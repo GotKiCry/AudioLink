@@ -118,7 +118,7 @@ impl Ptype {
                 max: DATAGRAM_MAX_PAYLOAD,
             },
             Self::ClockProbe => PayloadLenRule::Exact { len: 12 },
-            Self::ClockReply => PayloadLenRule::Exact { len: 24 },
+            Self::ClockReply => PayloadLenRule::Exact { len: 28 },
             Self::Keepalive => PayloadLenRule::Exact { len: 0 },
             Self::Nack => PayloadLenRule::U32List {
                 min_items: 1,
@@ -502,43 +502,29 @@ impl std::error::Error for AudioLinkError {}
 
 /// 节点平台（§9.1 / §9.2 的 `platform` 字段）。
 ///
-/// [`Platform::Unknown`] 承载 0 / 1 之外的未来取值，落实「未知值必须可忽略」的演进规则（§13）；
+/// v1 只有两种平台；[`Platform::Unknown`] 用于「未来版本引入的第三种平台」，
+/// 落实「未知值可忽略、不丢弃节点」的演进规则（§13）。
 /// 文本载体（mDNS TXT / 广播 JSON）只接受 `win` / `android`，见 [`Platform::from_str_exact`]。
+///
+/// 注：**本类型暂无二进制编码**（v1 的发现报文用文本；`HELLO.node_info` 的二进制取值冻结于 M1，
+/// 届时按 §4.1 + §13 补规格，不在 M0-02 里先行发明）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Platform {
     /// Windows 桌面端（文本形式 `win`）。
     Windows,
     /// Android 移动端（文本形式 `android`）。
     Android,
-    /// 未知平台（未来版本；构造时应避免 0 / 1 —— 那两个值由 [`Platform::from_u8`] 映射到已知平台）。
-    Unknown(u8),
+    /// 未知平台（未来版本）。
+    Unknown,
 }
 
 impl Platform {
-    /// 二进制载体的编码值（文本载体见 [`Platform::as_str`]）。
-    pub const fn as_u8(self) -> u8 {
-        match self {
-            Self::Windows => 0,
-            Self::Android => 1,
-            Self::Unknown(value) => value,
-        }
-    }
-
-    /// 由二进制编码值解析；`0` / `1` 之外一律记作 [`Platform::Unknown`]（**绝不丢弃**节点）。
-    pub const fn from_u8(value: u8) -> Self {
-        match value {
-            0 => Self::Windows,
-            1 => Self::Android,
-            other => Self::Unknown(other),
-        }
-    }
-
     /// 文本载体的字符串形式（§9.2）。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Windows => "win",
             Self::Android => "android",
-            Self::Unknown(_) => "unknown",
+            Self::Unknown => "unknown",
         }
     }
 

@@ -4,8 +4,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use audiolink_proto::{
-    AudioDatagram, AudioDatagramHeader, ControlFrame, DiscoveryBeacon, DiscoveryTxt, NackList,
-    payload_decode, payload_encode,
+    AudioDatagram, AudioDatagramHeader, ClockReply, ControlFrame, DiscoveryBeacon, DiscoveryTxt,
+    NackList, payload_decode, payload_encode,
 };
 use audiolink_types::{
     Caps, ErrorCode, Flags, OpCode, PROTO_MAJOR, PROTO_VERSION, PayloadLenRule, Platform, Ptype,
@@ -232,6 +232,20 @@ fn discovery_txt_round_trip() {
     let mut bad = pairs.clone();
     bad.push(("paired".to_string(), "yes".to_string()));
     assert!(DiscoveryTxt::from_pairs(&bad).is_err());
+
+    // §9.2：`v` 只接受 ASCII 数字（`+1` / `-1` / 空串必须拒绝）
+    for value in ["+1", "-1", "", "1.0"] {
+        let mut bad_v: Vec<(String, String)> = pairs
+            .iter()
+            .filter(|(key, _)| key != "v")
+            .cloned()
+            .collect();
+        bad_v.push(("v".to_string(), value.to_string()));
+        assert!(
+            DiscoveryTxt::from_pairs(&bad_v).is_err(),
+            "v = {value:?} 必须被拒绝"
+        );
+    }
 }
 
 #[test]
@@ -314,6 +328,34 @@ fn enum_tables_are_consistent() {
             "{unknown} 应为未分配"
         );
     }
+}
+
+/// `CLOCK_REPLY` 正路径往返（§3 载荷表：`probe_seq(u32)` + `t1/t2/t3(i64)` = **28 B**）。
+#[test]
+fn clock_reply_round_trip() {
+    let reply = ClockReply {
+        probe_seq: 7,
+        t1: 1_000_000,
+        t2: 1_000_120,
+        t3: 1_000_121,
+    };
+    let payload = reply.encode_to_vec().unwrap();
+    assert_eq!(payload.len(), ClockReply::LEN);
+    assert_eq!(payload.len(), 4 + 8 + 8 + 8, "字段布局决定载荷必须 28 B");
+    assert_eq!(ClockReply::decode(&payload).unwrap(), reply);
+
+    let wire = reply.to_datagram_bytes().unwrap();
+    assert_eq!(wire.len(), 24 + ClockReply::LEN);
+    let datagram = AudioDatagram::decode(&wire).unwrap();
+    assert_eq!(datagram.header.ptype, Ptype::ClockReply);
+    assert_eq!(ClockReply::from_datagram(&datagram).unwrap(), reply);
+    assert_eq!(
+        ClockReply::from_datagram(&datagram)
+            .unwrap()
+            .to_datagram_bytes()
+            .unwrap(),
+        wire
+    );
 }
 
 /// 为指定 ptype 造一个长度合法的载荷。

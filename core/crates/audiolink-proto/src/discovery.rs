@@ -151,7 +151,7 @@ impl DiscoveryBeacon {
         validate_fingerprint_id(&self.id)?;
         match self.platform {
             Platform::Windows | Platform::Android => Ok(()),
-            Platform::Unknown(_) => Err(AudioLinkError::bad_request(
+            Platform::Unknown => Err(AudioLinkError::bad_request(
                 "discovery platform must be win / android",
             )),
         }
@@ -220,6 +220,12 @@ impl DiscoveryTxt {
         for (key, value) in pairs {
             match key.as_str() {
                 "v" => {
+                    // §9.2：只接受 ASCII 数字（`u8::parse` 会放行 `+1`，这里显式收紧）
+                    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                        return Err(AudioLinkError::bad_request(
+                            "discovery v must be an ASCII integer",
+                        ));
+                    }
                     let parsed = value.parse::<u8>().map_err(|_| {
                         AudioLinkError::bad_request("discovery v must be an integer")
                     })?;

@@ -283,8 +283,8 @@ pub struct ClockProbe {
 }
 
 impl ClockProbe {
-    /// 载荷长度（12 B）。
-    pub const LEN: usize = 12;
+    /// 载荷长度（12 B = 4 + 8，§3 载荷表）。
+    pub const LEN: usize = 4 + 8;
 
     /// 解析载荷（长度必须恰为 12 B）。
     pub fn decode(payload: &[u8]) -> Result<Self, AudioLinkError> {
@@ -335,50 +335,33 @@ impl ClockProbe {
     }
 }
 
-/// 时钟探测应答载荷（§3 载荷表：恰 24 B）。
+/// 时钟探测应答载荷（§3 载荷表：恰 28 B）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClockReply {
-    /// 回填的探测序号。
+    /// 回填的探测序号（偏移 0）。
     pub probe_seq: u32,
-    /// 发起方发送时刻（µs，原样回填）。
+    /// 发起方发送时刻（µs，原样回填；偏移 4）。
     pub t1: i64,
-    /// 应答方接收时刻（µs，应答方单调时钟）。
+    /// 应答方接收时刻（µs，应答方单调时钟；偏移 12）。
     pub t2: i64,
-    /// 应答方发送时刻（µs，紧随 `t2`）。
+    /// 应答方发送时刻（µs，紧随 `t2`；偏移 20）。
     pub t3: i64,
 }
 
 impl ClockReply {
-    /// 载荷长度（24 B）。
-    pub const LEN: usize = 24;
+    /// 载荷长度：`probe_seq(u32)` + `t1/t2/t3(i64)` = **28 B**（§3 载荷表）。
+    pub const LEN: usize = 4 + 8 + 8 + 8;
 
-    /// 解析载荷（长度必须恰为 24 B）。
+    /// 解析载荷（长度必须恰为 28 B）。
     pub fn decode(payload: &[u8]) -> Result<Self, AudioLinkError> {
+        const BAD: &str = "CLOCK_REPLY payload must be exactly 28 B";
         if payload.len() != Self::LEN {
-            return Err(AudioLinkError::bad_request(
-                "CLOCK_REPLY payload must be exactly 24 B",
-            ));
+            return Err(AudioLinkError::bad_request(BAD));
         }
-        let probe_seq = u32::from_le_bytes(fixed_bytes::<4>(
-            payload,
-            0,
-            "CLOCK_REPLY payload must be exactly 24 B",
-        )?);
-        let t1 = i64::from_le_bytes(fixed_bytes::<8>(
-            payload,
-            4,
-            "CLOCK_REPLY payload must be exactly 24 B",
-        )?);
-        let t2 = i64::from_le_bytes(fixed_bytes::<8>(
-            payload,
-            12,
-            "CLOCK_REPLY payload must be exactly 24 B",
-        )?);
-        let t3 = i64::from_le_bytes(fixed_bytes::<8>(
-            payload,
-            20,
-            "CLOCK_REPLY payload must be exactly 24 B",
-        )?);
+        let probe_seq = u32::from_le_bytes(fixed_bytes::<4>(payload, 0, BAD)?);
+        let t1 = i64::from_le_bytes(fixed_bytes::<8>(payload, 4, BAD)?);
+        let t2 = i64::from_le_bytes(fixed_bytes::<8>(payload, 12, BAD)?);
+        let t3 = i64::from_le_bytes(fixed_bytes::<8>(payload, 20, BAD)?);
         Ok(Self {
             probe_seq,
             t1,
@@ -387,7 +370,7 @@ impl ClockReply {
         })
     }
 
-    /// 编码进缓冲，返回写入长度（24）。
+    /// 编码进缓冲，返回写入长度（28）。
     pub fn encode_into(&self, out: &mut [u8]) -> Result<usize, AudioLinkError> {
         let dst = out
             .get_mut(..Self::LEN)
@@ -399,7 +382,7 @@ impl ClockReply {
         Ok(Self::LEN)
     }
 
-    /// 编码为 24 B 载荷。
+    /// 编码为 28 B 载荷。
     pub fn encode_to_vec(&self) -> Result<Vec<u8>, AudioLinkError> {
         let mut payload = [0u8; Self::LEN];
         self.encode_into(&mut payload)?;

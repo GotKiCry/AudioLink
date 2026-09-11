@@ -7,9 +7,9 @@
 use audiolink_proto::discovery::MAGIC;
 use audiolink_proto::{
     AudioDatagram, AudioDatagramHeader, ClockProbe, ClockReply, ControlFrame, ControlFrameHeader,
-    DiscoveryBeacon, NackList,
+    DiscoveryBeacon, DiscoveryTxt, NackList, payload_decode,
 };
-use audiolink_types::{AudioLinkError, Caps, ErrorCode, Platform};
+use audiolink_types::{AudioLinkError, Caps, ErrorCode, Platform, StreamStats};
 
 /// 断言一次解码被 L1 层拒绝，且错误码恰为 `1008 BAD_REQUEST`。
 #[track_caller]
@@ -200,54 +200,85 @@ fn datagram_fixed_payload_lengths_are_enforced() {
             &format!("CLOCK_PROBE 总长 {len} B"),
         );
     }
-    // CLOCK_REPLY：恰 24 B
-    for payload_len in [0usize, 8, 12, 23, 25, 48] {
-        assert_bad_request(
-            AudioDatagram::decode(&auxiliary_bytes(0x04, payload_len)),
-            &format!("CLOCK_REPLY 载荷 {payload_len} B"),
+
+    // 其余定长载体：逐载荷长度扫掠（§12：对定长载荷的载体逐个长度扫掠）
+    let sweep = |ptype: u8, good: usize, name: &str, max: usize| {
+        for payload_len in 0..=max {
+            let bytes = auxiliary_bytes(ptype, payload_len);
+            if payload_len == good {
+                assert!(
+                    AudioDatagram::decode(&bytes).is_ok(),
+                    "{name} 载荷 {payload_len} B 应合法"
+                );
+            } else {
+                assert_bad_request(
+                    AudioDatagram::decode(&bytes),
+                    &format!("{name} 载荷 {payload_len} B（规范长度 {good} B）"),
+                );
+            }
+        }
+    };
+    assert_eq!(
+        ClockReply::LEN,
+        28,
+        "probe_seq(4) + t1/t2/t3(24) = 28 B（§3 载荷表）"
+    );
+    sweep(0x04, ClockReply::LEN, "CLOCK_REPLY", 48);
+    sweep(0x05, 0, "KEEPALIVE", 8);
+
+    // NACK：4×n，1 ≤ n ≤ 16 —— 逐长度扫掠
+    for payload_len in 0..=72 {
+        let bytes = auxiliary_bytes(0x06, payload_len);
+        let expected_ok = payload_len.is_multiple_of(4) && (4..=64).contains(&payload_len);
+        assert_eq!(
+            AudioDatagram::decode(&bytes).is_ok(),
+            expected_ok,
+            "NACK 载荷 {payload_len} B 的合法性判定错误"
         );
+        if !expected_ok {
+            assert_bad_request(
+                AudioDatagram::decode(&bytes),
+                &format!("NACK 载荷 {payload_len} B"),
+            );
+        }
     }
-    assert!(AudioDatagram::decode(&auxiliary_bytes(0x04, 24)).is_ok());
-    // KEEPALIVE：恰 0 B
-    assert_bad_request(
-        AudioDatagram::decode(&auxiliary_bytes(0x05, 1)),
-        "KEEPALIVE 带载荷",
-    );
-    assert!(AudioDatagram::decode(&auxiliary_bytes(0x05, 0)).is_ok());
-    // NACK：4×n，1 ≤ n ≤ 16
-    assert_bad_request(
-        AudioDatagram::decode(&auxiliary_bytes(0x06, 0)),
-        "NACK 0 项",
-    );
-    assert_bad_request(
-        AudioDatagram::decode(&auxiliary_bytes(0x06, 3)),
-        "NACK 长度非 4 的倍数",
-    );
-    assert_bad_request(
-        AudioDatagram::decode(&auxiliary_bytes(0x06, 68)),
-        "NACK 17 项",
-    );
-    assert!(AudioDatagram::decode(&auxiliary_bytes(0x06, 4)).is_ok());
-    assert!(AudioDatagram::decode(&auxiliary_bytes(0x06, 64)).is_ok());
 }
 
 #[test]
 fn clock_payload_decoders_reject_wrong_lengths() {
-    for bad in [vec![0u8; 0], vec![0u8; 11], vec![0u8; 13], vec![0u8; 24]] {
-        assert_bad_request(
-            ClockProbe::decode(&bad),
-            &format!("CLOCK_PROBE 载荷 {} B", bad.len()),
-        );
+    // 载荷级解码器：逐长度扫掠，只接受规范长度（§3 载荷表）
+    for len in 0..=32 {
+        let bytes = vec![0u8; len];
+        if len == ClockProbe::LEN {
+            assert!(
+                ClockProbe::decode(&bytes).is_ok(),
+                "CLOCK_PROBE {len} B 应合法"
+            );
+        } else {
+            assert_bad_request(ClockProbe::decode(&bytes), &format!("CLOCK_PROBE {len} B"));
+        }
+        if len == ClockReply::LEN {
+            assert!(
+                ClockReply::decode(&bytes).is_ok(),
+                "CLOCK_REPLY {len} B 应合法"
+            );
+        } else {
+            assert_bad_request(ClockReply::decode(&bytes), &format!("CLOCK_REPLY {len} B"));
+        }
     }
-    for bad in [vec![0u8; 0], vec![0u8; 12], vec![0u8; 23], vec![0u8; 25]] {
-        assert_bad_request(
-            ClockReply::decode(&bad),
-            &format!("CLOCK_REPLY 载荷 {} B", bad.len()),
+    for len in 0..=72 {
+        let bytes = vec![0u8; len];
+        let expected_ok = len.is_multiple_of(4) && (4..=64).contains(&len);
+        assert_eq!(
+            NackList::decode(&bytes).is_ok(),
+            expected_ok,
+            "NACK {len} B"
         );
+        if !expected_ok {
+            assert_bad_request(NackList::decode(&bytes), &format!("NACK {len} B"));
+        }
     }
     assert_bad_request(NackList::decode(&[]), "NACK 空载荷");
-    assert_bad_request(NackList::decode(&[0u8; 3]), "NACK 3 B");
-    assert_bad_request(NackList::decode(&[0u8; 68]), "NACK 17 项");
     // ptype 不符
     let probe = AudioDatagram::decode(VECTOR_CLOCK_PROBE).unwrap();
     assert_bad_request(
@@ -307,7 +338,7 @@ fn control_frame_version_op_and_flags_are_enforced() {
             &format!("未知命令 {op:#04x}"),
         );
     }
-    for bit in [0u16, 1, 5, 15] {
+    for bit in 0..16u16 {
         assert_bad_request(
             ControlFrame::decode(&control_frame_bytes(0x01, 0x02, 1 << bit, &[])),
             &format!("控制帧 flags bit{bit} 非 0"),
@@ -455,6 +486,9 @@ impl XorShift64 {
 }
 
 /// 把所有解码入口跑一遍（panic 会让测试失败，即「绝不 panic」的断言）。
+///
+/// 覆盖范围必须含**全部**公开解码入口，否则 fuzz 只是心理安慰：
+/// 直接吃字节的 8 个 + JSON 载荷 + postcard 载荷 + TXT 键值对（由随机字节派生）。
 fn exercise_all_decoders(bytes: &[u8]) {
     let _ = AudioDatagram::decode(bytes);
     let _ = AudioDatagramHeader::decode(bytes);
@@ -464,6 +498,16 @@ fn exercise_all_decoders(bytes: &[u8]) {
     let _ = ControlFrame::decode(bytes);
     let _ = ControlFrameHeader::decode(bytes);
     let _ = DiscoveryBeacon::decode(bytes);
+    let _ = DiscoveryBeacon::from_json_payload(bytes);
+    let _ = payload_decode::<StreamStats>(bytes);
+    if let Ok(text) = core::str::from_utf8(bytes) {
+        for key in [
+            "v", "proto", "id", "name", "platform", "caps", "paired", "unknown",
+        ] {
+            let pairs = [(key.to_string(), text.to_string())];
+            let _ = DiscoveryTxt::from_pairs(&pairs);
+        }
+    }
 }
 
 #[test]
