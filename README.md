@@ -1,5 +1,9 @@
 # AudioLink
 
+[![CI](https://github.com/GotKiCry/AudioLink/actions/workflows/ci.yml/badge.svg)](https://github.com/GotKiCry/AudioLink/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-informational.svg)](#)
+
 > **局域网实时音频分发系统** —— 把任意节点的声音，低延迟、可同步、可混合地推给局域网内任意数量的其他节点。
 > Windows ⇄ Android 双向，多设备并发，组内同步 ±10 ms，Opus 编码，全链路加密。
 
