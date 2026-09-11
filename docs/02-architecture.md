@@ -65,8 +65,8 @@ AudioLink/
 ├─ .cargo/config.toml             # 目标与交叉编译约定
 ├─ core/
 │  └─ crates/
-│     ├─ audiolink-types/         # 协议常量、枚举、错误码、遥测指标结构（零依赖）
-│     ├─ audiolink-proto/         # 帧/命令/发现报文 编解码 + 测试向量（golden vectors）
+│     ├─ audiolink-types/         # 协议常量、枚举、错误码、遥测指标结构（默认零依赖；`serde` 为可选依赖，仅由 proto 开启）
+│     ├─ audiolink-proto/         # 帧/命令/发现报文 编解码 + 测试向量（golden vectors）；L1 严格解码层（非法帧一律 BadRequest 且不 panic，见 03-protocol.md §1.1）
 │     ├─ audiolink-audio/         # 采集/播放抽象、重采样、Opus、抖动缓冲、混音器
 │     ├─ audiolink-net/           # quinn QUIC 会话、数据报通道、FEC/NACK、时钟同步
 │     ├─ audiolink-discovery/     # mDNS/DNS-SD + UDP 广播兜底
