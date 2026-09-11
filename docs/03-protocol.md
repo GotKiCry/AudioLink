@@ -132,6 +132,11 @@ TLS1.3（quinn 默认 rustls）：
 
 **MTU 约束**：单包总长 ≤ **1200 B**（保守值，避免 QUIC 分片）。默认 Opus 20 ms @160 kbps ≈ 400 B，余量充足。若协商为高码率（>512 kbps）或 PCM 档，需**应用层分片**（同一 `seq` 内可用 `flags` 扩展或分包：v1 采取"PCM 档限制为 20 ms 片、必要时同 seq 多包，接收方按 `sample_index` 重组"）。
 
+> ⚠️ **实测修正（M0 用 `tools/latency-probe` 量得）**：1200 B 是**协议预算**，不是**实际可用值**。
+> QUIC 数据报的真实上限由连接自身的 `max_datagram_size()` 决定：quinn 0.11 在默认 `initial_mtu = 1200` 下实测只有 **1162 B**
+> （1200 − QUIC 短头/AEAD 开销）。因此**发送侧必须按 `min(1200, connection.max_datagram_size())` 分片或截断**，
+> 不得假设 1200 B 一定可发；DPLPMTUD 探测到更大 MTU 后该值会上升，但仍需逐连接读取。
+
 **心跳**：无音频发送时每 **1 s** 发一个 `KEEPALIVE`；链路 5 s 无任何数据报 → 判定 `Degraded`，10 s → `Reconnecting`。心跳**双向**都用于存活判定（旧版单向且被忽略）。
 
 ---

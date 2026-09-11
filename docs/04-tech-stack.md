@@ -221,7 +221,7 @@
 | crate | 版本 | 用途 |
 |---|---|---|
 | `quinn` | 0.11.x | QUIC（含 `send_datagram`） |
-| `rustls` / `rcgen` | 最新稳定 | TLS + 自签证书生成 |
+| `rustls` / `rcgen` | 最新稳定 | TLS + 自签证书生成；**必须显式选 `ring` 后端**（`default-features = false, features = ["ring", …]`）—— 默认的 `aws_lc_rs` 需要 CMake/NASM，本机与 CI 都不装 |
 | `tokio` | 1.x（full） | 异步运行时 |
 | `opus-rs`（或 `rusty-opus`） | 0.1.33 / 0.9.1 | Opus 编解码 |
 | `wasapi` | 0.24.0 | Windows 采集/播放 |

@@ -120,6 +120,7 @@ keyPassword=<同上>
 | 端口占用 | QUIC 58290 / 发现 58280 冲突 | 端口可配置；启动时检测占用并提示 |
 | PATH 里有 GNU coreutils 的 `link.exe` | 可能劫持 MSVC 链接步骤 | 用 `cargo build`（rustc 自带精确工具链路径）；不要手写 `link` 调用 |
 | 想装 CMake 编译 Opus | 不必要 | 本项目走 **纯 Rust `opus-rs`**（ADR-003）→ **CMake / NASM / Perl / pkg-config / vcpkg 全都不需要**；仅当切换到 `opus` 0.4.0 路线才需要 CMake |
+| `cargo build` 报 `aws-lc-sys` / 缺 CMake、NASM | `rustls` 的**默认**加密后端是 `aws_lc_rs`（需要 CMake 构建） | workspace 里已把 `rustls` 固定为 `default-features = false, features = ["ring", "std", "tls12", "logging"]`；`quinn` 默认后端即 `rustls-ring`（无需改动）。**不要**给 `rustls` 打开默认 features，也不要显式启用 `quinn/rustls-aws-lc-rs` |
 
 ### 4.1 首次跑通时实测踩到的坑（2026-09-11 已全部修复）
 
@@ -151,8 +152,25 @@ keyPassword=<同上>
 
 | 工具 | 用途 | 归属里程碑 |
 |---|---|---|
-| `alp2-dump` | 协议抓包解码（人类可读） | M0 |
-| `latency-probe` | 各环节延迟分解测量（采集/编码/网络/缓冲/播放） | M0 |
+| `alp2-dump` | 协议抓包解码（hex 文本 → 人类可读字段；拒绝用例的现场取证） | M0 ✅ |
+| `latency-probe` | QUIC 数据报 RTT/抖动 + §6 四时间戳时钟偏移（`listen` / `probe` 两个子命令） | M0 ✅（音频各环节分解留到 M1） |
 | `netem-sim` | 丢包/抖动/带宽注入（Windows 侧代理或 WFP） | M2 |
 | `sync-measure` | 双机同期录音 + 波形对齐，输出同步偏差报告 | M3 |
 | `soak-runner` | 8 h 连续运行 + 指标采集 + 异常自动快照 | M2 |
+
+**用法（M0 已可用；可执行文件在 `target/x86_64-pc-windows-msvc/debug/`）**：
+
+```powershell
+# 1) 协议解码：每行一个报文；可直接粘 docs/03-protocol.md §12 的向量行
+"02 01 00 00 | 01 00 00 00 | 2A 00 00 00 | C0 03 00 00 | 88 77 66 55 44 33 22 11 | DE AD BE EF" |
+    cargo run -q -p audiolink-tools --bin alp2-dump
+cargo run -q -p audiolink-tools --bin alp2-dump -- dump.txt        # 文件输入
+cargo run -q -p audiolink-tools --bin alp2-dump -- --single       # 整个输入当作一个报文
+# 退出码：0 = 全部解码成功；1 = 有报文被 L1 拒绝；2 = 用法/输入错误
+
+# 2) 链路测量（两个终端；先服务端后客户端）
+cargo run -q -p audiolink-tools --bin latency-probe -- listen --bind 0.0.0.0:58290
+cargo run -q -p audiolink-tools --bin latency-probe -- probe 192.168.1.20 --count 50 --interval-ms 100
+# 输出：RTT 的 min/P50/P95/P99/max、相邻 RTT 波动、§6 的 best8 偏移估计与极差、§6.5 质量分级
+# 启动时会打印 QUIC 的 max_datagram_size() —— §3 的 1200 B 预算必须与它取 min（默认初始 MTU 下实测 1162 B）
+```
