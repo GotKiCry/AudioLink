@@ -121,7 +121,7 @@ cd desktop; pnpm install; pnpm tauri dev
 # 4) Android（先编 Rust 内核，再打 APK）
 cd ..\android
 pwsh .\scripts\build-rust.ps1 -Abi arm64-v8a,armeabi-v7a
-.\gradlew.bat assembleDebug
+pwsh ..\tools\gradlew.ps1 assembleDebug   # 包装脚本：自动校验 JDK 17+ 并注入 ANDROID_HOME
 ```
 
 ---

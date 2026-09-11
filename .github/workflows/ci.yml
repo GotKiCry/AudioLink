@@ -10,24 +10,35 @@ env:
   RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: always
 
+# 设计说明（2026-09-11 优化）：
+#   四个 job **互不依赖、全部并行** —— 它们的唯一共享物是代码本身，不存在构建产物依赖。
+#   早先版本让 android/desktop `needs: rust`，导致总时长 = rust(27min) + max(android, desktop)，
+#   首轮实测 49 分钟。现在总时长 ≈ max(各 job) ≈ 22~27 分钟。
+#   另外把「内核 lint/test」与「桌面外壳构建」拆开：内核几个 crate 依赖极轻，能在数分钟内给出反馈，
+#   不必等 tauri 那一整套依赖编完。
+
 jobs:
-  # ---------- 内核：格式 / 静态检查 / 单元测试（协议 golden vectors 在此把关）----------
-  rust:
+  # ---------- 快速反馈：内核格式 / lint / 单元测试（协议 golden vectors 在此把关）----------
+  core:
+    name: core (fmt + clippy + test)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4          # TODO: pin to SHA
-      - uses: dtolnay/rust-toolchain@stable # TODO: pin to SHA；版本由 rust-toolchain.toml 决定
+      - uses: dtolnay/rust-toolchain@stable # TODO: pin to SHA；实际版本由 rust-toolchain.toml 决定
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2        # TODO: pin to SHA
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace --exclude audiolink-desktop
+      # 排除桌面外壳：它的 tauri 依赖编译很重，放到独立的 desktop job 里
+      - name: Clippy (kernel crates)
+        run: cargo clippy --workspace --exclude audiolink-desktop --all-targets --all-features -- -D warnings
+      - name: Test (kernel crates)
+        run: cargo test --workspace --exclude audiolink-desktop
 
   # ---------- Android：Rust 交叉编译 + 组装 debug APK ----------
   android:
+    name: android (ndk + assembleDebug)
     runs-on: ubuntu-latest
-    needs: rust
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -52,8 +63,8 @@ jobs:
 
   # ---------- 桌面端：类型检查 + Tauri 构建（不含签名）----------
   desktop:
+    name: desktop (vite + tauri)
     runs-on: windows-latest
-    needs: rust
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -76,6 +87,7 @@ jobs:
 
   # ---------- 版本一致性：单一来源校验（旧版靠人工同步三处，必错）----------
   version-consistency:
+    name: version-consistency
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
