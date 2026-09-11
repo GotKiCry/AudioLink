@@ -27,10 +27,10 @@
 
 ```powershell
 # 1) 让 Gradle 能启动（本机 JAVA_HOME 是 JDK 11 → Gradle 9 直接拒绝启动）
-#    推荐做法：写在项目内 android/gradle.properties（已配置好，不动全局环境变量）
-#       org.gradle.java.home=C:/Users/liuzh/scoop/apps/corretto17-jdk/current
-#    如需全局改（会影响其他项目，谨慎）：
-#       [Environment]::SetEnvironmentVariable('JAVA_HOME','C:\Users\liuzh\scoop\apps\corretto17-jdk\current','User')
+#    ⚠️ 不要把 JDK 路径写进 android/gradle.properties：CI 跑在 Ubuntu，路径不存在会直接失败。
+#    本地用包装脚本（自动校验 JAVA_HOME 是否 17+，并注入 ANDROID_HOME）：
+#       pwsh tools\gradlew.ps1 assembleDebug
+#    也可显式指定：-JavaHome 'C:\path\to\jdk-17'
 # 验证（新开终端）
 java -version            # 期望 17.x
 
@@ -84,9 +84,9 @@ pnpm tauri build          # 产物：NSIS 安装包 + 绿色版 exe
 cd C:\_Project\AudioLink\android
 # 1) 先编内核 .so（脚本会调 cargo-ndk，产出到 app/src/main/jniLibs/<abi>/）
 pwsh .\scripts\build-rust.ps1 -Abi arm64-v8a,armeabi-v7a
-# 2) 再编 APK
-.\gradlew.bat assembleDebug
-.\gradlew.bat assembleRelease   # 需本地 keystore 属性（见下）
+# 2) 再编 APK —— 用包装脚本（保证以 JDK 17 启动 Gradle；本机直接 .\gradlew.bat 会因 JAVA_HOME=11 失败）
+pwsh ..\tools\gradlew.ps1 assembleDebug
+pwsh ..\tools\gradlew.ps1 assembleRelease   # 需本地 keystore 属性（见下）
 ```
 
 `android/local.properties`（**不入库**）：
@@ -129,7 +129,8 @@ keyPassword=<同上>
 | `术语 '.\gradlew.bat' 不会被识别为…` | 仓库缺 wrapper 三件套（只写了 `gradle-wrapper.properties`） | 已补齐 `gradlew`、`gradlew.bat`、`gradle/wrapper/gradle-wrapper.jar`（标准文件；`distributionUrl` 仍锁 9.7.1） |
 | Gradle 配置期报 `Unresolved reference 'exec'` | **Gradle 9 移除了项目/任务级 `exec {}` DSL** | `app/build.gradle.kts` 改为注入 `ExecOperations` 的 `RustBuildTask`（配置缓存与 Isolated Projects 下同样安全） |
 | `error: OUT_DIR env var is not set, do you have a build script?`（指向 `tauri::generate_context!`） | `desktop/src-tauri/` 缺 **`build.rs`** | 已补 `build.rs` 调用 `tauri_build::build()`（Tauri 2 硬要求） |
-| `gradlew` 启动即失败（即使 `org.gradle.java.home` 已指向 JDK 17） | `gradlew` 的 **launcher JVM** 由 `JAVA_HOME`/PATH 决定，`org.gradle.java.home` 只影响 **daemon JVM** | 运行前把 `JAVA_HOME` 指到 JDK 17+（本次验证用 `$env:JAVA_HOME=corretto17`）；后续可加 `tools/gradlew.ps1` 包装 |
+| `gradlew` 启动即失败 | **launcher JVM** 由 `JAVA_HOME`/PATH 决定，`org.gradle.java.home` 只影响 **daemon JVM** | 已提供 **`tools/gradlew.ps1`** 包装（自动校验 JDK 17+、注入 ANDROID_HOME）；并**禁止**把本机 JDK 路径写进 `android/gradle.properties`（会让 Ubuntu CI 直接失败） |
+| `无法覆盖变量 home，因为它是只读变量或常量` | PowerShell 把 `$home` / `$profile` / `$args` / `$host` 等视为**只读自动变量**，不能用作参数名或赋值目标 | 已改名；写 PS 脚本时避开这些名字（本项目已在 `build-rust.ps1` 的 `$profile` 与 `gradlew.ps1` 的 `$home` 各踩一次） |
 
 ---
 

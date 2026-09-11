@@ -1,0 +1,37 @@
+# AudioLink 行尾与二进制策略
+#
+# 背景：本项目同时在 Windows（开发）与 Ubuntu（CI）上构建。
+# 若不做规范化，Windows 编辑产生 CRLF 会让 Linux 侧的 shell 脚本报 `^M: bad interpreter`，
+# 也会让 `cargo fmt --check` 在两端表现不一致。
+#
+# 结论：仓库内一律 LF；仅 Windows 专用脚本保持 CRLF。
+
+* text=auto eol=lf
+
+# Windows 专用脚本：cmd.exe 对 LF-only 的 .bat 更敏感，保持 CRLF
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# shell 脚本与无扩展名启动器必须是 LF（gradlew 会被 Ubuntu runner 直接执行）
+gradlew    text eol=lf
+gradlew.*  text eol=crlf
+
+# 二进制：禁止行尾转换与文本 diff
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.ico      binary
+*.jar      binary
+*.so       binary
+*.dll      binary
+*.exe      binary
+*.apk      binary
+*.aab      binary
+*.jks      binary
+*.keystore binary
+
+# 生成物与锁文件：保留原样，避免无意义的大 diff
+Cargo.lock       -diff
+pnpm-lock.yaml   -diff
+*.snap           -diff
