@@ -146,7 +146,12 @@ catch {
 $project = $projectList.projects | Where-Object { $_.title -eq $ProjectTitle } | Select-Object -First 1
 if (-not $project) {
     if ($DryRun) {
-        Write-Host "  [dry-run] 创建看板 '$ProjectTitle'"
+        Write-Host "  [dry-run] 创建看板 '$ProjectTitle'（并关联仓库 $Repo）"
+        Write-Host "  [dry-run] 创建单选项字段：Status($($STATUS_OPTIONS -join '/'))、里程碑($($MILESTONE_OPTIONS -join '/'))、优先级($($PRIORITY_OPTIONS -join '/'))"
+        Write-Host "  [dry-run] 将写入 $($Tasks.Count) 个条目："
+        foreach ($task in $Tasks) {
+            Write-Host ("      - [{0}/{1}/{2}] {3}" -f $task.M, $task.P, $task.S, $task.T)
+        }
         exit 0
     }
     Write-Host "  + 创建看板 '$ProjectTitle'"
