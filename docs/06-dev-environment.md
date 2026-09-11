@@ -121,6 +121,16 @@ keyPassword=<同上>
 | PATH 里有 GNU coreutils 的 `link.exe` | 可能劫持 MSVC 链接步骤 | 用 `cargo build`（rustc 自带精确工具链路径）；不要手写 `link` 调用 |
 | 想装 CMake 编译 Opus | 不必要 | 本项目走 **纯 Rust `opus-rs`**（ADR-003）→ **CMake / NASM / Perl / pkg-config / vcpkg 全都不需要**；仅当切换到 `opus` 0.4.0 路线才需要 CMake |
 
+### 4.1 首次跑通时实测踩到的坑（2026-09-11 已全部修复）
+
+| 现象 | 根因 | 处置 |
+|---|---|---|
+| `cargo ndk` 报 `profile name 'debug' is reserved` | Cargo 的开发 profile 叫 **`dev`**，`debug` 是保留名 | `android/scripts/build-rust.ps1` 已改用 `dev`/`release`；同时避免用 `$profile` 作变量名（与 PowerShell 自动变量 `$PROFILE` 撞名） |
+| `术语 '.\gradlew.bat' 不会被识别为…` | 仓库缺 wrapper 三件套（只写了 `gradle-wrapper.properties`） | 已补齐 `gradlew`、`gradlew.bat`、`gradle/wrapper/gradle-wrapper.jar`（标准文件；`distributionUrl` 仍锁 9.7.1） |
+| Gradle 配置期报 `Unresolved reference 'exec'` | **Gradle 9 移除了项目/任务级 `exec {}` DSL** | `app/build.gradle.kts` 改为注入 `ExecOperations` 的 `RustBuildTask`（配置缓存与 Isolated Projects 下同样安全） |
+| `error: OUT_DIR env var is not set, do you have a build script?`（指向 `tauri::generate_context!`） | `desktop/src-tauri/` 缺 **`build.rs`** | 已补 `build.rs` 调用 `tauri_build::build()`（Tauri 2 硬要求） |
+| `gradlew` 启动即失败（即使 `org.gradle.java.home` 已指向 JDK 17） | `gradlew` 的 **launcher JVM** 由 `JAVA_HOME`/PATH 决定，`org.gradle.java.home` 只影响 **daemon JVM** | 运行前把 `JAVA_HOME` 指到 JDK 17+（本次验证用 `$env:JAVA_HOME=corretto17`）；后续可加 `tools/gradlew.ps1` 包装 |
+
 ---
 
 ## 5. CI 设计（`.github/workflows/`）

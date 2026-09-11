@@ -1,5 +1,7 @@
 // AudioLink Android —— app 模块
 import java.util.Properties
+import javax.inject.Inject
+import org.gradle.process.ExecOperations
 
 plugins {
     id("com.android.application")
@@ -80,6 +82,7 @@ android {
 }
 
 dependencies {
+    // Compose 全家桶由 BOM 统一版本（不要给 compose.* 单独写版本号）
     val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
     implementation(composeBom)
     androidTestImplementation(composeBom)
@@ -87,13 +90,15 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.activity:activity-compose")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose")
-    implementation("androidx.lifecycle:lifecycle-service")
-    implementation("androidx.datastore:datastore-preferences")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json")
+
+    // 以下不属于 Compose BOM 管辖，必须显式给版本号（漏写会得到 "Could not find xxx:." 这类空版本错误）
+    // 版本查询日期：2026-09-11（源码：dl.google.com / repo1.maven.org 的 maven-metadata.xml）
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-service:2.11.0")
+    implementation("androidx.datastore:datastore-preferences:1.2.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
 
     // 注意：不引入 okhttp / ExoPlayer / AndroidAsync —— 旧版的整块 HTTP 管理面已被移除
     debugImplementation("androidx.compose.ui:ui-tooling")
@@ -101,17 +106,36 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }
 
-// 一键：先编 Rust 内核，再打 APK（避免忘记同步 .so）
-tasks.register("buildRustCore") {
-    group = "audiolink"
-    description = "用 cargo-ndk 交叉编译 Rust 内核到 app/src/main/jniLibs"
-    doLast {
-        exec {
-            commandLine(
-                "pwsh", "-NoProfile", "-File",
-                rootProject.file("scripts/build-rust.ps1").absolutePath,
-                "-Abi", "arm64-v8a,armeabi-v7a"
-            )
+/**
+ * 一键交叉编译 Rust 内核到 `app/src/main/jniLibs`（避免忘记同步 .so）。
+ *
+ * 注意：Gradle 9 已移除任务/项目级的 `exec {}` DSL（会报 Unresolved reference 'exec'）。
+ * 官方推荐注入 `ExecOperations` —— 这样在配置缓存与 Isolated Projects 下同样安全，
+ * 且路径在**配置阶段**解析好，执行期不再访问 rootProject。
+ */
+abstract class RustBuildTask : DefaultTask() {
+    @get:Inject
+    abstract val execOps: ExecOperations
+
+    @get:Input
+    abstract val scriptPath: Property<String>
+
+    @get:Input
+    abstract val abis: Property<String>
+
+    @TaskAction
+    fun build() {
+        execOps.exec {
+            commandLine("pwsh", "-NoProfile", "-File", scriptPath.get(), "-Abi", abis.get())
         }
     }
+}
+
+tasks.register<RustBuildTask>("buildRustCore") {
+    group = "audiolink"
+    description = "用 cargo-ndk 交叉编译 Rust 内核到 app/src/main/jniLibs"
+    scriptPath.set(
+        rootProject.layout.projectDirectory.file("scripts/build-rust.ps1").asFile.absolutePath
+    )
+    abis.set("arm64-v8a,armeabi-v7a")
 }

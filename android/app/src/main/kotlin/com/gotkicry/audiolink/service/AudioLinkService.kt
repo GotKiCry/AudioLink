@@ -54,13 +54,22 @@ class AudioLinkService : Service() {
         super.onDestroy()
     }
 
-    private fun foregroundServiceTypes(): Int =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+    /**
+     * 前台服务类型：
+     * * `mediaPlayback` 自 API 29 起可用；
+     * * `connectedDevice` 自 **API 30** 起才有该类型位 —— 在 API 29 上提交未知位属于未定义行为，
+     *   因此这里按版本精确分级（而不是简单地 `>= Q` 一刀切）。
+     */
+    private fun foregroundServiceTypes(): Int = when {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R ->
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-        } else {
-            0
-        }
+
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+
+        else -> 0
+    }
 
     private fun createChannel() {
         val channel = NotificationChannel(
@@ -89,7 +98,17 @@ class AudioLinkService : Service() {
             .setContentText(text)
             .setSmallIcon(com.gotkicry.audiolink.R.mipmap.ic_launcher)
             .setContentIntent(open)
-            .addAction(0, getString(com.gotkicry.audiolink.R.string.action_stop), stop)
+            // 用 Notification.Action.Builder 而非已废弃的 addAction(int, CharSequence, PendingIntent)
+            .addAction(
+                Notification.Action.Builder(
+                    android.graphics.drawable.Icon.createWithResource(
+                        this,
+                        com.gotkicry.audiolink.R.mipmap.ic_launcher,
+                    ),
+                    getString(com.gotkicry.audiolink.R.string.action_stop),
+                    stop,
+                ).build(),
+            )
             .setOngoing(true)
             .build()
     }

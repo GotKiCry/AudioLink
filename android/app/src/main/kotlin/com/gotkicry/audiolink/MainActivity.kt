@@ -4,6 +4,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import com.gotkicry.audiolink.ui.AudioLinkTheme
+import com.gotkicry.audiolink.ui.HomeScreenPlaceholder
 
 /**
  * 单页信息架构（docs/08-ui-spec.md §3.1）：

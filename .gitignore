@@ -1,6 +1,8 @@
 # ---------- Rust ----------
 /target/
 **/target/
+# Android 交叉编译独立产物目录（避免与桌面 target 互相触发重编）
+/target-android/
 core/target/
 desktop/src-tauri/target/
 *.rs.bk
@@ -14,9 +16,13 @@ dist-ssr/
 desktop/dist/
 desktop/node_modules/
 pnpm-lock.yaml.bak
+# Tauri 每次构建自动生成的权限 schema（不入库）
+desktop/src-tauri/gen/schemas/
 
 # ---------- Android ----------
 android/.gradle/
+android/.gradle-home/          # 本项目隔离的 GRADLE_USER_HOME（避免混入全局私服凭据）
+.gradle-home/
 android/build/
 android/app/build/
 android/local.properties

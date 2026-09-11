@@ -43,7 +43,7 @@
       },
       "webviewInstallMode": { "type": "downloadBootstrapper" }
     },
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": false
   },
   "plugins": {
     "updater": {
