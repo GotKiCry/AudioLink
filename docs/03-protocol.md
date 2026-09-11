@@ -30,7 +30,7 @@
 
 - **L1 严格解码层**（`audiolink-proto` 的 `decode*` 函数）：以下输入一律返回 `Err(1008 BAD_REQUEST)`，**绝不 panic**：
   长度不足 / 超出上限、`payload_len` 与剩余字节不符、版本字节 ≠ `0x02`、`ptype` 不在 §3 表内、
-  `flags` 的 bit 5–15 任一非 0、ptype 定长载荷长度不符（见 §3 载荷表）。
+  `flags` 的 bit 5–15 任一非 0、ptype 定长载荷长度不符（见 §3 载荷表）、`AUDIO` 空载荷但未置 `DTX`（见 §3 载荷表）。
   本层是 golden vectors（§12）与「Android / 桌面共用同一内核」的跨端一致性契约面：**严格是为了让两端漂移在 CI 立刻暴露**。
 - **L2 分发层**（`audiolink-engine`，v1 起实现）：收到 `BadRequest`，或解码成功但 `ptype` / 命令码不在自身实现范围时，
   **计数并丢弃该帧，不中断会话、不向对端回报错误**（§13 演进策略）。
@@ -112,11 +112,12 @@ TLS1.3（quinn 默认 rustls）：
 | `AUDIO` | 0 … 1176 B | 不透明字节串（Opus 帧 / PCM16LE 片）；`DTX` 位置位时允许 0 B |
 | `FEC` | 0 … 1176 B | 不透明字节串（XOR 组格式冻结于 M2，解码器不解释） |
 | `CLOCK_PROBE` | **恰 12 B** | `probe_seq(u32)` + `t1(i64)` |
-| `CLOCK_REPLY` | **恰 24 B** | `probe_seq(u32)` + `t1(i64)` + `t2(i64)` + `t3(i64)` |
+| `CLOCK_REPLY` | **恰 28 B** | `probe_seq(u32)` + `t1(i64)` + `t2(i64)` + `t3(i64)`（4+8+8+8） |
 | `KEEPALIVE` | **恰 0 B** | 无载荷（状态只走 `flags`） |
 | `NACK` | **4×n B** | n 个 `u32` 待重传 seq，`1 ≤ n ≤ 16`（即 4…64 B） |
 
 - 长度不符 → `1008 BAD_REQUEST`（L1 层，见 §1.1）；
+- `AUDIO` 的 `payload_len = 0` **仅当 `DTX` 位置位**：静音段必须显式置 `DTX`；未置位却为空 → `1008 BAD_REQUEST`（视为协议违规，由 L2 计数丢弃）；
 - 非 `AUDIO`/`FEC` 的包中 `stream_id` / `seq` / `sample_index` / `epoch_id` **无意义，发送端置 0，接收端不校验**（见 §12 示例 2）。
 
 **flags 位定义**：
@@ -155,6 +156,8 @@ TLS1.3（quinn 默认 rustls）：
   - `ver` 必须为 `0x02`，`type` 必须在本节命令表内；
   - `flags` 在 v1 **全部保留**（bit 0–15 必须置 0），非 0 → `1008 BAD_REQUEST`（新增位需在小版本内约定，同 §1.1 的演进规则）；
   - 握手阶段的宽容信封解析（不校验 `ver`/`type`）见 §1.1。
+- **postcard 载荷必须恰好消费全部字节**：解码后仍有尾随字节 → `1008 BAD_REQUEST`（避免两端 schema 漂移被静默接受，
+  也保证「长度 + 结构」双重吻合）。
 
 ### 4.1 命令表
 
@@ -346,12 +349,12 @@ rtt    = (t4 - t1) - (t3 - t2)
 
 | Key | 载体 | 格式 | 说明 |
 |---|---|---|---|
-| `v` | TXT + JSON | 整数 | 发现协议版本，当前为 `1`；不匹配 → 丢弃 |
-| `proto` | TXT + JSON | **带 `0x` 前缀的 4 位小写 hex 字符串**，如 `"0x0201"` | ALP 版本（`0x0201`）；不匹配**不丢弃**，仅用于 UI 提示能力降级 |
+| `v` | TXT + JSON | 整数（**仅 ASCII 数字**，不接受 `+1` 等写法） | 发现协议版本，当前为 `1`；不匹配 → 丢弃 |
+| `proto` | TXT + JSON | **带 `0x` 前缀的 4 位小写 hex 字符串**，如 `"0x0201"`（解析时大小写均可） | ALP 版本（`0x0201`）；不匹配**不丢弃**，仅用于 UI 提示能力降级 |
 | `id` | TXT + JSON | 16 位 hex 字符（小写输出；解析时大小写均可，规范化存小写） | 节点指纹（`SHA-256(证书 DER)`）前 8 字节 |
 | `name` | TXT + JSON | UTF-8 字符串 | 显示名（可含非 ASCII） |
-| `platform` | TXT + JSON | `"win"` / `"android"` | 平台；其它值 → 丢弃该报文 |
-| `caps` | TXT + JSON | **无前缀小写 hex**，如 `"3"` | 位图：bit0 可发送、bit1 可接收、bit2 支持内录、bit3 支持混音 |
+| `platform` | TXT + JSON | `"win"` / `"android"`（**区分大小写**） | 平台；其它值 → 丢弃该报文 |
+| `caps` | TXT + JSON | **无前缀小写 hex**，如 `"3"`（解析时大小写均可） | 位图：bit0 可发送、bit1 可接收、bit2 支持内录、bit3 支持混音 |
 | `paired` | **仅 TXT** | `"0"` / `"1"` | 是否已与「我」配对（仅 UI 提示，不携带敏感信息）；缺失按 `0` 处理 |
 | `port` | **仅 JSON** | 整数（u16） | QUIC 端口（TXT 由 mDNS 的 SRV 记录提供） |
 
@@ -461,6 +464,7 @@ pub struct CodecStats {
 | | `ptype` 不在 §3 表内（`0x00` / `0x07` / `0xFF` …） |
 | | `flags` 的 bit 5–15 任一非 0 |
 | | ptype 定长载荷长度不符（§3 载荷表：`CLOCK_*` / `KEEPALIVE` / `NACK`） |
+| | `AUDIO` 空载荷但未置 `DTX`（§3 载荷表） |
 | 控制帧 | 总长 < 12 B |
 | | `payload_len` ≠ 剩余字节数，或 `> 65536` |
 | | `ver ≠ 0x02`，或 `type` 不在 §4.1 表内 |

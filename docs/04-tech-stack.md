@@ -227,6 +227,7 @@
 | `wasapi` | 0.24.0 | Windows 采集/播放 |
 | `mdns-sd` | 0.21.3 | 服务发现 |
 | `serde` / `postcard` | 最新 | 控制面序列化 |
+| `serde_json` | 1.x | 发现报文的 JSON 载荷（`03-protocol.md` §9.2）；**仅发现层使用**，音频/控制面一律 postcard |
 | `crossbeam` / `ringbuf` | 最新 | 无锁环形缓冲 |
 | `tracing` / `tracing-subscriber` | 最新 | 结构化日志 |
 | `uniffi` | 最新 | FFI 绑定生成 |
