@@ -1,0 +1,57 @@
+# ---------- Rust ----------
+/target/
+**/target/
+core/target/
+desktop/src-tauri/target/
+*.rs.bk
+Cargo.lock.orig
+
+# ---------- Node / Tauri ----------
+node_modules/
+dist/
+dist-ssr/
+.vite/
+desktop/dist/
+desktop/node_modules/
+pnpm-lock.yaml.bak
+
+# ---------- Android ----------
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/captures/
+android/*.apk
+android/*.aab
+*.jks
+*.keystore
+android/app/release/
+android/.cxx/
+android/app/src/main/jniLibs/
+!android/app/src/main/jniLibs/.gitkeep
+
+# ---------- 密钥与身份（绝不入库）----------
+*.pem
+*.key
+identity/
+secrets/
+.env
+.env.*
+!.env.example
+
+# ---------- 日志与产物 ----------
+logs/
+*.log
+*.csv
+*.zip
+!/docs/**/*.md
+
+# ---------- IDE / OS ----------
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

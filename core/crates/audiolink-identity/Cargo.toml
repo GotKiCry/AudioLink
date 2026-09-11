@@ -1,0 +1,14 @@
+# audiolink-identity —— 自签证书、指纹、信任库、PIN 配对状态机
+# 规格见 docs/02-architecture.md、docs/03-protocol.md
+[package]
+name = "audiolink-identity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+audiolink-types = { workspace = true }
+
+[lints]
+workspace = true
+

@@ -1,0 +1,22 @@
+# audiolink-tools —— 开发工具：alp2-dump / latency-probe / soak-runner
+# 规格见 docs/02-architecture.md、docs/03-protocol.md
+[package]
+name = "audiolink-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+audiolink-proto = { workspace = true }
+audiolink-types = { workspace = true }
+
+[lints]
+workspace = true
+[[bin]]
+name = "alp2-dump"
+path = "src/bin/alp2_dump.rs"
+
+[[bin]]
+name = "latency-probe"
+path = "src/bin/latency_probe.rs"
+

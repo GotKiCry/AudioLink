@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      XML 主题仅用于窗口外壳；实际配色由 Compose Material3（ui/Theme.kt）接管。
+      深色模式：Compose 侧跟随系统（isSystemInDarkTheme），此处保持中性。
+    -->
+    <style name="Theme.AudioLink" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+    </style>
+
+    <!-- MediaProjection 授权中转页：透明、无标题栏 -->
+    <style name="Theme.AudioLink.Transparent" parent="android:Theme.Translucent.NoTitleBar" />
+</resources>

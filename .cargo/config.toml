@@ -1,0 +1,17 @@
+# 交叉编译与构建约定（Rust）
+# 说明：Android .so 由 `cargo ndk` 驱动，具体见 android/scripts/build-rust.ps1
+
+[build]
+# 桌面端默认目标（Windows x64）
+target = "x86_64-pc-windows-msvc"
+
+[target.aarch64-linux-android]
+# Android NDK 链接器由 cargo-ndk 自动注入；此处保留占位以便手工交叉编译时覆盖
+# linker = "<NDK>/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android24-clang.cmd"
+
+[target.armv7-linux-androideabi]
+# linker = "<NDK>/toolchains/llvm/prebuilt/windows-x86_64/bin/armv7a-linux-androideabi24-clang.cmd"
+
+[alias]
+xt = "nextest run"
+lint = "clippy --all-targets -- -D warnings"

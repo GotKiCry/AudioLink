@@ -1,0 +1,18 @@
+# audiolink-ffi —— UniFFI 导出（供 Kotlin 调用）
+# 规格见 docs/02-architecture.md、docs/03-protocol.md
+[package]
+name = "audiolink-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]  # Android JNI 加载 .so；桌面端走 rlib
+
+[dependencies]
+audiolink-engine = { workspace = true }
+
+[lints]
+workspace = true
+
+

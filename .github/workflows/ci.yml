@@ -1,0 +1,84 @@
+name: CI
+
+# 触发：主干与 PR。规则：所有 action 必须 pin 到 commit SHA（旧版用未 pin 的 v3 actions 是反面教材）
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------- 内核：格式 / 静态检查 / 单元测试（协议 golden vectors 在此把关）----------
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4          # TODO: pin to SHA
+      - uses: dtolnay/rust-toolchain@stable # TODO: pin to SHA；版本由 rust-toolchain.toml 决定
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2        # TODO: pin to SHA
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --exclude audiolink-desktop
+
+  # ---------- Android：Rust 交叉编译 + 组装 debug APK ----------
+  android:
+    runs-on: ubuntu-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Build Rust core for Android
+        run: cargo ndk -t arm64-v8a -t armeabi-v7a -o android/app/src/main/jniLibs build -p audiolink-ffi --release
+      - name: Assemble debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audiolink-android-debug
+          path: android/app/build/outputs/apk/debug/*.apk
+
+  # ---------- 桌面端：类型检查 + Tauri 构建（不含签名）----------
+  desktop:
+    runs-on: windows-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: desktop
+      - name: Type check & build frontend
+        run: pnpm build
+        working-directory: desktop
+      - name: Cargo check (shell)
+        run: cargo check -p audiolink-desktop
+
+  # ---------- 版本一致性：单一来源校验（旧版靠人工同步三处，必错）----------
+  version-consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify version matches across Cargo / tauri.conf / build.gradle
+        shell: pwsh
+        run: ./tools/check-version.ps1

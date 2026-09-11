@@ -1,0 +1,13 @@
+# audiolink-types —— 协议常量、枚举、错误码、遥测结构（零依赖）
+# 规格见 docs/02-architecture.md、docs/03-protocol.md
+[package]
+name = "audiolink-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+
+[lints]
+workspace = true

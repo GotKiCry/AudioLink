@@ -1,0 +1,68 @@
+# AudioLink —— Rust workspace 根
+# 成员：跨平台内核（core/crates/*）+ 桌面端外壳（desktop/src-tauri）
+# 版本单一来源：workspace.package.version（CI 校验 Tauri 与 Android 侧一致）
+
+[workspace]
+resolver = "3"
+members = ["core/crates/*", "desktop/src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "Apache-2.0"
+repository = "https://github.com/GotKiCry/AudioLink"
+authors = ["GotKiCry"]
+
+[workspace.dependencies]
+# ---- 内部 crate（依赖方向见 docs/02-architecture.md §2）----
+audiolink-types = { path = "core/crates/audiolink-types" }
+audiolink-proto = { path = "core/crates/audiolink-proto" }
+audiolink-audio = { path = "core/crates/audiolink-audio" }
+audiolink-net = { path = "core/crates/audiolink-net" }
+audiolink-discovery = { path = "core/crates/audiolink-discovery" }
+audiolink-identity = { path = "core/crates/audiolink-identity" }
+audiolink-engine = { path = "core/crates/audiolink-engine" }
+audiolink-ffi = { path = "core/crates/audiolink-ffi" }
+
+# ---- 外部依赖（版本依据见 docs/04-tech-stack.md）----
+quinn = "0.11"                                        # QUIC（数据报 + 可靠流）
+rustls = "0.23"                                       # TLS1.3
+rustls-pemfile = "2"
+rcgen = "0.14"                                        # 自签证书生成
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+postcard = { version = "1", features = ["alloc"] }     # 控制面紧凑编码
+opus-rs = "0.1.33"                                    # 纯 Rust Opus（零 C 依赖，见 ADR-003）
+wasapi = "0.24"                                       # Windows WASAPI（loopback + render）
+mdns-sd = "0.21"                                      # 服务发现
+ringbuf = "0.4"                                       # 无锁 SPSC 环形缓冲（实时路径）
+crossbeam-channel = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+anyhow = "1"
+uniffi = "0.29"                                       # FFI 绑定（Android）
+
+# ---- 实时路径纪律：任何 panic 都是缺陷 ----
+[workspace.lints.rust]
+unsafe_code = "deny"          # 必需时在具体 crate 内 allow 并注明理由
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"          # 音频线程内禁止
+expect_used = "deny"
+panic = "deny"
+todo = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 1                 # 开发期音频回调也需要基本性能
+
+[profile.dev.package."*"]
+opt-level = 2                 # 依赖（含 opus）在 dev 下也优化，否则实时测试无意义

@@ -1,0 +1,17 @@
+# audiolink-proto —— ALP/2 帧/命令/发现报文编解码 + golden vectors
+# 规格见 docs/02-architecture.md、docs/03-protocol.md
+[package]
+name = "audiolink-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+audiolink-types = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }
+
+[lints]
+workspace = true
+
+

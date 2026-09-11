@@ -1,0 +1,19 @@
+# audiolink-engine —— 编排层：引擎、会话管理、同步组、遥测、事件总线
+# 规格见 docs/02-architecture.md、docs/03-protocol.md
+[package]
+name = "audiolink-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+audiolink-types = { workspace = true }
+audiolink-proto = { workspace = true }
+audiolink-audio = { workspace = true }
+audiolink-net = { workspace = true }
+audiolink-discovery = { workspace = true }
+audiolink-identity = { workspace = true }
+
+[lints]
+workspace = true
+

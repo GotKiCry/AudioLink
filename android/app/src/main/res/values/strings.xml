@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AudioLink</string>
+    <string name="notif_channel_playback">音频播放</string>
+    <string name="action_stop">停止</string>
+    <string name="action_mute">静音</string>
+
+    <!-- 空态与错误文案（docs/08-ui-spec.md §4 文案规范：短句、动词开头、不用技术黑话） -->
+    <string name="empty_searching">正在搜索同一 Wi-Fi 下的设备…</string>
+    <string name="empty_none_found">未发现设备，也可以手动添加 IP</string>
+    <string name="bt_latency_warning">当前输出为蓝牙设备，延迟会显著增加（100–300 ms）。改用手机扬声器或有线耳机可达到 40–110 ms。</string>
+</resources>

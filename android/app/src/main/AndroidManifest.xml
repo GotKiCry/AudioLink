@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AudioLink Android 清单
+  与旧版的刻意差异：
+   1) 不声明 usesCleartextTraffic（全链路 QUIC/TLS，禁止明文）
+   2) 不内置任何 HTTP 服务器 → 无网络攻击面
+   3) 不做开机自启（用户决策）：Android 15+ 已禁止由 BOOT_COMPLETED 启动 mediaPlayback
+      前台服务，且本项目不需要该能力 → 不申请 RECEIVE_BOOT_COMPLETED、不注册 BootReceiver
+   4) 前台服务启动即进入前台（startForegroundService），声明 mediaPlayback|connectedDevice
+      两个无超时类型（后者用于局域网设备连接场景，零运行时成本）
+   5) 通知动作使用显式 Intent（旧版 PendingIntent 指向 BroadcastReceiver 导致点击崩溃）
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 局域网通信 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- mDNS 组播接收必需（WifiManager.MulticastLock）；注意 Android 14+ 该锁会被系统降级 -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <!-- 前台服务与通知（Android 13+ 需运行时授权 POST_NOTIFICATIONS） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- 可选发送源：麦克风（运行时按需申请，FR-07）；系统内录走 MediaProjection 授权，无需额外声明 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <application
+        android:name=".AudioLinkApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.AudioLink">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 内录授权结果回传（MediaProjection） -->
+        <activity
+            android:name=".capture.MediaProjectionRequestActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AudioLink.Transparent" />
+
+        <!-- 核心前台服务：接收播放 + 发送采集。
+             mediaPlayback|connectedDevice 两个类型均无时长上限，且 media3 MediaSessionService
+             的媒体通知可豁免 POST_NOTIFICATIONS 拒绝（用户拒绝通知权限时仍能显示播放通知）。 -->
+        <service
+            android:name=".service.AudioLinkService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback|connectedDevice" />
+    </application>
+</manifest>

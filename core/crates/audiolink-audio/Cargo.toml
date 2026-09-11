@@ -1,0 +1,15 @@
+# audiolink-audio —— 采集/播放抽象、重采样、Opus 编解码、抖动缓冲、混音器
+# 规格见 docs/02-architecture.md、docs/03-protocol.md
+[package]
+name = "audiolink-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+audiolink-types = { workspace = true }
+audiolink-proto = { workspace = true }
+
+[lints]
+workspace = true
+
