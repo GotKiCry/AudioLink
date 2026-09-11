@@ -311,6 +311,7 @@ dependencies = [
  "audiolink-types",
  "postcard",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -324,6 +325,9 @@ dependencies = [
 [[package]]
 name = "audiolink-types"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "auto-launch"

@@ -1,4 +1,4 @@
-# audiolink-types —— 协议常量、枚举、错误码、遥测结构（零依赖）
+# audiolink-types —— 协议常量、枚举、错误码、遥测结构（默认零依赖）
 # 规格见 docs/02-architecture.md、docs/03-protocol.md
 [package]
 name = "audiolink-types"
@@ -7,7 +7,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# 默认零依赖；`serde` 仅用于控制帧载荷（§4）与遥测结构（§10）的 postcard 编解码，
+# 由 audiolink-proto 通过 features = ["serde"] 开启（docs/02-architecture.md §2）
+serde = { workspace = true, optional = true }
 
+[features]
+serde = ["dep:serde"]
 
 [lints]
 workspace = true

@@ -1,4 +1,4 @@
-# audiolink-proto —— ALP/2 帧/命令/发现报文编解码 + golden vectors
+# audiolink-proto —— ALP/2 帧/命令/发现报文编解码（L1 严格解码层）+ golden vectors
 # 规格见 docs/02-architecture.md、docs/03-protocol.md
 [package]
 name = "audiolink-proto"
@@ -7,11 +7,11 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-audiolink-types = { workspace = true }
+# 开启 types 的可选 serde feature：控制帧载荷（§4）与遥测结构（§10）走 postcard
+audiolink-types = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
-postcard = { workspace = true }
+serde_json = { workspace = true }   # 发现报文的 JSON 载荷（§9.2）
+postcard = { workspace = true }     # 控制帧载荷紧凑编码（§4）
 
 [lints]
 workspace = true
-
-
