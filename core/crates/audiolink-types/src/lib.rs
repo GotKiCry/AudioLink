@@ -111,6 +111,18 @@ impl Ptype {
         self as u8
     }
 
+    /// 人类可读名称（与 `docs/03-protocol.md` §3 表一致；`alp2-dump` 与日志用）。
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Audio => "AUDIO",
+            Self::Fec => "FEC",
+            Self::ClockProbe => "CLOCK_PROBE",
+            Self::ClockReply => "CLOCK_REPLY",
+            Self::Keepalive => "KEEPALIVE",
+            Self::Nack => "NACK",
+        }
+    }
+
     /// 该类型的载荷长度规则（§3 载荷表）。
     pub const fn payload_len_rule(self) -> PayloadLenRule {
         match self {

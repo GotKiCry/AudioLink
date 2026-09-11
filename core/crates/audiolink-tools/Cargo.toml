@@ -9,9 +9,16 @@ license.workspace = true
 [dependencies]
 audiolink-proto = { workspace = true }
 audiolink-types = { workspace = true }
+# latency-probe：QUIC 数据报 + 四时间戳时钟探测（docs/03-protocol.md §6）
+anyhow = { workspace = true }
+tokio = { workspace = true }
+quinn = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
 
 [lints]
 workspace = true
+
 [[bin]]
 name = "alp2-dump"
 path = "src/bin/alp2_dump.rs"
@@ -19,4 +26,3 @@ path = "src/bin/alp2_dump.rs"
 [[bin]]
 name = "latency-probe"
 path = "src/bin/latency_probe.rs"
-

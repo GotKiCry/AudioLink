@@ -254,25 +254,6 @@ fn auxiliary_datagram_bytes(ptype: Ptype, payload: &[u8]) -> Result<Vec<u8>, Aud
     .encode_to_vec()
 }
 
-/// `Ptype` 的人类可读名称（L1 错误上下文用）。
-trait PtypeName {
-    /// 名称，如 `CLOCK_PROBE`。
-    fn name(self) -> &'static str;
-}
-
-impl PtypeName for Ptype {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Audio => "AUDIO",
-            Self::Fec => "FEC",
-            Self::ClockProbe => "CLOCK_PROBE",
-            Self::ClockReply => "CLOCK_REPLY",
-            Self::Keepalive => "KEEPALIVE",
-            Self::Nack => "NACK",
-        }
-    }
-}
-
 /// 时钟探测请求载荷（§3 载荷表：恰 12 B）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClockProbe {

@@ -26,10 +26,11 @@ audiolink-engine = { path = "core/crates/audiolink-engine" }
 audiolink-ffi = { path = "core/crates/audiolink-ffi" }
 
 # ---- 外部依赖（版本依据见 docs/04-tech-stack.md）----
-quinn = "0.11"                                        # QUIC（数据报 + 可靠流）
-rustls = "0.23"                                       # TLS1.3
+quinn = "0.11"                                        # QUIC（数据报 + 可靠流）；默认后端即 rustls-ring
+# TLS 后端**强制 ring**：rustls 默认的 aws_lc_rs 需要 CMake/NASM（本机与 CI 都不装，见 docs/06-dev-environment.md §4）
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-pemfile = "2"
-rcgen = "0.14"                                        # 自签证书生成
+rcgen = "0.14"                                        # 自签证书生成（默认 crypto+pem+ring，同样不依赖 CMake）
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
