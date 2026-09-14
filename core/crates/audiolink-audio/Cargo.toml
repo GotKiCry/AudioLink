@@ -9,6 +9,12 @@ license.workspace = true
 [dependencies]
 audiolink-types = { workspace = true }
 audiolink-proto = { workspace = true }
+opus-rs = { workspace = true }   # ADR-003：纯 Rust Opus（零 C 依赖）
+ringbuf = { workspace = true }   # 无锁 SPSC：采集回调 → 编码线程
+
+# WASAPI 只在 Windows 上参与编译（CI 的 core job 跑 windows-latest；Android 交叉编译不受影响）
+[target.'cfg(windows)'.dependencies]
+wasapi = { workspace = true }
 
 [lints]
 workspace = true
