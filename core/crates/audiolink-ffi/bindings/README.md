@@ -30,8 +30,11 @@ Android 产物。
 | `kotlin/com/gotkicry/audiolink/core/*.kt` | `android/app/src/main/kotlin/com/gotkicry/audiolink/core/`（或把它挂成一个额外 source set） |
 | `libaudiolink_ffi.so`（`cargo ndk -o android/app/src/main/jniLibs`） | `android/app/src/main/jniLibs/<abi>/libaudiolink_ffi.so` |
 
-依赖：生成的绑定用 **JNA** 加载动态库（`net.java.dev.jna:jna:<ver>@aar`），异步函数用
-**kotlinx-coroutines**（`suspend`）。
+依赖：生成的绑定用 **JNA** 加载动态库（`net.java.dev.jna:jna:<ver>@aar`，Android 上必须 `@aar`：
+只有它带 `libjnidispatch.so`），异步函数用 **kotlinx-coroutines**（`suspend`）。
+
+**进 APK / 上真机必须用 `-Release`**：`build-rust.ps1` 默认是 `dev` profile，产出的 `.so` 带 debuginfo
+（本机实测 **94.0 MB / 74.6 MB**），release 后是 **3.70 MB / 2.50 MB**。
 
 ## 验证生成物（两条都跑过，别只靠 review）
 
@@ -65,6 +68,34 @@ java -cp "$compiler;$stdlib;$coroutines;$annotations" `
 两个坑：`coroutines` 和 `annotations` 必须同时出现在**编译器自己的** `-cp` 上（只放 target classpath 会得到
 `NoClassDefFoundError: kotlinx/coroutines/CoroutineScope` / `org/jetbrains/annotations/NotNull`）。
 本机实测：Kotlin 2.4.20 + JNA（JVM jar 与 aar 的 classes.jar 两种形态）→ 各 **119 个 class，零错误零警告**。
+
+### 3) 发布前 30 秒自检：`.so` 里该有的符号真的在吗
+
+UniFFI 的 **checksum 校验发生在第一次 FFI 调用**（`uniffi_audiolink_ffi_checksum_...`），
+所以「符号在不在」要提前看得见，而不是等真机第一次 `feedPcm` 才暴露。
+把生成物声明的每个 checksum 符号拿去 `.so` 里找 —— 全部命中才算同源：
+
+```powershell
+$kt = "core/crates/audiolink-ffi/bindings/kotlin/com/gotkicry/audiolink/core/audiolink_ffi.kt"
+$symbols = Select-String -Path $kt -Pattern "(uniffi_audiolink_ffi_checksum_[a-z_]+)\(" |
+  ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique
+foreach ($abi in @("arm64-v8a", "armeabi-v7a")) {
+  $so = "android\app\src\main\jniLibs\$abi\libaudiolink_ffi.so"
+  $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($so))
+  $miss = @($symbols | Where-Object { -not $text.Contains($_) })
+  "{0,-14} {1}/{2}  缺失=[{3}]" -f $abi, ($symbols.Count - $miss.Count), $symbols.Count, ($miss -join ",")
+}
+```
+
+本机实测（release 版 `.so`，2026/09/14 14:14:06 / 14:15:12）：
+
+```text
+arm64-v8a      13/13  缺失=[]
+armeabi-v7a    13/13  缺失=[]
+```
+
+抽一个字段名一起搜（`message_text`）还能顺带确认「这份 `.so` 是改名之后编的」——
+比对比时间戳可靠。
 
 ## 与内核的约定（改之前先读）
 

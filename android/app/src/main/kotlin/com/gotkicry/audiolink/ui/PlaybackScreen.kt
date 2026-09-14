@@ -17,12 +17,20 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.gotkicry.audiolink.audio.LowLatencyPlayer
+import com.gotkicry.audiolink.diagnostics.ProtocolSelfTest
+import com.gotkicry.audiolink.diagnostics.SelfTestResult
 import com.gotkicry.audiolink.service.PlaybackUiState
+import kotlinx.coroutines.launch
 
 /**
  * M1 最小页面：服务启停 + 播放状态。
@@ -41,6 +49,12 @@ fun PlaybackScreen(
     onTogglePlayback: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // 自检状态刻意放在 UI 本地：它**不依赖服务**（验的是协议层），
+    // 所以服务没启动、没连接、甚至没开网都能点 —— 这正是真机排障第一步需要的性质。
+    var selfTestResult by remember { mutableStateOf<SelfTestResult?>(null) }
+    var selfTestRunning by remember { mutableStateOf(false) }
+    val uiScope = rememberCoroutineScope()
+
     Scaffold(
         modifier = modifier,
         topBar = { TopAppBar(title = { Text("AudioLink") }) },
@@ -54,6 +68,22 @@ fun PlaybackScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             ServiceCard(state = state, onTogglePlayback = onTogglePlayback)
+            SelfTestCard(
+                result = selfTestResult,
+                running = selfTestRunning,
+                onRun = {
+                    if (!selfTestRunning) {
+                        selfTestRunning = true
+                        uiScope.launch {
+                            try {
+                                selfTestResult = ProtocolSelfTest.run()
+                            } finally {
+                                selfTestRunning = false
+                            }
+                        }
+                    }
+                },
+            )
             EngineCard(state = state)
             LowLatencyCard(state = state)
             StatsCard(state = state)
@@ -96,6 +126,50 @@ private fun ServiceCard(state: PlaybackUiState, onTogglePlayback: (Boolean) -> U
             )
             Button(onClick = { onTogglePlayback(!state.serviceRunning) }) {
                 Text(if (state.serviceRunning) "停止服务" else "启动并开始接收")
+            }
+        }
+    }
+}
+
+@Composable
+private fun SelfTestCard(result: SelfTestResult?, running: Boolean, onRun: () -> Unit) {
+    Card {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("内核自检（协议 golden vectors）", style = MaterialTheme.typography.titleSmall)
+            when (result) {
+                null -> Text(
+                    "尚未自检。自检验的是协议编解码层，不依赖引擎与连接 —— 服务未启动也能跑。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+
+                is SelfTestResult.Passed -> Text(
+                    "✔ ${result.summary}",
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+
+                is SelfTestResult.Rejected -> {
+                    Text(
+                        "✘ 内核拒绝",
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    KeyValue("错误码", result.code.toString())
+                    KeyValue("短名", result.shortName)
+                    KeyValue("细节", result.context)
+                }
+
+                is SelfTestResult.Unavailable -> {
+                    Text(
+                        "✘ 自检未能运行",
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(result.reason, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Button(onClick = onRun, enabled = !running) {
+                Text(if (running) "自检中…" else "运行自检")
             }
         }
     }

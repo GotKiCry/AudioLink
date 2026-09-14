@@ -1,9 +1,15 @@
 # AudioLink —— 用 cargo-ndk 把 Rust 内核交叉编译成 Android 动态库
 #
 # 用法：
-#   pwsh .\scripts\build-rust.ps1                       # debug，双 ABI
-#   pwsh .\scripts\build-rust.ps1 -Release              # release（发布用）
+#   pwsh .\scripts\build-rust.ps1                       # release，双 ABI（**默认**）
+#   pwsh .\scripts\build-rust.ps1 -Debug                # dev profile（只给要调试内核的人）
 #   pwsh .\scripts\build-rust.ps1 -Abi arm64-v8a        # 只编 arm64
+#
+# 为什么默认是 release（2026-09-14 踩过的坑）：
+#   dev profile 带 debuginfo，本 crate 的产物是 **94 MB / 75 MB**（双 ABI），进 APK 完全不可接受；
+#   而 jniLibs 里的东西会被 `assembleDebug` **原样打包**，所以「随手跑一次脚本」就能把 APK 撑到离谱。
+#   release 是 3.7 MB / 2.5 MB —— 相差 25 倍。需要内核级调试（native 断点、符号化堆栈）时才用 -Debug，
+#   并且要清楚那份产物**不能拿去发布**。
 #
 # 前置：
 #   * rustup target add aarch64-linux-android armv7-linux-androideabi
@@ -12,7 +18,7 @@
 
 param(
     [string]$Abi = "arm64-v8a,armeabi-v7a",
-    [switch]$Release,
+    [switch]$Debug,
     [switch]$SkipUniffi
 )
 
@@ -23,7 +29,11 @@ $repoRoot   = Split-Path -Parent $androidDir
 $jniLibs    = Join-Path $androidDir "app\src\main\jniLibs"
 # 注意 1：Cargo 的开发 profile 名为 `dev`（`debug` 是保留名，会被直接拒绝）。
 # 注意 2：变量不要叫 $profile —— PowerShell 变量名不区分大小写，会与自动变量 $PROFILE 撞名。
-$cargoProfile = if ($Release) { "release" } else { "dev" }
+# 注意 3：开关叫 `-Debug` 而不是 `-Release`，是为了让**默认值落在安全的那一侧**（见文件头说明）。
+$cargoProfile = if ($Debug) { "dev" } else { "release" }
+if ($Debug) {
+    Write-Warning "正在构建 dev profile 的 .so（带 debuginfo，约 94 MB / 75 MB）——仅用于内核调试，**不要**拿去发布或提交 APK。"
+}
 
 # ---- 解析 Android SDK / NDK：环境变量 → android/local.properties → 默认路径 ----
 
