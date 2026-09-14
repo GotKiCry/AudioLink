@@ -9,12 +9,14 @@ license.workspace = true
 [dependencies]
 audiolink-proto = { workspace = true }
 audiolink-types = { workspace = true }
+audiolink-audio = { workspace = true }   # self-loop：真实 采集/编码/解码/播放 链路
 # latency-probe：QUIC 数据报 + 四时间戳时钟探测（docs/03-protocol.md §6）
 anyhow = { workspace = true }
 tokio = { workspace = true }
 quinn = { workspace = true }
 rustls = { workspace = true }
 rcgen = { workspace = true }
+serde_json = { workspace = true }         # self-loop 报告导出（仅工具面；音频/控制面一律 postcard）
 
 [lints]
 workspace = true
@@ -26,3 +28,8 @@ path = "src/bin/alp2_dump.rs"
 [[bin]]
 name = "latency-probe"
 path = "src/bin/latency_probe.rs"
+
+# 桌面自环链路 + 四段延迟分解（M1 P0；仅 Windows 可用，非 Windows 为占位 main）
+[[bin]]
+name = "self-loop"
+path = "src/bin/self_loop.rs"
