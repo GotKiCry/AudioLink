@@ -39,9 +39,11 @@ $Tasks = @(
     @{ T = '[M0] tools/latency-probe：QUIC 数据报 RTT / 时钟偏移测量'; M = 'M0'; P = 'P1'; S = 'Done'; B = 'listen/probe；输出 RTT 分位、抖动代理、§6 best8 偏移与极差、§6.5 质量分级' }
 
     # ---- M1 单链路（关键路径）----
-    @{ T = '[M1] WASAPI loopback 事件驱动采集（48 kHz / f32 / 2ch，10–20 ms 缓冲）'; M = 'M1'; P = 'P0'; S = 'Todo'; B = '最大关键路径风险：先把采集缓冲压到 10–20 ms 再谈其余' }
-    @{ T = '[M1] Opus 编码（opus-rs，20 ms / 160 kbps / VBR / 48 kHz 锁定）'; M = 'M1'; P = 'P0'; S = 'Todo'; B = 'ADR-003：纯 Rust，不装 CMake；in-band FEC 默认关闭' }
-    @{ T = '[M1] 桌面自环链路 + 四段延迟分解（采集/编码/解码/播放）'; M = 'M1'; P = 'P0'; S = 'Todo'; B = '不碰网络与 Android，先把两个未知量钉死（roadmap M1 第一周要求）' }
+    # 注：标题里的「10–20 ms 缓冲」是当初的规划口径；实测共享模式缓冲下限是 22 ms（1056 帧），
+    #     能压到 10 ms 的是引擎周期 —— 为保持看板条目稳定（标题是幂等键），标题不改，口径修正记在 body 与文档里。
+    @{ T = '[M1] WASAPI loopback 事件驱动采集（48 kHz / f32 / 2ch，10–20 ms 缓冲）'; M = 'M1'; P = 'P0'; S = 'Done'; B = 'audiolink-audio::wasapi（LoopbackCapture/RenderSink）。实测：缓冲下限 1056 帧=22 ms、引擎周期 10 ms（每周期 480 帧）、空闲端点零数据、COM 对象 !Send 需线程内构造；自环实测零欠载' }
+    @{ T = '[M1] Opus 编码（opus-rs，20 ms / 160 kbps / VBR / 48 kHz 锁定）'; M = 'M1'; P = 'P0'; S = 'Done'; B = 'ADR-003：纯 Rust，不装 CMake；实测 encode P50 75 μs / decode 57 μs、160.4 kbps、热路径零分配；已知缺陷：CELT-only 无真 PLC 且 packet_loss_perc 为空设置（见 ADR-003 注记）' }
+    @{ T = '[M1] 桌面自环链路 + 四段延迟分解（采集/编码/解码/播放）'; M = 'M1'; P = 'P0'; S = 'Done'; B = 'tools/self-loop：五段分解 + 19 kHz 标记往返实测（同口径模型 7.00 ms vs 实测 6.78 ms）；本机实测合计 39.7 ms，999 帧零欠载零丢弃' }
     @{ T = '[M1] QUIC 通道（quinn：控制流 #0 + 音频数据报）'; M = 'M1'; P = 'P1'; S = 'Todo'; B = '发送侧必须 min(1200, max_datagram_size())，默认初始 MTU 下实测 1162 B' }
     @{ T = '[M1] Android 播放（AudioTrack 低延迟模式 + JNI 环缓冲 + 欠载检测）'; M = 'M1'; P = 'P1'; S = 'Todo'; B = 'NFR-14 硬指标：PERFORMANCE_MODE_LOW_LATENCY + WRITE_NON_BLOCKING，须用 getPerformanceMode() 断言' }
     @{ T = '[M1] 最小 UI（桌面手工 IP 连接；Android 服务启停）'; M = 'M1'; P = 'P1'; S = 'Todo'; B = 'FR-29 / FR-35 的最小形态' }
@@ -50,16 +52,18 @@ $Tasks = @(
 
     # ---- M2–M5 ----
     @{ T = '[M2] 稳定性与质量：抖动缓冲 + 双发/PLC/NACK + 自适应码率 + 遥测面板'; M = 'M2'; P = 'P2'; S = 'Todo'; B = 'docs/05-roadmap.md M2；验收含 8 h soak 与弱网（5 Mbps / 2% 丢包 / 30 ms 抖动）' }
+    @{ T = '[M2] 自建丢包掩盖（CELT-only 无真 PLC：重复上一包 + 淡出 + 交叉淡化）'; M = 'M2'; P = 'P1'; S = 'Todo'; B = '实测（2026-09-14）：opus-rs 在 CELT-only 下第 2 个丢失帧起硬静音、恢复有 -45 dB 凹陷，「PLC 兜底」不成立 → 必须自建；见 ADR-003 注记' }
     @{ T = '[M3] 多设备与同步：时钟同步全流程 + 预约播放 + 同步组 + sync-measure'; M = 'M3'; P = 'P2'; S = 'Todo'; B = '组内 ±10 ms（P95）；§6 的 200 样本窗口 + 回归漂移估计在此落地' }
     @{ T = '[M4] 网状与混音：Android 内录/麦克风 + PC 播放 + 混音器 + 能力协商'; M = 'M4'; P = 'P3'; S = 'Todo'; B = 'FR-06/07/08/12；内录受 allowAudioPlaybackCapture 限制需 UI 说明' }
     @{ T = '[M5] 产品化：托盘/自启/自动更新/双语/双 ABI 发布/合规清单'; M = 'M5'; P = 'P3'; S = 'Todo'; B = 'docs/05-roadmap.md M5' }
 
     # ---- 技术债与护栏 ----
     @{ T = '[护栏] 「定长载荷自洽」测试：LEN == 字段宽度之和'; M = 'M0'; P = 'P2'; S = 'Todo'; B = '针对 CLOCK_REPLY 那类「文档/常量算错」的机械护栏' }
-    @{ T = '[文档] docs/10-handoff.md 状态更新（M0 已完成）'; M = 'M0'; P = 'P2'; S = 'Todo'; B = '交接文档当前仍写「M0-02 待做」，会误导下一个会话' }
+    @{ T = '[文档] docs/10-handoff.md 状态更新（M0 已完成）'; M = 'M0'; P = 'P2'; S = 'Done'; B = '已更新：M0 全绿 + M1 三项 P0 完成、实测基线、下一步为 M1 主线（QUIC/Android 播放/最小 UI）' }
     @{ T = '[安全] docs/06-dev-environment.md 本机路径脱敏'; M = 'M0'; P = 'P2'; S = 'Todo'; B = '仓库已 PUBLIC，文档里仍有 C:\Users\liuzh\... 路径' }
     @{ T = '[护栏] 跨端一致性夹具：同一组 golden vectors 在 Rust 与 FFI 双跑'; M = 'M1'; P = 'P3'; S = 'Todo'; B = '§12 唯一尚未验证的一条（需 audiolink-ffi 有导出路径后落地）' }
     @{ T = '[工具] alp2-dump 支持 pcap/pcapng 输入'; M = 'M1'; P = 'P3'; S = 'Todo'; B = '当前只吃 hex 文本；等真有抓包需求再加（需夹具验证）' }
+    @{ T = '[工具] self-loop 支持真机链路端到端测量'; M = 'M1'; P = 'P2'; S = 'Todo'; B = '本机自环已可用；M1 真机验收需要一个「网络抖动下仍可检出」的端到端标记方案（当前 19 kHz 标记依赖同一端点回环）' }
     @{ T = '[CI] QUIC 依赖 feature 门控（回收 core job 的 ~2.5 min）'; M = 'M0'; P = 'P3'; S = 'Todo'; B = 'tools 引入 quinn/rustls/tokio 后 core job 由 1m36s 涨到 4m10s' }
     @{ T = '[工具] soak-runner（8 h 回环 + 指标采集 + 异常快照）'; M = 'M2'; P = 'P3'; S = 'Todo'; B = 'M2 验收依赖，建议 M1 一结束就有最简版' }
     @{ T = '[CI] Android job：预编译 cargo-ndk（省 ~2 min）'; M = 'M0'; P = 'P3'; S = 'Todo'; B = 'docs/10-handoff.md §7 待办' }
@@ -109,6 +113,26 @@ function Item-Title {
     param($Item)
     if ($Item.title) { return "$($Item.title)" }
     if ($Item.content -and $Item.content.title) { return "$($Item.content.title)" }
+    return ''
+}
+
+function Item-Body {
+    param($Item)
+    if ($Item.content -and $Item.content.body) { return "$($Item.content.body)" }
+    return ''
+}
+
+function Item-IsDraft {
+    param($Item)
+    return ($Item.content -and "$($Item.content.type)" -eq 'DraftIssue')
+}
+
+# 草稿条目的正文要按 **content id**（`DI_...`）改，不是按项目条目 id（`PVTI_...`）——
+# 实测 gh 会直接报「ID must be the ID of the draft issue content which is prefixed with DI_」。
+function Item-DraftContentId {
+    param($Item)
+    $id = "$($Item.content.id)"
+    if ($id.StartsWith('DI_')) { return $id }
     return ''
 }
 
@@ -189,6 +213,7 @@ Write-Host "  现有条目 $($existing.Count) 个，任务表 $($Tasks.Count) �
 
 $created = 0
 $updated = 0
+$bodies = 0
 $unchanged = 0
 
 foreach ($task in $Tasks) {
@@ -211,12 +236,26 @@ foreach ($task in $Tasks) {
     }
 
     $itemId = "$($item.id)"
-    if ("$($item.status)" -ne $task.S) {
+    $statusChanged = "$($item.status)" -ne $task.S
+    # 说明（body）也要跟着文档走：看板是文档的机械映射，正文里往往写着口径修正与实测结论
+    $bodyChanged = (Item-IsDraft $item) -and ((Item-Body $item) -ne $task.B)
+    if ($statusChanged) {
         Set-SingleSelect -ItemId $itemId -ProjectId $projectId -Field $statusField -OptionName $task.S -Number $number
         $updated++
         Write-Host ("  ~ 状态 {0} → {1}：{2}" -f $item.status, $task.S, $task.T)
     }
-    else {
+    if ($bodyChanged) {
+        $contentId = Item-DraftContentId $item
+        if ($contentId) {
+            Invoke-Gh @('project', 'item-edit', '--id', $contentId, '--body', $task.B) | Out-Null
+            $bodies++
+            Write-Host ("  ~ 说明更新：{0}" -f $task.T)
+        }
+        else {
+            Write-Warning "条目 '$($task.T)' 不是草稿条目，跳过说明更新"
+        }
+    }
+    if (-not $statusChanged -and -not $bodyChanged) {
         $unchanged++
     }
 }
@@ -226,6 +265,6 @@ if ($DryRun) {
     Write-Host "DRY-RUN 结束（没有做任何变更）。去掉 -DryRun 即真正同步。"
 }
 else {
-    Write-Host "同步完成：新建 $created，状态更新 $updated，已是最新 $unchanged。"
+    Write-Host "同步完成：新建 $created，状态更新 $updated，说明更新 $bodies，已是最新 $unchanged。"
     Write-Host "看板：$($project.url)"
 }

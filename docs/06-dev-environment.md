@@ -133,6 +133,35 @@ keyPassword=<同上>
 | `gradlew` 启动即失败 | **launcher JVM** 由 `JAVA_HOME`/PATH 决定，`org.gradle.java.home` 只影响 **daemon JVM** | 已提供 **`tools/gradlew.ps1`** 包装（自动校验 JDK 17+、注入 ANDROID_HOME）；并**禁止**把本机 JDK 路径写进 `android/gradle.properties`（会让 Ubuntu CI 直接失败） |
 | `无法覆盖变量 home，因为它是只读变量或常量` | PowerShell 把 `$home` / `$profile` / `$args` / `$host` 等视为**只读自动变量**，不能用作参数名或赋值目标 | 已改名；写 PS 脚本时避开这些名字（本项目已在 `build-rust.ps1` 的 `$profile` 与 `gradlew.ps1` 的 `$home` 各踩一次） |
 
+### 4.2 WASAPI 实测基线（M1 P0，2026-09-14 · 工具 `self-loop list` 可随时复测）
+
+用 `wasapi` **0.24.0**（注意：0.24 是 API 重写，与 0.23 不兼容）在四个活动渲染端点（NVIDIA HDMI / Realtek / 网易虚拟 / AudioRelay 虚拟）上实测：
+
+| 事实 | 实测值 | 影响 / 处置 |
+|---|---|---|
+| **共享模式缓冲下限** | 请求 1–20 ms 一律被顶到 **1056 帧 = 22 ms**；请求 ≥ 30 ms 才按请求值（30→1440、100→4800）。四个端点 × 采集/播放两个方向**全部一致** | 「显式缓冲 10–20 ms」在**设备缓冲层不可达**；能压的是**读出口粒度**。M1 交付口径据此修正（见 `05-roadmap.md` M1） |
+| **引擎周期** | 默认 **10 ms**、最小 **3 ms**；事件驱动下每周期交付 **480 帧** | 采集侧固有粒度 = 10 ms；要更小需 `IAudioClient3`（本 crate 未暴露） |
+| **同步格式** | 四个端点混音格式**全为 48000 Hz / 2ch / f32** | 本机天然满足「零重采样」；其它机器若为 44.1 k 必须让用户改设备设置（内核**不做**静默 SRC） |
+| `autoconvert` 是陷阱 | 44.1 k + `autoconvert=false` → `0x88890008`；`autoconvert=true` **会静默 SRC**且「成功」 | 本项目**禁用** autoconvert（`audiolink-audio` 里硬编码 `autoconvert: false`） |
+| **空闲端点零数据** | 没有程序在该端点播放时，`start_stream` 成功但 `packets=0 / events ok=0 / timeouts=47`（5 s 内） | 采集侧的**超时不是错误**；内核侧只计数（`read_timeouts` / `empty_wakeups`） |
+| **WASAPI 对象 `!Send`** | `Device`/`AudioClient`/`AudioCaptureClient`/`RenderClient`/`Handle` 全是 `!Send + !Sync`（windows 0.62） | **谁用谁建**：使用线程自己 `initialize_mta()` 并构造对象；线程间只传数据（SPSC 环），不传句柄 |
+| 独占模式 | Realtek 上 `EventsExclusive` 报 `0x88890008`（对齐周期后仍失败） | v1 不依赖独占模式 |
+| `get_id()` 前 12 字符 | 所有设备相同（`{0.0.0.00000000}.{`），唯一性只在尾部 GUID | 设备选择 UI 必须显示 GUID 段（`RenderDeviceInfo::short_id`） |
+| 默认输出 | 本机默认是 **NVIDIA HDMI**（不是虚拟声卡）；但它**空闲时不出数据**，且有内容播放时电平可达 0 dBFS+ | 自环测量必须能区分「端点安静」与「端点很吵」两种情况 → `self-loop` 报告里的**采集电平**一行 |
+
+**实测工具用法**（不碰网络与 Android，M1 第一周的关键未知量就靠它钉死）：
+
+```powershell
+cargo run -q -p audiolink-tools --bin self-loop -- list        # 端点/格式/周期一览
+cargo run -q -p audiolink-tools --bin self-loop -- run --seconds 20 --json out.json
+cargo run -q -p audiolink-tools --bin self-loop -- run --capture synth --sink null   # 无声卡环境（CI）
+```
+
+2026-09-14 本机实测（默认 HDMI 端点，20 ms 帧 / 160 kbps Opus / 请求 20 ms 缓冲）：
+采集(半周期模型) **5.0 ms** + 组帧 **20.0 ms** + 编码 **2.6 ms** + 解码 **0.08 ms** + 播放(写后水位+半帧) **12.0 ms**
+= 自环 **39.7 ms**（P50/P95 几乎相同）；**标记法实测设备往返 6.78 ms**，与同口径模型 7.00 ms 吻合（差 0.22 ms）。
+编解码实测：encode P50 ≈ 120 μs、decode P50 ≈ 80 μs（占 20 ms 帧预算 < 1%），连续 999 帧**零欠载、零丢弃**。
+
 ---
 
 ## 5. CI 设计（`.github/workflows/`）
@@ -154,6 +183,7 @@ keyPassword=<同上>
 |---|---|---|
 | `alp2-dump` | 协议抓包解码（hex 文本 → 人类可读字段；拒绝用例的现场取证） | M0 ✅ |
 | `latency-probe` | QUIC 数据报 RTT/抖动 + §6 四时间戳时钟偏移（`listen` / `probe` 两个子命令） | M0 ✅（音频各环节分解留到 M1） |
+| `self-loop` | **桌面自环链路 + 五段延迟分解 + 19 kHz 标记往返实测**（`list` / `run` 两个子命令） | M1 ✅（P0 第三项） |
 | `netem-sim` | 丢包/抖动/带宽注入（Windows 侧代理或 WFP） | M2 |
 | `sync-measure` | 双机同期录音 + 波形对齐，输出同步偏差报告 | M3 |
 | `soak-runner` | 8 h 连续运行 + 指标采集 + 异常自动快照 | M2 |
@@ -173,4 +203,10 @@ cargo run -q -p audiolink-tools --bin latency-probe -- listen --bind 0.0.0.0:582
 cargo run -q -p audiolink-tools --bin latency-probe -- probe 192.168.1.20 --count 50 --interval-ms 100
 # 输出：RTT 的 min/P50/P95/P99/max、相邻 RTT 波动、§6 的 best8 偏移估计与极差、§6.5 质量分级
 # 启动时会打印 QUIC 的 max_datagram_size() —— §3 的 1200 B 预算必须与它取 min（默认初始 MTU 下实测 1162 B）
+
+# 3) 自环链路 + 五段延迟分解（M1 P0；会把采集到的声音按 --gain 放回去，请调小音量）
+cargo run -q -p audiolink-tools --bin self-loop -- list
+cargo run -q -p audiolink-tools --bin self-loop -- run --seconds 20 --json target/notes/self-loop.json
+cargo run -q -p audiolink-tools --bin self-loop -- run --capture synth --sink null --seconds 6   # 无声卡/CI 兜底
+# 输出：端点/格式/周期、五段延迟分位、标记法实测往返、采集与播放计数、电平审计、M1 判定
 ```
