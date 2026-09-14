@@ -9,6 +9,9 @@
 #[derive(Debug, Clone)]
 pub struct SampleStats {
     samples: Vec<u32>,
+    /// 显式记下容量：**不能**用 `Vec::capacity()` 判断是否写满 —— `Vec::with_capacity(n)`
+    /// 只保证「至少 n」，分配器给多了环就永远不覆盖最旧样本，8 h soak 会把内存吃光。
+    capacity: usize,
     next: usize,
     full: bool,
 }
@@ -40,6 +43,7 @@ impl SampleStats {
         let capacity = capacity.max(1);
         Self {
             samples: Vec::with_capacity(capacity),
+            capacity,
             next: 0,
             full: false,
         }
@@ -52,12 +56,12 @@ impl SampleStats {
                 *slot = value;
             }
             self.next += 1;
-            if self.next >= self.samples.len() {
+            if self.next >= self.capacity {
                 self.next = 0;
             }
         } else {
             self.samples.push(value);
-            if self.samples.len() == self.samples.capacity() {
+            if self.samples.len() >= self.capacity {
                 self.full = true;
                 self.next = 0;
             }
@@ -74,9 +78,9 @@ impl SampleStats {
         self.samples.is_empty()
     }
 
-    /// 容量。
+    /// 容量（构造时声明值，不是 `Vec` 的分配容量）。
     pub fn capacity(&self) -> usize {
-        self.samples.capacity()
+        self.capacity
     }
 
     /// 清空。
@@ -186,5 +190,27 @@ mod tests {
             ),
             (7, 7, 7, 7, 7)
         );
+    }
+
+    /// 长跑护栏：声明容量必须被真正遵守。
+    ///
+    /// `Vec::with_capacity(n)` 只保证「至少 n」，早先的实现用 `Vec::capacity()` 判断是否写满
+    /// → 分配器给多了就**永不覆盖最旧样本**，8 h soak 会把内存涨爆。这里用远超容量的写入压住它。
+    #[test]
+    fn 长跑时样本数不超过声明容量() {
+        let mut stats = SampleStats::new(64);
+        assert_eq!(stats.capacity(), 64);
+        for value in 0..100_000u32 {
+            stats.push(value);
+            assert!(
+                stats.len() <= 64,
+                "样本数 {} 超过声明容量 64（第 {value} 次 push）",
+                stats.len()
+            );
+        }
+        assert_eq!(stats.len(), 64);
+        let summary = stats.summary().unwrap();
+        assert_eq!(summary.count, 64);
+        assert_eq!(summary.max, 99_999, "最后写入的样本必须在集合里");
     }
 }
