@@ -63,6 +63,17 @@ android {
         buildConfig = true
     }
 
+    /**
+     * Rust 内核的 UniFFI Kotlin 绑定：**不复制**，直接把生成物目录挂进源集。
+     *
+     * 生成物归 `core/crates/audiolink-ffi/bindings/kotlin`（ffi 流所有，重新生成见其 README）。
+     * 为什么不 copy 一份到 android/：绑定必须与 `libaudiolink_ffi.so` **同版本** ——
+     * 复制会让「内核更新了、APK 还在用旧绑定」变成只在运行期才炸的静默故障，单一来源更安全。
+     */
+    sourceSets["main"].kotlin.srcDir(
+        rootProject.file("../core/crates/audiolink-ffi/bindings/kotlin"),
+    )
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -99,6 +110,11 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.2.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+
+    // UniFFI 生成的绑定用 JNA 加载 libaudiolink_ffi.so。Android 上**必须**用 @aar 分类器：
+    // 只有它带 libjnidispatch.so（plain jar 是 JVM 版，真机上会 UnsatisfiedLinkError）。
+    // 版本查询日期：2026-09-14（来源 repo1.maven.org 的 net.java.dev.jna:jna maven-metadata.xml，release=5.19.1）
+    implementation("net.java.dev.jna:jna:5.19.1@aar")
 
     // 注意：不引入 okhttp / ExoPlayer / AndroidAsync —— 旧版的整块 HTTP 管理面已被移除
     debugImplementation("androidx.compose.ui:ui-tooling")

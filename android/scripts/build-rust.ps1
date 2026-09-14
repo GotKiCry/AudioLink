@@ -26,13 +26,30 @@ $jniLibs    = Join-Path $androidDir "app\src\main\jniLibs"
 $cargoProfile = if ($Release) { "release" } else { "dev" }
 
 # ---- 解析 Android SDK / NDK：环境变量 → android/local.properties → 默认路径 ----
+
+<#
+把 local.properties 里的路径值还原成 PowerShell 能用的路径。
+
+为什么需要它：`.properties` 是 Java 格式，**路径里的冒号与反斜杠必须转义**
+（Android Studio 生成的就是 `sdk.dir=C\:\\Users\\...\\Sdk`；lint 的 PropertyEscape 也会要求
+`C\:/Users/...` 这种写法）。而手工写的往往是未转义的 `C:/Users/...`。
+两种写法都必须认，否则会得到一个离谱的报错：`\` 被当成普通字符后路径变成 `C/:/Users/...`，
+PowerShell 会报「找不到驱动器。名为"C/"的驱动器不存在」，而真正原因藏在转义规则里。
+#>
+function ConvertFrom-PropertiesPath([string]$value) {
+    $v = $value.Trim()
+    # 先还原 `\:` → `:`（否则后面把 `\` 归一成 `/` 时会破坏盘符），再还原 `\\` → `\`。
+    $v = $v.Replace('\:', ':').Replace('\\', '\').Replace('\/', '/')
+    return $v.Replace('\', '/')
+}
+
 function Resolve-AndroidSdk {
     if ($env:ANDROID_HOME)     { return $env:ANDROID_HOME }
     if ($env:ANDROID_SDK_ROOT) { return $env:ANDROID_SDK_ROOT }
     $lp = Join-Path $androidDir "local.properties"
     if (Test-Path $lp) {
         $line = Get-Content $lp | Where-Object { $_ -match '^\s*sdk\.dir\s*=' } | Select-Object -First 1
-        if ($line) { return (($line -replace '^\s*sdk\.dir\s*=\s*', '').Replace('\', '/').Trim()) }
+        if ($line) { return (ConvertFrom-PropertiesPath (($line -replace '^\s*sdk\.dir\s*=\s*', '').Trim())) }
     }
     $guess = Join-Path $env:LOCALAPPDATA "Android\Sdk"
     if (Test-Path $guess) { return $guess }
@@ -78,12 +95,14 @@ finally {
 }
 
 if (-not $SkipUniffi) {
-    Write-Host "==> 生成 Kotlin 绑定（UniFFI）" -ForegroundColor Cyan
-    # TODO(M0)：内核 UDL/派生稳定后启用：
-    #   cargo run -p audiolink-ffi --bin uniffi-bindgen generate `
-    #     --library "$jniLibs\arm64-v8a\libaudiolink_ffi.so" `
-    #     --language kotlin --out-dir android/app/src/main/kotlin
-    Write-Host "    （当前为占位：UniFFI 绑定生成待 M0 内核接口定型后启用）" -ForegroundColor DarkGray
+    # 绑定是**入库交付物**（`core/crates/audiolink-ffi/bindings/kotlin`），与 .so 同源同版本。
+    # 重新生成必须在**宿主平台**上做（要 x86_64-pc-windows-msvc 的 cdylib 做元数据来源；
+    # Android .so 不能喂给 bindgen），所以它不属于本脚本 —— 命令见
+    # `core/crates/audiolink-ffi/bindings/README.md`：
+    #   cargo build -p audiolink-ffi --features bindgen
+    #   cargo run   -p audiolink-ffi --features bindgen --bin uniffi-bindgen -- generate ...
+    # 本脚本只负责重编 .so；ffi 侧另有护栏测试，会在"源码改了却没重新生成"时把 cargo test 打红。
+    Write-Host "==> Kotlin 绑定：不在此生成（需宿主 cdylib，见 core/crates/audiolink-ffi/bindings/README.md）" -ForegroundColor DarkGray
 }
 
 Write-Host "==> 产物：" -ForegroundColor Green

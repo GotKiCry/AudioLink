@@ -1,5 +1,9 @@
 # audiolink-net —— quinn QUIC 会话、数据报通道、FEC/NACK、时钟同步
 # 规格见 docs/02-architecture.md、docs/03-protocol.md
+#
+# 分层纪律（docs/11-m1-contract.md §2）：
+# - 只依赖 `audiolink-types` + `audiolink-proto` + 外部库，**不依赖 `audiolink-identity`**；
+# - 本 crate 只做传输：证书/私钥以原始 DER 字节进出，控制帧载荷是不透明 postcard 字节。
 [package]
 name = "audiolink-net"
 version.workspace = true
@@ -9,7 +13,18 @@ license.workspace = true
 [dependencies]
 audiolink-types = { workspace = true }
 audiolink-proto = { workspace = true }
+# QUIC（默认特性已含 runtime-tokio + rustls-ring → 强制 ring 后端，不引入 CMake 依赖）
+quinn = { workspace = true }
+# TLS：workspace 已 `default-features = false, features = ["ring", ...]`
+rustls = { workspace = true }
+bytes = { workspace = true }        # quinn 的 send_datagram 收 Bytes
+sha2 = { workspace = true }         # peer_id() = SHA-256(对端证书 DER)
+thiserror = { workspace = true }    # NetError
+tracing = { workspace = true }
+
+[dev-dependencies]
+rcgen = { workspace = true }        # 测试用自签证书（生产路径的证书来自 identity）
+tokio = { workspace = true }        # #[tokio::test] 与真 QUIC 回环
 
 [lints]
 workspace = true
-

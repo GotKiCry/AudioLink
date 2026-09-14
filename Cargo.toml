@@ -45,6 +45,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 anyhow = "1"
 uniffi = "0.29"                                       # FFI 绑定（Android）
+bytes = "1"                                           # quinn 数据报载荷
+futures = "0.3"                                       # 流/异步组合子
+sha2 = "0.10"                                         # 证书指纹（SHA-256）
+rand = "0.9"                                          # PIN / nonce / group_id 生成
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8"] } # §5 AUTH 签名（纯 Rust，零 C 依赖）
+tempfile = "3"                                        # 测试临时目录
 
 # ---- 实时路径纪律：任何 panic 都是缺陷 ----
 [workspace.lints.rust]

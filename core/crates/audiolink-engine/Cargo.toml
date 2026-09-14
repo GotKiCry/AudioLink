@@ -1,5 +1,5 @@
 # audiolink-engine —— 编排层：引擎、会话管理、同步组、遥测、事件总线
-# 规格见 docs/02-architecture.md、docs/03-protocol.md
+# 规格见 docs/02-architecture.md、docs/03-protocol.md、docs/11-m1-contract.md §5
 [package]
 name = "audiolink-engine"
 version.workspace = true
@@ -7,13 +7,23 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-audiolink-types = { workspace = true }
+audiolink-types = { workspace = true, features = ["serde"] }
 audiolink-proto = { workspace = true }
 audiolink-audio = { workspace = true }
 audiolink-net = { workspace = true }
-audiolink-discovery = { workspace = true }
 audiolink-identity = { workspace = true }
+
+serde = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+crossbeam-channel = { workspace = true }   # 采集线程 → 编码线程的有界队列
+rand = { workspace = true }               # §5 握手 nonce
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
-

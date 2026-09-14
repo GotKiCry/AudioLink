@@ -1,5 +1,5 @@
 # audiolink-ffi —— UniFFI 导出（供 Kotlin 调用）
-# 规格见 docs/02-architecture.md、docs/03-protocol.md
+# 规格见 docs/02-architecture.md、docs/11-m1-contract.md §8
 [package]
 name = "audiolink-ffi"
 version.workspace = true
@@ -10,9 +10,29 @@ license.workspace = true
 crate-type = ["cdylib", "staticlib", "rlib"]  # Android JNI 加载 .so；桌面端走 rlib
 
 [dependencies]
+audiolink-audio = { workspace = true }
 audiolink-engine = { workspace = true }
+# golden vectors 直接来自 audiolink-proto（`protocolSelfTest` 的被执行对象；见 src/golden.rs）
+audiolink-proto = { workspace = true }
+audiolink-types = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+# `tokio` feature = UniFFI 的 async 支持走 tokio 运行时（`#[uniffi::export(async_runtime = "tokio")]`）
+uniffi = { workspace = true, features = ["tokio"] }
+
+[features]
+default = []
+# 绑定生成器（仅开发机 / CI 用；不进 Android 产物，故 gate 在 feature 后面）
+bindgen = ["uniffi/cli"]
+
+[dev-dependencies]
+tempfile = { workspace = true }   # 引擎生命周期用例要一个真实的可写身份目录
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
 
 [lints]
 workspace = true
-
-

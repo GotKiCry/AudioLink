@@ -449,47 +449,128 @@ impl ErrorCode {
     }
 }
 
-/// 统一错误类型（`docs/02-architecture.md` §11）：所有错误收敛于此，带「错误码 + 上下文」，跨 FFI 可直接映射。
+/// 按 §11 错误码表批量生成 [`AudioLinkError`]：每个变体 4 个成员（`const` 构造器 / 动态构造器 /
+/// `code()` 分支 / `context()` 分支），避免 13 份手写样板漂移。
 ///
-/// M0-02 只落地 L1 解码层需要的 [`AudioLinkError::BadRequest`]（§1.1）；
-/// 握手 / 配对 / 采集等变体随 M1 各模块实现补入（新增变体是源码兼容变更）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AudioLinkError {
-    /// `1008 BAD_REQUEST`：字节流非法（截断 / 超长 / 未知 ptype / 保留位非 0 / 长度越界 …）。
+/// 语法：`Variant => snake_name, ErrorCode::Variant, is_statistical;`
+macro_rules! define_audio_link_errors {
+    ($($(#[$meta:meta])* $variant:ident => $ctor:ident, $code:ident, $statistical:literal;)*) => {
+        /// 统一错误类型（`docs/02-architecture.md` §11）：所有错误收敛于此，带「错误码 + 上下文」，
+        /// 跨 FFI 可直接映射。
+        ///
+        /// **构造纪律**：优先用 `const` 构造器（静态上下文，零分配）；只有错误路径才用 `*_owned`。
+        ///
+        /// **处置纪律**：「这条错误该不该断流」只能由 [`AudioLinkError::is_statistical`] 回答，
+        /// 调用方**不得**自行按 `code()` 猜测 —— 这是旧版「异常即永久静音」的根治点之一。
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub enum AudioLinkError {
+            $(
+                $(#[$meta])*
+                $variant {
+                    /// 失败细节（静态字面量，或错误路径上格式化的动态串）。
+                    context: Cow<'static, str>,
+                },
+            )*
+        }
+
+        impl AudioLinkError {
+            $(
+                #[doc = concat!("静态上下文的 `", stringify!($variant), "`：`const` 友好，零分配。")]
+                pub const fn $ctor(context: &'static str) -> Self {
+                    Self::$variant { context: Cow::Borrowed(context) }
+                }
+            )*
+
+            /// 错误码（跨 FFI 用 [`ErrorCode::as_u16`] 取值）。
+            pub fn code(&self) -> ErrorCode {
+                match self {
+                    $(Self::$variant { .. } => ErrorCode::$code,)*
+                }
+            }
+
+            /// 失败细节。
+            pub fn context(&self) -> &str {
+                match self {
+                    $(Self::$variant { context } => context.as_ref(),)*
+                }
+            }
+
+            /// 是否**统计类**（不致命）：计数后继续，绝不因此断流或停播。
+            ///
+            /// §11 的 `2001` / `2002` / `2003` 与 `3001` 属于此类 —— 它们是「链路还在跑，但需要
+            /// 记账 / 自愈 / 限速」的信号，与 `1001`–`1009` 的契约级失败有本质区别。
+            pub const fn is_statistical(&self) -> bool {
+                match self {
+                    $(Self::$variant { .. } => $statistical,)*
+                }
+            }
+
+            /// 是否**契约级失败**（需要状态机迁移，通常是重连或拒绝会话）。
+            pub const fn is_fatal(&self) -> bool {
+                !self.is_statistical()
+            }
+        }
+    };
+}
+
+define_audio_link_errors! {
+    /// `1001`：协议主版本不兼容 → 提示升级并断开。
+    VersionMismatch => version_mismatch, VersionMismatch, false;
+    /// `1002`：未配对 → 触发配对流程。
+    NotPaired => not_paired, NotPaired, false;
+    /// `1003`：PIN 错误 / 超时（含剩余尝试次数）。
+    PairRejected => pair_rejected, PairRejected, false;
+    /// `1004`：签名校验失败（可能是中间人）→ 断开并告警。
+    AuthFailed => auth_failed, AuthFailed, false;
+    /// `1005`：对方不支持所需能力（如内录）→ UI 置灰。
+    CapUnsupported => cap_unsupported, CapUnsupported, false;
+    /// `1006`：混音路数超上限 → 拒绝并提示。
+    StreamLimit => stream_limit, StreamLimit, false;
+    /// `1007`：无共同编解码 → 建议切 PCM 档。
+    CodecUnsupported => codec_unsupported, CodecUnsupported, false;
+    /// `1008`：字节流非法（截断 / 超长 / 未知 ptype / 保留位非 0 / 长度越界 …）。
     ///
     /// 这是 L1 严格解码层（`audiolink-proto`）的**唯一拒绝出口**：调用方不得把它升级为断连（§1.1）。
-    BadRequest {
-        /// 失败细节（静态字面量，或错误路径上格式化的动态串）。
-        context: Cow<'static, str>,
-    },
+    BadRequest => bad_request, BadRequest, false;
+    /// `1009`：正在握手 / 配对中 → 稍后重试。
+    Busy => busy, Busy, false;
+    /// `2001`：播放欠载（统计用途，不致命）。
+    PlayoutUnderrun => playout_underrun, PlayoutUnderrun, true;
+    /// `2002`：播放器重建（自愈路径，FR-28）。
+    SinkRebuild => sink_rebuild, SinkRebuild, true;
+    /// `2003`：采集源失效（设备拔出 / 权限回收）。
+    CaptureLost => capture_lost, CaptureLost, true;
+    /// `3001`：请求过频（防滥用）。
+    RateLimited => rate_limited, RateLimited, true;
 }
 
 impl AudioLinkError {
-    /// 静态上下文的 `BadRequest`：`const` 友好，零分配。
-    pub const fn bad_request(context: &'static str) -> Self {
-        Self::BadRequest {
-            context: Cow::Borrowed(context),
+    /// 动态上下文的同码错误（仅错误路径使用，允许分配）。
+    ///
+    /// 与各 `const` 构造器一一对应，按 [`AudioLinkError::code`] 分派。
+    pub fn owned(code: ErrorCode, context: String) -> Self {
+        let context = Cow::Owned(context);
+        match code {
+            ErrorCode::VersionMismatch => Self::VersionMismatch { context },
+            ErrorCode::NotPaired => Self::NotPaired { context },
+            ErrorCode::PairRejected => Self::PairRejected { context },
+            ErrorCode::AuthFailed => Self::AuthFailed { context },
+            ErrorCode::CapUnsupported => Self::CapUnsupported { context },
+            ErrorCode::StreamLimit => Self::StreamLimit { context },
+            ErrorCode::CodecUnsupported => Self::CodecUnsupported { context },
+            ErrorCode::BadRequest => Self::BadRequest { context },
+            ErrorCode::Busy => Self::Busy { context },
+            ErrorCode::PlayoutUnderrun => Self::PlayoutUnderrun { context },
+            ErrorCode::SinkRebuild => Self::SinkRebuild { context },
+            ErrorCode::CaptureLost => Self::CaptureLost { context },
+            ErrorCode::RateLimited => Self::RateLimited { context },
         }
     }
 
-    /// 动态上下文的 `BadRequest`（仅错误路径使用，允许分配）。
+    /// 动态上下文的 `BadRequest`（保留 M0 签名，等价于 [`AudioLinkError::owned`] 的 `BadRequest` 分支）。
     pub fn bad_request_owned(context: String) -> Self {
         Self::BadRequest {
             context: Cow::Owned(context),
-        }
-    }
-
-    /// 错误码（跨 FFI 用 [`ErrorCode::as_u16`] 取值）。
-    pub fn code(&self) -> ErrorCode {
-        match self {
-            Self::BadRequest { .. } => ErrorCode::BadRequest,
-        }
-    }
-
-    /// 失败细节。
-    pub fn context(&self) -> &str {
-        match self {
-            Self::BadRequest { context } => context.as_ref(),
         }
     }
 }
@@ -521,6 +602,7 @@ impl std::error::Error for AudioLinkError {}
 /// 注：**本类型暂无二进制编码**（v1 的发现报文用文本；`HELLO.node_info` 的二进制取值冻结于 M1，
 /// 届时按 §4.1 + §13 补规格，不在 M0-02 里先行发明）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Platform {
     /// Windows 桌面端（文本形式 `win`）。
     Windows,
@@ -552,6 +634,7 @@ impl Platform {
 
 /// 能力位图（§9.1 / §9.2 的 `caps` 字段）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Caps(u16);
 
 impl Caps {
@@ -583,6 +666,21 @@ impl Caps {
         (self.0 & other.0) == other.0
     }
 
+    /// 按位并集（能力组合）：`Caps::CAN_SEND.union(Caps::CAN_RECEIVE)`，也支持 `|` 运算符。
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// 按位交集。
+    pub const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
+    /// 掩掉 v1 未知的位（§13 演进规则：未知能力位必须被忽略，否则新版本节点会被旧版本判成能力异常）。
+    pub const fn known_only(self) -> Self {
+        Self(self.0 & Self::KNOWN_MASK)
+    }
+
     /// 文本载体的 hex 形式：**无前缀小写**（§9.2），如 `"3"`。
     pub fn to_hex(self) -> String {
         format!("{:x}", self.0)
@@ -594,6 +692,32 @@ impl Caps {
             return None;
         }
         u16::from_str_radix(text, 16).ok().map(Self)
+    }
+}
+
+/// 运算符形式的能力组合：`Caps::CAN_SEND | Caps::CAN_RECEIVE`。
+///
+/// 提供运算符而不只是 [`Caps::union`]，是因为能力组合在构造 `NodeInfo` 时是高频操作，
+/// 写成一串 `.union()` 会把「有哪些能力」这个关键信息淹掉。
+impl std::ops::BitOr for Caps {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        self.union(rhs)
+    }
+}
+
+impl std::ops::BitOrAssign for Caps {
+    fn bitor_assign(&mut self, rhs: Self) {
+        *self = self.union(rhs);
+    }
+}
+
+impl std::ops::BitAnd for Caps {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        self.intersection(rhs)
     }
 }
 
@@ -649,4 +773,187 @@ pub struct StreamStats {
     pub e2e_latency_us: u32,
     /// 迟到丢弃包数。
     pub late_drops: u32,
+}
+
+// ---------------------------------------------------------------------------
+// 时钟同步质量（docs/03-protocol.md §6.5）
+// ---------------------------------------------------------------------------
+
+/// 时钟同步质量分级（§6 第 5 条）：用于遥测面板展示、`CLOCK_RESULT` 载荷与「自动加深播放环」判据。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(u8)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ClockQuality {
+    /// `RTT ≤ 5 ms` 且样本数 ≥ 8：满足 FR-22 的同步前提。
+    #[default]
+    Good = 0,
+    /// `RTT ≤ 20 ms`：可用，但同步精度按比例劣化。
+    Fair = 1,
+    /// 其它：UI 必须明示「该设备同步质量差」，并加深播放环。
+    Poor = 2,
+}
+
+impl ClockQuality {
+    /// 由 RTT 与有效样本数分级（§6 第 5 条的唯一实现，避免两端各写一套阈值）。
+    pub const fn from_measurement(rtt_us: u64, samples: usize) -> Self {
+        if rtt_us <= 5_000 && samples >= 8 {
+            Self::Good
+        } else if rtt_us <= 20_000 {
+            Self::Fair
+        } else {
+            Self::Poor
+        }
+    }
+
+    /// 线上 / FFI 的数值形式。
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// 由数值解析；未知值 → `None`（§13：未知取值按 `Poor` 处理，不得 panic）。
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Good),
+            1 => Some(Self::Fair),
+            2 => Some(Self::Poor),
+            _ => None,
+        }
+    }
+
+    /// 展示名（遥测面板 / 日志）。
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Good => "good",
+            Self::Fair => "fair",
+            Self::Poor => "poor",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 节点身份（docs/02-architecture.md §3、docs/03-protocol.md §5 / §9）
+// ---------------------------------------------------------------------------
+
+/// 节点指纹长度（SHA-256）。
+pub const NODE_ID_LEN: usize = 32;
+
+/// 节点短码长度（UI 展示与发现报文 `id` 字段用）：16 个 hex 字符 = 前 8 字节。
+pub const NODE_ID_SHORT_HEX_LEN: usize = 16;
+
+/// 小写 hex 编码（本 crate 默认零依赖，故自备；只在身份展示路径上调用）。
+pub fn hex_encode(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
+/// 单个 hex 字符 → 半字节（大小写均可）。
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// 节点标识 = 自签证书 DER 的 SHA-256 指纹（32 B）。
+///
+/// 这是 AudioLink 的**唯一身份**：TLS 握手已保证对端持有对应私钥，控制面
+/// `AUTH_CHALLENGE` / `AUTH_RESPONSE` 再证明「私钥持有者 = 证书主体」（§5「认证强度」）。
+/// 因此信任库只需存这个值，UI 上也只展示它的[短码](NodeId::short)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct NodeId(pub [u8; NODE_ID_LEN]);
+
+impl NodeId {
+    /// 完整指纹长度（SHA-256 = 32 B）。
+    pub const LEN: usize = NODE_ID_LEN;
+
+    /// 由原始字节构造。
+    pub const fn from_bytes(bytes: [u8; NODE_ID_LEN]) -> Self {
+        Self(bytes)
+    }
+
+    /// 原始字节。
+    pub const fn as_bytes(&self) -> &[u8; NODE_ID_LEN] {
+        &self.0
+    }
+
+    /// 全量小写 hex（64 字符）。
+    pub fn to_hex(self) -> String {
+        hex_encode(&self.0)
+    }
+
+    /// 短码（16 个 hex 字符 = 指纹前 8 字节）：UI 展示与发现报文 `id` 字段用。
+    ///
+    /// 注意：短码**只用于展示与发现提示**，任何信任判定必须比对完整 [`NodeId`]。
+    pub fn short(self) -> String {
+        hex_encode(&self.0[..NODE_ID_SHORT_HEX_LEN / 2])
+    }
+
+    /// 解析 64 字符 hex 的完整指纹；长度或字符非法 → `None`。
+    pub fn from_hex(text: &str) -> Option<Self> {
+        if text.len() != NODE_ID_LEN * 2 {
+            return None;
+        }
+        let raw = text.as_bytes();
+        let mut out = [0u8; NODE_ID_LEN];
+        for (slot, pair) in out.iter_mut().zip(raw.chunks_exact(2)) {
+            let [high, low] = pair else { return None };
+            *slot = (hex_nibble(*high)? << 4) | hex_nibble(*low)?;
+        }
+        Some(Self(out))
+    }
+
+    /// 该短码是否与另一完整指纹的[短码](NodeId::short)一致（发现流程的初筛，**不构成信任**）。
+    pub fn short_matches(self, text: &str) -> bool {
+        text.eq_ignore_ascii_case(&self.short())
+    }
+
+    /// 是否未初始化哨兵（全 0）。
+    pub fn is_zero(self) -> bool {
+        self.0 == [0u8; NODE_ID_LEN]
+    }
+}
+
+impl fmt::Display for NodeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.short())
+    }
+}
+
+/// 节点描述（`docs/02-architecture.md` §3）：控制面 `HELLO` / `HELLO_ACK` 的 `node_info` 载荷，
+/// 并供发现协议（§9）与 UI 展示复用。
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct NodeInfo {
+    /// 节点身份（完整 32 B 指纹）—— 信任判定的唯一依据。
+    pub id: NodeId,
+    /// 用户可改的展示名。**仅展示**，不参与任何身份 / 信任判定。
+    pub name: String,
+    /// 平台。
+    pub platform: Platform,
+    /// 能力位图。
+    pub caps: Caps,
+    /// 协议版本（取值 [`PROTO_VERSION`]）。
+    pub proto_version: u16,
+}
+
+impl NodeInfo {
+    /// 构造一个使用当前协议版本、且已归一化能力位（掩掉未知位）的节点描述。
+    pub fn new(id: NodeId, name: impl Into<String>, platform: Platform, caps: Caps) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            platform,
+            // §13 演进规则：未知能力位必须被忽略（掩掉），否则新版本节点会被旧版本判成「能力异常」
+            caps: Caps::from_bits(caps.bits() & Caps::KNOWN_MASK),
+            proto_version: PROTO_VERSION,
+        }
+    }
 }

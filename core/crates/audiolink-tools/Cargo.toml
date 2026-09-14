@@ -10,6 +10,7 @@ license.workspace = true
 audiolink-proto = { workspace = true }
 audiolink-types = { workspace = true }
 audiolink-audio = { workspace = true }   # self-loop：真实 采集/编码/解码/播放 链路
+audiolink-engine = { workspace = true }  # link-loop：两个真实 Engine 之间的端到端验收
 # latency-probe：QUIC 数据报 + 四时间戳时钟探测（docs/03-protocol.md §6）
 anyhow = { workspace = true }
 tokio = { workspace = true }
@@ -17,6 +18,7 @@ quinn = { workspace = true }
 rustls = { workspace = true }
 rcgen = { workspace = true }
 serde_json = { workspace = true }         # self-loop 报告导出（仅工具面；音频/控制面一律 postcard）
+tempfile = { workspace = true }           # link-loop：两台节点的临时身份目录
 
 [lints]
 workspace = true
@@ -33,3 +35,8 @@ path = "src/bin/latency_probe.rs"
 [[bin]]
 name = "self-loop"
 path = "src/bin/self_loop.rs"
+
+# PC↔PC 真 QUIC 端到端验收（M1 验收主工具：两个 Engine 实例 + 真实 127.0.0.1 QUIC）
+[[bin]]
+name = "link-loop"
+path = "src/bin/link_loop.rs"

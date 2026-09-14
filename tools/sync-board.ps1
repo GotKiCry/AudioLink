@@ -44,11 +44,16 @@ $Tasks = @(
     @{ T = '[M1] WASAPI loopback 事件驱动采集（48 kHz / f32 / 2ch，10–20 ms 缓冲）'; M = 'M1'; P = 'P0'; S = 'Done'; B = 'audiolink-audio::wasapi（LoopbackCapture/RenderSink）。实测：缓冲下限 1056 帧=22 ms、引擎周期 10 ms（每周期 480 帧）、空闲端点零数据、COM 对象 !Send 需线程内构造；自环实测零欠载' }
     @{ T = '[M1] Opus 编码（opus-rs，20 ms / 160 kbps / VBR / 48 kHz 锁定）'; M = 'M1'; P = 'P0'; S = 'Done'; B = 'ADR-003：纯 Rust，不装 CMake；实测 encode P50 75 μs / decode 57 μs、160.4 kbps、热路径零分配；已知缺陷：CELT-only 无真 PLC 且 packet_loss_perc 为空设置（见 ADR-003 注记）' }
     @{ T = '[M1] 桌面自环链路 + 四段延迟分解（采集/编码/解码/播放）'; M = 'M1'; P = 'P0'; S = 'Done'; B = 'tools/self-loop：五段分解 + 19 kHz 标记往返实测（同口径模型 7.00 ms vs 实测 6.78 ms）；本机实测合计 39.7 ms，999 帧零欠载零丢弃' }
-    @{ T = '[M1] QUIC 通道（quinn：控制流 #0 + 音频数据报）'; M = 'M1'; P = 'P1'; S = 'Todo'; B = '发送侧必须 min(1200, max_datagram_size())，默认初始 MTU 下实测 1162 B' }
-    @{ T = '[M1] Android 播放（AudioTrack 低延迟模式 + JNI 环缓冲 + 欠载检测）'; M = 'M1'; P = 'P1'; S = 'Todo'; B = 'NFR-14 硬指标：PERFORMANCE_MODE_LOW_LATENCY + WRITE_NON_BLOCKING，须用 getPerformanceMode() 断言' }
-    @{ T = '[M1] 最小 UI（桌面手工 IP 连接；Android 服务启停）'; M = 'M1'; P = 'P1'; S = 'Todo'; B = 'FR-29 / FR-35 的最小形态' }
-    @{ T = '[M1] PIN 配对最小可用（白名单落盘）'; M = 'M1'; P = 'P1'; S = 'Todo'; B = 'FR-17；白名单可先为明文 JSON' }
-    @{ T = '[M1] 验收：P50 ≤ 110 ms / P95 ≤ 150 ms、零重采样、低延迟模式生效'; M = 'M1'; P = 'P1'; S = 'Todo'; B = '两项硬指标不达标不得进入 M2（roadmap M1 备注）' }
+    @{ T = '[M1] QUIC 通道（quinn：控制流 #0 + 音频数据报）'; M = 'M1'; P = 'P1'; S = 'Done'; B = 'audiolink-net：端点/连接/控制流 #0/时钟估计。实测握手时 max_datagram_size=1162 B，但 DPLPMTUD 会话开始后抬到 1288 B → 发送侧按 min(1200, mds) 封顶（§3 的 1200 B 预算**真的是有效约束**）。未知 OpCode 走 Ok(op=None) 交 L2 忽略计数（§1.1）；peer_cert_der() 供 §5 验签；双向 TLS 让接收侧也能算 peer_id()。19 单测 + 5 真 QUIC 集成测试全绿' }
+    @{ T = '[M1] Android 播放（AudioTrack 低延迟模式 + JNI 环缓冲 + 欠载检测）'; M = 'M1'; P = 'P1'; S = 'Done'; B = 'LowLatencyPlayer（PERFORMANCE_MODE_LOW_LATENCY + WRITE_NON_BLOCKING + USAGE_MEDIA + 48k/2ch/FLOAT，播放线程内 build/write/release，§1 第 3 条未反转）+ 纯逻辑播放环 + 欠载/溢出计数；assembleDebug 与 testDebugUnitTest 通过（31 个 JVM 用例）。⚠️ **真机指标全部未验证**（本机 adb 无设备、无可用 AVD）：getPerformanceMode() 实测值、出声延迟、30 min 无断流。顺带修掉一个 minSdk 26 上调用 API 29+ 三参 startForeground 的既有崩溃缺陷' }
+    @{ T = '[M1] 最小 UI（桌面手工 IP 连接；Android 服务启停）'; M = 'M1'; P = 'P1'; S = 'Done'; B = 'FR-29 / FR-35 的最小形态。桌面：手工 IP → 连接 → 对端卡片（名字/短指纹/状态/是否受信）→ 开始·停止推流 → 遥测数字面板 → PIN 输入框；外壳已**接真实引擎**（无 mock），含一个起两个真 Engine 的接缝测试（真 QUIC + 真配对）。Android：服务启停 + 状态卡片（低延迟是否生效 / 采样率 / 缓冲帧数 / 欠载）。⚠️ **UI 交互与视觉未验证**（无头环境点不了，应用从未启动过）' }
+    @{ T = '[M1] PIN 配对最小可用（白名单落盘）'; M = 'M1'; P = 'P1'; S = 'Done'; B = 'audiolink-identity：自签证书（SAN 固定 "audiolink"，展示名不进证书 → 改名不换身份）+ SHA-256 指纹 + ECDSA-P256 挑战应答 + 信任库原子落盘（损坏必须 Err，绝不静默重置）+ PinGate（6 位 / 60 s / 5 次锁 5 分钟 / 成功后不可重放）。30 测试全绿。已在 link-loop 里跑通真实 PIN 配对（node-b 显示 308011 → node-a 提交 → 双方落盘）' }
+    @{ T = '[M1] 引擎编排：会话状态机 + 收发管线 + 遥测聚合'; M = 'M1'; P = 'P1'; S = 'Done'; B = 'audiolink-engine：§4 控制帧载荷（postcard）+ L2 分发层（未知/未实现/载荷非法三分支分别计数，一律不断流）+ 会话状态机（非法迁移显式报错，Failed 可重启）+ 采集线程（拥有 !Send 的 CaptureSource）→ 编码 → 数据报 + 数据报 → 解码 → 时钟驱动播放线程 + 1 Hz 遥测。60 测试全绿' }
+    @{ T = '[M1] 验收：P50 ≤ 110 ms / P95 ≤ 150 ms、零重采样、低延迟模式生效'; M = 'M1'; P = 'P1'; S = 'In Progress'; B = '两项硬指标不达标不得进入 M2（roadmap M1 备注）。**PC↔PC 段已实测**（tools/link-loop，真实 127.0.0.1 QUIC + 真实 PIN 配对 + 真实 Opus）：探针「帧封口→出声」P50 20.1 ms / P95 20.6 ms，合计账本约 50 ms，零丢包零欠载；零重采样在采集/播放线程启动时硬断言通过。**PC→Android 段未验证**（无真机）：Android 低延迟模式是否真的生效、真机出声延迟、30 min 无断流均为待办' }
+    @{ T = '[工具] link-loop：PC↔PC 真 QUIC 端到端验收'; M = 'M1'; P = 'P1'; S = 'Done'; B = 'tools/link-loop：同进程起两个真实 Engine，走真实 QUIC（TLS + 证书指纹互认 + §5 握手 + PIN 配对），用共享 MeasurementTap 按 seq 配对量「帧封口→sink 写出」。与 self-loop 的分工：self-loop 量单进程音频链，link-loop 量含网络与会话的完整链路' }
+    @{ T = '[M1] 真机验收：Android 低延迟/出声延迟/30 min 无断流'; M = 'M1'; P = 'P1'; S = 'Todo'; B = '**阻塞在硬件**：本机 adb 无设备、无可用 AVD。需要一台 Android 真机（API 26+）跑：getPerformanceMode() 实测返回值、出声延迟、30 min 连续无断流与 underruns/plc_count 记录。Android 侧代码与 31 个 JVM 用例已就绪，接上设备即可复跑' }
+    @{ T = '[M1] 桌面外壳接入真实 engine（替换 mock）'; M = 'M1'; P = 'P1'; S = 'Done'; B = 'MockEngine / run_mock_source 已整块删除，engine_bridge.rs 现为真实实现（Engine::start + spawn_accept_loop + subscribe → 三事件翻译 + 状态映射 + 遥测聚合）。**含一个起两个真 Engine 的运行时接缝测试**（真 QUIC + 真 PIN 配对，断言 connect 返回 1002 但对端已进 peers()、submit_pin 结果走事件回来、start_send 后接收端出现非零码率）。⚠️ 真实 WASAPI 采集/播放工厂按签名写好但**未启动过应用**（会真采集真放音）；UI 交互与视觉未验证' }
+    @{ T = '[M1] Android 接入 FFI 绑定（JNA + 播放环适配 + 引擎随服务启停）'; M = 'M1'; P = 'P1'; S = 'Done'; B = '绑定源集**挂载而非复制**（../core/crates/audiolink-ffi/bindings/kotlin，保证绑定与 .so 永远同源）+ jna 5.19.1@aar；FfiPcmFeed 把 PcmFeed → PcmRingBuffer（环满时把 accepted<frames 上报给内核遥测）；engineStart/engineStop 跟随服务生命周期（listenPort=0 用内核默认端口，不在 Kotlin 侧硬编码）；catch(Throwable) 接住 JNA 的 UnsatisfiedLinkError 以免服务进程崩。验收：assembleDebug + testDebugUnitTest **38/38** + lintDebug 0 error，APK 22.7 MB。⚠️ JNA 运行期加载 .so、端到端 PCM 链路、GC 抖动均**未验证**（无真机）' }
 
     # ---- M2–M5 ----
     @{ T = '[M2] 稳定性与质量：抖动缓冲 + 双发/PLC/NACK + 自适应码率 + 遥测面板'; M = 'M2'; P = 'P2'; S = 'Todo'; B = 'docs/05-roadmap.md M2；验收含 8 h soak 与弱网（5 Mbps / 2% 丢包 / 30 ms 抖动）' }
@@ -61,9 +66,9 @@ $Tasks = @(
     @{ T = '[护栏] 「定长载荷自洽」测试：LEN == 字段宽度之和'; M = 'M0'; P = 'P2'; S = 'Todo'; B = '针对 CLOCK_REPLY 那类「文档/常量算错」的机械护栏' }
     @{ T = '[文档] docs/10-handoff.md 状态更新（M0 已完成）'; M = 'M0'; P = 'P2'; S = 'Done'; B = '已更新：M0 全绿 + M1 三项 P0 完成、实测基线、下一步为 M1 主线（QUIC/Android 播放/最小 UI）' }
     @{ T = '[安全] docs/06-dev-environment.md 本机路径脱敏'; M = 'M0'; P = 'P2'; S = 'Todo'; B = '仓库已 PUBLIC，文档里仍有 C:\Users\liuzh\... 路径' }
-    @{ T = '[护栏] 跨端一致性夹具：同一组 golden vectors 在 Rust 与 FFI 双跑'; M = 'M1'; P = 'P3'; S = 'Todo'; B = '§12 唯一尚未验证的一条（需 audiolink-ffi 有导出路径后落地）' }
+    @{ T = '[护栏] 跨端一致性夹具：同一组 golden vectors 在 Rust 与 FFI 双跑'; M = 'M1'; P = 'P3'; S = 'Done'; B = 'audiolink-ffi::protocolSelfTest()：FFI 侧自带 §12 三组向量（解码→字段→再编码逐字节一致），并把 audiolink-proto 的 tests/golden_vectors.rs 原文 include_str! 进来**运行期逐字节比对**四份常量 —— 上游一改向量就红灯（该守卫当场抓到过一次解析注释的 bug）。18 测试绿' }
     @{ T = '[工具] alp2-dump 支持 pcap/pcapng 输入'; M = 'M1'; P = 'P3'; S = 'Todo'; B = '当前只吃 hex 文本；等真有抓包需求再加（需夹具验证）' }
-    @{ T = '[工具] self-loop 支持真机链路端到端测量'; M = 'M1'; P = 'P2'; S = 'Todo'; B = '本机自环已可用；M1 真机验收需要一个「网络抖动下仍可检出」的端到端标记方案（当前 19 kHz 标记依赖同一端点回环）' }
+    @{ T = '[工具] self-loop 支持真机链路端到端测量'; M = 'M1'; P = 'P2'; S = 'In Progress'; B = '**已被 tools/link-loop 部分取代**：link-loop 用两个真实 Engine 走真 QUIC，按 seq 配对探针量「帧封口→sink 写出」，PC↔PC 段已实测（P50 40.2 ms）。**跨机仍缺**：探针直接比较 Instant，跨机不可相减 —— 需要接 §6 时钟同步（ClockEstimator 已实现并单测，但引擎侧一根线没接，clock_offset_us 恒为 0）' }
     @{ T = '[CI] QUIC 依赖 feature 门控（回收 core job 的 ~2.5 min）'; M = 'M0'; P = 'P3'; S = 'Todo'; B = 'tools 引入 quinn/rustls/tokio 后 core job 由 1m36s 涨到 4m10s' }
     @{ T = '[工具] soak-runner（8 h 回环 + 指标采集 + 异常快照）'; M = 'M2'; P = 'P3'; S = 'Todo'; B = 'M2 验收依赖，建议 M1 一结束就有最简版' }
     @{ T = '[CI] Android job：预编译 cargo-ndk（省 ~2 min）'; M = 'M0'; P = 'P3'; S = 'Todo'; B = 'docs/10-handoff.md §7 待办' }
@@ -200,10 +205,13 @@ $statusField = Ensure-SingleSelectField -Number $number -Name 'Status' -Options 
 $milestoneField = Ensure-SingleSelectField -Number $number -Name '里程碑' -Options $MILESTONE_OPTIONS
 $priorityField = Ensure-SingleSelectField -Number $number -Name '优先级' -Options $PRIORITY_OPTIONS
 
-$items = @()
-if (-not $DryRun) {
-    $items = (Invoke-Gh @('project', 'item-list', "$number", '--owner', $Owner, '--limit', '200', '--format', 'json') -AsJson).items
-}
+# 即使 dry-run 也要真的读一次现有条目 —— `project item-list` 是只读命令。
+#
+# 不读的后果（2026-09-14 实测暴露）：dry-run 里 `$existing` 恒为空，
+# 于是「已存在 / 新建」的预览**全都是「新建」**。而本脚本唯一的危险动作恰恰是
+# **造重复条目**（标题是幂等键，靠 `$existing` 匹配）—— 一个分不清重复的预览等于没有预览，
+# 会让人误以为「一切都要新建」而去关掉 dry-run 直接跑。
+$items = (Invoke-Gh @('project', 'item-list', "$number", '--owner', $Owner, '--limit', '200', '--format', 'json') -AsJson).items
 $existing = @{}
 foreach ($item in $items) {
     $title = Item-Title $item

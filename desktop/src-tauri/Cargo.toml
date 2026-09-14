@@ -23,8 +23,12 @@ tauri-plugin-window-state = "2.4"
 tauri-plugin-opener = "2.5"
 tauri-plugin-notification = "2.4"
 
+# 内核 crate：外壳通过 engine 的公开 API（`core/crates/audiolink-engine/src/runtime.rs`）接线，
+# 唯一接缝在 src/engine_bridge.rs；`audiolink-audio` 只用于提供 WASAPI 采集/播放工厂
+# （`CaptureSource` / `PlayoutSink` 是 `!Send`，只能交出"怎么建"，由音频线程自己建）。
 audiolink-engine = { workspace = true }
-audiolink-ffi = { workspace = true }
+audiolink-audio = { workspace = true }
+# 内核类型：错误码 / NodeId / StreamStats。
 audiolink-types = { workspace = true }
 
 serde = { workspace = true }

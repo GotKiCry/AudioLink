@@ -1,0 +1,8 @@
+# UniFFI 绑定生成的 Kotlin 侧配置（`uniffi-bindgen --config uniffi.toml`）
+#
+# package_name：生成到 android 侧的包名。Android 应用包是 `com.gotkicry.audiolink`，
+#               内核绑定放子包 `.core`，与 UI/服务代码分家。
+# cdylib_name：JNA 加载的库名 —— 即 `libaudiolink_ffi.so`（Android）/ `audiolink_ffi.dll`（宿主）。
+[bindings.kotlin]
+package_name = "com.gotkicry.audiolink.core"
+cdylib_name = "audiolink_ffi"

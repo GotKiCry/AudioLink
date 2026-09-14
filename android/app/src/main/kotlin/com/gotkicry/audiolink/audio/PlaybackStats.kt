@@ -1,0 +1,51 @@
+package com.gotkicry.audiolink.audio
+
+/**
+ * 播放器启动结果 —— **形状冻结**（`docs/11-m1-contract.md` §7），字段名/顺序不得改动。
+ *
+ * @property lowLatency 低延迟是否**真的生效**（= [performanceMode] == `PERFORMANCE_MODE_LOW_LATENCY`）。
+ *   注意：请求低延迟 ≠ 拿到低延迟，厂商/设备可以拒绝（返回 `PERFORMANCE_MODE_NONE`），
+ *   所以这个字段只能由 `start()` 之后实测 `getPerformanceMode()` 得到，不能由调用参数推断。
+ * @property actualBufferFrames 实际生效的输出缓冲帧数（`AudioTrack.getBufferSizeInFrames()`），
+ *   可能与请求值不同：设备会把过小的请求抬到 `getMinBufferSize()` 之上。
+ * @property performanceMode 原始 `getPerformanceMode()` 返回值（不要在这里转成字符串，UI 层再转）。
+ */
+data class PlaybackReport(
+    val lowLatency: Boolean,
+    val actualBufferFrames: Int,
+    val sampleRate: Int,
+    val channelCount: Int,
+    val performanceMode: Int,
+)
+
+/**
+ * 播放统计快照（口径见 [PlaybackCounters] 的类注释）。
+ *
+ * 契约 `docs/11-m1-contract.md` §7 要求至少包含 `underruns / framesWritten / writeErrors /
+ * actualBufferFrames / performanceMode`；这里额外带上供给侧欠载、静音帧、丢弃帧与参数回显，
+ * 目的是让 UI 与日志**不需要再问播放器第二个问题**就能解释清楚"现在是什么状态"。
+ *
+ * @property underruns 系统口径：`AudioTrack.getUnderrunCount()` —— "输出缓冲被写空"的次数。
+ *   它与 [sourceUnderruns] 是两件事：前者说明**播放线程/系统调度**没喂上，后者说明**数据源**没数据。
+ *   补静音策略正常工作时它应当长期为 0，一旦增长就是调度问题的直接证据。
+ * @property sourceUnderruns 供给侧口径：一次拉取拿不满 = 一次欠载。
+ * @property framesWritten 写入输出设备的**有效音频帧**（不含静音填充）。
+ * @property silenceFrames 欠载时为保持输出流连续而补写的静音帧；设备实收 = framesWritten + silenceFrames。
+ * @property framesDropped 推模式下被丢弃的帧（拉模式永不丢弃，见 [PlayoutLoop]）。
+ * @property lastWriteError 最近一次输出设备错误码（[PlaybackCounters.ERROR_NONE] = 无错误）。
+ */
+data class PlaybackStats(
+    val running: Boolean,
+    val underruns: Int,
+    val sourceUnderruns: Long,
+    val framesWritten: Long,
+    val silenceFrames: Long,
+    val framesDropped: Long,
+    val writeErrors: Int,
+    val lastWriteError: Int,
+    val actualBufferFrames: Int,
+    val requestedBufferFrames: Int,
+    val performanceMode: Int,
+    val sampleRate: Int,
+    val channelCount: Int,
+)
