@@ -457,6 +457,8 @@ dependencies = [
  "anyhow",
  "audiolink-audio",
  "audiolink-engine",
+ "audiolink-identity",
+ "audiolink-net",
  "audiolink-proto",
  "audiolink-types",
  "quinn",

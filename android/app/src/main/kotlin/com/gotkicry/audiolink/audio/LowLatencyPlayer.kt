@@ -68,6 +68,34 @@ class LowLatencyPlayer(
         /** 缓冲快照的采样间隔（轮次）：`getBufferSizeInFrames` 是 JNI 调用，没必要每轮都问。 */
         private const val BUFFER_SNAPSHOT_INTERVAL = 32
 
+        /**
+         * 队列目标 = 不设目标 = **旧的"尽力写满"行为**。
+         *
+         * 刻意留成合法取值（而不是拿 `-1` 当"未设置"）：A/B 对照要在同一条连接里来回切，
+         * "不设目标"本身就是要测的一侧，不能是个非法状态。
+         */
+        const val QUEUE_TARGET_UNLIMITED = 0
+
+        /** 容量收缩尚未执行过的哨兵值（合法的帧数不会是负数）。 */
+        const val SHRINK_NOT_ATTEMPTED = -1
+
+        /**
+         * **默认队列目标 = [QUEUE_TARGET_UNLIMITED]（满灌）**：保持 task-3/5 以来的既有行为。
+         *
+         * 为什么默认不改（Lead 裁决 + 我的复核一致）：本轮 A/B 显示 **30 ms 档确实严格更优**
+         * （flinger Latency 101 → 51 ms，系统欠载与静音填充都没升），但——
+         * 设备侧省下的这 50 ms **不会改变端到端总量**：实测播放环在持续溢出
+         * （清零后 78 s 溢出 3 791 040 帧 ≈ **1.01× 实时率**，读空 +0），环始终是满的，
+         * 延迟由「内核推送速率 ≈ 2× 实时」这条失配主导，属 M2 抖动缓冲/漂移补偿的输入。
+         * 在总量没降之前改默认行为，只会让 soak 的对照条件漂移 —— 所以默认留满灌，
+         * 档位留成 UI 上的 chip（20/30/40/60 ms），要启用一行常量或点一下即可。
+         */
+        const val DEFAULT_QUEUE_TARGET_FRAMES = QUEUE_TARGET_UNLIMITED
+
+        /** 纳秒换算常量（实时路径上不用 `TimeUnit` —— 那个会装箱）。 */
+        private const val NANOS_PER_MILLI = 1_000_000L
+        private const val NANOS_PER_SECOND = 1_000_000_000L
+
         /** `getPerformanceMode()` → 可读名字（UI 用；不要让它显示裸数字）。 */
         fun performanceModeName(mode: Int): String = when (mode) {
             AudioTrack.PERFORMANCE_MODE_LOW_LATENCY -> "LOW_LATENCY"
@@ -129,6 +157,39 @@ class LowLatencyPlayer(
     @Volatile
     private var trackUnderruns: Int = 0
 
+    // ---------------------------------------------------------------- task-8：队列水位控制
+
+    /**
+     * 队列水位记账器。**只被播放线程访问**（[QueueWatermark] 非线程安全）：
+     * [tryWrite] 与播放循环都跑在播放线程上，因此不需要额外同步。
+     */
+    private val watermark = QueueWatermark()
+
+    /** 设备队列当前水位（帧）：播放线程写、任意线程读快照。 */
+    @Volatile
+    private var queuedFrames: Int = 0
+
+    /** 设备容量上限（帧）；`buildAudioTrack` + `play()` 之后填。 */
+    @Volatile
+    private var bufferCapacityFrames: Int = 0
+
+    /**
+     * 队列目标深度（帧）。[QUEUE_TARGET_UNLIMITED] = 不设目标（旧的"尽力写满"）。
+     *
+     * 为什么是运行时可变的 `@Volatile` 而不是构造参数：A/B 对照要在**同一条连接里前后切换**，
+     * 重启播放器会把播放环清空、也会打断正在测的那条链路 —— 那样两份数字就不是同一条件下采的了。
+     */
+    @Volatile
+    private var queueTargetFrames: Int = DEFAULT_QUEUE_TARGET_FRAMES
+
+    /** 待执行的容量收缩请求（帧）；`0` = 无请求。由播放线程取走执行（`AudioTrack` 亲和性）。 */
+    @Volatile
+    private var pendingShrinkFrames: Int = 0
+
+    /** 最近一次容量收缩后设备给回的实际帧数；[SHRINK_NOT_ATTEMPTED] = 没试过。 */
+    @Volatile
+    private var shrinkGrantedFrames: Int = SHRINK_NOT_ATTEMPTED
+
     @Volatile
     private var lastFailure: String? = null
 
@@ -142,6 +203,38 @@ class LowLatencyPlayer(
      */
     fun setSource(source: PcmSource) {
         this.source = source
+    }
+
+    // ---------------------------------------------------------------- task-8：延迟杠杆（运行时可控）
+
+    /**
+     * 设置**队列目标深度**（帧）。[QUEUE_TARGET_UNLIMITED]（0）= 不设目标、尽力写满（旧行为）。
+     *
+     * 会被夹到 `[0, 设备容量]`：目标超过容量没有意义，只会让门控永远为真、退化成满灌。
+     * 容量在 `play()` 之前未知（为 0），此时先记下请求，建好 track 后再夹一次。
+     *
+     * 刻意**不**重启播放器：切档只改一个 `@Volatile`，下一拍生效 —— 这样 A/B 对照
+     * 可以在同一条连接里前后各测一段，避免"两次安装/两次配对"带来的环境漂移。
+     */
+    fun setQueueTargetFrames(frames: Int) {
+        val cap = bufferCapacityFrames
+        queueTargetFrames = if (cap > 0) frames.coerceIn(0, cap) else frames.coerceAtLeast(0)
+    }
+
+    /** 当前队列目标（帧）；[QUEUE_TARGET_UNLIMITED] = 满灌。 */
+    val queueTarget: Int get() = queueTargetFrames
+
+    /**
+     * 请求把设备缓冲**容量**收缩到 [frames] 帧（task-8 的路①：`setBufferSizeInFrames`）。
+     *
+     * 只登记请求，真正执行在播放线程 —— `AudioTrack` 的一切调用都必须发生在它自己的线程上
+     * （并且框架要求 track 处于播放态）。执行结果（是否生效、FAST 是否还在）会通过
+     * [stats] 的 [PlaybackStats.shrinkGrantedFrames] / [PlaybackStats.performanceMode] 如实回报。
+     *
+     * `0` 表示"取消未执行的请求"。
+     */
+    fun requestBufferShrink(frames: Int) {
+        pendingShrinkFrames = frames.coerceAtLeast(0)
     }
 
     /**
@@ -169,10 +262,14 @@ class LowLatencyPlayer(
                 localTrack.play()
                 val mode = localTrack.performanceMode
                 val bufferFramesActual = localTrack.bufferSizeInFrames
+                val capacityFrames = localTrack.bufferCapacityInFrames
                 synchronized(writeLock) {
                     track = localTrack
                     performanceMode = mode
                     actualBufferFrames = bufferFramesActual
+                    bufferCapacityFrames = capacityFrames
+                    // 建 track 前设的目标可能超过设备容量（那时还问不到容量）→ 这里夹一次。
+                    if (queueTargetFrames > capacityFrames) queueTargetFrames = capacityFrames
                 }
                 report = PlaybackReport(
                     lowLatency = mode == AudioTrack.PERFORMANCE_MODE_LOW_LATENCY,
@@ -289,6 +386,10 @@ class LowLatencyPlayer(
         performanceMode = performanceMode,
         sampleRate = sampleRate,
         channelCount = channelCount,
+        queuedFrames = queuedFrames,
+        queueTargetFrames = queueTargetFrames,
+        bufferCapacityFrames = bufferCapacityFrames,
+        shrinkGrantedFrames = shrinkGrantedFrames,
     )
 
     /** [PcmSink] 实现：非阻塞写一块，`0` 表示"这轮写不进"（输出缓冲满，调用方稍后再来）。 */
@@ -308,31 +409,110 @@ class LowLatencyPlayer(
                 counters.recordWriteError(writtenSamples)
                 return 0
             }
-            return PcmLayout.framesForSamples(writtenSamples, channelCount)
+            val writtenFrames = PcmLayout.framesForSamples(writtenSamples, channelCount)
+            // 水位记账：设备**真的收下**的帧才算数（补的静音也算 —— 设备确实收了）。
+            // 本方法只被播放线程（PlayoutLoop）调用，与 watermark 的线程约束一致。
+            watermark.recordFed(writtenFrames)
+            return writtenFrames
         }
     }
 
     // ---------------------------------------------------------------- 播放线程内部
 
-    /** 播放线程主循环：拉 → 写 →（写不进就歇 1 ms）→ 采设备快照。 */
+    /**
+     * 播放线程主循环。
+     *
+     * 两种节奏，靠 [queueTargetFrames] 切换 —— 这正是 task-8 的 A/B 两侧：
+     *
+     * - **满灌（[QUEUE_TARGET_UNLIMITED]，旧行为）**：每轮都试着写，写不进就歇 1 ms。
+     *   稳态下队列被灌到容量上限（真机 3844 帧 = 80.08 ms），flinger 报 Latency=101.00 ms。
+     *   延迟地板是**这个策略**给的，不是容量的错。
+     * - **水位门控（target > 0）**：只在 `queued ≤ target − chunk` 时补一块
+     *   （判据见 [QueueWatermark.shouldWrite]），补不上就睡 1 ms 再看。
+     *   稳态下队列稳定在 `[target − chunk, target]`，延迟随之降到目标档。
+     *
+     * 为什么满灌模式不也走节拍：那一侧是**对照组**，必须与 task-3/5 的基线逐字一致，
+     * 改节奏就等于把对照组也动了，A/B 就不成立了。
+     */
     private fun runPlayoutLoop(localTrack: AudioTrack) {
         val loop = PlayoutLoop(source, this, channelCount, chunkFrames, counters)
+        watermark.reset()
         var ticks = 0
+
         while (running) {
-            val progressed = loop.pumpOnce()
-            trackUnderruns = localTrack.underrunCount
-            if (++ticks % BUFFER_SNAPSHOT_INTERVAL == 0) {
-                actualBufferFrames = localTrack.bufferSizeInFrames
+            // 路① 的容量收缩请求：必须在播放线程执行（AudioTrack 亲和性 + 框架要求播放态）。
+            val shrink = pendingShrinkFrames
+            if (shrink > 0) {
+                pendingShrinkFrames = 0
+                applyBufferShrink(localTrack, shrink)
             }
-            if (!progressed) {
-                try {
-                    Thread.sleep(IDLE_SLEEP_MS)
-                } catch (e: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    lastFailure = "播放线程被中断，已退出循环：${e.message}"
+
+            // 队列水位：每轮采一次 head position —— 廉价 JNI，且是门控的唯一依据。
+            watermark.advanceHead(localTrack.playbackHeadPosition)
+            queuedFrames = watermark.queuedFrames.toInt()
+
+            val target = queueTargetFrames
+            if (target <= 0) {
+                val progressed = loop.pumpOnce()
+                trackUnderruns = localTrack.underrunCount
+                if (++ticks % BUFFER_SNAPSHOT_INTERVAL == 0) {
+                    actualBufferFrames = localTrack.bufferSizeInFrames
+                }
+                if (!progressed && !sleepNanos(IDLE_SLEEP_MS * NANOS_PER_MILLI)) return
+            } else {
+                // 水位门控：**欠一个 chunk 就补一个**，欠不到就睡 1 ms 再看。
+                //
+                // 为什么**不**按固定 chunk 周期（10 ms）睡（这是实测踩到的坑）：
+                // `Thread.sleep` 的误差是单向累积的 —— 每拍多睡 0.5 ms，一秒就少写 48 ms 的数据，
+                // 而输出设备仍以 48 kHz 匀速消费，缺口只能由**播放环里的数据**补 ——
+                // 结果是环水位单调爬升（实测：3 分钟里从 80 ms 爬到 220 ms），端到端延迟反而变大。
+                // "缺了就补"没有这个问题：写入速率自动等于消费速率，水位稳定在目标档，
+                // 1 ms 的唤醒代价与旧的满灌路径完全相同（那条路径写不进时也是睡 1 ms）。
+                if (watermark.shouldWrite(target, chunkFrames)) {
+                    loop.pumpOnce()
+                } else if (!sleepNanos(IDLE_SLEEP_MS * NANOS_PER_MILLI)) {
                     return
                 }
+                trackUnderruns = localTrack.underrunCount
+                if (++ticks % BUFFER_SNAPSHOT_INTERVAL == 0) {
+                    actualBufferFrames = localTrack.bufferSizeInFrames
+                    bufferCapacityFrames = localTrack.bufferCapacityInFrames
+                }
             }
+        }
+    }
+
+    /**
+     * 执行容量收缩（路①）：`setBufferSizeInFrames(目标)`，读回实际生效值。
+     *
+     * **只改容量、不改写入策略** —— 如果写入仍是"尽力写满"，容量收缩只是把上限压低，
+     * 队列照样会被灌到新的上限。所以路① 与路② 是两个独立杠杆，A/B 把它们的组合都量一遍。
+     */
+    private fun applyBufferShrink(localTrack: AudioTrack, frames: Int) {
+        val capacity = localTrack.bufferCapacityInFrames
+        val want = frames.coerceIn(0, capacity)
+        val granted = localTrack.setBufferSizeInFrames(want)
+        shrinkGrantedFrames = granted
+        actualBufferFrames = localTrack.bufferSizeInFrames
+        bufferCapacityFrames = capacity
+        // 收缩后框架**可能把性能模式改掉**（丢了 FAST 就白搭）；如实重采，UI 上看得到。
+        performanceMode = localTrack.performanceMode
+    }
+
+    /**
+     * 睡 [nanos] 纳秒；被中断时记下原因并返回 `false`（调用方据此退出播放循环）。
+     *
+     * 实时路径不抛异常：中断是"要停了"的正常信号，不是错误；更不允许 panic。
+     */
+    private fun sleepNanos(nanos: Long): Boolean {
+        if (nanos <= 0) return true
+        return try {
+            Thread.sleep(nanos / NANOS_PER_MILLI, (nanos % NANOS_PER_MILLI).toInt())
+            true
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            lastFailure = "播放线程被中断，已退出循环：${e.message}"
+            false
         }
     }
 

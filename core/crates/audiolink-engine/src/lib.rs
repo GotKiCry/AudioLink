@@ -18,6 +18,7 @@
 //!
 //! | 模块 | 职责 |
 //! |---|---|
+//! | [`clock`] | §6 时钟同步接线：`CLOCK_PROBE` / `CLOCK_REPLY` 的节奏、配对与 RTT 分位数 |
 //! | [`payload`] | §4 控制帧载荷结构体（postcard），字段顺序即 wire 顺序 |
 //! | [`dispatch`] | L2 分发层：不透明载荷 → 有类型命令，并落实 §1.1 的忽略/计数纪律 |
 //! | [`session`] | 会话状态机（§11 的迁移图落成数据表） |
@@ -26,6 +27,7 @@
 #![deny(unsafe_code)] // 必须使用 unsafe 的 crate（如 FFI 绑定）在文件顶部显式 #[allow] 并注明理由
 #![deny(clippy::unwrap_used, clippy::expect_used)] // 实时路径禁止 panic；确需处用 #[allow] 并注明理由
 
+pub mod clock;
 pub mod dispatch;
 pub mod format_guard;
 pub mod handshake;
@@ -35,6 +37,10 @@ pub mod runtime;
 pub mod session;
 pub mod telemetry;
 
+pub use clock::{
+    ClockProbeStats, FAST_INTERVAL_MS, FAST_PROBES, RTT_WINDOW, STEADY_INTERVAL_MS,
+    now_monotonic_us,
+};
 pub use dispatch::{ControlRequest, DispatchOutcome, DispatchStats, dispatch, dispatch_into};
 pub use format_guard::{require_unified_format, require_unified_link};
 pub use handshake::{Handshake, HandshakeEvent, HandshakePhase, HandshakeStep, Outgoing, Role};

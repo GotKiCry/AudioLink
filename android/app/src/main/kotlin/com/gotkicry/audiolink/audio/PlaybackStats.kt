@@ -48,4 +48,23 @@ data class PlaybackStats(
     val performanceMode: Int,
     val sampleRate: Int,
     val channelCount: Int,
+
+    // ---- task-8：队列水位控制（延迟杠杆）----
+    /**
+     * 设备队列**当前水位**（帧）—— 输出设备里还压着没播完的帧数。
+     *
+     * 与 [actualBufferFrames] 的区别是这一条最要紧：后者是**容量**（"最多能压多少"），
+     * 前者是**水位**（"现在压了多少"）。真机上的延迟地板由水位决定，不是容量
+     * （实测容量 3844 帧 / flinger Latency 101 ms，正是因为此前每拍都把它灌满）。
+     */
+    val queuedFrames: Int,
+    /** 当前队列目标深度（帧）；`0` = 未设目标（旧行为：尽力写满，仅用于 A/B 的对照侧）。 */
+    val queueTargetFrames: Int,
+    /** 设备**容量**上限（`getBufferCapacityInFrames()`）—— 队列目标不可能超过它。 */
+    val bufferCapacityFrames: Int,
+    /**
+     * 最近一次「容量收缩」（路①）执行后设备给回的实际缓冲帧数；
+     * `-1` = 尚未执行过收缩。非负时与 [actualBufferFrames] 应当一致。
+     */
+    val shrinkGrantedFrames: Int,
 )

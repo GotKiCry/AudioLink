@@ -11,6 +11,9 @@ audiolink-proto = { workspace = true }
 audiolink-types = { workspace = true }
 audiolink-audio = { workspace = true }   # self-loop：真实 采集/编码/解码/播放 链路
 audiolink-engine = { workspace = true }  # link-loop：两个真实 Engine 之间的端到端验收
+# device-link：独立测量连接走生产 mTLS 端点（不裸拼 quinn），身份材料从 identity 读
+audiolink-net = { workspace = true }
+audiolink-identity = { workspace = true }
 # latency-probe：QUIC 数据报 + 四时间戳时钟探测（docs/03-protocol.md §6）
 anyhow = { workspace = true }
 tokio = { workspace = true }
@@ -40,3 +43,8 @@ path = "src/bin/self_loop.rs"
 [[bin]]
 name = "link-loop"
 path = "src/bin/link_loop.rs"
+
+# PC → 真机（Android）验收：连接 / PIN 配对 / 推流 / 跨机延迟账本 + JSON（支持 --self-test）
+[[bin]]
+name = "device-link"
+path = "src/bin/device_link.rs"

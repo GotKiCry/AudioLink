@@ -74,7 +74,7 @@ pub enum Ptype {
     Fec = 0x02,
     /// 时钟探测请求（载荷恰 12 B）。
     ClockProbe = 0x03,
-    /// 时钟探测应答（载荷恰 24 B）。
+    /// 时钟探测应答（载荷恰 28 B：`probe_seq(u32)` + `t1/t2/t3(i64)`，见 §3 载荷表）。
     ClockReply = 0x04,
     /// 心跳（无载荷；状态只走 `flags`）。
     Keepalive = 0x05,

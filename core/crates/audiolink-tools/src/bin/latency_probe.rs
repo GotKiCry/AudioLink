@@ -11,7 +11,9 @@
 //! 它同时是 ADR-004（QUIC vs 裸 UDP 的回退判据）与 M1 抖动缓冲深度（§7）的输入。
 //!
 //! 注意：
-//! - 客户端**跳过证书校验**（`SkipServerVerification`）—— 本工具只做测量，不建立信任；生产的身份校验见 §2 / `audiolink-identity`；
+//! - 客户端**不校验服务端证书**（`SkipServerVerification`）—— 本工具只做测量，不建立信任；生产的身份校验见 §2 / `audiolink-identity`；
+//!   但它**会出示自己的自签客户端证书**：生产端点（`audiolink-net`）是强制 mTLS 的（§5 要求接收侧拿到对端证书 DER 验签），
+//!   不带客户端证书时 QUIC 握手会看似成功、随后被服务端以 `error 116: peer sent no certificates` 拒掉（真机实测）；
 //! - 收发的就是生产协议的 `CLOCK_PROBE` / `CLOCK_REPLY` 报文，因此同时验证 alp2 编解码在真实网络上的可用性；
 //! - `offset` 是**两台进程单调时钟原点之差**（`Instant` 不可跨进程/跨机比较），所以它的**绝对值没有意义**；
 //!   有意义的两个指标是 RTT 分布与「选中样本 offset 极差」（收敛性，§6 要求 ≤ 2 ms）；
@@ -479,14 +481,28 @@ fn server_config() -> Result<quinn::ServerConfig> {
     Ok(config)
 }
 
-/// 客户端配置：跳过证书校验（仅测量用途，见文件头说明）。
+/// 客户端配置：不校验**服务端**证书（仅测量用途），但**出示一张自签客户端证书**。
+///
+/// 为什么必须带客户端证书：生产端点是强制 mTLS —— `audiolink-net::tls::server_config()` 用
+/// `with_client_cert_verifier` 索取客户端证书（§5 要求接收侧也能拿到对端证书 DER 验签）。
+/// 只带 `with_no_client_auth()` 时，QUIC 握手在客户端侧会**看似成功**（能打印 max_datagram_size），
+/// 随后被服务端以 `error 116: peer sent no certificates` 拒掉 —— 于是「探针发得出去、一个 REPLY 都收不到」。
+/// 这正是 M0 时期本工具只能工具↔工具自测、打不动生产端点的原因。
+///
+/// 证书现场生成、不落盘、不复用身份：本工具不建立信任，只证明「我持有私钥」。
 fn client_config() -> Result<quinn::ClientConfig> {
+    let certified = rcgen::generate_simple_self_signed(vec!["audiolink-probe".to_string()])
+        .context("生成自签客户端证书失败")?;
+    let key = PrivatePkcs8KeyDer::from(certified.signing_key.serialize_der());
+    let cert: CertificateDer<'static> = certified.cert.into();
+
     let crypto = rustls::ClientConfig::builder_with_provider(crypto_provider())
         .with_safe_default_protocol_versions()
         .context("rustls 协议版本配置失败")?
         .dangerous()
         .with_custom_certificate_verifier(SkipServerVerification::new())
-        .with_no_client_auth();
+        .with_client_auth_cert(vec![cert], key.into())
+        .context("装载自签客户端证书失败")?;
 
     let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
         .map_err(|error| anyhow!("QUIC 加密配置失败：{error}"))?;

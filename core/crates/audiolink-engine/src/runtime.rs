@@ -22,8 +22,10 @@
 //!
 //! - **不做抖动缓冲**：播放侧一到即播，队列深度由发送帧率自然形成。代价是网络抖动直接变成欠载，
 //!   而这恰好是 M2 要解决的对象 —— M1 先把它**量出来**（`underruns` / `late_drops`）。
-//! - **不做时钟同步**：`clock_offset_us` / `drift_ppm` 恒为 0（§6 的估计算法在 `audiolink-net` 里，
-//!   接线属 M3）；`buffer_level_us` 是「队列里的帧数 × 帧长」的换算值。
+//! - **不做预约播放 / 同步组**：§7 的 epoch 驱动排播属 M3 —— 那是「**用** offset 排播」，
+//!   与「**算** offset」是两件事。§6 的时钟同步**已经接线**（见 [`crate::clock`]）：
+//!   `CLOCK_PROBE` / `CLOCK_REPLY` 的收发节奏都在会话任务里，估计结果写进
+//!   `StreamStats.clock_offset_us` / `drift_ppm`。`buffer_level_us` 是「队列里的帧数 × 帧长」的换算值。
 //! - **不做 FEC / 双发 / NACK / 自适应码率**：数据报丢了就丢，只计数。
 //!
 //! # 实时纪律
@@ -39,8 +41,10 @@ use std::time::{Duration, Instant};
 use audiolink_audio::{
     AudioError, CaptureSource, CodecConfig, FrameChunker, OpusDecoder, OpusEncoder, PlayoutSink,
 };
-use audiolink_identity::{IdentityError, NodeIdentity, TrustEntry, TrustStore};
-use audiolink_net::{AudioLinkEndpoint, Connection, ControlChannel, EndpointConfig, NetError};
+use audiolink_identity::{IdentityError, NodeIdentity, PIN_TTL, TrustEntry, TrustStore};
+use audiolink_net::{
+    AudioLinkEndpoint, ClockEstimate, Connection, ControlChannel, EndpointConfig, NetError,
+};
 use audiolink_proto::{AudioDatagram, AudioDatagramHeader};
 use audiolink_types::{
     AudioLinkError, Caps, DATAGRAM_MAX_LEN, DEFAULT_QUIC_PORT, ErrorCode, NodeId, NodeInfo,
@@ -49,6 +53,9 @@ use audiolink_types::{
 use crossbeam_channel::{Receiver, Sender};
 use tokio::sync::{broadcast, mpsc};
 
+use crate::clock::{
+    ClockProbeState, ClockProbeStats, STEADY_INTERVAL_MS, now_monotonic_us, publish_clock,
+};
 use crate::dispatch::{ControlRequest, DispatchStats, dispatch_into};
 use crate::format_guard::require_unified_format;
 use crate::handshake::{Handshake, HandshakeEvent, HandshakeStep, Outgoing, Role};
@@ -83,6 +90,33 @@ const ENCODE_QUEUE_FRAMES: usize = 8;
 /// 这是 M1 的**最小**抖动吸收量；完整的自适应抖动缓冲（15–60 ms 动态深度）属 M2。
 const PRIME_FRAMES: usize = 2;
 
+/// §5 握手的**非配对阶段**死线：10 s（[`EngineConfig::handshake_timeout`] 的默认值）。
+///
+/// 对端要是连 `HELLO` / `AUTH_RESPONSE` 都发不全，就不值得占着一条会话 —— 半开连接必须能被回收。
+pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 等人工输入 PIN 的窗口余量（秒）。
+///
+/// 作用是让「PIN 到期」与「连接被抽掉」**不在同一瞬间发生**：否则用户看到的会是
+/// `1002 NOT_PAIRED（unknown peer）`，而不是「PIN 已过期」。前者会让人以为配对功能坏了。
+const PIN_WAIT_MARGIN_SECS: u64 = 15;
+
+/// 等人工输入 PIN 的窗口：§5 的 PIN 有效期 + 余量（[`EngineConfig::pin_wait_timeout`] 的默认值）。
+///
+/// # 为什么是 60 s 而不是 10 s（task-10 真机阻断项）
+///
+/// `docs/03-protocol.md` §5 规定 PIN **60 s 有效、最多 5 次尝试**，而「把手机屏幕上的 6 位数字
+/// 读到 PC 上敲进去」是**唯一的真实配对流程**（FR-17 手工配对）。原来的 10 s 握手死线对这段
+/// 人工流程必然超时 —— 真机现场实测：device-link 连上真机、手机上 PIN 显示出来之后 30–40 s
+/// 才提交，拿到 `1002 NOT_PAIRED（unknown peer）`（会话已被死线回收，见 `target/evidence/`
+/// 下 device-link 的真机记录）。
+///
+/// 所以：**进入配对等待时把死线顺延到本值**（从顺延那一刻起算），配对窗口的权威留在
+/// [`audiolink_identity::PinGate`]（60 s 过期 / 5 次锁定 / 锁 5 min），引擎**不再另立一套语义**。
+/// 非配对阶段仍按 [`DEFAULT_HANDSHAKE_TIMEOUT`] 回收 —— 安全底线没有被放宽。
+pub const DEFAULT_PIN_WAIT_TIMEOUT: Duration =
+    Duration::from_secs(PIN_TTL.as_secs() + PIN_WAIT_MARGIN_SECS);
+
 /// 引擎配置。
 pub struct EngineConfig {
     /// 用户可见的节点名（仅展示，不参与身份判定）。
@@ -101,6 +135,15 @@ pub struct EngineConfig {
     pub playout: Option<PlayoutFactory>,
     /// 端到端测量探针；仅本机验收使用（见 [`MeasurementTap`] 的文档 —— 跨机不适用）。
     pub measurement: Option<Arc<MeasurementTap>>,
+    /// §5 握手的**非配对阶段**死线；默认 [`DEFAULT_HANDSHAKE_TIMEOUT`]（10 s）。
+    ///
+    /// 测试可以调小它（真实 I/O 下 tokio 的时钟暂停不可靠，改常量比 pause/advance 更诚实）。
+    pub handshake_timeout: Duration,
+    /// 等人工输入 PIN 的窗口；默认 [`DEFAULT_PIN_WAIT_TIMEOUT`]（PIN 有效期 60 s + 15 s 余量）。
+    ///
+    /// 进入配对等待（发出 / 收到 `PAIR_REQUIRED`）后，握手死线顺延到本值**从此刻起算**
+    /// —— 理由见 [`DEFAULT_PIN_WAIT_TIMEOUT`] 的文档。
+    pub pin_wait_timeout: Duration,
 }
 
 impl EngineConfig {
@@ -116,6 +159,8 @@ impl EngineConfig {
             capture: None,
             playout: None,
             measurement: None,
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+            pin_wait_timeout: DEFAULT_PIN_WAIT_TIMEOUT,
         }
     }
 }
@@ -210,6 +255,10 @@ struct PeerSession {
     addr: std::net::SocketAddr,
     machine: Mutex<SessionMachine>,
     telemetry: Arc<Mutex<TelemetryAggregator>>,
+    /// §6 的时钟探测状态（估计器 + 未决探测表 + 计数 + RTT 环）。**每个对端一份**。
+    clock: Mutex<ClockProbeState>,
+    /// 对端最近一次 1 Hz `STREAM_STATS` 快照（**对端视角**）。按 `peer` 隔离，多对端不串流。
+    peer_stats: Mutex<Option<StreamStats>>,
     commands: mpsc::Sender<SessionCommand>,
     trusted: AtomicBool,
     state: Mutex<SessionState>,
@@ -356,11 +405,42 @@ impl Engine {
             .unwrap_or_default()
     }
 
-    /// 指定对端的遥测。
+    /// 指定对端的遥测（**本机视角**：本机聚合的 1 Hz 快照，含本机算出的时钟估计）。
     pub fn telemetry(&self, peer: NodeId) -> Option<StreamStats> {
         let peers = self.inner.peers.lock().ok()?;
         let telemetry = peers.get(&peer)?.telemetry.lock().ok()?;
         Some(telemetry.snapshot())
+    }
+
+    /// §6 的当前时钟估计；`None` = 对端不存在，或**有效样本 < 8 尚未收敛**。
+    ///
+    /// 绝不返回「样本不足但看起来像真的」的偏移：调用方拿到 `None` 就该明确呈现「未收敛/未测」。
+    /// 跨机端到端延迟靠它把本机时刻换算到对端时基：
+    /// `e2e = 本地出声时刻 − (对端采集时刻 + offset_us)`（`docs/10-handoff.md` §4.2）。
+    pub fn clock_estimate(&self, peer: NodeId) -> Option<ClockEstimate> {
+        let peers = self.inner.peers.lock().ok()?;
+        let clock = peers.get(&peer)?.clock.lock().ok()?;
+        clock.estimate()
+    }
+
+    /// 对端最近一次 1 Hz `STREAM_STATS` 快照（**对端视角**；本机视角见 [`Engine::telemetry`]）。
+    ///
+    /// 从未收到过对端的 `STREAM_STATS` 时返回 `None` —— 消费方必须能区分「对端没发」与
+    /// 「对端发了但值就是 0」，否则会把「没测到」呈现成「测到了 0」。
+    ///
+    /// 按 `peer` 隔离：每个会话各存自己那份最近快照（`EngineEvent::Telemetry` 不带对端 id，
+    /// 多对端时它无法区分来源，所以存储必须按 peer 分开 —— 见契约 §5 的已知局限）。
+    pub fn peer_stats(&self, peer: NodeId) -> Option<StreamStats> {
+        let peers = self.inner.peers.lock().ok()?;
+        let session = peers.get(&peer)?;
+        *session.peer_stats.lock().ok()?
+    }
+
+    /// §6 探针收发计数 + RTT 分位数（对端不存在 → `None`；会话刚建立 → 全 0 / 分位数 `None`）。
+    pub fn clock_probe_stats(&self, peer: NodeId) -> Option<ClockProbeStats> {
+        let peers = self.inner.peers.lock().ok()?;
+        let clock = peers.get(&peer)?.clock.lock().ok()?;
+        Some(clock.stats())
     }
 
     /// 启动入站接受循环。
@@ -580,12 +660,80 @@ async fn run_session(
             return;
         }
     };
-    let mut control = match connection.open_control().await {
-        Ok(control) => control,
-        Err(error) => {
-            finish_ready(&mut ready, Err(net_error(&error)));
-            drop_session(&inner, &session, "control stream failed");
-            return;
+    // §6：控制流 #0 的获取在**服务端**是 `accept_bi()` —— 对端必须先往 #0 写第一个字节
+    // （QUIC 的 `open_bi()` 是惰性的，见 `audiolink-net::Connection::open_control` 的文档）。
+    // 而纯数据报的测量客户端（`audiolink-tools` 的 `latency-probe`）**永远不会**开控制流。
+    // 所以这一步绝不能挡在「应答时钟探测」前面：那样会话任务会卡在这里，一个探测都答不了，
+    // 真机验收量「PC→手机网络 RTT」的路就断了。两者必须**并行等**。
+    let mut opening = Box::pin(connection.open_control());
+
+    let mut rx_buf = vec![0u8; DATAGRAM_MAX_LEN];
+    // 握手死线：**非配对阶段**按 handshake_timeout（默认 10 s）回收半开连接；
+    // 一旦进入「等人工输入 PIN」的窗口，就顺延到 pin_wait_timeout（默认 75 s），
+    // 而且**从顺延那一刻起算** —— 配对等待不吃握手死线（真机 1002 的根因，
+    // 理由见 DEFAULT_PIN_WAIT_TIMEOUT 的文档）。
+    let mut deadline = tokio::time::Instant::now() + inner.config.handshake_timeout;
+    // 握手死线到点、但这条连接已经在应答时钟探测时，死线不再收回连接（测量连接专用，见下）。
+    let mut serving_probes = false;
+    let mut probes_answered: u64 = 0;
+
+    // ---- 阶段零：拿到控制流之前，只做一件事 —— 应答 §6 的时钟探测 ----
+    let mut control = loop {
+        tokio::select! {
+            command = commands.recv() => {
+                match command {
+                    Some(SessionCommand::Shutdown) | None => {
+                        finish_ready(&mut ready, Err(AudioLinkError::bad_request("cancelled by local side")));
+                        drop_session(&inner, &session, "shutdown before the control stream");
+                        return;
+                    }
+                    // 握手还没开始，PIN 无处可去（控制流起来之后才轮得到它）。
+                    _ => {}
+                }
+            }
+
+            opened = &mut opening => {
+                match opened {
+                    Ok(control) => break control,
+                    Err(error) => {
+                        let error = net_error(&error);
+                        finish_ready(&mut ready, Err(error.clone()));
+                        drop_session(&inner, &session, error.context());
+                        return;
+                    }
+                }
+            }
+
+            // §6：应答 CLOCK_PROBE **不依赖 §5 会话状态** —— 阶段零（连控制流都还没有）就在回包。
+            //
+            // 为什么必须这样：`audiolink-tools` 的 `latency-probe`（M0 交付物、
+            // `docs/05-roadmap.md` M1 验收点名的跨机测量手段）只用数据报、不跑 §5 握手。
+            //
+            // 安全口径（Lead 已认可）：这里不额外要求 §5 认证 —— TLS 握手已经保证「对端可达且能完成
+            // 握手」，且 12 B 进 → 28 B 出（放大 2.33×，还必须先完成 TLS 才到得了这一层），不构成
+            // 源地址伪造的放大面。§5 认证保护的是「能不能收音频」，不是「能不能问时间」。
+            //
+            // 一条连接**只能有一个数据报读者**，所以这里与阶段一/二共用同一个读循环 ——
+            // 另起一个「时钟任务」会与音频路径抢数据报（表现为偶发丢帧，最难查的那种症状）。
+            datagram = connection.read_datagram_into(&mut rx_buf) => {
+                match answer_probe_datagram(&connection, &session, datagram, &rx_buf).await {
+                    ProbeStep::Replied => probes_answered = probes_answered.saturating_add(1),
+                    ProbeStep::Ignored => {} // §1.1：忽略并计数，不断流
+                    ProbeStep::SendFailed(error) => report_error(&inner, &session, &error),
+                    ProbeStep::LinkLost(error) => {
+                        finish_ready(&mut ready, Err(error.clone()));
+                        drop_session(&inner, &session, error.context());
+                        return;
+                    }
+                }
+            }
+
+            _ = tokio::time::sleep_until(deadline), if !serving_probes => {
+                if !handshake_deadline_expired(&inner, &session, &mut ready, probes_answered) {
+                    return;
+                }
+                serving_probes = true;
+            }
         }
     };
 
@@ -600,9 +748,8 @@ async fn run_session(
     }
 
     // ---------------------------------------------------------------
-    // 阶段一：握手与配对
+    // 阶段一：握手与配对（期间继续应答 §6 的时钟探测）
     // ---------------------------------------------------------------
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
         tokio::select! {
             command = commands.recv() => {
@@ -685,6 +832,8 @@ async fn run_session(
                             &mut ready,
                             Err(AudioLinkError::not_paired("peer requires pin pairing")),
                         );
+                        // 从这一刻起是**人工时间**：死线顺延到 PIN 窗口（真机现场 30–40 s 才提交）。
+                        arm_pin_wait(&mut deadline, inner.config.pin_wait_timeout);
                     }
                     HandshakeEvent::DisplayPin { pin, remaining_attempts } => {
                         let _ = inner.events.send(EngineEvent::DisplayPin {
@@ -697,6 +846,10 @@ async fn run_session(
                             pin,
                             remaining_attempts,
                         });
+                        // 本端是响应方：现在轮到**对端**的用户看屏幕输数字，同样是人工时间。
+                        // 顺延只做这一处（PIN 输错时**不**重算）：PIN 能不能用、还能试几次，
+                        // 权威判据在 PinGate（60 s / 5 次 / 锁 5 min），引擎不另立一套语义。
+                        arm_pin_wait(&mut deadline, inner.config.pin_wait_timeout);
                     }
                     HandshakeEvent::PinRejected { reason } => {
                         let _ = inner.events.send(EngineEvent::PairCompleted {
@@ -709,11 +862,25 @@ async fn run_session(
                 }
             }
 
-            _ = tokio::time::sleep_until(deadline) => {
-                let error = AudioLinkError::bad_request("handshake timed out");
-                finish_ready(&mut ready, Err(error));
-                drop_session(&inner, &session, "handshake timed out");
-                return;
+            // 握手期间继续应答 §6 的探测（理由与安全口径见阶段零的注释）。
+            datagram = connection.read_datagram_into(&mut rx_buf) => {
+                match answer_probe_datagram(&connection, &session, datagram, &rx_buf).await {
+                    ProbeStep::Replied => probes_answered = probes_answered.saturating_add(1),
+                    ProbeStep::Ignored => {}
+                    ProbeStep::SendFailed(error) => report_error(&inner, &session, &error),
+                    ProbeStep::LinkLost(error) => {
+                        finish_ready(&mut ready, Err(error.clone()));
+                        drop_session(&inner, &session, error.context());
+                        return;
+                    }
+                }
+            }
+
+            _ = tokio::time::sleep_until(deadline), if !serving_probes => {
+                if !handshake_deadline_expired(&inner, &session, &mut ready, probes_answered) {
+                    return;
+                }
+                serving_probes = true;
             }
         }
     }
@@ -730,7 +897,6 @@ async fn run_session(
         }
     };
 
-    let mut rx_buf = vec![0u8; DATAGRAM_MAX_LEN];
     let mut pcm = vec![0f32; codec.interleaved_frame() * 2];
     let mut dispatch_stats = DispatchStats::default();
 
@@ -745,6 +911,10 @@ async fn run_session(
 
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    // §6：会话可通信后立刻开始探测（首次到期即发），此后按 probe_interval() 推进：
+    // 前 50 次 100 ms（首连快速同步 ≈ 5 s 收敛），之后 1 Hz 持续采样。
+    let mut probe_deadline = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
@@ -817,8 +987,36 @@ async fn run_session(
                         let Ok(datagram) = AudioDatagram::decode(slice) else {
                             continue; // §1.1：非法数据报忽略并计数，不断流
                         };
-                        if datagram.header.ptype != Ptype::Audio {
-                            continue; // M1 不处理 FEC / NACK / 时钟探测（属 M2/M3）
+
+                        // §6 的两种时钟数据报与音频共用**同一个读循环**（一条连接只有一个读者；
+                        // 另起任务会把音频数据报抢走，表现为「偶发丢帧」这种最难查的症状）。
+                        match datagram.header.ptype {
+                            Ptype::Audio => {}
+                            Ptype::ClockProbe => {
+                                match respond_clock_probe(&connection, &session, &datagram).await {
+                                    Ok(_) => {}
+                                    Err(error) => report_error(&inner, &session, &error),
+                                }
+                                continue;
+                            }
+                            Ptype::ClockReply => {
+                                // t4 必须在**收到包的那一刻**取：等互斥量的时间不算网络延迟。
+                                let t4_us = now_monotonic_us();
+                                let outcome = match session.clock.lock() {
+                                    Ok(mut clock) => clock.on_reply(&datagram, t4_us),
+                                    Err(_) => continue,
+                                };
+                                match outcome {
+                                    // 每记一个样本就把估计写进遥测：快速阶段 10 次/秒，
+                                    // 只在 1 Hz 的 roll 里写会让面板看不到收敛过程。
+                                    Ok(Some(_sample)) => publish_clock_to_telemetry(&session),
+                                    Ok(None) => {} // 配不上的应答（已计入 unmatched）
+                                    Err(_) => {}   // §1.1：非法载荷忽略并计数，不断流
+                                }
+                                continue;
+                            }
+                            // FEC / KEEPALIVE / NACK 属 M2。
+                            _ => continue,
                         }
 
                         // 到达间隔抖动：|实际间隔 − 标称帧长|（§10 的 jitter 口径）。
@@ -871,11 +1069,42 @@ async fn run_session(
                 }
             }
 
+            _ = tokio::time::sleep_until(probe_deadline) => {
+                // §6 的探测：t1 取在**紧邻发送前**，否则本地排队时间会被算进网络单程里。
+                let now_us = now_monotonic_us();
+                let (probe, interval) = match session.clock.lock() {
+                    Ok(mut clock) => {
+                        // 先问间隔再组包：build_probe 会推进计数，顺序反了这一拍就提前进稳态。
+                        let interval = clock.probe_interval();
+                        (clock.build_probe(now_us), interval)
+                    }
+                    Err(_) => (
+                        Err(AudioLinkError::bad_request("clock state poisoned")),
+                        Duration::from_millis(STEADY_INTERVAL_MS),
+                    ),
+                };
+
+                match probe {
+                    Ok(bytes) => {
+                        if let Err(error) = connection.send_datagram(&bytes).await {
+                            report_error(&inner, &session, &net_error(&error));
+                        }
+                    }
+                    // 编码失败只可能是实现缺陷（定长 12 B），仍按「显式报错 + 计数」处置。
+                    Err(error) => report_error(&inner, &session, &error),
+                }
+                probe_deadline = tokio::time::Instant::now() + interval;
+            }
+
             _ = ticker.tick() => {
+                let estimate = clock_estimate_of(&session);
                 let snapshot = match session.telemetry.lock() {
                     Ok(mut telemetry) => {
-                        let rtt = u32::try_from(connection.rtt_us()).unwrap_or(u32::MAX);
-                        telemetry.set_rtt_us(rtt);
+                        // rtt_us 只有一种口径：**QUIC 平滑 RTT**（`docs/03-protocol.md` §10 的定义），
+                        // 收敛与否都一样。§6 的代表 RTT / quality / 分位数走 clock_estimate() 与
+                        // clock_probe_stats() 两个正式出口，不往这个冻结字段里塞第二种统计口径（task-9）。
+                        telemetry.set_rtt_us(u32::try_from(connection.rtt_us()).unwrap_or(u32::MAX));
+                        publish_clock(&mut telemetry, estimate);
                         // 水位 = 待播队列深度 × 帧长（口径见 `PlayoutHandle::depth_frames`）。
                         if let Some(handle) = playback.as_ref() {
                             let depth = u32::try_from(handle.depth_frames()).unwrap_or(u32::MAX);
@@ -957,6 +1186,8 @@ fn create_session(
             1,
             inner.config.codec.telemetry(),
         ))),
+        clock: Mutex::new(ClockProbeState::new()),
+        peer_stats: Mutex::new(None),
         commands,
         trusted: AtomicBool::new(trusted),
         state: Mutex::new(SessionState::Handshaking),
@@ -1404,6 +1635,132 @@ fn receive_audio(
 }
 
 // ---------------------------------------------------------------------------
+// §6 时钟同步（数据报路径）
+// ---------------------------------------------------------------------------
+
+/// 读到一个数据报之后、**会话建立之前**该做的事：只认 §6 的 `CLOCK_PROBE`。
+///
+/// 握手前不处理音频 / FEC / NACK：还没有会话就没有流，收到的一切都不该被当成数据
+/// （阶段零与阶段一共用本函数，保证两处的判据完全一致）。
+enum ProbeStep {
+    /// 回了一个 `CLOCK_REPLY`。
+    Replied,
+    /// 不是探测、或载荷非法：按 §1.1 忽略并计数，不断流。
+    Ignored,
+    /// 回包失败（对端已走 / 连接已关）。
+    SendFailed(AudioLinkError),
+    /// 读数据报失败：连接已经不可用。
+    LinkLost(AudioLinkError),
+}
+
+/// 见 `ProbeStep`：读一个数据报 → 需要的话回一个 `CLOCK_REPLY`。
+async fn answer_probe_datagram(
+    connection: &Connection,
+    session: &Arc<PeerSession>,
+    read: Result<usize, NetError>,
+    buf: &[u8],
+) -> ProbeStep {
+    let len = match read {
+        Ok(len) => len,
+        Err(error) => return ProbeStep::LinkLost(net_error(&error)),
+    };
+    let Some(slice) = buf.get(..len) else {
+        return ProbeStep::Ignored;
+    };
+    let Ok(datagram) = AudioDatagram::decode(slice) else {
+        return ProbeStep::Ignored; // §1.1：非法数据报忽略并计数，不断流
+    };
+    if datagram.header.ptype != Ptype::ClockProbe {
+        return ProbeStep::Ignored;
+    }
+
+    match respond_clock_probe(connection, session, &datagram).await {
+        Ok(true) => ProbeStep::Replied,
+        Ok(false) => ProbeStep::Ignored,
+        Err(error) => ProbeStep::SendFailed(error),
+    }
+}
+
+/// 进入「等人工输入 PIN」的窗口：把握手死线顺延到 `pin_wait`（**从此刻起算**）。
+///
+/// 为什么是「顺延」而不是「把总死线放宽」：§5 的握手本身（HELLO / AUTH 往返）是**机器时间**，
+/// 毫秒级就该走完；把总死线放宽会让「对端发一半就装死」这种半开连接一起被容忍。
+/// 顺延只发生在**确实有真人在看屏幕输数字**的那一刻（收到 / 发出 `PAIR_REQUIRED` 之后）。
+fn arm_pin_wait(deadline: &mut tokio::time::Instant, pin_wait: Duration) {
+    *deadline = tokio::time::Instant::now() + pin_wait;
+}
+
+/// 握手死线到点的统一处置（阶段零与阶段一共用，两处判据必须一致）。
+///
+/// 返回 `false` = 调用方应立刻放弃这条连接（既没握手、也没探测：10 s 无事发生的连接不值得留着）；
+/// 返回 `true` = 已放开死线，继续服务到对端收工（对端一停，QUIC 的空闲超时会让读数据报返回 Err）。
+fn handshake_deadline_expired(
+    inner: &Arc<Inner>,
+    session: &Arc<PeerSession>,
+    ready: &mut Option<tokio::sync::oneshot::Sender<Result<(), AudioLinkError>>>,
+    probes_answered: u64,
+) -> bool {
+    if probes_answered == 0 {
+        let error = AudioLinkError::bad_request("handshake timed out");
+        finish_ready(ready, Err(error));
+        drop_session(inner, session, "handshake timed out");
+        return false;
+    }
+
+    // 已经答过 §6 的探测：这是一条测量连接（或一个先探测后握手的对端），不该被握手死线收回。
+    tracing::info!(
+        "handshake deadline released: {} clock probes served before the session was established",
+        probes_answered
+    );
+    true
+}
+
+/// 应答一个 `CLOCK_PROBE`：**立即**回 `CLOCK_REPLY{t2 = t3 = 本机单调 µs}`（§6）。
+///
+/// 返回 `Ok(true)` = 已回包；`Ok(false)` = 载荷非法（§1.1：忽略并计数，不断流）；
+/// `Err` = 回包失败（对端已走 / 连接已关）。
+///
+/// 只做「取时刻 → 编码 → 送出去」三步，中间不加任何处理：§6 的 `t3 = t2` 把应答侧处理延迟
+/// 主动归零，剩下的误差项才是要量的网络单程。**不依赖 §5 会话状态**，握手前也照回（理由见调用点）。
+async fn respond_clock_probe(
+    connection: &Connection,
+    session: &Arc<PeerSession>,
+    datagram: &AudioDatagram<'_>,
+) -> Result<bool, AudioLinkError> {
+    let now_us = now_monotonic_us();
+    let bytes = {
+        let mut clock = session
+            .clock
+            .lock()
+            .map_err(|_| AudioLinkError::bad_request("clock state poisoned"))?;
+        match clock.on_probe(datagram, now_us) {
+            Ok(bytes) => bytes,
+            // 载荷非法：按 §1.1 忽略并计数（互斥量中毒与否都不该升级成断流）。
+            Err(_) => return Ok(false),
+        }
+    };
+
+    connection
+        .send_datagram(&bytes)
+        .await
+        .map_err(|error| net_error(&error))?;
+    Ok(true)
+}
+
+/// 当前时钟估计（互斥量中毒时当作「还没有估计」—— 不 panic、不假装收敛）。
+fn clock_estimate_of(session: &Arc<PeerSession>) -> Option<ClockEstimate> {
+    session.clock.lock().ok()?.estimate()
+}
+
+/// 把当前估计写进遥测：样本 < 8 时保持 0（见 [`publish_clock`]）。
+fn publish_clock_to_telemetry(session: &Arc<PeerSession>) {
+    let estimate = clock_estimate_of(session);
+    if let Ok(mut telemetry) = session.telemetry.lock() {
+        publish_clock(&mut telemetry, estimate);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 控制面
 // ---------------------------------------------------------------------------
 
@@ -1482,7 +1839,14 @@ async fn handle_control(
         }
 
         ControlRequest::StreamStats(stats) => {
-            // 对端遥测：M1 只透传给 UI，不做自适应决策（M2）。
+            // 对端视角的遥测：① 存成该 peer 的最近快照（Engine::peer_stats，按 peer 隔离）；
+            // ② 透传给 UI。M1 不做自适应决策（M2）。
+            //
+            // 存储必须按 peer 分开：EngineEvent::Telemetry **不带对端 id**（契约 §5 的已知局限，
+            // M3 修），事件本身区分不了来源，多对端时共用一份快照就会串流。
+            if let Ok(mut slot) = session.peer_stats.lock() {
+                *slot = Some(stats);
+            }
             let _ = inner.events.send(EngineEvent::Telemetry(Box::new(stats)));
         }
 

@@ -1,0 +1,221 @@
+//! §5 握手死线 / 配对窗口的回归测试（task-10）。
+//!
+//! # 真机现场（不是推演）
+//!
+//! device-link 连上真机 → 手机显示 PIN → 30–40 s 后把 PIN 提交回去 →
+//! `1002 NOT_PAIRED（unknown peer）`。
+//! 根因：握手死线 10 s 一到就把会话回收（peers 表里没了），而 §5 规定 PIN **60 s 有效**
+//! —— 「人工把手机上的 6 位数字读到 PC 上敲进去」这个唯一的真实配对流程必然超时。
+//!
+//! # 为什么这里用「缩短过的常量」而不是真等 20 s
+//!
+//! 真实 I/O 下 tokio 的 `time::pause()` 不可靠（auto-advance 会在真实等待里把定时器一起推掉），
+//! 所以生产常量做成了 `EngineConfig::handshake_timeout` / `pin_wait_timeout`，
+//! 测试把「1 s 死线 vs 6 s 配对窗口、2 s 后才提交」按同比例压紧。
+//! 生产数字本身由 `production_defaults_cover_the_pin_validity` 钉住（不真等）。
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // 测试代码不受实时路径三条禁令约束
+
+use std::path::Path;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
+use audiolink_identity::{NodeIdentity, PIN_TTL};
+use audiolink_net::{AudioLinkEndpoint, EndpointConfig};
+use audiolink_types::{ErrorCode, NodeId};
+
+/// 压缩后的「非配对阶段死线」。
+const SHORT_HANDSHAKE: Duration = Duration::from_secs(1);
+/// 压缩后的「等人工输入 PIN 的窗口」（真机现场是 60 s + 15 s）。
+const SHORT_PIN_WAIT: Duration = Duration::from_secs(6);
+
+#[test]
+fn production_defaults_cover_the_pin_validity() {
+    // 真机现场：人工读数字 + 敲键盘要 30–40 s。这一条把**生产数字**钉死，不依赖任何等待。
+    let dir = std::env::temp_dir().join("audiolink-handshake-defaults");
+    let config = EngineConfig::new("defaults", &dir);
+
+    assert_eq!(
+        config.handshake_timeout,
+        Duration::from_secs(10),
+        "非配对阶段的死线仍是 10 s（安全底线不许被放宽）"
+    );
+    assert!(
+        config.pin_wait_timeout > config.handshake_timeout,
+        "配对窗口必须严格长于握手死线，否则真机人工配对还是走不通"
+    );
+    assert!(
+        config.pin_wait_timeout > PIN_TTL,
+        "配对窗口必须覆盖 §5 的 PIN 有效期（{PIN_TTL:?}），且留出余量：\
+         让 PIN 过期以「PIN 已过期」的形式浮出来，而不是报成 unknown peer"
+    );
+    assert!(
+        config.pin_wait_timeout >= Duration::from_secs(60),
+        "真机现场提交耗时 30–40 s ⇒ 窗口至少得覆盖 PIN 有效期"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pin_submitted_after_the_handshake_deadline_still_pairs() {
+    let dir = tempfile::TempDir::new().expect("临时目录");
+    let engine_a = start_engine(dir.path(), "node-a", SHORT_HANDSHAKE, SHORT_PIN_WAIT).await;
+    let engine_b = start_engine(dir.path(), "node-b", SHORT_HANDSHAKE, SHORT_PIN_WAIT).await;
+    let _accept_a = engine_a.spawn_accept_loop();
+    let _accept_b = engine_b.spawn_accept_loop();
+
+    let mut events_b = engine_b.subscribe();
+    let outcome = engine_a.connect(engine_b.local_addr()).await;
+    let error = match outcome {
+        Ok(peer) => panic!("对端本应要求 PIN，却直接连上了：{peer:?}"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), ErrorCode::NotPaired, "需要 PIN 不是连接失败");
+
+    let peer_on_a = engine_a
+        .peers()
+        .into_iter()
+        .next()
+        .map(|peer| peer.id)
+        .expect("需要 PIN 时会话必须仍然活着（否则 UI 无处提交）");
+    let pin = wait_for_pin(&mut events_b, Duration::from_secs(5)).await;
+
+    // ---- 关键一步：等到「旧死线早已过去」再提交 ----
+    let waited = Duration::from_secs(2);
+    assert!(
+        waited > SHORT_HANDSHAKE,
+        "用例前提：等待时间必须越过握手死线"
+    );
+    tokio::time::sleep(waited).await;
+
+    assert!(
+        engine_a.clock_probe_stats(peer_on_a).is_some(),
+        "配对等待期间会话不得被握手死线回收 —— 这正是真机 1002（unknown peer）的根因"
+    );
+
+    engine_a
+        .submit_pin(peer_on_a, &pin)
+        .await
+        .expect("t > 握手死线 时提交 PIN 必须成功");
+    wait_for_streaming(&engine_a, peer_on_a, Duration::from_secs(5)).await;
+
+    // 配对真的落地了：双方信任库都被写入。
+    assert!(
+        engine_b.peers().iter().any(|peer| peer.trusted),
+        "响应方侧必须把对端写进信任库"
+    );
+    assert!(
+        engine_a.peers().iter().any(|peer| peer.trusted),
+        "发起方侧必须把对端写进信任库"
+    );
+    println!(
+        "[handshake] PIN 在握手死线（{:?}）之后 {:?} 提交成功；生产值是 10 s 死线 / {:?} 配对窗口",
+        SHORT_HANDSHAKE,
+        waited,
+        EngineConfig::new("probe", std::env::temp_dir()).pin_wait_timeout
+    );
+
+    engine_a.shutdown().await;
+    engine_b.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn session_that_neither_handshakes_nor_probes_is_reclaimed() {
+    // 负例：配对窗口的顺延**没有**把安全底线放宽 —— 不发 HELLO、不发探测的连接仍按握手死线回收。
+    let dir = tempfile::TempDir::new().expect("临时目录");
+    let engine = start_engine(dir.path(), "node-a", SHORT_HANDSHAKE, SHORT_PIN_WAIT).await;
+    let _accept = engine.spawn_accept_loop();
+
+    let client =
+        NodeIdentity::load_or_create(dir.path().join("idle-client"), "idle-client").expect("身份");
+    let endpoint = AudioLinkEndpoint::bind(EndpointConfig {
+        bind: "127.0.0.1:0".parse().expect("回环地址"),
+        cert_der: client.cert_der().to_vec(),
+        key_der_pkcs8: client.key_der_pkcs8().to_vec(),
+        ..EndpointConfig::default()
+    })
+    .await
+    .expect("绑定");
+    // 绑定名刻意用 `_connection` 并保留到作用域末尾：句柄一 drop，quinn 就会关掉连接，
+    // 会话任务会因**读错误**退出 —— 那样测到的就不是「握手死线回收」了。
+    let _connection = endpoint
+        .connect(engine.local_addr(), "audiolink")
+        .await
+        .expect("连接引擎");
+
+    wait_until(Duration::from_secs(2), || {
+        engine.clock_probe_stats(client.id()).is_some()
+    })
+    .await;
+    assert!(
+        engine.clock_probe_stats(client.id()).is_some(),
+        "刚连上时会话必须在表里（否则下面的等待没有意义）"
+    );
+
+    // 什么都不发：握手死线到点后必须被回收。
+    wait_until(Duration::from_secs(3), || {
+        engine.clock_probe_stats(client.id()).is_none()
+    })
+    .await;
+    assert!(
+        engine.clock_probe_stats(client.id()).is_none(),
+        "非配对、无探测的连接必须被握手死线（{SHORT_HANDSHAKE:?}）回收"
+    );
+    assert!(engine.peers().is_empty(), "会话表必须清干净");
+
+    endpoint.close(0, "test done");
+    engine.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// 助手
+// ---------------------------------------------------------------------------
+
+async fn start_engine(
+    dir: &Path,
+    name: &str,
+    handshake_timeout: Duration,
+    pin_wait_timeout: Duration,
+) -> Arc<Engine> {
+    let node_dir = dir.join(name);
+    std::fs::create_dir_all(&node_dir).expect("建节点目录");
+    let mut config = EngineConfig::new(name, &node_dir);
+    config.listen = "127.0.0.1:0".parse().expect("回环地址");
+    config.handshake_timeout = handshake_timeout;
+    config.pin_wait_timeout = pin_wait_timeout;
+    Engine::start(config).await.expect("启动引擎")
+}
+
+async fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while !predicate() {
+        assert!(Instant::now() < deadline, "等待条件成立超时（{timeout:?}）");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_pin(
+    events: &mut tokio::sync::broadcast::Receiver<EngineEvent>,
+    timeout: Duration,
+) -> String {
+    let deadline = Instant::now() + timeout;
+    loop {
+        assert!(Instant::now() < deadline, "等待对端展示 PIN 超时");
+        match tokio::time::timeout(Duration::from_millis(200), events.recv()).await {
+            Ok(Ok(EngineEvent::DisplayPin { pin, .. })) => return pin,
+            Ok(Ok(_)) => continue,
+            Ok(Err(error)) => panic!("事件订阅中断：{error}"),
+            Err(_) => continue,
+        }
+    }
+}
+
+async fn wait_for_streaming(engine: &Arc<Engine>, peer: NodeId, timeout: Duration) {
+    wait_until(timeout, || {
+        engine
+            .peers()
+            .into_iter()
+            .any(|status| status.id == peer && status.state == SessionState::Streaming)
+    })
+    .await;
+}

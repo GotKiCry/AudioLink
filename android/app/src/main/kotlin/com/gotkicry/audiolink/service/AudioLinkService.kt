@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import com.gotkicry.audiolink.MainActivity
 import com.gotkicry.audiolink.R
 import com.gotkicry.audiolink.audio.FfiPcmFeed
@@ -20,8 +21,10 @@ import com.gotkicry.audiolink.audio.LowLatencyPlayer
 import com.gotkicry.audiolink.audio.PcmRingBuffer
 import com.gotkicry.audiolink.core.EngineStartConfig
 import com.gotkicry.audiolink.core.LocalStatus
+import com.gotkicry.audiolink.core.displayedPin
 import com.gotkicry.audiolink.core.engineStart
 import com.gotkicry.audiolink.core.engineStop
+import com.gotkicry.audiolink.core.peers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -97,6 +100,40 @@ class AudioLinkService : Service() {
         fun stop(context: Context) {
             context.stopService(Intent(context, AudioLinkService::class.java))
         }
+
+        // ---- task-8：延迟杠杆的 UI 入口（请求式：UI 只登记意图，由服务下发给播放器）----
+
+        /**
+         * UI 请求的队列目标深度（帧）。服务每拍把它下发给播放器。
+         *
+         * 为什么走"请求 + 每拍下发"而不是让 UI 直接持有播放器：AudioTrack 的亲和性纪律要求
+         * 所有设备调用都发生在播放线程上，UI 线程只允许改一个标量意图。
+         */
+        @Volatile
+        private var requestedQueueTargetFrames: Int = LowLatencyPlayer.DEFAULT_QUEUE_TARGET_FRAMES
+
+        /** UI 请求的一次性容量收缩（帧）；0 = 无请求。消费后清零。 */
+        @Volatile
+        private var requestedShrinkFrames: Int = 0
+
+        /** UI 请求：把环统计的「区间增量」基线挪到当前值。 */
+        @Volatile
+        private var ringWindowResetRequested: Boolean = false
+
+        /** UI → 播放器：设置输出设备队列目标深度（帧）。0 = 满灌（A/B 对照侧）。 */
+        fun setQueueTargetFrames(frames: Int) {
+            requestedQueueTargetFrames = frames
+        }
+
+        /** UI → 播放器：请求把输出缓冲**容量**收缩到 [frames] 帧（路①；由播放线程执行）。 */
+        fun requestBufferShrink(frames: Int) {
+            requestedShrinkFrames = frames
+        }
+
+        /** UI → 服务：把「溢出/读空」的区间增量基线挪到当前值（累计值不受影响）。 */
+        fun resetRingWindow() {
+            ringWindowResetRequested = true
+        }
     }
 
     private var player: LowLatencyPlayer? = null
@@ -125,6 +162,26 @@ class AudioLinkService : Service() {
 
     private var lastError: String? = null
 
+    /**
+     * 配对状态（PIN + 对端列表）的快照。
+     *
+     * 由 [refreshPairingAsync] 在 IO 线程写、主线程 [refreshState] 读，所以是 `@Volatile`。
+     * 为什么不让主线程直接调 FFI：`displayedPin()` / `peers()` 是跨 JNA 的同步调用，
+     * 主线程上每 500 ms 走一次 JNA 是拿 UI 的流畅度换便利 —— 不值得。
+     */
+    @Volatile
+    private var pairingState: PairingUiState = PairingUiState()
+
+    /** 正在跑的那次配对轮询；用它做"同一时刻只有一次在飞"的闸门（见 [refreshPairingAsync]）。 */
+    private var pairingJob: Job? = null
+
+    // ---- task-8：环统计的「区间增量」基线（累计值照旧保留）----
+    private var ringOverflowBaseline: Long = 0
+    private var ringUnderrunsBaseline: Long = 0
+
+    /** 区间起点（uptimeMillis）；0 = 尚未开始计时。 */
+    private var ringWindowStartUptimeMs: Long = 0
+
     private val refreshTask = object : Runnable {
         override fun run() {
             refreshState()
@@ -139,6 +196,9 @@ class AudioLinkService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        // 区间口径要在**服务创建时**就起算：环计数从这个实例的 0 开始，
+        // 若时长留在"未开始"状态，UI 会出现"区间时长 0 s 而增量 4000 万帧"这种自相矛盾的读数。
+        ringWindowStartUptimeMs = SystemClock.uptimeMillis()
         refreshState()
     }
 
@@ -187,6 +247,9 @@ class AudioLinkService : Service() {
         stopPlayback()
         // 引擎停止是 suspend：交给 IO 协程收尾，**不阻塞主线程**（onDestroy 跑在 UI 线程上）。
         stopEngine()
+        pairingJob?.cancel()
+        pairingJob = null
+        pairingState = PairingUiState()
         // 服务已不在：UI 必须看到"停止"而不是最后一次的快照。
         _state.value = PlaybackUiState()
         super.onDestroy()
@@ -250,6 +313,10 @@ class AudioLinkService : Service() {
         if (engineJob == null && engineStatus == null) return
         engineJob = null
         engineStatus = null
+        // 引擎没了就没有"当前 PIN"可言：配对面板必须立刻清空，不能留一个旧的 6 位数字骗人。
+        pairingJob?.cancel()
+        pairingJob = null
+        pairingState = PairingUiState()
         engineScope.launch {
             try {
                 engineStop()
@@ -325,6 +392,33 @@ class AudioLinkService : Service() {
     private fun refreshState() {
         val snapshot = player?.stats()
         val engine = engineStatus
+        val pairing = pairingState
+
+        // task-8：把 UI 的请求下发给播放器（设备调用本身仍在播放线程里做）。
+        val active = player
+        if (active != null) {
+            active.setQueueTargetFrames(requestedQueueTargetFrames)
+            val shrink = requestedShrinkFrames
+            if (shrink > 0) {
+                requestedShrinkFrames = 0
+                active.requestBufferShrink(shrink)
+            }
+        }
+
+        // task-8：「区间增量」的基线。清零只挪基线，**不动内核计数** ——
+        // 累计值是一个跨会话的事实，改它就是改口径（纪律：不许为了好看换口径）。
+        if (ringWindowResetRequested) {
+            ringWindowResetRequested = false
+            ringOverflowBaseline = playoutRing.overflowFrames
+            ringUnderrunsBaseline = playoutRing.underrunCount
+            ringWindowStartUptimeMs = SystemClock.uptimeMillis()
+        }
+        val windowSeconds = if (ringWindowStartUptimeMs == 0L) {
+            0L
+        } else {
+            (SystemClock.uptimeMillis() - ringWindowStartUptimeMs) / 1_000L
+        }
+
         _state.value = PlaybackUiState(
             serviceRunning = true,
             playing = snapshot?.running ?: false,
@@ -345,6 +439,16 @@ class AudioLinkService : Service() {
             ringCapacityFrames = playoutRing.capacityFrames,
             ringUnderruns = playoutRing.underrunCount,
             ringOverflowFrames = playoutRing.overflowFrames,
+            ringOverflowSinceReset = (playoutRing.overflowFrames - ringOverflowBaseline)
+                .coerceAtLeast(0L),
+            ringUnderrunsSinceReset = (playoutRing.underrunCount - ringUnderrunsBaseline)
+                .coerceAtLeast(0L),
+            ringWindowSeconds = windowSeconds,
+            queuedFrames = snapshot?.queuedFrames ?: 0,
+            queueTargetFrames = snapshot?.queueTargetFrames ?: 0,
+            bufferCapacityFrames = snapshot?.bufferCapacityFrames ?: 0,
+            shrinkGrantedFrames = snapshot?.shrinkGrantedFrames
+                ?: LowLatencyPlayer.SHRINK_NOT_ATTEMPTED,
             lastError = lastError ?: player?.lastFailureReason,
             engineRunning = engine != null,
             engineName = engine?.name.orEmpty(),
@@ -353,7 +457,67 @@ class AudioLinkService : Service() {
             engineCanReceive = engine?.canReceive == true,
             engineCanSend = engine?.canSend == true,
             engineError = engineError,
+            pairingPin = pairing.pin,
+            peers = pairing.peers,
+            pairingNote = pairing.note,
         )
+        // 配对面板是"按需拉"的：主线程只读快照，真正的 FFI 调用丢到 IO（见 refreshPairingAsync）。
+        refreshPairingAsync()
+    }
+
+    /**
+     * 拉一次配对状态（内核 `displayedPin()` + `peers()`），映射后写进 [pairingState]。
+     *
+     * 三个刻意的设计：
+     * 1. **在 IO 线程调 FFI**：`displayedPin()` / `peers()` 是跨 JNA 的同步调用，每 500 ms 在主线程走一次
+     *    是拿 UI 流畅度换便利；这里只让主线程读 `@Volatile` 快照。
+     * 2. **catch Throwable（不是 Exception）**：`.so` 缺失/ABI 不匹配时 JNA 抛 `UnsatisfiedLinkError`（Error），
+     *    漏掉它会让**服务进程崩掉** —— 而正确行为是"服务活着，把原因显示出来"。
+     * 3. **一次只飞一个**：引擎里 `peers()` 要拿会话表，UI 刷新是 500 ms 一跳，不设闸门会在引擎卡顿时堆积调用；
+     *    用 [pairingJob] 做闸门，慢的时候自然是"降频"，不会排队。
+     *
+     * 引擎没起来时**不动 FFI**：那会儿没有会话也没有 PIN，调用只会抛 `NOT_STARTED`，
+     * 把"引擎没启动"渲染成"配对出错"是纯噪声。
+     */
+    private fun refreshPairingAsync() {
+        if (pairingJob?.isActive == true) return
+        if (engineStatus == null) {
+            pairingState = PairingUiState()
+            return
+        }
+        pairingJob = engineScope.launch {
+            var pin: String? = null
+            var note: String? = null
+
+            try {
+                pin = displayedPin()
+            } catch (t: Throwable) {
+                note = "读取配对 PIN 失败：${t.javaClass.simpleName}: ${t.message}"
+            }
+
+            var snapshots: List<PeerSnapshot> = emptyList()
+            try {
+                snapshots = peers().map { peer ->
+                    PeerSnapshot(
+                        idShort = peer.idShort,
+                        name = peer.name,
+                        addr = peer.addr,
+                        state = peer.state,
+                        trusted = peer.trusted,
+                    )
+                }
+            } catch (t: Throwable) {
+                val reason = "读取对端列表失败：${t.javaClass.simpleName}: ${t.message}"
+                note = if (note == null) reason else "$note；$reason"
+            }
+
+            // 收尾竞态：这一跳开始时引擎还在，跑完时可能已经被停了 —— 别把旧 PIN 又写回去。
+            if (engineStatus == null) return@launch
+
+            pairingState = PairingStateMapper.map(pin = pin, snapshots = snapshots, error = note)
+            // 立刻回灌一次：PIN 的出现/消失不该等下一个 500 ms 节拍。
+            refreshState()
+        }
     }
 
     private fun createChannel() {

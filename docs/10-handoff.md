@@ -7,35 +7,39 @@
 
 ## 1. 一句话现状
 
-M0 全部完成。**M1 的代码面已全部落地并各自跑绿**（QUIC 通道 / 身份与 PIN 配对 / 引擎编排 / FFI 桥 /
-Android 低延迟播放 / 桌面最小 UI / PC↔PC 端到端验收工具），
-**唯一未闭环的是「Android 真机验收」—— 卡在硬件（本机 `adb devices` 为空、无可用 AVD），不是卡在代码。**
+M0 全部完成。M1 的代码面已全部落地；**2026-09-15 真机（MI 8 Lite / Android 10 / API 29）接上后，M1 真机验收首次跑通**：
+PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → AudioTrack 低延迟输出）已通，**设备侧两项硬指标达标**
+（`getPerformanceMode()=LOW_LATENCY`、全链路 48 kHz 零重采样），四轮 60/60/90/75 s 推流零断流。
+**唯一未达标的是 e2e 延迟**（目标 P50 ≤ 110 ms；实测下限 ≥115 ms + 设备输出 80–101 ms），根因已定位（见 §4）。
 
 | 项 | 状态 |
 |---|---|
 | 远端仓库 | **PUBLIC** · main 分支 · 看板 https://github.com/users/GotKiCry/projects/2 |
-| 本地三条链 | ✅ 内核 `cargo test --workspace`（**214 项**）· ✅ Android `assembleDebug` + 31 个 JVM 用例 · ✅ 桌面 `pnpm build` + Tauri `cargo test` |
-| 质量门 | ✅ `cargo fmt --all --check` 干净 · ✅ `cargo clippy --workspace --exclude audiolink-desktop --all-targets --all-features -- -D warnings` 干净 |
-| M1 代码面 | ✅ 全部落地（见下表） |
-| M1 真机验收 | ⬜ **阻塞在硬件**：Android 低延迟模式 / 出声延迟 / 30 min 无断流 |
-| PC↔PC 实测 | ✅ 真实 QUIC 链路：探针「帧封口→出声」**P50 40.2 ms / P95 40.6 ms**，零丢包零欠载；含模型段的合计约 **70 ms** |
+| 本地三条链 | ✅ 内核 workspace（engine 73 + audio 46 + …）· ✅ Android `assembleDebug` + **69** JVM 用例 · ✅ 桌面 `pnpm build` + Tauri `cargo test` |
+| 质量门 | ✅ `cargo fmt --all --check` 干净 · ✅ workspace clippy `-D warnings` 干净（独立复核者自跑 exit 0） |
+| M1 真机验收 | ✅ **已跑通**（2026-09-15，真机 MI 8 Lite）：自检 PASS(5/5) / 低延迟模式 ✅ / 零重采样 ✅ / PIN 配对 ✅ / 四轮零断流 ✅ |
+| M1 延迟指标 | ❌ **未达标**：e2e 下限 ≥115 ms + 设备输出 80–101 ms ≈ 195 ms；根因 = 内核→Kotlin PCM 推送 ≈2× 实时 + 设备 AudioTrack 默认容量 80 ms |
+| **验收报告** | `docs/12-m1-device-acceptance.md`（含账本、缺陷表、独立复核的 4 处不成立与修订留痕） |
+| PC↔PC 实测 | ✅ link-loop 探针「帧封口→出声」P50 40.2 / P95 40.6 ms，零丢包零欠载 |
 
 | M1 交付物 | crate / 路径 | 证据 |
 |---|---|---|
-| QUIC 通道（控制流 #0 + 数据报 + 时钟估计） | `core/crates/audiolink-net` | 19 单测 + 5 真 QUIC 集成测试 |
-| 自签证书 / 指纹 / 信任库 / PIN 配对 | `core/crates/audiolink-identity` | 22 单测 + 8 黑盒验收 |
-| 引擎编排（状态机 / 收发管线 / 遥测） | `core/crates/audiolink-engine` | 60 测试 |
+| QUIC 通道（控制流 #0 + 数据报 + **§6 时钟同步接线**） | `core/crates/audiolink-net` + `audiolink-engine/src/clock.rs` | 19 单测 + 5 真 QUIC 集成；真机 60/60 探针样本、收敛 1.01 s |
+| 自签证书 / 指纹 / 信任库 / PIN 配对 | `core/crates/audiolink-identity` | 22 单测 + 8 黑盒验收 + 真机配对（人工节奏延迟 ≥25 s 提交） |
+| 引擎编排（状态机 / 收发管线 / 遥测 / 对端遥测 / 配对死线） | `core/crates/audiolink-engine` | 73 单测 + 6 集成测试 |
 | FFI 桥（UniFFI + 跨端 golden vectors 夹具） | `core/crates/audiolink-ffi` | 18 测试 + aarch64 交叉检查 |
-| Android 低延迟播放 | `android/app/src/main/kotlin/.../audio/` | APK 构建 + 31 JVM 用例 |
-| 桌面最小 UI（真实引擎，无 mock） | `desktop/` | `pnpm build` + 10 Rust 测试（含 1 个起两个真 Engine 的接缝测试） |
+| Android 低延迟播放 + **配对 PIN UI** + **队列水位档位** | `android/app/src/main/kotlin/.../` | APK 构建 + **69** JVM 用例 + 真机验证 |
+| 桌面最小 UI（真实引擎，无 mock） | `desktop/` | `pnpm build` + 10 Rust 测试 |
+| **PC→真机验收工具**（连接/PIN/推流/跨机账本） | `core/crates/audiolink-tools/src/bin/device_link.rs` | 真机四轮实测 + 本机自检 e1–e8 证据 |
 | PC↔PC 端到端验收工具 | `core/crates/audiolink-tools/src/bin/link_loop.rs` | 见上表实测数字 |
 
-**本机 PC↔PC 实测（`link-loop`，30 s，默认端点，20 ms 帧 / 160 kbps Opus）**：
-真实 127.0.0.1 QUIC（TLS + 证书指纹互认 + §5 握手 + PIN 配对实跑）。
-探针实测「帧封口 → sink 写出」P50 **40.2 ms** / P95 **40.6 ms** / P99 40.7 ms / max 44.1 ms；
-加两段模型（采集半周期 10 ms + 组帧 20 ms）合计约 **70 ms**。码率 160.4 kbps（目标 160），
-丢包 0.00%，欠载 0，迟到丢弃 0，抖动 P50/P95 = 0.11/0.43 ms。
-复测：`cargo run -q -p audiolink-tools --bin link-loop -- run --seconds 30`。
+**本轮真机实测（`device-link`，真机 MI 8 Lite，20 ms 帧 / 160 kbps Opus）**：
+- 网络：跨三层路由（PC 192.168.3.200 ↔ 手机 172.16.2.54/23）。**1 Hz 探测 RTT ~115 ms（无线唤醒代价），推流中 §6 逐探针 RTT P50 11.73 / P95 81.11 ms** —— 只能用推流中口径；
+- 链路：四轮 60/60/90/75 s，`late_drops 0`、`plc 0`、丢包末值 0.00%、码率 160.4 kbps；
+- 设备：`LOW_LATENCY`、48000 Hz/2ch、flinger `PRIMARY|FAST` + FastMixer 活跃；AudioTrack 请求 960 帧 → **实际 3844 帧（80.08 ms）**，flinger track Latency 101 ms；
+- 延迟账本（真实 WASAPI 采集）：采集半周期 10[模型] + 组帧 20[结构] + 网络单向 5.86[模型] + 对端播放环水位 80[实测] = **下限 ≥115 ms**；加设备输出 80–101 ms ≈ **195 ms**。
+
+复测：`target/x86_64-pc-windows-msvc/debug/device-link.exe run --peer 172.16.2.54 --seconds 60 --capture synth`（脚本见 `target/evidence/acceptance/`）。
 
 
 ---
@@ -75,44 +79,45 @@ Android 低延迟播放 / 桌面最小 UI / PC↔PC 端到端验收工具），
 
 ## 4. 下一次开工
 
-### 4.1 第一优先：Android 真机验收（**唯一的 M1 阻塞项，卡在硬件**）
+### 4.1 第一优先：**修「内核→Kotlin PCM 推送 ≈2× 实时」**（M1 延迟达标的唯一入口）
 
-M1 的代码面已经齐了，缺的只是「插上手机跑一遍」。需要一台 **API 26+** 的 Android 真机（局域网可达 PC）。要跑：
+真机验收已经把预算吃在哪一段量清楚了（`docs/12-m1-device-acceptance.md`）：
 
-| 项 | 标准 | 怎么看 |
+| 段 | 值 | 性质 |
 |---|---|---|
-| 低延迟模式 | `getPerformanceMode()` 返回 `PERFORMANCE_MODE_LOW_LATENCY` | `PlaybackReport.lowLatency` + UI 显示的原值（**不做粉饰**） |
-| 出声 | 连接成功 ≤ 300 ms 内出声 | 人工计时 + 遥测首帧时间 |
-| 延迟 | P50 ≤ 110 ms、P95 ≤ 150 ms | `link-loop` 的探针口径换成跨机（见 §4.2）；M1 现只验了 PC↔PC |
-| 零重采样 | 采集/内核/播放采样率均 48000，运行时无 SRC | 遥测显示 + 音频路径日志断言（引擎侧已在**线程启动时**硬断言） |
-| 稳定性 | 30 min 连续无断流 | 记录 `underruns` / `plc_count` |
+| 采集半周期 + 组帧 | 10 + 20 ms | 模型/结构 |
+| 网络单向（推流中） | 5.86 ms | 模型（§6 逐探针 RTT P50 ÷ 2） |
+| 对端播放环水位 | 80 ms（且被上游推着涨） | 实测 |
+| 对端 AudioTrack 输出 | 80–101 ms（请求 960 帧 → 实际 3844 帧） | 实测（设备侧） |
 
-接线状态：FFI 绑定（UniFFI Kotlin）已生成，`AudioLinkService.feedPcm()` 是内核 PCM 的接缝。
-`engineStart(config, playout, capture)` 的生命周期**跟随 Service 生命周期**（服务启 → 引擎启；
-`capture = null` → `canReceive=true / canSend=false`），理由是 Android 在 M1 是接收端，必须在被连接前就监听，
-而「启动服务」这个动作本身已经由用户显式点出来。
+**合计下限 ≥115 ms，加设备输出 ≈195 ms —— 超 P50 ≤ 110 ms 目标。**
 
-### 4.2 第二优先：跨机端到端测量手段
+两条根因（都在 §12 §4 的缺陷表里）：
+1. **内核→Kotlin PCM 推送 ≈ 2× 实时**（区间增量实测：推流 78 s 环溢出 +3 791 040 帧 = 48 603 帧/s，读空 +0）
+   → 环始终满、消费侧永不缺数据；**设备侧省的 50–66 ms 只是搬进环里排队，总量不降**。
+   写域：`audiolink-ffi` + `audiolink-engine`（目前无 owner）。
+2. PC 侧封口 50.5 fps vs 手机消费 50 fps（+1%，≈ +1 ms/s 水位增长）→ M2 的速率匹配/漂移补偿负责。
 
-`link-loop` 现在只量得了 PC↔PC：它的探针（`MeasurementTap`）按 `seq` 配对两侧 `Instant`，
-**而跨机的单调时钟不可相减**。真机验收前需要一个跨机方案，两条路：
+设备侧的现成杠杆（已量好、等上游修好即可兑现）：**队列目标 30 ms 档 = −50 ms 且零欠载代价**
+（`DEFAULT_QUEUE_TARGET_FRAMES` 一行常量；A/B 见 §12 §2.1b）。
 
-1. **推荐**：接 §6 的时钟同步 —— `audiolink-net::ClockEstimator` 已实现并单测通过（200 样本窗口、
-   RTT 最小 8 个取中位数、回归出 `drift_ppm`），但**引擎侧一根线都没接**（`clock_offset_us` / `drift_ppm`
-   现在恒为 0）。接上之后 `e2e = 本地出声时刻 − (对端采集时刻 + offset)` 就能跨机算。
-2. 退路：人工双机录音 + 波形对齐（属 M3 的 `sync-measure`）。
+### 4.2 第二优先：跑完 30 min soak 并回填
+
+`pwsh target/evidence/acceptance/soak-30min.ps1 -Seconds 1800 -Dir target/device-link-3 -Tag soak30`
+（前后各读一次设备侧计数器算区间增量；结论写进 `docs/12` §2/§5。）
 
 ### 4.3 已知待办（按优先级）
 
 | 项 | 说明 | 优先级 |
 |---|---|---|
-| 真机验收 | §4.1 | **P0** |
-| 跨机测量 | §4.2（建议顺便把 §6 时钟同步接进引擎，M3 反正要做） | **P0**（M1 验收依赖） |
-| WASAPI 真实音频链 | 桌面端的采集/播放工厂按真实签名写好了，但**没启动过应用**（会真采集真放音）。需要一次带声卡的实跑 | P1 |
-| `EngineEvent::Telemetry` 加 `peer: NodeId` | 现在对端遥测与本机采样共用同一事件，**多对端会串**（M3 必须修） | P1（M3） |
-| PCM 回调装箱开销 | UniFFI 0.29 无 `FloatArray` 映射 → `List<Float>` 每帧约 30 KB 装箱。真机 GC 抖动**未验证**；逃生通道（UDL `bytes` + `ByteBuffer.asFloatBuffer()`）已写进 `audiolink-ffi/src/audio_bridge.rs` 顶部 | P1（真机定） |
-| 抖动缓冲 | M1 只做了「起步攒 2 帧 + 时钟驱动提交」（`PRIME_FRAMES`）。自适应深度（15–60 ms）属 M2 | M2 |
-| 时钟同步接线 | 见 §4.2 第 1 条 | M3 |
+| 推送 ≈2× 实时 | §4.1 第 1 条（`audiolink-ffi`/`audiolink-engine`） | **P0**（M1 延迟达标依赖） |
+| 30 min soak | §4.2 | **P0**（M1 退出条件） |
+| FFI 不清 PIN | `engine_bridge.rs::apply_event()` 只在 `PairCompleted{ok:true}` 清缓存；`PeerDisconnected`/失败落进 `_ => {}` → 屏幕挂失效 PIN（UI 侧已标注，根治在 ffi） | P1 |
+| 设备侧 `queuedFrames` 进遥测 | 现在账本看不到「对端 AudioTrack」那一段，设备侧省下的 50 ms 在报告里不可见 | P1 |
+| `EngineEvent::Telemetry` 加 `peer: NodeId` | 对端遥测与本机采样共用同一事件，**多对端会串**（M3 必须修） | P1（M3） |
+| PCM 回调装箱开销 | UniFFI 0.29 无 `FloatArray` 映射 → `List<Float>` 每帧约 30 KB 装箱；逃生通道写在 `audiolink-ffi/src/audio_bridge.rs` 顶部。真机 GC 抖动仍未专门测 | P1（M2） |
+| 抖动缓冲 | M1 只做「起步攒 2 帧 + 时钟驱动提交」（`PRIME_FRAMES`，只是 40 ms 开播门槛；队列容量 = `PLAYBACK_QUEUE_FRAMES` = 16 帧 = 320 ms）。自适应深度属 M2 | M2 |
+| 跨机时钟的工程边界 | `now_monotonic_us()` 在 Android 是**进程相对**基准（`CLOCK_MONOTONIC`，深睡停走）⇒ offset **只在同一次连接内有效**；M3 若要挂起后续播，需改用 `CLOCK_BOOTTIME` 或显式检测阶跃后重收敛 | M3 |
 | `docs/06-dev-environment.md` 脱敏 | 含 `C:\Users\liuzh\...` 等本机路径，仓库已公开 | 低（用户未决） |
 
 **纪律（不变）**
@@ -184,16 +189,40 @@ M1 的代码面已经齐了，缺的只是「插上手机跑一遍」。需要�
 20. **`VecDeque` 没有 `swap_remove`**（那是 `Vec` 的）；`VecDeque::remove` 是 O(n) 但保持顺序 ——
     在「队列满了丢最旧」的场景里，保序比 O(1) 更要紧。
 
+### 本轮（真机验收）新踩的坑
+
+21. **生产端点是强制 mTLS**：`audiolink-net::tls::server_config()` 索取客户端证书（§5 要求接收侧也能拿到对端证书 DER 验签）。
+    ⇒ 任何「裸 QUIC 客户端」都连不上：M0 的 `latency-probe` 客户端原本不带证书，被服务端回
+    `error 116: peer sent no certificates`（**看起来像网络不通，其实是缺客户端证书**）。已给它补自签客户端证书。
+22. **握手死线必须给配对让路**：死线 10 s 是绝对的、而 §5 的 PIN 有效期 60 s ⇒「人在手机上看 PIN 再敲进 PC」必然超时，
+    表现为 `1002 NOT_PAIRED（unknown peer）`（会话已被回收，peers 表里没有该对端）。
+    现在进入配对等待时把死线顺延到 75 s（PIN_TTL 60 + 15 余量），权威判据仍在 `PinGate`。
+23. **内核每连接新建 `PinGate`**：PIN 不是「这台设备的 PIN」，而是**每连接一个**，连接一断即作废。
+    ⇒ 自动化流程必须「连上后轮询读屏 → 同一条连接内提交」（`device-link --pin-file` 就是为此）。
+24. **低延迟模式生效 ≠ 缓冲小**：真机 `getPerformanceMode()=LOW_LATENCY`，但请求 960 帧被框架顶到 **3844 帧（80 ms）**，
+    flinger 对该 track 报 Latency 101 ms。合法解释：缓冲**容量**与队列**水位**是两件事；
+    容量可 `setBufferSizeInFrames` 收缩（实测 3844→960r **不掉 FAST**，Latency 101→41 ms），
+    水位可用「按 getPlaybackHeadPosition 估已消费帧、只在 queued < 目标时写」压（30 ms 档 = −50 ms 且零欠载代价）。
+25. **低频探测会被无线唤醒代价带偏**：同一条链路，1 Hz 探针 RTT P50 **115 ms**，10 Hz 或推流中（50 包/s）只要 **10.6–11.7 ms**。
+    ⇒ 用 1 Hz 的 RTT 估网络段会高估一个数量级；M2 的抖动缓冲深度必须按推流中口径取值。
+26. **Windows 的 `Instant` 与 Android 的 `Instant` 都从各自进程/系统起点计时**：`now_monotonic_us()` 在 Android 是
+    `LazyLock<Instant>` 的**进程首次调用**起点。⇒ 跨连接比 offset 没有意义（会随墙钟 1:1 漂），
+    **offset 只在同一次连接内有效**；不要把它缓存下来跨会话用。
+27. **设备侧读数必须当场落盘**：终端读到的「播放环水位 1920/2880、溢出 4 332 000」没有存文件，
+    独立复核时无法证实，只能判「不成立」并被撤下。工具（`uiautomator dump` + `adb pull`）要顺手存证。
+
 ---
 
 ## 7. 待办与遗留
 
 | 项 | 说明 | 优先级 |
 |---|---|---|
-| M1 主线 | QUIC 通道 / Android 播放 / 最小 UI / PIN 配对 / 真机验收（§4） | **P0** |
-| 跨端一致性夹具 | §12 golden vectors 在 Rust 与 FFI 双跑（需 ffi 有导出路径） | P3（M1） |
+| **推送 ≈2× 实时** | 内核→Kotlin PCM 推送 ≈2× 实时（环持续溢出 48.6k 帧/s）—— M1 延迟达标的唯一入口，见 §4.1 | **P0** |
+| 30 min soak | 真机最终固件上跑（§4.2） | **P0** |
+| FFI 不清 PIN | `apply_event()` 补 `PeerDisconnected` / `PairCompleted{ok:false}` 的清空分支 | P1 |
+| 设备侧 queuedFrames 进遥测 | 否则账本看不见「对端 AudioTrack」那一段 | P1 |
+| 跨端一致性夹具 | §12 golden vectors 在 Rust 与 FFI 双跑 —— **已落地**（`audiolink-ffi::protocolSelfTest()`） | ✅ 完成 |
 | `alp2-dump` 支持 pcap | 当前只吃 hex 文本；等真有抓包需求再加 | P3 |
-| 自环测量增强 | 目前只测本机；真机链路需要一个「回环标记」端到端测量手段（网络抖动会掩盖标记） | P2（M1 验收时想清楚） |
 | `docs/06-dev-environment.md` 脱敏 | 含 `C:\Users\liuzh\...` 等本机路径，仓库已公开 | 低（用户未决） |
 | `release.yml` 未跑过 | 首次 tag 触发时才验证；`createUpdaterArtifacts:false`（M5 打开） | 中（M5） |
 | CI 可再优化 | `android` job 每次 `cargo install cargo-ndk` 约 2 分钟；`core` job 因 tools 引入 quinn/rustls 涨到 ~4 分钟 | 低 |
