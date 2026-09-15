@@ -101,17 +101,18 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 设备侧的现成杠杆（已量好、等上游修好即可兑现）：**队列目标 30 ms 档 = −50 ms 且零欠载代价**
 （`DEFAULT_QUEUE_TARGET_FRAMES` 一行常量；A/B 见 §12 §2.1b）。
 
-### 4.2 第二优先：跑完 30 min soak 并回填
+### 4.2 已完成：30 min soak（结论已回填）
 
-`pwsh target/evidence/acceptance/soak-30min.ps1 -Seconds 1800 -Dir target/device-link-3 -Tag soak30`
-（前后各读一次设备侧计数器算区间增量；结论写进 `docs/12` §2/§5。）
+`pwsh target/evidence/acceptance/soak-30min.ps1 -Seconds 1800 -Dir target/device-link-3 -Tag soak30` → exit 0。
+**结果：1800 s 全程 `streaming`、无断连（退出条件达成）；但水位顶到 320 ms 队列上限、迟到丢弃 0→53、供给欠载 7→69、e2e 下限 ≥235 ms。**
+⇒ 与 §4.1 同源：链路稳、接收管线不稳。明细见 `docs/12` §5.1。
 
 ### 4.3 已知待办（按优先级）
 
 | 项 | 说明 | 优先级 |
 |---|---|---|
 | 推送 ≈2× 实时 | §4.1 第 1 条（`audiolink-ffi`/`audiolink-engine`） | **P0**（M1 延迟达标依赖） |
-| 30 min soak | §4.2 | **P0**（M1 退出条件） |
+| ~~30 min soak~~ | ✅ 已完成（§4.2）：无断连，但水位/迟到/欠载暴露接收管线问题 | ✅ |
 | FFI 不清 PIN | `engine_bridge.rs::apply_event()` 只在 `PairCompleted{ok:true}` 清缓存；`PeerDisconnected`/失败落进 `_ => {}` → 屏幕挂失效 PIN（UI 侧已标注，根治在 ffi） | P1 |
 | 设备侧 `queuedFrames` 进遥测 | 现在账本看不到「对端 AudioTrack」那一段，设备侧省下的 50 ms 在报告里不可见 | P1 |
 | `EngineEvent::Telemetry` 加 `peer: NodeId` | 对端遥测与本机采样共用同一事件，**多对端会串**（M3 必须修） | P1（M3） |
@@ -218,7 +219,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 | 项 | 说明 | 优先级 |
 |---|---|---|
 | **推送 ≈2× 实时** | 内核→Kotlin PCM 推送 ≈2× 实时（环持续溢出 48.6k 帧/s）—— M1 延迟达标的唯一入口，见 §4.1 | **P0** |
-| 30 min soak | 真机最终固件上跑（§4.2） | **P0** |
+| ~~30 min soak~~ | ✅ 已完成（§4.2 / `docs/12` §5.1） | ✅ |
 | FFI 不清 PIN | `apply_event()` 补 `PeerDisconnected` / `PairCompleted{ok:false}` 的清空分支 | P1 |
 | 设备侧 queuedFrames 进遥测 | 否则账本看不见「对端 AudioTrack」那一段 | P1 |
 | 跨端一致性夹具 | §12 golden vectors 在 Rust 与 FFI 双跑 —— **已落地**（`audiolink-ffi::protocolSelfTest()`） | ✅ 完成 |
