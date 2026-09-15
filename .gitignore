@@ -26,6 +26,8 @@ android/.gradle-home/          # 本项目隔离的 GRADLE_USER_HOME（避免混
 android/build/
 android/app/build/
 android/local.properties
+# 发布签名口令（PUBLIC 仓库绝对不入库）；注意 .gitignore 不支持行尾注释
+android/keystore.properties
 android/.idea/
 android/captures/
 android/*.apk

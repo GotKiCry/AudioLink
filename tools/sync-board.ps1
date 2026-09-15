@@ -64,6 +64,12 @@ $Tasks = @(
     @{ T = '[M1→M2] 内核→Kotlin PCM 推送 ≈ 2× 实时（环持续溢出 48.6k 帧/s）'; M = 'M1'; P = 'P0'; S = 'Todo'; B = '区间增量实测：推流 78 s 环溢出 +3 791 040 帧（48 603 帧/s ≈ 1.01× 实时），同期读空 +0 ⇒ 环始终满、消费侧永不缺数据。这是「接收侧延迟总量降不下来」的根因，也是 M2 抖动缓冲的前置（不修则水位被上游推着涨）。另有 buffer_level_us 文档口径与实测不符（0–1 帧 vs 稳定 7 帧）' }
     @{ T = '[M1] 真机验收报告 + 独立复核（41 项三态判定）'; M = 'M1'; P = 'P0'; S = 'Done'; B = 'docs/12-m1-device-acceptance.md：设备侧两项硬指标达标（LOW_LATENCY / 48 kHz 零重采样）、四轮零断流；e2e 延迟未达标（下限 ≥115 ms + 设备输出 80–101 ms）；独立验证者复核 41 项 → 可信 29 / 存疑 8 / 不成立 4，4 项已修正并留痕（含 run4 欠载被写成更漂亮的值）' }
 
+    # ---- 2026-09-15 深夜：发行构建 + 真机联调新发现 ----
+    @{ T = '[M1] 发行构建：release APK 首次打通（签名 keystore + R8 规则 + gitignore 修口）'; M = 'M1'; P = 'P1'; S = 'Done'; B = '此前 release 路径从未跑过：proguard-rules.pro 根本不存在（R8 会把 JNA/UniFFI 反射目标删掉）。已补 JNA/UniFFI keep 规则 + 生成 release keystore（RSA4096/30 年）+ .gitignore 加 android/keystore.properties（实测原本没被忽略，PUBLIC 仓库存在口令入库风险）。产物 app-release.apk 7.98 MB 已签名（V2）。⚠️ MIUI 上 adb install 报 -99（需开发者选项「USB 安装」）' }
+    @{ T = '[M1 听感缺陷] 接收侧队列以 ≈0.5%/s 上涨到 320 ms 上限 → 周期性丢帧（听感断续）'; M = 'M1'; P = 'P0'; S = 'Todo'; B = '对照实验（Lead，真机 40 s 纯 440 Hz）：前 15 s 干净（水位 20–60 ms / 欠载 0 / 丢包 0%），末值水位 260 ms / 欠载 20 / 迟到 6。机制：发送与接收速率不匹配（≈5500 ppm，远超晶振 ±50 ppm），队列涨到内核上限 320 ms 后触发「迟到就丢」。与 task-13（推送 ≈2× 实时）同族但机制不同。⚠️ 副作用：我先前建议的「满灌」会把富余攒成批量丢（更断续）；20/30 ms 档反而把小富余摊成均匀丢帧 —— 建议按后者实测听感' }
+    @{ T = '[M1] 桌面 UI 缺采集端点选择器（只能吃默认输出端点）'; M = 'M1'; P = 'P1'; S = 'Todo'; B = '桌面壳没有端点选择（CLI 有 --device）。用户切了 PC 默认输出后，App 采到的可能还是启动时的那个端点 → 表现为「有连接但没声音/断续」。需要：端点下拉 + 启动时打印实际采集端点' }
+    @{ T = '[M1] Android PIN 卡有时不显示（已进入配对分支但屏幕无 PIN 卡）'; M = 'M1'; P = 'P1'; S = 'Todo'; B = '实测：PC 侧已收到 PAIR_REQUIRED（工具打印「进入 PIN 配对分支」），手机 UI 却没有 PIN 卡。怀疑 FFI 事件泵的 broadcast 丢事件（engine_bridge.rs 注释自述「背压丢事件」），或 UI 轮询路径在特定时刻取不到。另注：uiautomator 因界面 500 ms 刷新拿不到 idle，自动化要改用截图' }
+    @{ T = '[环境] MIUI 上 adb install release APK 失败 -99（需「USB 安装」权限）'; M = 'M1'; P = 'P2'; S = 'Todo'; B = 'debug 包可装（debuggable），release 包在 MIUI 上被拒：Failure [-99]。需在开发者选项打开「USB 安装」（可能要求登录小米账号）。属环境/文档项，代码侧无问题（APK 签名校验通过、清单 minSdk26/targetSdk36 正常）' }
     # ---- M2–M5 ----
     @{ T = '[M2] 稳定性与质量：抖动缓冲 + 双发/PLC/NACK + 自适应码率 + 遥测面板'; M = 'M2'; P = 'P2'; S = 'Todo'; B = 'docs/05-roadmap.md M2；验收含 8 h soak 与弱网（5 Mbps / 2% 丢包 / 30 ms 抖动）' }
     @{ T = '[M2] 自建丢包掩盖（CELT-only 无真 PLC：重复上一包 + 淡出 + 交叉淡化）'; M = 'M2'; P = 'P1'; S = 'Todo'; B = '实测（2026-09-14）：opus-rs 在 CELT-only 下第 2 个丢失帧起硬静音、恢复有 -45 dB 凹陷，「PLC 兜底」不成立 → 必须自建；见 ADR-003 注记' }
