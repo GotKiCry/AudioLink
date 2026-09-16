@@ -57,20 +57,11 @@ jobs:
         run: pwsh tools/license-audit.ps1 -Notices
       - name: Tauri build
         shell: pwsh
-        working-directory: desktop
         env:
+          # 密钥不在时脚本会降级构建并打 ::warning::（见 tools/tauri-build.ps1 的注释）。
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          if ([string]::IsNullOrEmpty($env:TAURI_SIGNING_PRIVATE_KEY)) {
-            Write-Host "::warning::未配置 TAURI_SIGNING_PRIVATE_KEY：本次产物不带更新签名（不能用于自动更新）"
-            # 用**文件**承载覆盖配置，而不是内联 JSON：PowerShell → pnpm → tauri 三层传参会把内联
-            # 单引号 JSON 的引号吞掉（2026-09-16 CI 实测：`key must be a string at line 1 column 2`）。
-            $override = Join-Path $env:RUNNER_TEMP "no-updater-artifacts.json"
-            '{"bundle":{"createUpdaterArtifacts":false}}' | Set-Content -Path $override -Encoding utf8NoBOM
-            pnpm tauri build --bundles nsis --config $override
-          } else {
-            pnpm tauri build --bundles nsis
-          }
+        run: pwsh tools/tauri-build.ps1
       - name: Generate update manifest
         shell: pwsh
         run: |
