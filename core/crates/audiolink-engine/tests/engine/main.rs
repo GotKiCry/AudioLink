@@ -20,6 +20,7 @@ mod engine_shutdown;
 mod gain_control;
 mod group_epoch;
 mod group_management;
+mod group_sync;
 mod handshake_deadline;
 mod latency_budget;
 mod mixer_alignment;
