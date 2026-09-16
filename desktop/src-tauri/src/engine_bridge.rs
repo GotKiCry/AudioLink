@@ -36,8 +36,16 @@ use audiolink_types::{
     AudioLinkError, ClockQuality, DEFAULT_QUIC_PORT, ErrorCode, NodeId, StreamStats,
 };
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_store::StoreExt as _;
 
 use std::path::PathBuf;
+
+/// 外壳设置文件名（`tauri-plugin-store` 自己管目录）。
+const SETTINGS_FILE: &str = "settings.json";
+/// 「启动时自动连接上次设备」开关。
+const KEY_AUTO_CONNECT: &str = "auto_connect";
+/// 上一次成功连接的地址。
+const KEY_LAST_PEER: &str = "last_peer";
 
 /// 第三方声明的文件名（打包资源与仓库内生成路径同名）。
 pub const NOTICES_FILE: &str = "THIRD-PARTY-NOTICES.md";
@@ -45,6 +53,7 @@ use tokio::sync::{broadcast, watch};
 
 use crate::capture::{self, SharedCapture};
 use crate::error::CommandError;
+use crate::settings::AutoConnectPolicy;
 use crate::view::{
     AlignmentView, CaptureDeviceView, GroupMemberView, GroupView, LocalStatus, NoticesView,
     PairRequiredPayload, PeerState, PeerView, StartSendResult, SubmitPinResult, TelemetryRow,
@@ -191,6 +200,31 @@ impl EngineBridge {
         Ok(peers)
     }
 
+    /// 读设置（读不到就用默认值：设置坏了不该让应用起不来）。
+    fn policy(&self) -> AutoConnectPolicy {
+        let Ok(store) = self.app.store(SETTINGS_FILE) else {
+            return AutoConnectPolicy::default();
+        };
+        AutoConnectPolicy {
+            enabled: store
+                .get(KEY_AUTO_CONNECT)
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            last_peer: store
+                .get(KEY_LAST_PEER)
+                .and_then(|value| value.as_str().map(str::to_string)),
+        }
+    }
+
+    /// 记下「上次**成功**连接的地址」—— 失败的不记（免得开机就自动去连一个连不上的东西）。
+    fn remember_peer(&self, addr: std::net::SocketAddr) {
+        let Ok(store) = self.app.store(SETTINGS_FILE) else {
+            return;
+        };
+        store.set(KEY_LAST_PEER, serde_json::Value::String(addr.to_string()));
+        let _ = store.save();
+    }
+
     /// 手工 IP 连接（`connect`，FR-17）。
     ///
     /// 返回"已登记 + 正在握手/配对"的对端视图；配对请求与后续状态由事件推进。
@@ -209,6 +243,8 @@ impl EngineBridge {
 
         match engine.connect(addr).await {
             Ok(peer_id) => {
+                // 只有成功才记：失败也记的话，开机自动重连会去连一个已知连不上的地址。
+                self.remember_peer(addr);
                 let (peers, _) = refresh(&engine, &self.cache);
                 emit_peer(&self.app, &self.cache, &peers);
                 find_view(&peers, peer_id).ok_or_else(|| {
@@ -422,6 +458,37 @@ impl EngineBridge {
     pub async fn alignment(&self) -> Result<AlignmentView, CommandError> {
         let engine = self.engine().await?;
         Ok(alignment_view(&engine.stream_axes(), engine.monotonic_ms()))
+    }
+
+    /// M5：自动重连的当前设置（开关 + 上次设备）。
+    pub async fn auto_connect_state(&self) -> Result<AutoConnectPolicy, CommandError> {
+        Ok(self.policy())
+    }
+
+    /// M5：开关「启动时自动连接上次设备」。
+    pub async fn set_auto_connect(&self, enabled: bool) -> Result<(), CommandError> {
+        let store = self.app.store(SETTINGS_FILE).map_err(|error| {
+            CommandError::busy(format!("打开设置失败：{error}"), "set_auto_connect")
+        })?;
+        store.set(KEY_AUTO_CONNECT, serde_json::Value::Bool(enabled));
+        store.save().map_err(|error| {
+            CommandError::busy(format!("保存设置失败：{error}"), "set_auto_connect")
+        })?;
+        Ok(())
+    }
+
+    /// M5：启动时试一次自动重连。
+    ///
+    /// 返回连上的对端；没开、没记录或连不上都返回 `None` —— **不报错**：
+    /// 开机自动重连失败不该弹一条错误横幅（用户什么都没点）。前端据此给一句轻提示即可。
+    pub async fn try_auto_connect(&self) -> Result<Option<PeerView>, CommandError> {
+        let Some(addr) = self.policy().target().map(str::to_string) else {
+            return Ok(None);
+        };
+        match self.connect(&addr).await {
+            Ok(view) => Ok(Some(view)),
+            Err(_) => Ok(None),
+        }
     }
 
     /// M5：退出前的优雅收尾 —— 给对方发 `BYE`，而不是让对端等 QUIC 空闲超时。

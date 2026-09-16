@@ -22,6 +22,7 @@
 mod capture;
 mod engine_bridge;
 mod error;
+mod settings;
 mod view;
 
 use tauri::menu::{Menu, MenuItem};
@@ -179,6 +180,31 @@ async fn alignment(bridge: State<'_, EngineBridge>) -> Result<AlignmentView, Com
     bridge.alignment().await
 }
 
+/// M5：自动重连的当前设置（开关 + 上次设备）。
+#[tauri::command]
+async fn auto_connect_state(
+    bridge: State<'_, EngineBridge>,
+) -> Result<settings::AutoConnectPolicy, CommandError> {
+    bridge.auto_connect_state().await
+}
+
+/// M5：开关「启动时自动连接上次设备」。
+#[tauri::command(rename_all = "snake_case")]
+async fn set_auto_connect(
+    bridge: State<'_, EngineBridge>,
+    enabled: bool,
+) -> Result<(), CommandError> {
+    bridge.set_auto_connect(enabled).await
+}
+
+/// M5：启动时试一次自动重连（没开 / 没记录 / 连不上都返回 null，不报错）。
+#[tauri::command]
+async fn try_auto_connect(
+    bridge: State<'_, EngineBridge>,
+) -> Result<Option<PeerView>, CommandError> {
+    bridge.try_auto_connect().await
+}
+
 /// M5：开机自启状态（FR-31 的一部分）。
 #[tauri::command]
 async fn autostart_enabled(app: tauri::AppHandle) -> Result<bool, CommandError> {
@@ -251,7 +277,10 @@ pub fn run() {
             broadcast_epoch,
             third_party_notices,
             autostart_enabled,
-            set_autostart
+            set_autostart,
+            auto_connect_state,
+            set_auto_connect,
+            try_auto_connect
         ])
         .setup(|app| {
             // 桥接层必须在窗口加载**之前**就位：前端一挂载就会 invoke，拿不到 State 会直接报错。

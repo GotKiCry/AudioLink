@@ -1,20 +1,21 @@
 /**
- * M5 · 设置（目前只有开机自启一项）。
+ * M5 · 设置（开关自启 + 启动时自动连接上次设备）。
  *
  * 为什么单独一块而不是塞进「关于」：关于页讲的是「这个软件是什么、用了谁的代码」，
  * 设置页讲的是「它怎么运行」—— 两件事放在一起，用户找起来会慢。
  *
- * 状态来自系统（`autostart_enabled`），不是本地记住的一个布尔：用户在系统设置里改过之后，
- * 这里显示的必须仍然是**真实状态**。
+ * 两个开关的状态都来自**系统/存储**（`autostart_enabled` / `auto_connect_state`），
+ * 不是本地记住的布尔：用户在系统设置里改过之后，这里显示的必须仍然是真实状态。
  */
 
 import { useEffect, useState } from "react";
 
 import { api } from "../lib/ipc";
-import { toCommandError } from "../types";
+import { toCommandError, type AutoConnectPolicy } from "../types";
 
 export function SettingsPanel() {
-  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [autostart, setAutostart] = useState<boolean | null>(null);
+  const [policy, setPolicy] = useState<AutoConnectPolicy | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -22,18 +23,34 @@ export function SettingsPanel() {
     void api
       .autostartEnabled()
       .then((value) => {
-        setEnabled(value);
+        setAutostart(value);
         setError(null);
       })
       .catch((raw: unknown) => setError(toCommandError(raw).message));
+    void api
+      .autoConnectState()
+      .then(setPolicy)
+      .catch((raw: unknown) => setError(toCommandError(raw).message));
   }, []);
 
-  const toggle = (next: boolean): void => {
+  const toggleAutostart = (next: boolean): void => {
     setBusy(true);
     void api
       .setAutostart(next)
       .then(() => {
-        setEnabled(next);
+        setAutostart(next);
+        setError(null);
+      })
+      .catch((raw: unknown) => setError(toCommandError(raw).message))
+      .finally(() => setBusy(false));
+  };
+
+  const toggleAutoConnect = (next: boolean): void => {
+    setBusy(true);
+    void api
+      .setAutoConnect(next)
+      .then(() => {
+        setPolicy((current) => (current === null ? current : { ...current, enabled: next }));
         setError(null);
       })
       .catch((raw: unknown) => setError(toCommandError(raw).message))
@@ -49,16 +66,34 @@ export function SettingsPanel() {
         </p>
       </header>
 
-      <label className="mt-3 flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
-        <input
-          type="checkbox"
-          checked={enabled === true}
-          disabled={busy || enabled === null}
-          onChange={(event) => toggle(event.target.checked)}
-        />
-        开机自动启动
-        {enabled === null ? <span className="text-slate-400">（读取中…）</span> : null}
-      </label>
+      <div className="mt-3 space-y-2">
+        <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+          <input
+            type="checkbox"
+            checked={autostart === true}
+            disabled={busy || autostart === null}
+            onChange={(event) => toggleAutostart(event.target.checked)}
+          />
+          开机自动启动
+          {autostart === null ? <span className="text-slate-400">（读取中…）</span> : null}
+        </label>
+
+        <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+          <input
+            type="checkbox"
+            checked={policy?.enabled === true}
+            disabled={busy || policy === null}
+            onChange={(event) => toggleAutoConnect(event.target.checked)}
+          />
+          启动时自动连接上次设备
+          {policy === null ? <span className="text-slate-400">（读取中…）</span> : null}
+        </label>
+        <p className="pl-5 text-xs text-slate-500 dark:text-slate-400">
+          {policy?.lastPeer == null
+            ? "还没有成功连接过的设备。"
+            : `上次设备：${policy.lastPeer}`}
+        </p>
+      </div>
 
       {error === null ? null : (
         <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">{error}</p>

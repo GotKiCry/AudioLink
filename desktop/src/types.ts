@@ -206,6 +206,17 @@ export interface NoticesView {
   text: string;
 }
 
+/**
+ * 自动重连设置（`auto_connect_state` 的返回，M5 / FR-31）。
+ *
+ * `lastPeer` 是上一次**成功连接**的地址；失败的不记 —— 否则开机自动重连会去连一个
+ * 已知连不上的地址。
+ */
+export interface AutoConnectPolicy {
+  enabled: boolean;
+  lastPeer: string | null;
+}
+
 export interface TelemetryRow {
   /** 采样时刻（Unix 毫秒）。 */
   atUnixMs: number;

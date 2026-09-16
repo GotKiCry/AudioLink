@@ -194,6 +194,19 @@ export function useAudioLink(): AudioLinkController {
     void refreshActiveCapture();
   }, [captureLocked, refreshActiveCapture]);
 
+  useEffect(() => {
+    // M5：启动时试一次自动重连（FR-31）。静默失败是刻意的 —— 用户什么都没点，
+    // 不该在开机时弹一条「连不上」的错误横幅；连上了才给一句轻提示。
+    void api
+      .tryAutoConnect()
+      .then((peer) => {
+        if (peer !== null) {
+          setNotice(`已自动连接上次设备 ${peer.idShort}`);
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
   const refreshAlignment = useCallback(async (): Promise<void> => {
     const next = await api.alignment().catch(() => null);
     if (next !== null) {

@@ -11,6 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AlignmentView,
+  AutoConnectPolicy,
   CaptureDeviceView,
   GroupView,
   NoticesView,
@@ -85,6 +86,18 @@ export const api = {
   thirdPartyNotices: (): Promise<NoticesView> => invoke<NoticesView>("third_party_notices"),
   /** `autostart_enabled` —— M5：读取开机自启状态。 */
   autostartEnabled: (): Promise<boolean> => invoke<boolean>("autostart_enabled"),
+  /** `auto_connect_state` —— M5：启动时自动连接上次设备的设置。 */
+  autoConnectState: (): Promise<AutoConnectPolicy> =>
+    invoke<AutoConnectPolicy>("auto_connect_state"),
+  /** `set_auto_connect` —— M5：开关「启动时自动连接上次设备」。 */
+  setAutoConnect: (enabled: boolean): Promise<null> =>
+    invoke<null>("set_auto_connect", { enabled }),
+  /**
+   * `try_auto_connect` —— M5：启动时试一次自动重连。
+   *
+   * 没开、没记录、连不上都返回 `null`（**不报错**）：用户什么都没点，不该弹错误横幅。
+   */
+  tryAutoConnect: (): Promise<PeerView | null> => invoke<PeerView | null>("try_auto_connect"),
   /** `set_autostart` —— M5：开关开机自启。 */
   setAutostart: (enabled: boolean): Promise<null> =>
     invoke<null>("set_autostart", { enabled }),
