@@ -53,3 +53,8 @@ path = "src/bin/device_link.rs"
 [[bin]]
 name = "soak-runner"
 path = "src/bin/soak_runner.rs"
+
+# M2 的弱网测试台：透明 UDP 中继 + 丢包 / 延迟 / 抖动 / 限速注入
+[[bin]]
+name = "netem-sim"
+path = "src/bin/netem_sim.rs"

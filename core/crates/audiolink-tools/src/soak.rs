@@ -205,6 +205,7 @@ impl SoakMonitor {
             self.check_delta(
                 ViolationKind::Underrun,
                 "欠载",
+                self.thresholds.max_underruns,
                 previous.underruns,
                 stats.underruns,
                 sample.at_secs,
@@ -213,6 +214,7 @@ impl SoakMonitor {
             self.check_delta(
                 ViolationKind::PlayoutConcealment,
                 "PCM 掩盖帧",
+                self.thresholds.max_plc,
                 previous.plc_count,
                 stats.plc_count,
                 sample.at_secs,
@@ -221,6 +223,7 @@ impl SoakMonitor {
             self.check_delta(
                 ViolationKind::LateDrop,
                 "迟到丢弃",
+                self.thresholds.max_late_drops,
                 previous.late_drops,
                 stats.late_drops,
                 sample.at_secs,
@@ -229,6 +232,7 @@ impl SoakMonitor {
             self.check_delta(
                 ViolationKind::NackRetransmit,
                 "NACK 重传请求",
+                self.thresholds.max_nack,
                 previous.nack_count,
                 stats.nack_count,
                 sample.at_secs,
@@ -422,20 +426,34 @@ impl SoakMonitor {
         out
     }
 
+    /// 计数器增量的判定。
+    ///
+    /// `threshold` 是**累计值**的允许上限：只有超过它之后的增量才算异常。
+    /// 默认全 0（回环稳态：任何非零增量都是缺陷信号）；弱网档把它放开，
+    /// 于是「给定条件造成的欠载」不再被当成故障 —— 否则弱网长跑永远是红的。
+    ///
+    /// 七个参数不分装结构体：这里就是「一个计数器 + 它的名字 + 它的上限 + 前后值 + 时刻 + 快照」，
+    /// 拆成结构体只会让四处调用各自多写一遍字段名。
+    #[allow(clippy::too_many_arguments)]
     fn check_delta(
         &mut self,
         kind: ViolationKind,
         label: &str,
+        threshold: u32,
         before: u32,
         after: u32,
         at_secs: u64,
         stats: StreamStats,
     ) {
-        if after > before {
+        if after <= threshold {
+            return;
+        }
+        let baseline = before.max(threshold);
+        if after > baseline {
             self.push_violation(
                 kind,
                 at_secs,
-                format!("{label} +{}（累计 {after}）", after - before),
+                format!("{label} +{}（累计 {after}）", after - baseline),
                 stats,
             );
         }
@@ -662,5 +680,29 @@ mod tests {
             "摘要必须点名异常种类：{text}"
         );
         assert!(text.contains("判定 failed"));
+    }
+
+    #[test]
+    fn raised_thresholds_suppress_only_what_they_allow() {
+        let thresholds = SoakThresholds {
+            max_underruns: 10,
+            max_late_drops: u32::MAX,
+            ..SoakThresholds::default()
+        };
+        let mut monitor = SoakMonitor::new(thresholds, 160_000);
+        monitor.observe(sample(0, stats(160_000)));
+
+        let mut within = stats(160_000);
+        within.underruns = 5;
+        within.late_drops = 7;
+        monitor.observe(sample(1, within));
+        assert!(monitor.violations().is_empty(), "阈值内的增量不该记异常");
+
+        let mut over = stats(160_000);
+        over.underruns = 12;
+        over.late_drops = 7;
+        monitor.observe(sample(2, over));
+        assert_eq!(monitor.violations().len(), 1, "只有超过上限的欠载算异常");
+        assert_eq!(monitor.violations()[0].detail, "欠载 +2（累计 12）");
     }
 }

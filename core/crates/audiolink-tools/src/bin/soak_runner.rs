@@ -26,6 +26,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use audiolink_audio::{NullPlayout, PlayoutSink, SyntheticCapture};
 use audiolink_engine::session::SessionState;
 use audiolink_engine::{Engine, EngineConfig, EngineEvent};
+use audiolink_tools::netem::{NetemConfig, NetemRelay};
 use audiolink_tools::soak::{SoakMeta, SoakMonitor, SoakSample, SoakThresholds};
 use audiolink_types::{ErrorCode, NodeId, StreamStats};
 
@@ -42,10 +43,21 @@ soak-runner —— 回环长跑 + 指标采集 + 异常快照
   --expected-bps    目标码率（bps），默认 320000（冗余双发后的期望值）；0 = 不判码率
   --warmup-seconds  预热秒数（不参与判定），默认 3
   --quiet           不打印每秒进度
+  --tolerant        弱网档：只钉「会话不断 + 掩盖比例 ≤ 1%」，不判欠载/迟到/NACK/瞬时丢包
+
+弱网注入（可选，M2 验收口径见 docs/05-roadmap.md）：
+  --netem-loss-pct        丢包率（百分比，可小数），默认 0
+  --netem-delay-ms        单向延迟（ms），默认 0
+  --netem-jitter-ms       抖动幅度（ms），默认 0
+  --netem-bandwidth-kbps  带宽上限（kbps），默认 0（不限）
+  --netem-seed            注入随机种子，默认 1（同种子 = 同一条注入序列）
 
 说明：
-  两个真实 Engine（node-a 发送 / node-b 接收）走 127.0.0.1 的真实 QUIC；
+  两个真实 Engine（node-a 发送 / node-b 接收）走真实 QUIC；
   node-b 之前不认识 node-a，因此会实跑一遍 §5 的 PIN 配对流程。
+  给了任一 --netem-* 参数时，中间会插入一个弱网中继（node-a 连中继、中继转给 node-b），
+  于是「弱网下的长跑」也是一条命令。
+  五个参数写全即 M2 的验收口径：--netem-loss-pct 2 --netem-delay-ms 15 --netem-jitter-ms 15 --netem-bandwidth-kbps 5000
   退出码：0 = 无异常；1 = 有异常；2 = 用法或初始化失败。
 ";
 
@@ -79,6 +91,12 @@ fn real_main() -> Result<ExitCode> {
     let mut expected_bps: u32 = 320_000;
     let mut report: Option<PathBuf> = None;
     let mut quiet = false;
+    let mut tolerant = false;
+    let mut netem_loss_pct_x100: u16 = 0;
+    let mut netem_delay_ms: u32 = 0;
+    let mut netem_jitter_ms: u32 = 0;
+    let mut netem_bandwidth_kbps: u32 = 0;
+    let mut netem_seed: u64 = 1;
 
     let mut index = 1;
     while index < args.len() {
@@ -114,6 +132,42 @@ fn real_main() -> Result<ExitCode> {
                 quiet = true;
                 index += 1;
             }
+            "--tolerant" => {
+                tolerant = true;
+                index += 1;
+            }
+            "--netem-loss-pct" => {
+                let raw = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow!("{key} 缺少取值"))?;
+                let value: f64 = raw
+                    .parse()
+                    .with_context(|| format!("{key} 的取值不是数字：{raw}"))?;
+                if !(0.0..=100.0).contains(&value) {
+                    bail!("{key} 必须在 0..=100 之间：{raw}");
+                }
+                netem_loss_pct_x100 = (value * 100.0).round() as u16;
+                index += 2;
+            }
+            "--netem-delay-ms" => {
+                netem_delay_ms = u32::try_from(next_u64(&args, index, key)?)
+                    .map_err(|_| anyhow!("{key} 超出范围"))?;
+                index += 2;
+            }
+            "--netem-jitter-ms" => {
+                netem_jitter_ms = u32::try_from(next_u64(&args, index, key)?)
+                    .map_err(|_| anyhow!("{key} 超出范围"))?;
+                index += 2;
+            }
+            "--netem-bandwidth-kbps" => {
+                netem_bandwidth_kbps = u32::try_from(next_u64(&args, index, key)?)
+                    .map_err(|_| anyhow!("{key} 超出范围"))?;
+                index += 2;
+            }
+            "--netem-seed" => {
+                netem_seed = next_u64(&args, index, key)?;
+                index += 2;
+            }
             other => bail!("未知参数 {other}（用 --help 看用法）"),
         }
     }
@@ -122,6 +176,13 @@ fn real_main() -> Result<ExitCode> {
         .enable_all()
         .build()
         .context("创建 tokio 运行时失败")?;
+    let netem = NetemOptions {
+        loss_pct_x100: netem_loss_pct_x100,
+        delay_ms: netem_delay_ms,
+        jitter_ms: netem_jitter_ms,
+        bandwidth_kbps: netem_bandwidth_kbps,
+        seed: netem_seed,
+    };
     runtime.block_on(run(
         seconds,
         frame_ms,
@@ -129,7 +190,36 @@ fn real_main() -> Result<ExitCode> {
         expected_bps,
         report,
         quiet,
+        tolerant,
+        netem,
     ))
+}
+
+/// 弱网注入参数（全 0 = 不加中继）。
+#[derive(Debug, Clone, Copy)]
+struct NetemOptions {
+    loss_pct_x100: u16,
+    delay_ms: u32,
+    jitter_ms: u32,
+    bandwidth_kbps: u32,
+    seed: u64,
+}
+
+impl NetemOptions {
+    /// 是否启用注入。
+    const fn enabled(&self) -> bool {
+        self.loss_pct_x100 > 0 || self.delay_ms > 0 || self.jitter_ms > 0 || self.bandwidth_kbps > 0
+    }
+
+    /// 转成注入内核的参数。
+    const fn config(&self) -> NetemConfig {
+        NetemConfig {
+            loss_pct_x100: self.loss_pct_x100,
+            delay_ms: self.delay_ms,
+            jitter_ms: self.jitter_ms,
+            bandwidth_kbps: self.bandwidth_kbps,
+        }
+    }
 }
 
 fn next_u64(args: &[String], index: usize, key: &str) -> Result<u64> {
@@ -140,6 +230,8 @@ fn next_u64(args: &[String], index: usize, key: &str) -> Result<u64> {
         .with_context(|| format!("{key} 的取值不是整数：{raw}"))
 }
 
+/// 编排入口：参数就是命令行选项本身，不再为它们造一个只有名字的包装结构。
+#[allow(clippy::too_many_arguments)]
 async fn run(
     seconds: u64,
     frame_ms: u32,
@@ -147,6 +239,8 @@ async fn run(
     expected_bps: u32,
     report: Option<PathBuf>,
     quiet: bool,
+    tolerant: bool,
+    netem: NetemOptions,
 ) -> Result<ExitCode> {
     println!("=== AudioLink soak-runner（真实 QUIC 回环 · 不出声）===");
     println!(
@@ -190,9 +284,30 @@ async fn run(
         engine_b.local_addr()
     );
 
+    // ---- 可选：弱网中继（M2 验收口径）----
+    let relay = if netem.enabled() {
+        let relay = NetemRelay::start(engine_b.local_addr(), netem.config(), netem.seed)
+            .await
+            .context("起弱网中继失败")?;
+        println!(
+            "弱网注入：{}（种子 {}）· 中继 {} → {}\n",
+            netem.config().describe(),
+            netem.seed,
+            relay.addr(),
+            engine_b.local_addr()
+        );
+        Some(relay)
+    } else {
+        None
+    };
+    // 发起方连的地址：有中继就连中继，否则直连（这才是「注入」的定义）。
+    let rendezvous = relay
+        .as_ref()
+        .map_or_else(|| engine_b.local_addr(), |relay| relay.addr());
+
     // ---- §5 握手 + PIN 配对 ----
     let mut events_b = engine_b.subscribe();
-    let peer_on_a = match engine_a.connect(engine_b.local_addr()).await {
+    let peer_on_a = match engine_a.connect(rendezvous).await {
         Ok(_) => first_peer(&engine_a).ok_or_else(|| anyhow!("node-a 侧没有建立会话"))?,
         Err(error) if error.code() == ErrorCode::NotPaired => {
             let peer_on_a =
@@ -224,7 +339,34 @@ async fn run(
     tokio::time::sleep(Duration::from_millis(600)).await;
 
     let started_at_unix = unix_now();
-    let mut monitor = SoakMonitor::new(SoakThresholds::default(), expected_bps);
+    // 判据档位：默认是**回环稳态**（任何非零欠载/掩盖/丢包都是缺陷信号）；
+    // 弱网档只钉三件事 —— 会话不断、修复后仍丢包 ≤ 1%、（可选）码率不跑偏。
+    // 理由：弱网下欠载/迟到本来就是给定条件的一部分，把它们算成「故障」等于永远红。
+    let mut thresholds = SoakThresholds::default();
+    if tolerant {
+        // 弱网档的判据是「**可听**」，不是「零异常」：
+        //   · 会话必须一直在 streaming（`not_streaming` 仍然判）；
+        //   · 掩盖比例 ≤ 1%（偶发掩盖可以，成片掩盖不行）—— 这是「可听」的量化版本；
+        //   · 欠载 / 迟到 / NACK 不判：它们是弱网给定条件的一部分，判它们等于永远红。
+        // 瞬时 `loss_pct_x100` 也不判：它是 1 Hz 窗口值，实测在 2% 注入下会瞬间跳到 2%～4%，
+        //   而当窗口的平均掩盖比例只有 0.2% —— 用瞬时值当验收门槛只会制造假警报。
+        let planned_secs = if seconds == 0 { 28_800 } else { seconds };
+        let total_frames = planned_secs.saturating_mul(1_000) / u64::from(frame_ms.max(1));
+        thresholds.max_plc = u32::try_from(total_frames / 100).unwrap_or(u32::MAX);
+        thresholds.max_underruns = u32::MAX;
+        thresholds.max_late_drops = u32::MAX;
+        thresholds.max_nack = u32::MAX;
+        thresholds.max_loss_pct_x100 = u16::MAX;
+    }
+    println!(
+        "判据档位：{}\n",
+        if tolerant {
+            "弱网（宽容）：只钉会话不断与掩盖比例 ≤ 1%"
+        } else {
+            "回环稳态（零容忍）"
+        }
+    );
+    let mut monitor = SoakMonitor::new(thresholds, expected_bps);
     let started = std::time::Instant::now();
     let mut next_tick = tokio::time::Instant::now();
     println!("开始观测（预热 {warmup_seconds} s 不参与判定）…");
@@ -264,6 +406,22 @@ async fn run(
 
     println!("{}", monitor.summary_text(&meta));
     println!("报告：{}", path.display());
+
+    // 弱网注入的自账：丢了多少、按哪个原因丢的 —— 否则「这次卡顿是不是注入造成的」说不清。
+    if let Some(relay) = relay.as_ref() {
+        let netem_path = path.with_extension("netem.json");
+        let elapsed_secs = started.elapsed().as_secs_f64();
+        write_report(&netem_path, &relay.report_json(elapsed_secs)).context("写弱网报告失败")?;
+        let stats = relay.stats();
+        println!(
+            "弱网注入自账：观察 {} · 转发 {} · 按丢包率丢 {} · 限速丢 {} → {}\n",
+            stats.observed,
+            stats.forwarded,
+            stats.dropped_loss,
+            stats.dropped_bandwidth,
+            netem_path.display()
+        );
+    }
 
     engine_a.shutdown().await;
     engine_b.shutdown().await;

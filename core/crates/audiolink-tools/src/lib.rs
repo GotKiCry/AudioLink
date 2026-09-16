@@ -4,6 +4,7 @@
 //!
 //! - [`parse_hex_bytes`]：hex 文本 → 字节串（`alp2-dump` 用，容忍文档里的 `|` / `0x` / `<占位>` 写法）
 //! - [`pcap`]：pcap / pcapng 抓包 → 逐包 UDP 载荷（`alp2-dump --pcap` 的输入层）
+//! - [`netem`]：弱网注入内核（丢包 / 延迟 / 抖动 / 限速，`netem-sim` 与 `soak-runner --netem-*` 共用）
 //! - [`soak`]：长跑采样的异常判定与 JSON 报告（`soak-runner`）
 //! - [`ClockSamples`]：§6 的采样统计（最小 RTT 过滤 + 中位数 + 质量分级），`latency-probe` 用
 //!
@@ -13,6 +14,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)] // 实时路径禁止 panic；确需处用 #[allow] 并注明理由
 #![deny(clippy::panic)]
 
+pub mod netem;
 pub mod pcap;
 pub mod soak;
 
