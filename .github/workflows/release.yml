@@ -1,31 +1,47 @@
 name: Release
 
-# 触发：tag v*.*.*（与 workspace version 必须一致，由 version-consistency 校验）
+# 发布流程（M5）：把「能构建」变成「能发给别人」。
+#
+# 触发：
+#   - `push v*.*.*` tag：构建 + 创建 **草稿** Release（`draft: true` —— 发布是对外动作，留一道人工确认）；
+#   - `workflow_dispatch`：默认只构建并上传 artifact（`publish=false`），用于**验证发布链路本身**。
+#
+# 2026-09-16 修正（这份 workflow 从仓库骨架一直活到现在，却从未真正跑过 —— 因为从没打过 tag）：
+#   1. **产物路径错了**：写的是 `desktop/src-tauri/target/...`，而本仓库 `.cargo/config.toml` 把 target
+#      固定成 `x86_64-pc-windows-msvc`，产物在**仓库根** `target/x86_64-pc-windows-msvc/release/`。
+#      原样跑下去，收集步骤必然空手而归 —— 而 `-ErrorAction SilentlyContinue` 会把这件事吞掉。
+#   2. **缺打包前置**：桌面安装包要带第三方声明（`bundle.resources` 收了它），没先生成就打不出包。
+#   3. **缺更新清单**：`tauri build` 只出「安装包 + .sig」，updater 要的 `latest.json` 没人生成 ——
+#      自动更新于是永远停在「配置在、功能不可用」。
+#   4. **缺密钥时的行为**：没有签名密钥时 `createUpdaterArtifacts` 会让构建直接失败；现在降级构建
+#      并打 `::warning::`，宁可明确说「这份产物不能用于自动更新」。
+
 on:
   push:
-    tags: ['v*.*.*']
+    tags: ["v*.*.*"]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "构建后创建草稿 Release（默认否）"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
+  # ---------- 桌面：NSIS 安装包 + 更新签名 + latest.json ----------
+  desktop:
+    name: desktop installer
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # ---------- 工具链 ----------
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
       - uses: pnpm/action-setup@v4
         with:
           version: 11
@@ -34,55 +50,129 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: desktop/pnpm-lock.yaml
-      - run: cargo install cargo-ndk --locked
-
-      # ---------- 桌面端（NSIS 安装包 + 更新产物）----------
-      - name: Install frontend deps
-        run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
         working-directory: desktop
+      # 打包前置：安装包要带第三方声明。
+      - name: Generate third-party notices
+        run: pwsh tools/license-audit.ps1 -Notices
       - name: Tauri build
+        shell: pwsh
         working-directory: desktop
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri build
-
-      # ---------- Android（双 ABI，Secret 签名）----------
-      - name: Write keystore properties
+        run: |
+          if ([string]::IsNullOrEmpty($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            Write-Host "::warning::未配置 TAURI_SIGNING_PRIVATE_KEY：本次产物不带更新签名（不能用于自动更新）"
+            pnpm tauri build --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          } else {
+            pnpm tauri build --bundles nsis
+          }
+      - name: Generate update manifest
         shell: pwsh
         run: |
-          $p = "android/keystore.properties"
-          @"
-          storeFile=${{ github.workspace }}\android\release.jks
-          storePassword=${{ secrets.ANDROID_STORE_PASSWORD }}
-          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
-          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
-          "@ | Set-Content -Path $p -Encoding utf8NoBOM
-          [IO.File]::WriteAllBytes("${{ github.workspace }}\android\release.jks",
-            [Convert]::FromBase64String("${{ secrets.ANDROID_KEYSTORE_BASE64 }}"))
-      - name: Build Rust core for Android
-        run: cargo ndk -t arm64-v8a -t armeabi-v7a -o android/app/src/main/jniLibs build -p audiolink-ffi --release
-      - name: Assemble release APK
-        working-directory: android
-        run: ./gradlew assembleRelease --no-daemon
-
-      # ---------- 发布 ----------
-      - name: Collect artifacts
+          $sig = Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter "*.sig" -ErrorAction SilentlyContinue
+          if ($sig) {
+            pwsh tools/tauri-latest-json.ps1 -Notes "release $env:GITHUB_REF_NAME"
+          } else {
+            Write-Host "::warning::没有 .sig（未签名构建），跳过 latest.json"
+          }
+      - name: Collect desktop artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path out | Out-Null
-          Copy-Item "desktop/src-tauri/target/release/bundle/nsis/*.exe" out/ -ErrorAction SilentlyContinue
-          Copy-Item "desktop/src-tauri/target/release/bundle/**/*.sig" out/ -ErrorAction SilentlyContinue
-          Copy-Item "desktop/src-tauri/target/release/bundle/**/latest.json" out/ -ErrorAction SilentlyContinue
-          Copy-Item "android/app/build/outputs/apk/release/*.apk" out/AudioLink-android.apk -ErrorAction SilentlyContinue
-          Get-ChildItem out | Format-Table Name, Length
+          $dir = "target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          Copy-Item "$dir/*.exe" out/ -ErrorAction SilentlyContinue
+          Copy-Item "$dir/*.sig" out/ -ErrorAction SilentlyContinue
+          Copy-Item "target/evidence/release/latest.json" out/ -ErrorAction SilentlyContinue
+          $found = Get-ChildItem out -ErrorAction SilentlyContinue
+          if (-not $found) { throw "没有收集到任何产物 —— 检查 target 路径是否变了（.cargo/config.toml）" }
+          $found | Format-Table Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audiolink-desktop
+          path: out/*
+          if-no-files-found: error
 
+  # ---------- Android：双 ABI，keystore 走 secrets（缺则降级 debug 并标注）----------
+  android:
+    name: android apk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle.kts', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+      - run: cargo install cargo-ndk --locked
+      - name: Build Rust core for Android
+        run: cargo ndk -t arm64-v8a -t armeabi-v7a -o android/app/src/main/jniLibs build -p audiolink-ffi --release
+      - name: Assemble APK
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$GITHUB_WORKSPACE/android/release.jks"
+            cat > keystore.properties <<EOF
+          storeFile=$GITHUB_WORKSPACE/android/release.jks
+          storePassword=$ANDROID_STORE_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          keyPassword=$ANDROID_KEY_PASSWORD
+          EOF
+            ./gradlew assembleRelease --no-daemon
+          else
+            echo "::warning::未配置 Android keystore：本次只出 debug APK（不是发布物）"
+            ./gradlew assembleDebug --no-daemon
+          fi
+      - name: Collect APK
+        shell: bash
+        run: |
+          mkdir -p out
+          find android/app/build/outputs/apk -name "*.apk" -exec cp {} out/ \;
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audiolink-android
+          path: out/*.apk
+          if-no-files-found: error
+
+  # ---------- 发布：只在 tag 或显式 publish 时创建**草稿** ----------
+  release:
+    name: publish release
+    needs: [desktop, android]
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: List artifacts
+        run: find dist -type f | sort
+      # draft: true 是刻意的：发布对外，留一道人工确认（也避免半成品被当成正式版）。
       - uses: softprops/action-gh-release@v2      # TODO: pin to SHA
         with:
-          files: out/*
+          files: dist/**/*
           generate_release_notes: true
           draft: true
 
-      # 说明：
-      #  * 绿色版（便携 exe）与安装包同时产出，便携版不含自动更新（见 docs/02-architecture.md §12 技术债）
-      #  * 发布前必须跑 tools/check-version.ps1，保证 Cargo / tauri.conf / build.gradle 三处一致
+# 说明：
+#  * 发布前必须跑 tools/check-version.ps1（CI 的 version-consistency job 每次都在跑）。
+#  * 自动更新的端点是 releases/latest/download/latest.json —— 草稿 Release 不在 latest 里，
+#    所以「草稿 → 手动发布」这一步同时承担了「对外可见」与「更新可见」两件事。
