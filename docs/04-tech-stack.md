@@ -81,7 +81,7 @@
 | 48 kHz 合法帧长**只有 240 / 480 / 960**（5/10/20 ms）；2.5 ms（120）会**直接 panic**（`celt.rs:2252` 的 assert 写错） | `CodecConfig::validate` 白名单校验；M1 只用 10/20 ms |
 | `packet_loss_perc` 与 `use_inband_fec` 在 **CELT-only 帧里是空设置**（逐字节比对输出完全相同；只在 SILK/Hybrid 帧生效） | 48k/160k 恒为 CELT-only ⇒ **ADR-004 的「必须显式设置 packet_loss_perc」在本配置下不成立**；保留字段但不指望它 |
 | `enable_hybrid_mode()` 是**死 API**（只写一个从不被读的字段） | 不要使用 |
-| **CELT-only 没有真正的 PLC**：第 1 个丢失帧只剩 MDCT 重叠余响（rms 0.08、与真实帧互相关 −0.15），**第 2 帧起硬静音**；接回真实包有 −45 dB 瞬态凹陷 | ⇒ **M2 必须自建丢包掩盖**（重复上一包 + 淡出 + 交叉淡化）。`OpusDecoder::concealment_is_real()` 返回 `false` 就是在提醒这一点 |
+| **CELT-only 没有真正的 PLC**：第 1 个丢失帧只剩 MDCT 重叠余响（rms 0.08、与真实帧互相关 −0.15），**第 2 帧起硬静音**；接回真实包有 −45 dB 瞬态凹陷 | ⇒ **M2 已落地自建 PCM 掩盖**：重复上一包、120 ms 淡出、恢复时 2.5 ms 交叉淡化。`opus-rs` 无模式 getter，因此 `OpusDecoder::concealment_is_real()` 对所有档位保守返回 `false`，避免错误调用原生 conceal 污染恢复帧；详见 `docs/17-m2-pcm-concealment.md` |
 | `decode` 返回的是**每声道**样本数（960），不是交错样本数（1920） | `audiolink-audio` 已统一换算成交错样本数返回 |
 | 解码鲁棒性：20000 个畸形包 → Err 17131 / **panic 0** | 可安全放在网络入站路径 |
 | 实测性能（i7-10700 / release） | encode P50 **75 μs**、decode P50 **57 μs**（占 20 ms 帧预算 0.7%）；连续 200 帧**零堆分配**；160 kbps 目标 → 实测 **160.4 kbps**（401 B/帧） |

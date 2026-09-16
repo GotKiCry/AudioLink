@@ -1,7 +1,7 @@
 # AudioLink 交接文档（Handoff）
 
 > **性质**：过程性文档。新会话接手本项目时先读本文，再按 `docs/05-roadmap.md` 推进。
-> **最后更新**：2026-09-16（PHK110 已完成 PIN/启停复测，独立接收队列增长再次复现）· 远端 https://github.com/GotKiCry/AudioLink（PUBLIC）
+> **最后更新**：2026-09-16（接收队列增长已修复，M2 自建 PCM 丢包掩盖已落地）· 远端 https://github.com/GotKiCry/AudioLink（PUBLIC）
 
 ---
 
@@ -16,7 +16,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 | 项 | 状态 |
 |---|---|
 | 远端仓库 | **PUBLIC** · main 分支 · 看板 https://github.com/users/GotKiCry/projects/2 |
-| 本地三条链 | ✅ 内核 workspace（engine 78 + audio 46 + …）· ✅ Android `assembleDebug` + **73** JVM 用例 · ✅ 桌面 `pnpm build` + Tauri `cargo test` |
+| 本地三条链 | ✅ 内核 workspace（engine 83 + audio 50 + …）· ✅ Android `assembleDebug` + **73** JVM 用例 · ✅ 桌面 `pnpm build` + Tauri `cargo test` |
 | 质量门 | ✅ `cargo fmt --all --check` 干净 · ✅ workspace clippy `-D warnings` 干净（独立复核者自跑 exit 0） |
 | M1 真机验收 | ✅ **已跑通**（2026-09-15，真机 MI 8 Lite）：自检 PASS(5/5) / 低延迟模式 ✅ / 零重采样 ✅ / PIN 配对 ✅ / 四轮零断流 ✅ |
 | M1 延迟指标 | ⏳ **未完成**：PHK110 修复后待播队列 P50/P95/max = 40/40/60 ms，不再增长；已有段模型下限约 73 ms，但对端解码与 AudioTrack 输出仍未纳入上限 |
@@ -27,7 +27,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 |---|---|---|
 | QUIC 通道（控制流 #0 + 数据报 + **§6 时钟同步接线**） | `core/crates/audiolink-net` + `audiolink-engine/src/clock.rs` | 20 单测 + 6 真 QUIC 集成；真机 60/60 探针样本、收敛 1.01 s |
 | 自签证书 / 指纹 / 信任库 / PIN 配对 | `core/crates/audiolink-identity` | 22 单测 + 8 黑盒验收 + 真机配对（人工节奏延迟 ≥25 s 提交） |
-| 引擎编排（状态机 / 收发管线 / 遥测 / 对端遥测 / 配对死线） | `core/crates/audiolink-engine` | 78 单测 + 10 集成测试 |
+| 引擎编排（状态机 / 收发管线 / 遥测 / 对端遥测 / 配对死线） | `core/crates/audiolink-engine` | 83 单测 + 10 集成测试 |
 | FFI 桥（UniFFI + 跨端 golden vectors 夹具） | `core/crates/audiolink-ffi` | 24 单测 + 2 真 QUIC/FFI 配对与重启回归 + 双 ABI 构建 |
 | Android 低延迟播放 + **配对 PIN UI** + **队列水位档位** | `android/app/src/main/kotlin/.../` | APK 构建 + **73** JVM 用例 + 真机验证 |
 | 桌面最小 UI（真实引擎，无 mock） | `desktop/` | `pnpm build` + 12 Rust 测试（含接缝）+ 4 端点手工 WASAPI 测试 |
@@ -56,6 +56,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 | `docs/05-roadmap.md` | M0–M5 里程碑、每阶段退出条件（M1 的缓冲口径已按实测修正） |
 | `docs/06-dev-environment.md` | 构建命令 + **坑清单（§4、§4.1、§4.2 务必看）** |
 | `docs/04-tech-stack.md` | 版本矩阵 + ADR（含 ADR-003 的 PLC 实测注记） |
+| `docs/17-m2-pcm-concealment.md` | M2 自建 PCM 丢包掩盖的算法、接收接线、回归与真机证据 |
 | `target/notes/wasapi-0.24-api.md`、`target/notes/opus-rs-0.1.33-api.md` | **源码级 API 侦察 + 实测数字**（一次性产物，不入库；下次要复现就重跑） |
 
 ---
@@ -89,7 +90,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 - Android PIN 缺失/残留已改为 Engine 同步快照，清除丢广播缓存；同时修复旧连接退出误删重连会话。3 项内核回归 + 1 项真 QUIC/FFI 配对回归通过，旧 FFI 对照在断开清 PIN 处失败。详见 `docs/14-pairing-state.md`；PHK110 真机已验证显示/错误/成功/断开/到期/锁定，PIN 看板转 Done（`docs/16`）。
 - 同端口重启任务已完成：Engine 等全部任务与音频线程退出，net 等真实套接字释放，FFI 启停串行且取消后不遗留半成品。新增 5 项回归，覆盖 15 次五状态重启、并发、取消、IO poller 和未完成 QUIC 握手；既有 PIN 回归恢复同端口。详见 `docs/15-engine-restart.md`。
 - PHK110（Android 16 / API 36）真机复现并修复 Android 服务销毁后旧协程回写“运行中”：进程级启停队列 + 实例代次 + 主线程状态发布，4 项新增 JVM 回归及手机普通/快速/推流中/配对中重启通过。新 APK 已安装后回拉核对，详见 `docs/16-android-service-lifecycle.md`。
-- 下一步优先修复接收待播队列增长：新手机连续推流中再次观察到积压，PCM 环已无双倍供给溢出；定量延迟与修复后长跑继续验收。M2 自建 PLC 已开始代码路径调查，用户接入手机后暂先推进 M1。
+- 接收待播队列增长已修复并通过 PHK110 180 s 复测（P50/P95/max 40/40/60 ms，首尾 40 ms）。M2 自建 PCM 丢包掩盖也已完成：120 ms 淡出、2.5 ms 恢复交叉淡化、迟到包预解码丢弃及长空洞限流；约 2% 确定性丢包与 120 ms 突发回归通过，PHK110 正常链路 60 s 队列 P50/P95/max 均为 40 ms。下一步推进有界重排与自适应抖动缓冲，并继续 M1 声学延迟与修复后长跑验收；详见 `docs/17-m2-pcm-concealment.md`。
 
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
@@ -187,7 +188,7 @@ Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本�
 12. **空闲端点零数据**：采集超时不是错误，要计数不要报错；
 13. **`opus-rs` 48k 只接受 240/480/960 帧样本**（2.5 ms 会 panic）；底层 `decode` 返回**每声道**样本数，
     **本项目 `OpusDecoder::decode_into()` 已换算成交错样本数**，调用方不可再乘声道数（Issue #1）；
-14. **CELT-only 没有真 PLC**（第 2 个丢失帧起硬静音）→ M2 必须自建掩盖，别指望 `packet_loss_perc`。
+14. **CELT-only 没有真 PLC**（第 2 个丢失帧起硬静音）→ 已落地自建 PCM 掩盖，别指望 `packet_loss_perc`；`opus-rs` 无模式 getter 时也不能凭 application 猜原生 PLC 可用。
 
 ### 本轮（M1 主线）新踩的坑
 
@@ -241,7 +242,7 @@ Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本�
 
 `12cf674` 的 CI 暴露测量探针并发漏配，已统一状态锁并强化既有回归（2000/2000，见 `docs/16`）。
 手机待播队列增长也已修复：PHK110 180 s 从 P50/P95/max 240/300/320 ms 降至 40/40/60 ms，首尾均 40 ms；
-迟到丢弃增加到 143 次，已明确转入 M2 自适应抖动缓冲与 PLC，不能据此宣称弱网听感完成。
+自建 PCM 丢包掩盖已补齐 CELT 连续丢包硬静音，迟到丢弃增加到 143 次的问题继续转入 M2 自适应抖动缓冲，不能据此宣称弱网听感完成。
 
 | 项 | 说明 | 优先级 |
 |---|---|---|
@@ -250,6 +251,7 @@ Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本�
 | ~~Android PIN 真机复测~~ | ✅ PHK110 已通过，含配对中服务停止/重启（`docs/16`） | ✅ |
 | ~~同端口立即重启~~ | ✅ 已修复，原端口立即重绑、并发与取消语义已验证（`docs/15`） | ✅ |
 | ~~接收待播队列持续增长~~ | ✅ 播放序号随时钟推进，短暂停顿不再永久累积延迟；PHK110 180 s 首尾 40 ms（`docs/16`） | ✅ |
+| ~~CELT-only 自建丢包掩盖~~ | ✅ 重复上一帧 + 120 ms 淡出 + 2.5 ms 恢复交叉淡化，接收序号与遥测已接线（`docs/17`） | ✅ |
 | 设备侧 queuedFrames 进遥测 | 否则账本看不见「对端 AudioTrack」那一段 | P1 |
 | 跨端一致性夹具 | §12 golden vectors 在 Rust 与 FFI 双跑 —— **已落地**（`audiolink-ffi::protocolSelfTest()`） | ✅ 完成 |
 | `alp2-dump` 支持 pcap | 当前只吃 hex 文本；等真有抓包需求再加 | P3 |

@@ -40,7 +40,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use audiolink_audio::{
-    AudioError, CaptureSource, CodecConfig, FrameChunker, OpusDecoder, OpusEncoder, PlayoutSink,
+    AudioError, CONCEAL_FADE_MS, CaptureSource, CodecConfig, FrameChunker, OpusDecoder,
+    OpusEncoder, PcmConcealer, PlayoutSink,
 };
 use audiolink_identity::{IdentityError, NodeIdentity, PIN_TTL, TrustEntry, TrustStore};
 use audiolink_net::{
@@ -996,8 +997,8 @@ async fn run_session(
     // ---------------------------------------------------------------
     // 阶段二：会话（控制面 + 音频收发 + 应用指令）
     // ---------------------------------------------------------------
-    let mut decoder = match OpusDecoder::new(codec) {
-        Ok(decoder) => decoder,
+    let mut audio_receiver = match AudioReceiver::new(codec) {
+        Ok(receiver) => receiver,
         Err(error) => {
             report_error(&inner, &session, &audio_error(&error));
             drop_session(&inner, &session, "decoder init failed");
@@ -1005,10 +1006,8 @@ async fn run_session(
         }
     };
 
-    let mut pcm = vec![0f32; codec.interleaved_frame()];
     let mut dispatch_stats = DispatchStats::default();
 
-    let mut expected_seq: Option<u32> = None;
     let mut last_datagram_at: Option<Instant> = None;
     let mut playback: Option<PlayoutHandle> = None;
     let mut next_stream_id: u32 = 1;
@@ -1161,12 +1160,10 @@ async fn run_session(
 
                         receive_audio(
                             &session,
-                            &mut decoder,
-                            &mut pcm,
+                            &mut audio_receiver,
                             &playback,
                             datagram.header.seq,
                             datagram.payload,
-                            &mut expected_seq,
                         );
                     }
                     Err(error) => {
@@ -1714,63 +1711,137 @@ async fn transmit_audio(
 ///
 /// 接收侧是**唯一**能看见「真实丢包」的地方：`expected = received + lost`，
 /// 分母必须把丢掉的包也算进去，否则丢包率会系统性偏低，而 M2 的自适应码率就建在这个数字上。
-#[allow(clippy::too_many_arguments)] // 参数都是「本函数做完这件事所需的最小输入」，拆包只会把耦合藏起来
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ReceiveReport {
+    expected: u32,
+    lost: u32,
+    plc: u32,
+    late_drops: u32,
+}
+
+/// 单路接收解码状态：序号时间轴、Opus 状态与 PCM 掩盖历史必须一起推进。
+struct AudioReceiver {
+    decoder: OpusDecoder,
+    concealer: PcmConcealer,
+    pcm: Vec<f32>,
+    expected_seq: Option<u32>,
+    max_conceal_frames: u32,
+}
+
+impl AudioReceiver {
+    fn new(codec: CodecConfig) -> Result<Self, AudioError> {
+        let frame_ms = usize::try_from(codec.frame_ms).unwrap_or(20).max(1);
+        Ok(Self {
+            decoder: OpusDecoder::new(codec)?,
+            concealer: PcmConcealer::new(codec.frame_ms)?,
+            pcm: vec![0.0; codec.interleaved_frame()],
+            expected_seq: None,
+            max_conceal_frames: u32::try_from(CONCEAL_FADE_MS.div_ceil(frame_ms))
+                .unwrap_or(u32::MAX),
+        })
+    }
+
+    fn receive(
+        &mut self,
+        seq: u32,
+        payload: &[u8],
+        mut emit: impl FnMut(PlaybackFrame) -> bool,
+    ) -> ReceiveReport {
+        let mut report = ReceiveReport::default();
+        let gap = match self.expected_seq {
+            None => 0,
+            Some(expected) => {
+                let forward = seq.wrapping_sub(expected);
+                if forward >= (1 << 31) {
+                    report.late_drops = 1;
+                    return report;
+                }
+                if forward >= 1_000 {
+                    // 同一条 M1 流不应跳过 20 s 以上。把它当时间轴重建，避免一次异常包触发
+                    // 上千次解码和分配；新包成为新的基准，平台播放游标仍会按序号补静音。
+                    if let Ok(decoder) = OpusDecoder::new(self.decoder.config()) {
+                        self.decoder = decoder;
+                    }
+                    self.concealer.reset();
+                    0
+                } else {
+                    forward
+                }
+            }
+        };
+        self.expected_seq = Some(seq.wrapping_add(1));
+        report.expected = gap.saturating_add(1);
+        report.lost = gap;
+
+        let conceal_frames = gap.min(self.max_conceal_frames);
+        for missing in 0..conceal_frames {
+            if self.decoder.concealment_is_real() {
+                let _ = self.decoder.conceal_into(&mut self.pcm);
+            }
+            if self.concealer.conceal_into(&mut self.pcm).is_err() {
+                self.pcm.fill(0.0);
+            }
+            let missing_seq = seq.wrapping_sub(gap - missing);
+            if !emit(PlaybackFrame {
+                seq: missing_seq,
+                samples: self.pcm.clone(),
+            }) {
+                report.late_drops = report.late_drops.saturating_add(1);
+            }
+            report.plc = report.plc.saturating_add(1);
+        }
+        if gap > conceal_frames {
+            // 自建掩盖已经淡出到静音；剩余空洞由播放游标补静音。重建 Opus 状态，
+            // 但保留 concealer 的静音尾部，让真实包回来时仍能从 0 平滑淡入。
+            if let Ok(decoder) = OpusDecoder::new(self.decoder.config()) {
+                self.decoder = decoder;
+            }
+        }
+
+        let decoded = match self.decoder.decode_into(payload, &mut self.pcm) {
+            Ok(decoded) if decoded == self.pcm.len() => {
+                let _ = self.concealer.process_good(&mut self.pcm);
+                decoded
+            }
+            Ok(_) | Err(_) => {
+                if self.decoder.concealment_is_real() {
+                    let _ = self.decoder.conceal_into(&mut self.pcm);
+                }
+                if self.concealer.conceal_into(&mut self.pcm).is_err() {
+                    self.pcm.fill(0.0);
+                }
+                report.plc = report.plc.saturating_add(1);
+                self.pcm.len()
+            }
+        };
+        if !emit(PlaybackFrame {
+            seq,
+            samples: self.pcm[..decoded].to_vec(),
+        }) {
+            report.late_drops = report.late_drops.saturating_add(1);
+        }
+        report
+    }
+}
+
 fn receive_audio(
     session: &Arc<PeerSession>,
-    decoder: &mut OpusDecoder,
-    pcm: &mut [f32],
+    receiver: &mut AudioReceiver,
     playback: &Option<PlayoutHandle>,
     seq: u32,
     payload: &[u8],
-    expected_seq: &mut Option<u32>,
 ) {
-    // 序号跳跃 = 中间那些包在网络里丢了（QUIC 数据报不重传）。
-    if let Some(expected) = *expected_seq {
-        let gap = seq.wrapping_sub(expected);
-        // `gap == 0` 是重传/重复；`gap` 很大说明是会话重启后序号回绕，两种都不计丢包。
-        if gap > 0
-            && gap < 1_000
-            && let Ok(mut telemetry) = session.telemetry.lock()
-        {
-            for _ in 0..gap {
-                telemetry.record_expected();
-            }
-            telemetry.record_lost(gap);
-        }
-    }
-    *expected_seq = Some(seq.wrapping_add(1));
-
+    let report = receiver.receive(seq, payload, |frame| {
+        playback
+            .as_ref()
+            .is_none_or(|handle| handle.try_push(frame))
+    });
     if let Ok(mut telemetry) = session.telemetry.lock() {
-        telemetry.record_expected();
+        telemetry.record_expected_frames(report.expected);
+        telemetry.record_lost(report.lost);
         telemetry.record_received(payload.len());
-    }
-
-    // CELT-only 没有真 PLC（ADR-003 注记）：`decode_into` 失败就等于这一帧没了，
-    // 自建掩盖属 M2。M1 只如实计数，不假装补出了声音。
-    let Ok(decoded) = decoder.decode_into(payload, pcm) else {
-        if let Ok(mut telemetry) = session.telemetry.lock() {
-            telemetry.record_plc();
-        }
-        return;
-    };
-
-    let Some(handle) = playback.as_ref() else {
-        return; // 对端在开流协商前就发了音频：忽略
-    };
-
-    // 本项目的 OpusDecoder 封装已把底层每声道样本数换算为交错样本数。
-    // 直接使用有效长度；再次乘声道数会把缓冲尾部也送进播放队列（Issue #1）。
-    let Some(frame) = pcm.get(..decoded) else {
-        return;
-    };
-
-    // 队列满 = 播放跟不上：丢这一帧（§7 第 1 条：宁可丢一帧，也不延迟出声）。
-    if !handle.try_push(PlaybackFrame {
-        seq,
-        samples: frame.to_vec(),
-    }) && let Ok(mut telemetry) = session.telemetry.lock()
-    {
-        telemetry.record_late_drop();
+        telemetry.record_plc_frames(report.plc);
+        telemetry.record_late_drops(report.late_drops);
     }
 }
 

@@ -118,7 +118,12 @@ impl TelemetryAggregator {
     /// 这个口径让丢包率有稳定的分母：分母随发送端的包率走，不受「丢包后收不到包」影响，
     /// 否则丢包会让分母一起塌陷，算出来的丢包率会系统性偏低。
     pub fn record_expected(&mut self) {
-        self.window_expected = self.window_expected.saturating_add(1);
+        self.record_expected_frames(1);
+    }
+
+    /// 一次记录多个本应收到的包（序号跳跃时避免逐包加锁/循环）。
+    pub fn record_expected_frames(&mut self, count: u32) {
+        self.window_expected = self.window_expected.saturating_add(count);
     }
 
     /// 记录成功收到一个数据报（`payload_len` 为载荷字节数，用于算实际码率）。
@@ -157,7 +162,12 @@ impl TelemetryAggregator {
 
     /// 记录一次丢包隐藏（`plc_count`）。
     pub fn record_plc(&mut self) {
-        self.plc_count = self.plc_count.saturating_add(1);
+        self.record_plc_frames(1);
+    }
+
+    /// 一次记录多个丢包隐藏帧。
+    pub fn record_plc_frames(&mut self, count: u32) {
+        self.plc_count = self.plc_count.saturating_add(count);
     }
 
     /// 记录一次重传请求（M2 起启用；M1 恒为 0）。

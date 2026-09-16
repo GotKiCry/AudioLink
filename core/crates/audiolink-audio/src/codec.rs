@@ -327,13 +327,14 @@ impl OpusDecoder {
         Ok(written * CHANNELS as usize)
     }
 
-    /// 当前档位下 [`OpusDecoder::conceal_into`] 是否提供了**真实**的丢包掩盖。
+    /// 当前档位下 [`OpusDecoder::conceal_into`] 是否能被证明提供**真实**的丢包掩盖。
     ///
-    /// 实测：只有 SILK / Hybrid 帧（`Application::Voip` 或 [`Application::Audio`] 的低码率分支）
-    /// 才会走 pitch 外推式掩盖；CELT-only（`RESTRICTED_LOWDELAY` 恒为 CELT-only）返回 `false`。
-    /// 上层据此决定「要不要自己实现重复上一包 + 淡出」。
+    /// `opus-rs` 不公开每包最终选择的 SILK / Hybrid / CELT 模式；`Application::Audio` 在本项目
+    /// 160 kbps 档同样会走 CELT，不能仅凭 application 猜测。为了不让一次错误猜测污染恢复帧，
+    /// 当前所有支持档位都保守返回 `false`，上层使用自建 PCM 掩盖。将来只有拿到可靠模式 getter
+    /// 或逐包 ToC 判定后，才可对已证明的 SILK / Hybrid 路径返回 `true`。
     pub const fn concealment_is_real(&self) -> bool {
-        !matches!(self.config.application, Application::RestrictedLowDelay)
+        false
     }
 
     /// 累计丢包隐藏帧数（遥测 §10 的 `plc_count`）。
@@ -532,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn celt_only_的丢包掩盖被标记为非真实() {
+    fn 无模式_getter_时所有档位都保守使用自建掩盖() {
         let restricted = OpusDecoder::new(CodecConfig::m1_default()).unwrap();
         assert!(
             !restricted.concealment_is_real(),
@@ -543,7 +544,10 @@ mod tests {
             ..CodecConfig::m1_default()
         })
         .unwrap();
-        assert!(audio.concealment_is_real(), "其它应用模式走 SILK 掩盖");
+        assert!(
+            !audio.concealment_is_real(),
+            "Application::Audio 在高码率也会走 CELT，不能只看 application 猜模式"
+        );
     }
 
     /// 这条测试**固定住一个已知缺陷**（不是我们要的行为，但必须先如实记录）：

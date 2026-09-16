@@ -10,6 +10,7 @@
 //! | [`format`] | 统一内部格式（48 kHz / f32 / 2ch 交错）与设备格式转换 |
 //! | [`chunker`] | 固定帧长组帧（环形槽，零拷贝出帧，队列满丢最旧） |
 //! | [`codec`] | Opus 编解码封装（参数基线、PLC、遥测计数） |
+//! | [`conceal`] | CELT 丢包时的 PCM 重复、淡出与恢复交叉淡化 |
 //! | [`ring`] | 采集线程 → 编码线程的无锁 SPSC 采样环 |
 //! | [`source`] / [`sink`] | 采集与播放的平台抽象（ADR-010） |
 //! | [`synth`] | 无设备的合成实现（CI / 无声卡环境下的链路验证） |
@@ -31,6 +32,7 @@
 
 pub mod chunker;
 pub mod codec;
+pub mod conceal;
 pub mod error;
 pub mod format;
 pub mod latency;
@@ -45,6 +47,7 @@ pub mod wasapi;
 
 pub use chunker::{ChunkerStats, FrameChunker};
 pub use codec::{CodecConfig, OpusDecoder, OpusEncoder};
+pub use conceal::{CONCEAL_CROSSFADE_SAMPLES, CONCEAL_FADE_MS, PcmConcealer};
 pub use error::AudioError;
 pub use format::{
     CHANNELS, DEFAULT_FRAME_INTERLEAVED, DEFAULT_FRAME_MS, DEFAULT_FRAME_SAMPLES, DeviceFormat,
