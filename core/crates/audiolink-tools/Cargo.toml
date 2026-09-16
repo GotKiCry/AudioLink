@@ -63,6 +63,11 @@ path = "src/bin/soak_runner.rs"
 test = false
 
 # M2 的弱网测试台：透明 UDP 中继 + 丢包 / 延迟 / 抖动 / 限速注入
+# 双机录音对齐（M3 验收的测具：脉冲 + 波形对齐 → 偏差 / 漂移报告）
+[[bin]]
+name = "sync-measure"
+path = "src/bin/sync_measure.rs"
+
 [[bin]]
 name = "netem-sim"
 path = "src/bin/netem_sim.rs"

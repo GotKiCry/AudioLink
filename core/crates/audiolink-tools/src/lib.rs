@@ -17,6 +17,7 @@
 pub mod netem;
 pub mod pcap;
 pub mod soak;
+pub mod syncmeasure;
 
 use std::fmt;
 
