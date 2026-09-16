@@ -8,7 +8,10 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
-use audiolink_tools::license::{Verdict, audit_cargo_metadata, audit_npm_licenses, render_report};
+use audiolink_tools::license::{
+    Verdict, audit_cargo_metadata, audit_npm_licenses, collect_notices, render_notices,
+    render_report,
+};
 
 fn main() {
     if let Err(error) = run() {
@@ -21,6 +24,7 @@ fn run() -> anyhow::Result<()> {
     let mut cargo_path: Option<PathBuf> = None;
     let mut npm_path: Option<PathBuf> = None;
     let mut write_path: Option<PathBuf> = None;
+    let mut notices_path: Option<PathBuf> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -28,6 +32,7 @@ fn run() -> anyhow::Result<()> {
             "--cargo" => cargo_path = args.next().map(PathBuf::from),
             "--npm" => npm_path = args.next().map(PathBuf::from),
             "--write" => write_path = args.next().map(PathBuf::from),
+            "--notices" => notices_path = args.next().map(PathBuf::from),
             "--help" | "-h" => {
                 usage();
                 return Ok(());
@@ -58,6 +63,22 @@ fn run() -> anyhow::Result<()> {
         }
         std::fs::write(&path, &report).with_context(|| format!("写入 {}", path.display()))?;
         println!("license-audit: 报告已写入 {}", path.display());
+    }
+
+    if let Some(path) = notices_path {
+        let (entries, texts) = collect_notices(&rust_json).map_err(anyhow::Error::msg)?;
+        let notices = render_notices(&entries, &texts, &frontend);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("创建 {}", parent.display()))?;
+        }
+        std::fs::write(&path, &notices).with_context(|| format!("写入 {}", path.display()))?;
+        println!(
+            "license-audit: 第三方声明已写入 {}（{} 个组件 / {} 份去重全文）",
+            path.display(),
+            entries.len(),
+            texts.len()
+        );
     }
 
     let denied: Vec<_> = rust
@@ -91,6 +112,7 @@ fn run() -> anyhow::Result<()> {
 
 fn usage() {
     println!(
-        "license-audit --cargo <cargo-metadata.json> [--npm <pnpm-licenses.json>] [--write <report.md>]"
+        "license-audit --cargo <cargo-metadata.json> [--npm <pnpm-licenses.json>] \\
+         [--write <report.md>] [--notices <THIRD-PARTY-NOTICES.md>]"
     );
 }

@@ -10,7 +10,11 @@ param(
     # 前端依赖没装（冷 checkout / 只想看 Rust 侧）时跳过 pnpm。
     [switch]$SkipNpm,
     # 报告落盘位置（相对仓库根）。
-    [string]$Report = "docs/compliance/license-report.md"
+    [string]$Report = "docs/compliance/license-report.md",
+    # 同时生成第三方组件声明（清单 + 去重后的许可全文）。发布前才需要，平时不生成。
+    [switch]$Notices,
+    # 声明落盘位置（相对仓库根）。
+    [string]$NoticesPath = "docs/compliance/THIRD-PARTY-NOTICES.md"
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,6 +53,7 @@ $cargoArgs = @(
     "--write", (Join-Path $root $Report)
 )
 if ($npmJson) { $cargoArgs += @("--npm", $npmJson) }
+if ($Notices) { $cargoArgs += @("--notices", (Join-Path $root $NoticesPath)) }
 
 Push-Location $root
 & cargo @cargoArgs

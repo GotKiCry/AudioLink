@@ -471,3 +471,339 @@ mod tests {
         assert!(first.contains("未覆盖"), "覆盖面必须写在报告里");
     }
 }
+
+// ---------------------------------------------------------------------------
+// THIRD-PARTY-NOTICES 生成（M5 合规第二块）
+// ---------------------------------------------------------------------------
+
+use std::collections::BTreeMap;
+use std::hash::{Hash as _, Hasher as _};
+use std::path::{Path, PathBuf};
+
+/// 一份**去重后**的许可全文。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoticeText {
+    /// 人类可读来源标签（取自文件名，如 `LICENSE-MIT`）。
+    pub label: String,
+    /// 全文。
+    pub body: String,
+}
+
+/// 一个第三方组件在声明里的条目。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoticeEntry {
+    /// 包名。
+    pub name: String,
+    /// 版本。
+    pub version: String,
+    /// 许可表达式。
+    pub license: String,
+    /// 指向 [`NoticeText`] 的下标（一个包可能带两份：如 `LICENSE-MIT` + `LICENSE-APACHE`）。
+    pub texts: Vec<usize>,
+}
+
+/// 这个文件名看起来是不是许可/声明文件。
+fn is_license_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    let upper = name.to_ascii_uppercase();
+    ["LICENSE", "LICENCE", "COPYING", "NOTICE"]
+        .iter()
+        .any(|prefix| upper.starts_with(prefix))
+}
+
+fn body_key(body: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    body.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// 从 `cargo metadata` 收集「组件 + 许可全文」。
+///
+/// 全文从每个包的 `manifest_path` **同目录**下读（`LICENSE*` / `LICENCE*` / `COPYING*` / `NOTICE*`），
+/// 按**内容**去重：实测 635 个包里有 570 个带文件，但只有 148 份不同内容 —— 这正是
+/// 「清单 + 全文」能塞进一个文档的原因。
+///
+/// 读不到文件不是错误：包可能只在 `Cargo.toml` 里写了 SPDX 标识。
+pub fn collect_notices(json: &str) -> Result<(Vec<NoticeEntry>, Vec<NoticeText>), String> {
+    let value: Value = serde_json::from_str(json).map_err(|error| error.to_string())?;
+    let packages = value
+        .get("packages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "cargo metadata 缺少 packages 字段".to_string())?;
+
+    let mut texts: Vec<NoticeText> = Vec::new();
+    let mut seen: BTreeMap<u64, usize> = BTreeMap::new();
+    let mut entries = Vec::with_capacity(packages.len());
+
+    for package in packages {
+        // 本仓库自己的 crate 不进第三方声明（`cargo metadata` 里 source 为 null）——
+        // 它们不是「第三方」，而且它们的许可文件在仓库根，不在各自目录下。
+        if package.get("source").is_none_or(Value::is_null) {
+            continue;
+        }
+        let name = package
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_string();
+        let version = package
+            .get("version")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_string();
+        let license = package
+            .get("license")
+            .and_then(Value::as_str)
+            .or_else(|| package.get("license_file").and_then(Value::as_str))
+            .unwrap_or("(未声明)")
+            .to_string();
+
+        let mut indices: Vec<usize> = Vec::new();
+        if let Some(directory) = package
+            .get("manifest_path")
+            .and_then(Value::as_str)
+            .and_then(|manifest| Path::new(manifest).parent())
+        {
+            let mut files: Vec<PathBuf> = std::fs::read_dir(directory)
+                .map(|read| {
+                    read.filter_map(Result::ok)
+                        .map(|item| item.path())
+                        .filter(|path| path.is_file() && is_license_file(path))
+                        .collect()
+                })
+                .unwrap_or_default();
+            files.sort();
+            for file in files {
+                let Ok(body) = std::fs::read_to_string(&file) else {
+                    continue;
+                };
+                if body.trim().is_empty() {
+                    continue;
+                }
+                let key = body_key(&body);
+                let index = if let Some(existing) = seen.get(&key) {
+                    *existing
+                } else {
+                    let label = file
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("LICENSE")
+                        .to_string();
+                    texts.push(NoticeText { label, body });
+                    let index = texts.len() - 1;
+                    seen.insert(key, index);
+                    index
+                };
+                indices.push(index);
+            }
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        entries.push(NoticeEntry {
+            name,
+            version,
+            license,
+            texts: indices,
+        });
+    }
+
+    Ok((entries, texts))
+}
+
+/// 渲染 `THIRD-PARTY-NOTICES.md`。
+///
+/// **全量口径**：清单包含整棵依赖图（含构建期依赖），它是分发包实际内容集的**超集** ——
+/// 多列不构成合规问题，漏列才是。收窄到「运行时子集」是可选的优化，不是必需。
+#[must_use]
+pub fn render_notices(entries: &[NoticeEntry], texts: &[NoticeText], frontend: &[Entry]) -> String {
+    let mut out = String::new();
+    out.push_str("# 第三方组件声明（THIRD-PARTY NOTICES）\n\n");
+    out.push_str("> 由 `tools/license-audit.ps1 -Notices` 自动生成，**请勿手改**。\n");
+    out.push_str(
+        "> 口径：**整棵依赖图的超集**（含构建期依赖）—— 多列不构成合规问题，漏列才是。\n\n",
+    );
+
+    out.push_str("## 1. 组件清单（按许可分组）\n\n");
+    let mut groups: BTreeMap<&str, Vec<&NoticeEntry>> = BTreeMap::new();
+    for entry in entries {
+        groups
+            .entry(entry.license.as_str())
+            .or_default()
+            .push(entry);
+    }
+    for (license, list) in &mut groups {
+        list.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.version.cmp(&b.version)));
+        out.push_str(&format!("### {} （{} 个）\n\n", license, list.len()));
+        for entry in list.iter() {
+            let marker = if entry.texts.is_empty() {
+                " ⚠️无全文"
+            } else {
+                ""
+            };
+            out.push_str(&format!("- {} {}{}\n", entry.name, entry.version, marker));
+        }
+        out.push('\n');
+    }
+
+    if !frontend.is_empty() {
+        out.push_str("### 前端依赖（pnpm 不提供许可文件路径，只列清单）\n\n");
+        let mut list: Vec<&Entry> = frontend.iter().collect();
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        for entry in list {
+            out.push_str(&format!(
+                "- {} {}（{}）\n",
+                entry.name, entry.version, entry.license
+            ));
+        }
+        out.push('\n');
+    }
+
+    out.push_str("## 2. 许可全文（按内容去重）\n\n");
+    for (index, text) in texts.iter().enumerate() {
+        let users = entries
+            .iter()
+            .filter(|entry| entry.texts.contains(&index))
+            .count();
+        out.push_str(&format!(
+            "### 文本 {} · {}（被 {} 个包引用）\n\n",
+            index + 1,
+            text.label,
+            users
+        ));
+        out.push_str("```text\n");
+        out.push_str(text.body.trim_end());
+        out.push_str("\n```\n\n");
+    }
+    out.push_str(&format!("（共 {} 份去重后的许可全文）\n", texts.len()));
+    out
+}
+
+#[cfg(test)]
+mod notice_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    /// 本仓库自己的 crate 不该出现在第三方声明里。
+    #[test]
+    fn own_packages_are_not_listed() {
+        let json = serde_json::json!({
+            "packages": [
+                {"name": "mine", "version": "0.1.0", "license": "Apache-2.0", "source": null},
+                {"name": "theirs", "version": "1.0.0", "license": "MIT",
+                 "source": "registry+https://github.com/rust-lang/crates.io-index"},
+            ]
+        })
+        .to_string();
+        let (entries, _texts) = collect_notices(&json).expect("收集");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "theirs");
+    }
+
+    /// 造一个最小 workspace：两个包共用同一份许可文本 → 只应留一份全文。
+    #[test]
+    fn identical_license_bodies_are_deduplicated() {
+        let dir = tempfile::TempDir::new().expect("临时目录");
+        let a = dir.path().join("alpha-1.0.0");
+        let b = dir.path().join("beta-2.0.0");
+        std::fs::create_dir_all(&a).expect("建目录");
+        std::fs::create_dir_all(&b).expect("建目录");
+        let body = "MIT License\n\nPermission is hereby granted, free of charge...\n";
+        std::fs::write(a.join("LICENSE"), body).expect("写");
+        std::fs::write(b.join("LICENSE"), body).expect("写");
+
+        let json = serde_json::json!({
+            "packages": [
+                {"name": "alpha", "version": "1.0.0", "license": "MIT", "source": "registry+https://x",
+                 "manifest_path": a.join("Cargo.toml").to_string_lossy()},
+                {"name": "beta", "version": "2.0.0", "license": "MIT", "source": "registry+https://x",
+                 "manifest_path": b.join("Cargo.toml").to_string_lossy()},
+            ]
+        })
+        .to_string();
+
+        let (entries, texts) = collect_notices(&json).expect("收集");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(texts.len(), 1, "同一份文本只应留一份");
+        assert_eq!(entries[0].texts, vec![0]);
+        assert_eq!(entries[1].texts, vec![0]);
+        assert!(texts[0].body.contains("Permission is hereby granted"));
+    }
+
+    /// 双许可包（LICENSE-MIT + LICENSE-APACHE）两份都要收，且非许可文件不收。
+    #[test]
+    fn dual_licensed_packages_keep_both_texts() {
+        let dir = tempfile::TempDir::new().expect("临时目录");
+        let pkg = dir.path().join("dual-1.0.0");
+        std::fs::create_dir_all(&pkg).expect("建目录");
+        std::fs::write(pkg.join("LICENSE-MIT"), "MIT 文本\n").expect("写");
+        std::fs::write(pkg.join("LICENSE-APACHE"), "Apache 文本\n").expect("写");
+        std::fs::write(pkg.join("README.md"), "不是许可文件\n").expect("写");
+
+        let json = serde_json::json!({
+            "packages": [
+                {"name": "dual", "version": "1.0.0", "license": "MIT OR Apache-2.0", "source": "registry+https://x",
+                 "manifest_path": pkg.join("Cargo.toml").to_string_lossy()},
+            ]
+        })
+        .to_string();
+
+        let (entries, texts) = collect_notices(&json).expect("收集");
+        assert_eq!(entries[0].texts.len(), 2);
+        assert_eq!(texts.len(), 2);
+        assert!(texts.iter().any(|text| text.label == "LICENSE-APACHE"));
+    }
+
+    /// 只有 SPDX 标识、没有文件的包：条目照收，但必须标出「没有全文」。
+    #[test]
+    fn packages_without_files_are_still_listed() {
+        let dir = tempfile::TempDir::new().expect("临时目录");
+        let pkg = dir.path().join("bare-1.0.0");
+        std::fs::create_dir_all(&pkg).expect("建目录");
+        let json = serde_json::json!({
+            "packages": [
+                {"name": "bare", "version": "1.0.0", "license": "MIT", "source": "registry+https://x",
+                 "manifest_path": pkg.join("Cargo.toml").to_string_lossy()},
+            ]
+        })
+        .to_string();
+
+        let (entries, texts) = collect_notices(&json).expect("收集");
+        assert!(texts.is_empty());
+        assert!(entries[0].texts.is_empty());
+        let rendered = render_notices(&entries, &texts, &[]);
+        assert!(rendered.contains("⚠️无全文"), "缺全文必须显式标出来");
+    }
+
+    #[test]
+    fn notices_are_idempotent_and_grouped() {
+        let entries = vec![
+            NoticeEntry {
+                name: "zeta".to_string(),
+                version: "1.0.0".to_string(),
+                license: "MIT".to_string(),
+                texts: vec![0],
+            },
+            NoticeEntry {
+                name: "alpha".to_string(),
+                version: "2.0.0".to_string(),
+                license: "MIT".to_string(),
+                texts: vec![0],
+            },
+        ];
+        let texts = vec![NoticeText {
+            label: "LICENSE".to_string(),
+            body: "MIT 全文".to_string(),
+        }];
+        let first = render_notices(&entries, &texts, &[]);
+        let second = render_notices(&entries, &texts, &[]);
+        assert_eq!(first, second, "声明必须幂等");
+        assert!(first.contains("### MIT （2 个）"));
+        let alpha_at = first.find("alpha 2.0.0").expect("列在清单里");
+        let zeta_at = first.find("zeta 1.0.0").expect("列在清单里");
+        assert!(alpha_at < zeta_at, "组内按名排序，输出才稳定");
+        assert!(first.contains("被 2 个包引用"));
+    }
+}
