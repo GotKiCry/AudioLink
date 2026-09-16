@@ -72,6 +72,8 @@
 | 端到端 | --self-test --write target/evidence/sync 写出两段真 WAV（各 384 044 B / 192 000 帧），再用 sync-measure a.wav b.wav --json 走完整命令行：6 对全部 NCC ≈ 1.0，逐对偏差 4.708 / 4.750 / 4.812 / 4.875 / 4.938 / 5.000 ms（真值 4.7 + 0.06·i），判定 within，退出码 0，报告落到 target/evidence/sync/report.json |
 | 质量门 | fmt / clippy(-D warnings) / 内核全量测试 |
 
+提交 **6e2fddd** 已推送 main；CI run **35083496842**（core / android / desktop / version-consistency）四个 job 全绿。
+
 实测输出：
 
     自检：配对 6 对（a=6 / b=6 个脉冲）
