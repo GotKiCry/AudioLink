@@ -456,6 +456,13 @@ struct PeerSession {
     rx_axis: Arc<AtomicU64>,
     /// §13 能力协商结果（`None` = 还没协商完）。
     capabilities: Mutex<Option<PeerCapabilities>>,
+    /// §7：**待应用**的组基准 —— 收到 `GROUP_EPOCH` 时若播放句柄还没建好（流没开），先存这里，
+    /// `OpenStream` 建好句柄后立刻应用。
+    ///
+    /// 为什么必须有这个槽位（第 58 轮定位的真缺陷）：`GROUP_EPOCH` 常常**先于开流**到达，
+    /// 而那一分支原先只在 `playback` 已存在时才 `set_schedule`，否则静默跳过 —— 排播从未生效，
+    /// 接收端退回本地游标，组内同步形同虚设。
+    pending_schedule: Mutex<Option<EpochSchedule>>,
 }
 
 #[derive(Default)]
@@ -1787,18 +1794,31 @@ async fn run_session(
                         }
                     }
                     SessionCommand::SchedulePlayout { schedule, reply } => {
-                        let result = match playback.as_ref() {
-                            Some(handle) => {
-                                let offset_us = clock_estimate_of(&session)
-                                    .map(|estimate| estimate.offset_us)
-                                    .unwrap_or(0);
-                                let frame_samples = u32::try_from(frame_ms).unwrap_or(20) * 48;
-                                let _ = handle.set_schedule(schedule, offset_us, frame_samples);
+                        // 播放句柄还没建好时**暂存**而不是报错：显式 API 与组基准同一条原则 ——
+                        // 「先建组、再推流」是正常用法，回 `cap_unsupported` 等于把正常用法说成不支持
+                        // （第 58 轮定位的真缺陷）。
+                        let result = match schedule {
+                            Some(schedule) => {
+                                let frame_ms_u32 = u32::try_from(frame_ms).unwrap_or(20);
+                                if apply_schedule(&session, &playback, schedule, frame_ms_u32) {
+                                    Ok(())
+                                } else {
+                                    stash_schedule(&session, schedule);
+                                    Ok(())
+                                }
+                            }
+                            None => {
+                                clear_stashed_schedule(&session);
+                                if let Some(handle) = playback.as_ref() {
+                                    let offset_us = clock_estimate_of(&session)
+                                        .map(|estimate| estimate.offset_us)
+                                        .unwrap_or(0);
+                                    let frame_samples =
+                                        u32::try_from(frame_ms).unwrap_or(20).max(1) * 48;
+                                    let _ = handle.set_schedule(None, offset_us, frame_samples);
+                                }
                                 Ok(())
                             }
-                            None => Err(AudioLinkError::cap_unsupported(
-                                "this node has no playout sink to schedule",
-                            )),
                         };
                         let _ = reply.send(result);
                     }
@@ -2222,6 +2242,7 @@ fn create_session(
         pairing: Mutex::new(PairingState::default()),
         rx_axis: Arc::new(AtomicU64::new(u64::MAX)),
         capabilities: Mutex::new(None),
+        pending_schedule: Mutex::new(None),
     });
 
     let previous = inner
@@ -3239,6 +3260,49 @@ fn clock_estimate_of(session: &Arc<PeerSession>) -> Option<ClockEstimate> {
     session.clock.lock().ok()?.estimate()
 }
 
+/// §7：把一份组基准写到播放句柄上（顺带取**当时**的时钟偏移快照）。
+///
+/// 返回 `false` = 还没有播放句柄（流没开）。调用方据此决定「暂存」还是「应用」——
+/// **不能丢**：组基准常常先于开流到达（第 58 轮定位的真缺陷）。
+fn apply_schedule(
+    session: &Arc<PeerSession>,
+    playback: &Option<PlayoutHandle>,
+    schedule: EpochSchedule,
+    frame_ms: u32,
+) -> bool {
+    let Some(handle) = playback.as_ref() else {
+        return false;
+    };
+    let offset_us = clock_estimate_of(session)
+        .map(|estimate| estimate.offset_us)
+        .unwrap_or(0);
+    let frame_samples = frame_ms.max(1) * 48;
+    handle.set_schedule(Some(schedule), offset_us, frame_samples)
+}
+
+/// §7：暂存「还没法应用」的组基准，等 `OpenStream` 建好播放句柄再补上。
+fn stash_schedule(session: &Arc<PeerSession>, schedule: EpochSchedule) {
+    if let Ok(mut slot) = session.pending_schedule.lock() {
+        *slot = Some(schedule);
+    }
+}
+
+/// §7：取出并清空暂存的组基准。
+fn take_stashed_schedule(session: &Arc<PeerSession>) -> Option<EpochSchedule> {
+    session
+        .pending_schedule
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
+}
+
+/// §7：清空暂存的组基准（显式清除排播时用）。
+fn clear_stashed_schedule(session: &Arc<PeerSession>) {
+    if let Ok(mut slot) = session.pending_schedule.lock() {
+        *slot = None;
+    }
+}
+
 /// 把当前估计写进遥测：样本 < 8 时保持 0（见 [`publish_clock`]）。
 fn publish_clock_to_telemetry(session: &Arc<PeerSession>) {
     let estimate = clock_estimate_of(session);
@@ -3297,6 +3361,17 @@ async fn handle_control(
                 }
             }
 
+            // §7：流开之前收到的组基准在这里补上 —— 否则那次 `GROUP_EPOCH` 就被静默丢掉了。
+            if let Some(schedule) = take_stashed_schedule(session) {
+                let applied = apply_schedule(session, playback, schedule, codec.frame_ms);
+                tracing::info!(
+                    epoch_id = schedule.epoch_id,
+                    lead_ms = schedule.lead_ms,
+                    applied,
+                    "§7 开流后补应用先前暂存的组基准"
+                );
+            }
+
             let ack = ControlRequest::OpenStreamAck(OpenStreamAckPayload {
                 session_id: open.session_id,
                 stream_id: id,
@@ -3317,14 +3392,20 @@ async fn handle_control(
 
         ControlRequest::GroupCreate(payload) => {
             // §7：建组帧同时携带组基准 —— 接收侧据此排播，并让上层知道「我在哪个组」。
-            if let Some(handle) = playback.as_ref() {
-                let offset_us = clock_estimate_of(session)
-                    .map(|estimate| estimate.offset_us)
-                    .unwrap_or(0);
-                let frame_samples = codec.frame_ms.max(1) * 48;
-                let schedule =
-                    EpochSchedule::new(payload.epoch_id, payload.epoch_local_us, payload.lead_ms);
-                let _ = handle.set_schedule(Some(schedule), offset_us, frame_samples);
+            //
+            // 播放句柄还没建好（流没开）时**暂存**而不是跳过：`create_group` 只发这一帧
+            // （`GROUP_EPOCH` 只用于动态加入），而「先建组、再推流」正是正常用法 ——
+            // 跳过就等于排播从未生效、两端各自退回本地游标（第 58 轮定位的真缺陷，实测 20% 起播差一帧）。
+            let schedule =
+                EpochSchedule::new(payload.epoch_id, payload.epoch_local_us, payload.lead_ms);
+            if !apply_schedule(session, playback, schedule, codec.frame_ms) {
+                stash_schedule(session, schedule);
+                tracing::info!(
+                    epoch_id = payload.epoch_id,
+                    lead_ms = payload.lead_ms,
+                    group_id = payload.group_id,
+                    "§7 GROUP_CREATE：播放句柄尚未就绪，组基准已暂存，开流后补应用"
+                );
             }
             let _ = inner.events.send(EngineEvent::GroupUpdated {
                 group_id: payload.group_id,
@@ -3347,21 +3428,24 @@ async fn handle_control(
             );
         }
         ControlRequest::GroupEpoch(payload) => {
-            // §7：发送端指定组基准 → 接收侧据此排播（只有配了播放输出才真正生效）。
-            if let Some(handle) = playback.as_ref() {
-                let offset_us = clock_estimate_of(session)
-                    .map(|estimate| estimate.offset_us)
-                    .unwrap_or(0);
-                let frame_samples = codec.frame_ms.max(1) * 48;
-                let schedule =
-                    EpochSchedule::new(payload.epoch_id, payload.epoch_local_us, payload.lead_ms);
-                let enabled = handle.set_schedule(Some(schedule), offset_us, frame_samples);
+            // §7：发送端指定组基准 → 接收侧据此排播。
+            //
+            // 播放句柄还没建好（流没开）时**暂存**而不是丢掉：`GROUP_EPOCH` 常常先于开流到达，
+            // 丢掉就等于排播从未生效、接收端退回本地游标（第 58 轮定位的真缺陷）。
+            let schedule =
+                EpochSchedule::new(payload.epoch_id, payload.epoch_local_us, payload.lead_ms);
+            if apply_schedule(session, playback, schedule, codec.frame_ms) {
                 tracing::info!(
                     epoch_id = payload.epoch_id,
                     lead_ms = payload.lead_ms,
-                    offset_us,
-                    enabled,
-                    "§7 GROUP_EPOCH：接收侧排播已更新"
+                    "§7 GROUP_EPOCH：接收侧排播已生效"
+                );
+            } else {
+                stash_schedule(session, schedule);
+                tracing::info!(
+                    epoch_id = payload.epoch_id,
+                    lead_ms = payload.lead_ms,
+                    "§7 GROUP_EPOCH：播放句柄尚未就绪，排播已暂存，开流后补应用"
                 );
             }
         }

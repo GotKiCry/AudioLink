@@ -348,6 +348,15 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   **这也解释了前六个机制假设为何全都不动失败率 —— 它们改的是排播内部逻辑，而排播压根没跑起来。**
   影响：`[M3] 组内同步回环护栏`（Done）此前测的是两个本地游标播放器的相位差，不是 epoch 排播的同步质量，必须重测。
   下轮修复：给 `PeerSession` 加「待应用排播」槽位，`OpenStream` 建好播放句柄后立刻应用；`Engine::schedule_playout` 同样处理。
+- **第 59 轮：修好了**。`PeerSession` 加 `pending_schedule` 槽位 + `apply_schedule` / `stash_schedule` /
+  `take_stashed_schedule` / `clear_stashed_schedule` 四个小函数，把「有播放句柄就应用、没有就暂存」集中到一处；
+  三处控制路径统一走它并在开流后补应用：`GroupCreate`（**这才是实际路径** —— `create_group` 只发 GROUP_CREATE，
+  第 58 轮只改了 `GroupEpoch` 分支，所以那次修复后排播事件仍然是空的）、`GroupEpoch`、`SchedulePlayout`（不再回
+  `cap_unsupported`），外加 `OpenStream` 建好句柄后立刻补应用。
+  **实测：单跑 30 轮 0 失败（修复前 5~8/30）、排播事件 30/30 非空、绝对偏差 P50 0.00 ms / P95 ≤ 0.05 ms；
+  两端拿到的 `target_local_us` 完全相同**。引擎集成 27 项 + 单测 150 项全绿。
+  同批次三处改动（target 不再全局网格对齐 / 首拍锚 target / 2 ms 早起容差）到这一步才第一次被真正检验 ——
+  此前「无效」是因为排播没跑起来。教训：连续多次改机制都不动指标时，先问「这段代码执行了吗」。
 
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
