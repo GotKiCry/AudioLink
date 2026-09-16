@@ -695,6 +695,14 @@ impl Engine {
         Ok(())
     }
 
+    /// M4：引擎级混音器的累计观测（没有混音器时返回 None）。
+    pub fn mixer_stats(&self) -> Option<audiolink_audio::mixer::MixSnapshot> {
+        let slot = self.inner.playout_mixer.lock().ok()?;
+        let mixer = slot.as_ref()?;
+        let guard = mixer.lock().ok()?;
+        Some(guard.snapshot())
+    }
+
     /// 同步组快照（组 ID 升序）。
     ///
     /// 成员的同步质量取自**每个会话自己的**时钟估计：所以这里先放掉组表锁再去查会话表，

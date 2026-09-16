@@ -85,11 +85,26 @@ struct MixSource {
     buffer: VecDeque<f32>,
 }
 
+/// 混音器的累计观测快照（验收「多路都在稳定供帧」与「有没有削顶」看它）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MixSnapshot {
+    /// 当前注册的源数。
+    pub sources: usize,
+    /// 累计混音帧数。
+    pub total_frames: u64,
+    /// 其中「有源没赶上」的帧数。
+    pub partial_frames: u64,
+    /// 累计被限幅的样本数。
+    pub limited_samples: u64,
+}
+
 /// 一次混音的观测数据。
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct MixStats {
     /// 这一帧真正贡献了样本的源数。
     pub sources: usize,
+    /// 已注册但这一帧**没赶上**的源数（对齐程度的直接读数：多路时钟对齐好时它应当长期为 0）。
+    pub missing_sources: usize,
     /// 这一帧被限幅的样本数。
     pub limited_samples: u64,
     /// 限幅前这一帧的最大绝对幅度（多路求和之后）。
@@ -105,6 +120,10 @@ pub struct PcmMixer {
     sources: Vec<MixSource>,
     /// 累计被限幅的样本数（跨帧）。
     limited_total: u64,
+    /// 累计「有源没赶上」的帧数（>1 路时才有意义）。
+    partial_frames: u64,
+    /// 累计混音帧数。
+    total_frames: u64,
 }
 
 impl PcmMixer {
@@ -118,6 +137,8 @@ impl PcmMixer {
             capacity,
             sources: Vec::new(),
             limited_total: 0,
+            partial_frames: 0,
+            total_frames: 0,
         }
     }
 
@@ -134,6 +155,26 @@ impl PcmMixer {
     /// 累计被限幅的样本数（跨帧；验收「有没有爆」看它）。
     pub const fn limited_total(&self) -> u64 {
         self.limited_total
+    }
+
+    /// 累计「有源没赶上」的帧数 —— 多路时钟对齐好不好，这个数字最直接。
+    pub const fn partial_frames(&self) -> u64 {
+        self.partial_frames
+    }
+
+    /// 累计混音帧数。
+    pub const fn total_frames(&self) -> u64 {
+        self.total_frames
+    }
+
+    /// 当前观测快照（引擎把它暴露成 Engine::mixer_stats）。
+    pub fn snapshot(&self) -> MixSnapshot {
+        MixSnapshot {
+            sources: self.sources.len(),
+            total_frames: self.total_frames,
+            partial_frames: self.partial_frames,
+            limited_samples: self.limited_total,
+        }
     }
 
     /// 加一路源。超过 FR-12 上限时明确拒绝。
@@ -237,6 +278,7 @@ impl PcmMixer {
                 stats.sources += 1;
             }
         }
+        stats.missing_sources = self.sources.len().saturating_sub(stats.sources);
 
         for sample in out.iter_mut() {
             let magnitude = sample.abs();
@@ -252,6 +294,10 @@ impl PcmMixer {
             }
         }
         self.limited_total = self.limited_total.saturating_add(stats.limited_samples);
+        self.total_frames = self.total_frames.saturating_add(1);
+        if self.sources.len() > 1 && stats.missing_sources > 0 {
+            self.partial_frames = self.partial_frames.saturating_add(1);
+        }
         stats
     }
 
@@ -457,6 +503,39 @@ mod tests {
         let mut out = Vec::new();
         mixer.mix_frame(&mut out);
         assert!(out.iter().all(|sample| (*sample - 0.3).abs() < 1e-6));
+    }
+
+    #[test]
+    fn an_aligned_pair_never_reports_a_missing_source() {
+        let mut mixer = mixer();
+        mixer.add_source(1).unwrap();
+        mixer.add_source(2).unwrap();
+        let mut out = Vec::new();
+        for _ in 0..5 {
+            mixer.push(1, &frame(0.2)).unwrap();
+            mixer.push(2, &frame(0.2)).unwrap();
+            let stats = mixer.mix_frame(&mut out);
+            assert_eq!(stats.sources, 2);
+            assert_eq!(stats.missing_sources, 0, "两路都到齐时不该报缺席");
+        }
+        assert_eq!(mixer.partial_frames(), 0);
+        assert_eq!(mixer.total_frames(), 5);
+    }
+
+    #[test]
+    fn a_lagging_source_shows_up_as_a_missing_source() {
+        let mut mixer = mixer();
+        mixer.add_source(1).unwrap();
+        mixer.add_source(2).unwrap();
+        let mut out = Vec::new();
+        // 只有 1 号一直在送：每一帧都该记一次「2 号没赶上」
+        for _ in 0..3 {
+            mixer.push(1, &frame(0.2)).unwrap();
+            let stats = mixer.mix_frame(&mut out);
+            assert_eq!(stats.sources, 1);
+            assert_eq!(stats.missing_sources, 1);
+        }
+        assert_eq!(mixer.partial_frames(), 3);
     }
 
     #[test]
