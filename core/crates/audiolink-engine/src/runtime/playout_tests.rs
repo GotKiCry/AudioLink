@@ -469,16 +469,52 @@ fn epoch_schedule_gates_playout_by_the_target_time() {
 #[test]
 fn hub_clock_hands_out_one_timeline_to_every_session() {
     // 共享采集的核心承诺：全组拿到的是同一套编号（这也是「同一根时间轴」的全部含义）。
+    // M4 起 next 多了一个「本端单调时刻」参数：未对齐时它只参与共同起点的判定。
     let mut clock = HubClock::default();
-    assert_eq!(clock.next(960), (0, 0));
-    assert_eq!(clock.next(960), (1, 960));
-    assert_eq!(clock.next(960), (2, 1_920));
+    assert_eq!(clock.next(960, 1_000_000), Some((0, 0)));
+    assert_eq!(clock.next(960, 1_010_000), Some((1, 960)));
+    assert_eq!(clock.next(960, 1_020_000), Some((2, 1_920)));
 
     // 序号回绕仍按 u32 语义（接收侧本来就按回绕判丢包）
     let mut wrapped = HubClock {
         seq: u32::MAX,
         sample_index: u32::MAX - 100,
+        start_at_us: None,
     };
-    assert_eq!(wrapped.next(960), (u32::MAX, u32::MAX - 100));
-    assert_eq!(wrapped.next(960), (0, 859));
+    assert_eq!(
+        wrapped.next(960, 1_000_000),
+        Some((u32::MAX, u32::MAX - 100))
+    );
+    assert_eq!(wrapped.next(960, 1_010_000), Some((0, 859)));
+}
+
+/// M4 共同基准：接收端广播的 epoch 一到，编号 0 点钉到它，**到点之前一帧都不发** ——
+/// 否则那帧的编号在接收端没有可比性（它属于 epoch 之前的时间）。
+#[test]
+fn hub_clock_aligns_sample_index_to_a_common_start() {
+    let mut clock = HubClock::default();
+    assert_eq!(clock.next(960, 1_000_000), Some((0, 0)));
+    assert_eq!(clock.next(960, 1_010_000), Some((1, 960)));
+
+    clock.align_epoch(2_000_000);
+    assert_eq!(clock.next(960, 1_999_999), None, "共同起点之前不该发帧");
+
+    assert_eq!(
+        clock.next(960, 2_000_000),
+        Some((2, 0)),
+        "到点后编号从 0 起算"
+    );
+    assert_eq!(clock.next(960, 2_020_000), Some((3, 960)));
+}
+
+/// 接收端换基准（重新对齐）：编号再次归零，seq 不受影响 —— 它只管丢包检测。
+#[test]
+fn realigning_moves_the_zero_point_without_touching_seq() {
+    let mut clock = HubClock::default();
+    assert_eq!(clock.next(480, 100), Some((0, 0)));
+    clock.align_epoch(500);
+    assert_eq!(clock.next(480, 500), Some((1, 0)));
+    clock.align_epoch(900);
+    assert_eq!(clock.next(480, 900), Some((2, 0)));
+    assert_eq!(clock.next(480, 1_400), Some((3, 480)));
 }

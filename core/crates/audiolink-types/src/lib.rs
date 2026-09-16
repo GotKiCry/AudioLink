@@ -335,6 +335,8 @@ pub enum OpCode {
     GroupLeave = 0x42,
     /// `0x43` 发送方 →：`epoch_id, epoch_local_us, lead_ms`。
     GroupEpoch = 0x43,
+    /// `0x44` 接收方 →：`epoch_id, epoch_local_us, lead_ms`（接收端作为基准来源广播共同时间基准）。
+    ReceiverEpoch = 0x44,
     /// `0x50` 双方：汇总指标快照。
     TelemetryPush = 0x50,
     /// `0x60` 双方：可靠流版本 ping（`t1, t2`）。
@@ -434,6 +436,7 @@ impl OpCode {
             Self::GroupJoin => "GROUP_JOIN",
             Self::GroupLeave => "GROUP_LEAVE",
             Self::GroupEpoch => "GROUP_EPOCH",
+            Self::ReceiverEpoch => "RECEIVER_EPOCH",
             Self::TelemetryPush => "TELEMETRY_PUSH",
             Self::Ping => "PING",
             Self::Pong => "PONG",

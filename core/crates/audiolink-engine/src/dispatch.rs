@@ -95,8 +95,8 @@ impl DispatchStats {
 
 /// 一条已解码的控制命令（M1 需要的子集，`docs/03-protocol.md` §4.1）。
 ///
-/// 未列入的 `GROUP_*` / `TELEMETRY_PUSH` / `SET_VOLUME_LOCK` 属 M2/M3，
-/// 在当前版本里走 [`DispatchOutcome::IgnoredUnimplemented`] 路径 —— 这正好是 §13「未知值可忽略」的实践。
+/// 未列入的 `TELEMETRY_PUSH` / `SET_VOLUME_LOCK` 仍走
+/// [`DispatchOutcome::IgnoredUnimplemented`] 路径 —— 这正好是 §13「未知值可忽略」的实践。
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlRequest {
     /// `0x01` 发起方 →：连接请求。
@@ -135,6 +135,8 @@ pub enum ControlRequest {
     GroupLeave(GroupLeavePayload),
     /// `0x43` 发送方 →：同步组公共时间基准（§7 预约播放）。
     GroupEpoch(GroupEpochPayload),
+    /// `0x44` 接收方 →：接收端作为**基准来源**广播共同时间基准（M4 多源混音对齐）。
+    ReceiverEpoch(GroupEpochPayload),
     /// `0x60` 双方：可靠流 ping。
     Ping(PingPayload),
     /// `0x61` 双方：可靠流 pong。
@@ -167,6 +169,7 @@ impl ControlRequest {
             Self::GroupJoin(_) => OpCode::GroupJoin,
             Self::GroupLeave(_) => OpCode::GroupLeave,
             Self::GroupEpoch(_) => OpCode::GroupEpoch,
+            Self::ReceiverEpoch(_) => OpCode::ReceiverEpoch,
             Self::Ping(_) => OpCode::Ping,
             Self::Pong(_) => OpCode::Pong,
             Self::Error(_) => OpCode::Error,
@@ -198,6 +201,7 @@ impl ControlRequest {
             Self::GroupJoin(v) => encode_payload(v),
             Self::GroupLeave(v) => encode_payload(v),
             Self::GroupEpoch(v) => encode_payload(v),
+            Self::ReceiverEpoch(v) => encode_payload(v),
             Self::Ping(v) => encode_payload(v),
             Self::Pong(v) => encode_payload(v),
             Self::Error(v) => encode_payload(v),
@@ -303,6 +307,7 @@ fn decode_control(op: OpCode, payload: &[u8]) -> Result<ControlRequest, DecodeFa
         OpCode::GroupJoin => bad(decode_payload(payload)).map(ControlRequest::GroupJoin),
         OpCode::GroupLeave => bad(decode_payload(payload)).map(ControlRequest::GroupLeave),
         OpCode::GroupEpoch => bad(decode_payload(payload)).map(ControlRequest::GroupEpoch),
+        OpCode::ReceiverEpoch => bad(decode_payload(payload)).map(ControlRequest::ReceiverEpoch),
         OpCode::Ping => bad(decode_payload(payload)).map(ControlRequest::Ping),
         OpCode::Pong => bad(decode_payload(payload)).map(ControlRequest::Pong),
         OpCode::Error => bad(decode_payload(payload)).map(ControlRequest::Error),

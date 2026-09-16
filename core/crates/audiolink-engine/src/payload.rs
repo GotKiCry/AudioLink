@@ -215,7 +215,10 @@ pub struct GroupLeavePayload {
     pub member: NodeId,
 }
 
-/// `GROUP_EPOCH`（`0x43`，发送方 →）：同步组的公共时间基准与预约提前量（§7）。
+/// `GROUP_EPOCH`（`0x43`，发送方 →）/ `RECEIVER_EPOCH`（`0x44`，接收方 →）。
+///
+/// 同一个载荷两个方向：`0x43` 由发送端指定、接收端据此排播（同一发送端 → 多台接收端对齐）；
+/// `0x44` 由**接收端**广播、发送端据此对齐自己的发送时间轴（多台发送端 → 一台接收端混音对齐）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupEpochPayload {
     /// 组基准标识（会话重建后换新值）。

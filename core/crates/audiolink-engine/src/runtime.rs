@@ -36,7 +36,7 @@
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -293,6 +293,8 @@ enum SessionCommand {
     Shutdown,
     /// §7：向对端广播组基准（发送方 → `GROUP_EPOCH`）。
     AnnounceGroupEpoch(GroupEpochPayload),
+    /// M4：把**接收端**广播的共同基准转给对端（接收端 → 发送端，`RECEIVER_EPOCH`）。
+    BroadcastReceiverEpoch(GroupEpochPayload),
     /// §4.1：向对端下发音量变更（发送方 →）。
     SetGain {
         /// 目标增益（0.0–2.0，与协议一致）。
@@ -824,6 +826,40 @@ impl Engine {
             .await
     }
 
+    /// M4 共同基准：本机作为**接收端**（混音方），把所有发送端共用的时间原点广播出去。
+    ///
+    /// 与 [`Engine::announce_group_epoch`]（发送端指定、接收端排播）是**反方向**的：
+    /// 「同一发送端 → 多台接收端」用 `0x43` 对齐；「多台发送端 → 一台接收端混音」只能由接收端
+    /// 广播基准（`0x44`），否则两个发送端各自从启流瞬间编号，接收端按编号混音就错着几十毫秒。
+    ///
+    /// `epoch_local_us` 取**本机**单调时刻加 `lead_ms` 的余量：各发送端要等这个时刻到点才开始编号，
+    /// 所以提前量是它们的准备时间。返回成功发出的会话数。
+    pub async fn broadcast_epoch(&self, lead_ms: u32) -> Result<u32, AudioLinkError> {
+        let peers: Vec<NodeId> = {
+            let table = self
+                .inner
+                .peers
+                .lock()
+                .map_err(|_| AudioLinkError::bad_request("peer table poisoned"))?;
+            table.keys().copied().collect()
+        };
+        if peers.is_empty() {
+            return Err(AudioLinkError::bad_request("no connected peer to align"));
+        }
+        let payload = GroupEpochPayload {
+            epoch_id: random_u64().max(1),
+            epoch_local_us: now_monotonic_us().saturating_add(u64::from(lead_ms) * 1000),
+            lead_ms,
+        };
+        let mut sent = 0u32;
+        for peer in peers {
+            self.send_command(peer, SessionCommand::BroadcastReceiverEpoch(payload))
+                .await?;
+            sent = sent.saturating_add(1);
+        }
+        Ok(sent)
+    }
+
     /// §7 预约播放：给某个接收侧会话设置组基准（`None` = 回到本地游标排播）。
     ///
     /// 发送端在 `GROUP_EPOCH` 里给出 epoch 与提前量后由上层调用；只有本机是接收端
@@ -1194,6 +1230,8 @@ async fn run_session(
                 match command {
                     Some(SessionCommand::Shutdown) | None => {
                         finish_ready(&mut ready, Err(AudioLinkError::bad_request("cancelled by local side")));
+
+
                         drop_session(&inner, &session, "shutdown before the control stream");
                         return;
                     }
@@ -1517,6 +1555,19 @@ async fn run_session(
                                 epoch_id = payload.epoch_id,
                                 lead_ms = payload.lead_ms,
                                 "§7 已广播 GROUP_EPOCH"
+                            ),
+                            Err(error) => report_error(&inner, &session, &error),
+                        }
+                    }
+                    SessionCommand::BroadcastReceiverEpoch(payload) => {
+                        // M4：接收端 → 发送端。这里的 epoch_local_us 是**接收端**的本机时刻，
+                        // 发送端收到后用自己的时钟偏移换算到本端轴，再把编号 0 点钉到它。
+                        let request = ControlRequest::ReceiverEpoch(payload);
+                        match send_control(&mut control, &request).await {
+                            Ok(()) => tracing::info!(
+                                epoch_id = payload.epoch_id,
+                                lead_ms = payload.lead_ms,
+                                "M4 已广播 RECEIVER_EPOCH（共同基准）"
                             ),
                             Err(error) => report_error(&inner, &session, &error),
                         }
@@ -2228,6 +2279,9 @@ struct CaptureHub {
     join: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// 还在用这路采集的会话数：降到 0 就停采集线程、并把枢纽从引擎上摘掉。
     subscribers: AtomicUsize,
+    /// M4 共同基准：接收端广播来的「编号 0 点」（**本端**单调 µs）；i64::MIN = 未收到。
+    /// 采集线程每帧前读一次原子量 —— 实时路径不加锁、不分配。
+    epoch_us: Arc<AtomicI64>,
 }
 
 impl CaptureHub {
@@ -2243,6 +2297,12 @@ impl CaptureHub {
         if let Ok(mut guard) = self.join.lock() {
             let _ = guard.take();
         }
+    }
+
+    /// M4：接收端广播的共同基准到达 —— 采集线程下一帧前就会读到并据此对齐编号。
+    fn apply_epoch(&self, epoch_us: u64) {
+        let value = i64::try_from(epoch_us).unwrap_or(i64::MAX);
+        self.epoch_us.store(value, Ordering::Relaxed);
     }
 
     /// 采集线程是否已经停了（最后一个会话放手之后为 true，新的会话要重建枢纽）。
@@ -2265,15 +2325,38 @@ struct HubFrame {
 struct HubClock {
     seq: u32,
     sample_index: u32,
+    /// M4 共同基准：本端单调时钟上的「编号 0 点」（µs）。None = 未对齐，
+    /// 沿用「本机启流瞬间」作原点。见 HubClock::align_epoch。
+    start_at_us: Option<u64>,
 }
 
 impl HubClock {
+    /// 接收端广播的共同基准落到本端时钟之后，把编号的 0 点钉到它。
+    ///
+    /// 为什么需要：两台发送端各自启流，sample_index 的原点就是各自启流的瞬间，
+    /// 于是**同一个采样**在两条流上的编号差着几十毫秒；接收端按编号混音时，两路取到的
+    /// 就不是同一时刻的声音。对齐之后两路的 sample_index = 0 落在同一个绝对时刻。
+    fn align_epoch(&mut self, start_at_us: u64) {
+        self.start_at_us = Some(start_at_us);
+        self.sample_index = 0;
+    }
+
     /// 取下一帧的编号并推进；序号回绕按 u32 语义（接收侧本来就按回绕判丢包）。
-    fn next(&mut self, frame_samples: u32) -> (u32, u32) {
+    ///
+    /// 返回 None = 共同起点还没到：**这一帧不该发**。发出去它的编号在接收端是
+    /// 「epoch 之前的时间」，会和另一路同样错位的帧混在一起 —— 那正是要修掉的东西。
+    fn next(&mut self, frame_samples: u32, now_us: u64) -> Option<(u32, u32)> {
+        if let Some(start) = self.start_at_us {
+            if now_us < start {
+                return None;
+            }
+            // 到点：编号从 0 起算（seq 继续递增 —— 它只管丢包检测，不承担时间轴语义）。
+            self.start_at_us = None;
+        }
         let current = (self.seq, self.sample_index);
         self.seq = self.seq.wrapping_add(1);
         self.sample_index = self.sample_index.wrapping_add(frame_samples);
-        current
+        Some(current)
     }
 }
 
@@ -2466,6 +2549,9 @@ fn start_capture_hub(
     let frames_tx = frames.clone();
     let stop = new_stop_flag();
     let thread_stop = Arc::clone(&stop);
+    // M4：共同基准由会话线程写、采集线程读（i64::MIN = 还没收到接收端广播）。
+    let epoch_us = Arc::new(AtomicI64::new(i64::MIN));
+    let thread_epoch = Arc::clone(&epoch_us);
 
     let join = std::thread::Builder::new()
         .name("audiolink-capture-hub".to_string())
@@ -2477,6 +2563,7 @@ fn start_capture_hub(
                 thread_stop,
                 frames_tx,
                 ready_tx,
+                thread_epoch,
             );
         })
         .map_err(|_| AudioLinkError::bad_request("failed to spawn capture hub thread"))?;
@@ -2489,6 +2576,7 @@ fn start_capture_hub(
             stop,
             join: Mutex::new(Some(join)),
             subscribers: AtomicUsize::new(0),
+            epoch_us,
         }),
         Ok(Err(error)) => Err(error),
         Err(_) => Err(AudioLinkError::bad_request(
@@ -2505,6 +2593,7 @@ fn hub_main(
     stop: Arc<AtomicBool>,
     frames: broadcast::Sender<HubFrame>,
     ready_tx: std::sync::mpsc::Sender<Result<(), AudioLinkError>>,
+    epoch_us: Arc<AtomicI64>,
 ) {
     let mut capture = match factory() {
         Ok(capture) => capture,
@@ -2534,6 +2623,7 @@ fn hub_main(
 
     // 编号由枢纽统一分配：这是「全组同一根时间轴」的唯一来源。
     let mut clock = HubClock::default();
+    let mut applied_epoch = i64::MIN;
     let frame_samples = frame_ms.saturating_mul(48_000) / 1000;
     let mut samples: Vec<f32> =
         Vec::with_capacity(usize::try_from(frame_samples.saturating_mul(8)).unwrap_or(7_680));
@@ -2554,8 +2644,20 @@ fn hub_main(
         }
 
         while let Some(frame) = chunker.next_frame() {
+            // M4：接收端广播的共同基准一到，编号就对到同一条时间轴上（只在这儿改一次）。
+            let want_epoch = epoch_us.load(Ordering::Relaxed);
+            if want_epoch != applied_epoch {
+                applied_epoch = want_epoch;
+                if let Ok(start_at_us) = u64::try_from(want_epoch) {
+                    clock.align_epoch(start_at_us);
+                    tracing::info!(start_at_us, "M4 发送端已对齐接收端广播的共同基准");
+                }
+            }
             let sealed_at = Instant::now();
-            let (seq, sample_index) = clock.next(frame_samples);
+            let Some((seq, sample_index)) = clock.next(frame_samples, now_monotonic_us()) else {
+                // 共同起点还没到：这一帧不发（它的编号在接收端没有可比性）。
+                continue;
+            };
             // 探针记在枢纽这一层：一帧只封口一次，多会话不会各记一遍。
             if let Some(tap) = tap.as_ref() {
                 tap.record_sealed(seq, sealed_at);
@@ -3065,6 +3167,32 @@ async fn handle_control(
                     enabled,
                     "§7 GROUP_EPOCH：接收侧排播已更新"
                 );
+            }
+        }
+        ControlRequest::ReceiverEpoch(payload) => {
+            // M4：本机是**发送端**，接收端广播了共同基准 —— 把自己的编号 0 点钉到它。
+            let offset_us = clock_estimate_of(session)
+                .map(|estimate| estimate.offset_us)
+                .unwrap_or(0);
+            // offset_us = 对端（接收端）时钟 − 本端时钟 → 本端时刻 = 接收端时刻 − offset_us。
+            let local_epoch_us = i64::try_from(payload.epoch_local_us)
+                .unwrap_or(i64::MAX)
+                .saturating_sub(offset_us);
+            match capture.as_ref().and_then(|handle| handle.hub.as_ref()) {
+                Some(hub) => {
+                    hub.apply_epoch(u64::try_from(local_epoch_us).unwrap_or(0));
+                    tracing::info!(
+                        epoch_id = payload.epoch_id,
+                        remote_epoch_us = payload.epoch_local_us,
+                        local_epoch_us,
+                        offset_us,
+                        "M4 RECEIVER_EPOCH：发送端已对齐共同基准"
+                    );
+                }
+                None => tracing::warn!(
+                    epoch_id = payload.epoch_id,
+                    "M4 RECEIVER_EPOCH：本会话没有采集枢纽，无法对齐"
+                ),
             }
         }
         ControlRequest::CloseStream(_) => {
