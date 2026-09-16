@@ -62,6 +62,7 @@ use crate::clock::{
     ClockProbeState, ClockProbeStats, STEADY_INTERVAL_MS, now_monotonic_us, publish_clock,
 };
 use crate::dispatch::{ControlRequest, DispatchStats, dispatch_into};
+use crate::epoch::{EpochSchedule, PlayoutAction};
 use crate::format_guard::require_unified_format;
 use crate::handshake::{Handshake, HandshakeEvent, HandshakeStep, Outgoing, Role};
 use crate::measure::MeasurementTap;
@@ -238,6 +239,15 @@ pub enum EngineEvent {
         /// 触发原因（人类可读）。
         reason: String,
     },
+    /// §7 预约播放生效（接收端按 epoch 排播）：组内同步的验收时间线就看它。
+    PlayoutScheduled {
+        /// 组基准标识。
+        epoch_id: u64,
+        /// 该帧首样本在本机时钟轴上的目标时刻（µs）。
+        target_local_us: i64,
+        /// 触发时的等待量（µs；0 = 正好赶上）。
+        wait_us: u64,
+    },
     /// 会话级错误（不致命；致命路径走 `PeerDisconnected`）。
     Error {
         /// §11 错误码。
@@ -261,6 +271,13 @@ enum SessionCommand {
     SubmitPin(String),
     /// 关闭整个会话。
     Shutdown,
+    /// §7：给接收侧设置（或清除）预约播放基准；`None` 表示回到本地游标排播。
+    SchedulePlayout {
+        /// 组基准；`None` = 关闭预约。
+        schedule: Option<EpochSchedule>,
+        /// 完成回执。
+        reply: oneshot::Sender<Result<(), AudioLinkError>>,
+    },
 }
 
 /// 会话表项：控制面与应用共享的句柄。
@@ -448,6 +465,23 @@ impl Engine {
     }
 
     /// 订阅引擎事件。
+    /// §7 预约播放：给某个接收侧会话设置组基准（`None` = 回到本地游标排播）。
+    ///
+    /// 发送端在 `GROUP_EPOCH` 里给出 epoch 与提前量后由上层调用；只有本机是接收端
+    /// （配了播放输出）时才真正生效。生效后起播时刻不再由「队列攒够」决定，而由 epoch 决定；
+    /// 首次排播会发一条 [`EngineEvent::PlayoutScheduled`] 作为验收时间线。
+    pub async fn schedule_playout(
+        &self,
+        peer: NodeId,
+        schedule: Option<EpochSchedule>,
+    ) -> Result<(), AudioLinkError> {
+        let (reply, wait) = oneshot::channel();
+        self.send_command(peer, SessionCommand::SchedulePlayout { schedule, reply })
+            .await?;
+        wait.await
+            .map_err(|_| AudioLinkError::bad_request("session task is gone"))?
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<EngineEvent> {
         self.inner.events.subscribe()
     }
@@ -1116,6 +1150,22 @@ async fn run_session(
                             &ControlRequest::PairSubmit(crate::payload::PairSubmitPayload { pin }),
                         ).await;
                     }
+                    SessionCommand::SchedulePlayout { schedule, reply } => {
+                        let result = match playback.as_ref() {
+                            Some(handle) => {
+                                let offset_us = clock_estimate_of(&session)
+                                    .map(|estimate| estimate.offset_us)
+                                    .unwrap_or(0);
+                                let frame_samples = u32::try_from(frame_ms).unwrap_or(20) * 48;
+                                let _ = handle.set_schedule(schedule, offset_us, frame_samples);
+                                Ok(())
+                            }
+                            None => Err(AudioLinkError::cap_unsupported(
+                                "this node has no playout sink to schedule",
+                            )),
+                        };
+                        let _ = reply.send(result);
+                    }
                     SessionCommand::Shutdown => break,
                 }
             }
@@ -1242,6 +1292,12 @@ async fn run_session(
                         packet_reorder.set_target_frames(
                             jitter_depth.load(Ordering::Relaxed),
                         );
+                        if let Some(handle) = playback.as_ref() {
+                            handle.note_stream_base(
+                                datagram.header.seq,
+                                datagram.header.sample_index,
+                            );
+                        }
                         let batch = packet_reorder.push(
                             datagram.header.seq,
                             datagram.payload.to_vec(),
@@ -1650,14 +1706,68 @@ struct PlaybackFrame {
     samples: Vec<f32>,
 }
 
-/// 播放管线句柄：发送端（会话任务）+ 停止标志 + 线程句柄。
+/// 接收侧排播状态（§7 预约播放）：组基准 + 换算用的时钟偏移 + 首帧样本基准。
+#[derive(Debug, Clone, Copy, Default)]
+struct PlayoutSync {
+    /// 发送端给的组基准；`None` = 不启用预约播放（走 M1 / M2 的本地游标）。
+    schedule: Option<EpochSchedule>,
+    /// 设置排播时的时钟偏移快照（对端 − 本机，µs）。
+    offset_us: i64,
+    /// 每帧样本数（48 kHz × frame_ms）。
+    frame_samples: u32,
+    /// 本流首个数据报的 (seq, sample_index)：序号 → 样本序号的换算基准。
+    base: Option<(u32, u32)>,
+}
+
+impl PlayoutSync {
+    /// 该序号对应的负载首样本序号（发送端按 48 kHz 单调递增，可由首帧推算）。
+    fn sample_index_of(&self, seq: u32) -> Option<u32> {
+        let (base_seq, base_sample) = self.base?;
+        let frames = u64::from(seq.wrapping_sub(base_seq));
+        let advance = frames.saturating_mul(u64::from(self.frame_samples));
+        Some(base_sample.wrapping_add(advance as u32))
+    }
+}
+
+/// 排播状态的共享句柄（会话任务写、播放线程读）。
+type PlayoutSyncHandle = Arc<Mutex<PlayoutSync>>;
+
+/// 播放管线句柄：发送端（会话任务）+ 停止标志 + 线程句柄 + §7 排播状态。
 struct PlayoutHandle {
     frames: Sender<PlaybackFrame>,
     stop: Arc<AtomicBool>,
     join: Option<std::thread::JoinHandle<()>>,
+    sync: PlayoutSyncHandle,
 }
 
 impl PlayoutHandle {
+    /// §7：记下本流首个数据报的序号与样本序号（只有第一次生效）。
+    ///
+    /// 之后所有包的样本序号都由它推算 —— 发送端按 48 kHz 单调递增，序号与样本序号只差一个常数。
+    fn note_stream_base(&self, seq: u32, sample_index: u32) {
+        if let Ok(mut sync) = self.sync.lock()
+            && sync.base.is_none()
+        {
+            sync.base = Some((seq, sample_index));
+        }
+    }
+
+    /// §7：设置（或清除）预约播放基准，并返回是否真的启用了排播。
+    fn set_schedule(
+        &self,
+        schedule: Option<EpochSchedule>,
+        offset_us: i64,
+        frame_samples: u32,
+    ) -> bool {
+        let Ok(mut sync) = self.sync.lock() else {
+            return false;
+        };
+        sync.schedule = schedule;
+        sync.offset_us = offset_us;
+        sync.frame_samples = frame_samples.max(1);
+        schedule.is_some()
+    }
+
     /// 待播队列深度（帧数）。
     ///
     /// # 口径说明（别把它读成「播放器里积压了多少」）
@@ -2407,6 +2517,10 @@ fn spawn_playout_thread(
     let (frame_tx, frame_rx) = crossbeam_channel::bounded(PLAYBACK_QUEUE_FRAMES);
     let stop = new_stop_flag();
     let thread_stop = Arc::clone(&stop);
+    // §7 排播状态：会话任务写、播放线程读；默认关闭（没有组基准时一切照旧）。
+    let sync: PlayoutSyncHandle = Arc::new(Mutex::new(PlayoutSync::default()));
+    let thread_sync = Arc::clone(&sync);
+    let events = inner.events.clone();
 
     let factory = Arc::clone(factory);
     let telemetry = Arc::clone(&session.telemetry);
@@ -2425,6 +2539,8 @@ fn spawn_playout_thread(
                 tap,
                 thread_stop,
                 jitter_depth,
+                thread_sync,
+                events,
                 frame_rx,
                 ready_tx,
             );
@@ -2438,6 +2554,7 @@ fn spawn_playout_thread(
             frames: frame_tx,
             stop,
             join: Some(join),
+            sync,
         }),
         Ok(Err(error)) => Err(error),
         Err(_) => Err(AudioLinkError::bad_request(
@@ -2455,6 +2572,8 @@ fn playout_main(
     tap: Option<Arc<MeasurementTap>>,
     stop: Arc<AtomicBool>,
     jitter_depth: Arc<AtomicUsize>,
+    sync: PlayoutSyncHandle,
+    events: broadcast::Sender<EngineEvent>,
     frames: Receiver<PlaybackFrame>,
     ready_tx: std::sync::mpsc::Sender<Result<(), AudioLinkError>>,
 ) {
@@ -2483,6 +2602,7 @@ fn playout_main(
     let mut expected_seq: Option<u32> = None;
     let mut pending: Option<PlaybackFrame> = None;
     let mut refill_after_underrun = false;
+    let mut scheduled_reported = false;
 
     'playout: while !stop.load(Ordering::Relaxed) {
         // 睡到下一个提交时刻。节奏必须由**本地时钟**决定，数据到没到只影响
@@ -2538,6 +2658,50 @@ fn playout_main(
             depth_state.refill_after_underrun(buffered_frames);
             refill_after_underrun = false;
         }
+        // §7 预约播放：有组基准时，起播时刻由 epoch 决定，而不是「队列攒够就播」。
+        // 等待与丢弃都补静音（保持时间轴推进），但等待**不**推进游标 —— 那帧还要在目标时刻播。
+        if let Some((action, sample_index)) =
+            schedule_action(&sync, peek_frame(&frames, &mut pending))
+        {
+            match action {
+                PlayoutAction::Wait { wait_us } => {
+                    report_playout_scheduled(
+                        &events,
+                        &sync,
+                        sample_index,
+                        wait_us,
+                        &mut scheduled_reported,
+                    );
+                    if sink.write(&silence).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                PlayoutAction::Drop { late_us } => {
+                    if let Some(frame) = pending.take()
+                        && let Some(seq) = expected_seq.as_mut()
+                    {
+                        *seq = frame.seq.wrapping_add(1);
+                    }
+                    if let Ok(mut telemetry) = telemetry.lock() {
+                        telemetry.record_late_drop();
+                    }
+                    tracing::debug!(late_us, "§7 预约播放：过期帧已丢弃");
+                    if sink.write(&silence).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+                PlayoutAction::Play => report_playout_scheduled(
+                    &events,
+                    &sync,
+                    sample_index,
+                    0,
+                    &mut scheduled_reported,
+                ),
+            }
+        }
+
         match depth_state.action(requested_target, buffered_frames) {
             PlayoutDepthAction::Hold => {
                 if let Ok(mut telemetry) = telemetry.lock() {
@@ -2646,6 +2810,60 @@ fn take_due_frame(
             telemetry.record_late_drop();
         }
     }
+}
+
+/// 看一眼下一帧（不消费：必要时把它从队列挪进 `pending`）。
+fn peek_frame<'a>(
+    frames: &Receiver<PlaybackFrame>,
+    pending: &'a mut Option<PlaybackFrame>,
+) -> Option<&'a PlaybackFrame> {
+    if pending.is_none() {
+        match frames.try_recv() {
+            Ok(frame) => *pending = Some(frame),
+            Err(_) => return None,
+        }
+    }
+    pending.as_ref()
+}
+
+/// §7：有排播、且这一帧能换算成样本序号时给出判定；否则 `None`（走正常排播）。
+fn schedule_action(
+    sync: &PlayoutSyncHandle,
+    frame: Option<&PlaybackFrame>,
+) -> Option<(PlayoutAction, u32)> {
+    let state = *sync.lock().ok()?;
+    let schedule = state.schedule?;
+    let sample_index = state.sample_index_of(frame?.seq)?;
+    let now_us = i64::try_from(now_monotonic_us()).unwrap_or(i64::MAX);
+    Some((
+        schedule.action(now_us, sample_index, state.offset_us),
+        sample_index,
+    ))
+}
+
+/// 首次进入排播（等待或正好赶上）时报一次时间线，供验收与 UI 使用。
+fn report_playout_scheduled(
+    events: &broadcast::Sender<EngineEvent>,
+    sync: &PlayoutSyncHandle,
+    sample_index: u32,
+    wait_us: u64,
+    reported: &mut bool,
+) {
+    if *reported {
+        return;
+    }
+    let Ok(state) = sync.lock().map(|guard| *guard) else {
+        return;
+    };
+    let Some(schedule) = state.schedule else {
+        return;
+    };
+    *reported = true;
+    let _ = events.send(EngineEvent::PlayoutScheduled {
+        epoch_id: schedule.epoch_id,
+        target_local_us: schedule.local_target_us(sample_index, state.offset_us),
+        wait_us,
+    });
 }
 
 fn codec_pref(config: &CodecConfig) -> CodecPref {

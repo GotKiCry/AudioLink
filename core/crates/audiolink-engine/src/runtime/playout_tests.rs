@@ -384,3 +384,85 @@ fn reorder_deadline_falls_back_to_plc_and_rejects_the_late_packet() {
     );
     assert!(rms(&output[1].samples) > 0.02);
 }
+// ---------------------------------------------------------------------------
+// §7 预约播放（epoch 驱动排播）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn epoch_schedule_maps_sequence_numbers_to_sample_indices() {
+    let sync = PlayoutSync {
+        schedule: None,
+        offset_us: 0,
+        frame_samples: 960,
+        base: Some((50, 4_800_000)),
+    };
+    assert_eq!(sync.sample_index_of(50), Some(4_800_000));
+    assert_eq!(sync.sample_index_of(51), Some(4_800_960));
+    // 早于基准（重传 / 重复副本）也要给得出答案，而不是 panic 或 None 逃逸
+    assert_eq!(sync.sample_index_of(49), Some(4_799_040));
+    // 没有基准就没有答案：调用方据此继续走本地游标排播
+    assert_eq!(PlayoutSync::default().sample_index_of(1), None);
+}
+
+#[test]
+fn peek_frame_does_not_consume_the_frame() {
+    let (tx, rx) = crossbeam_channel::bounded(2);
+    let mut pending = None;
+    tx.send(frame(3)).unwrap();
+    assert_eq!(peek_frame(&rx, &mut pending).map(|f| f.seq), Some(3));
+    // 第二次 peek 还是同一帧（它已经躺在 pending 里），并且队列没有被二次消费
+    assert_eq!(peek_frame(&rx, &mut pending).map(|f| f.seq), Some(3));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn epoch_schedule_gates_playout_by_the_target_time() {
+    let sync: PlayoutSyncHandle = Arc::new(Mutex::new(PlayoutSync {
+        schedule: None,
+        offset_us: 0,
+        frame_samples: 960,
+        base: Some((0, 0)),
+    }));
+
+    // 没有组基准 → 不做判定（M1 / M2 的本地游标排播原样保留）
+    assert!(schedule_action(&sync, Some(&frame(0))).is_none());
+
+    let now = i64::try_from(now_monotonic_us()).unwrap();
+    // 基准取「现在 + 10 s」以保证是正数：协议里 epoch_local_us 是 u64，表示不了过去
+    let anchor = u64::try_from(now).unwrap().saturating_add(10_000_000);
+    // 用 offset 制造「过去 / 现在」：epoch_local_us 是 u64，表示不了过去，
+    // 而 local(epoch) = epoch_local_us − offset，于是把 offset 调大就把目标拉到过去。
+    let set_target = |epoch_local_us: u64, offset_us: i64| {
+        let mut state = sync.lock().unwrap();
+        state.offset_us = offset_us;
+        state.schedule = Some(EpochSchedule::new(11, epoch_local_us, 0));
+    };
+
+    // 目标在未来 5 s → 等待（并且明确告诉调用方还要等多久）
+    set_target(anchor + 5_000_000, 0);
+    match schedule_action(&sync, Some(&frame(0))) {
+        Some((PlayoutAction::Wait { wait_us }, 0)) => {
+            assert!(wait_us > 4_000_000, "wait = {wait_us}");
+        }
+        other => panic!("expected Wait, got {other:?}"),
+    }
+
+    // 正好到点（对端比本机快 10 s，把 epoch 拉到「现在」）→ 照常播
+    set_target(anchor, 10_000_000);
+    assert!(matches!(
+        schedule_action(&sync, Some(&frame(0))),
+        Some((PlayoutAction::Play, 0))
+    ));
+
+    // 已经过期 5 s → 丢弃（宁可丢一帧，也不延迟出声破坏组同步）
+    set_target(anchor, 15_000_000);
+    match schedule_action(&sync, Some(&frame(0))) {
+        Some((PlayoutAction::Drop { late_us }, _)) => {
+            assert!(late_us > 4_000_000, "late = {late_us}");
+        }
+        other => panic!("expected Drop, got {other:?}"),
+    }
+
+    // 手上没有帧就不做判定
+    assert!(schedule_action(&sync, None).is_none());
+}

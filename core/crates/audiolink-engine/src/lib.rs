@@ -31,6 +31,7 @@
 pub mod adaptive;
 pub mod clock;
 pub mod dispatch;
+pub mod epoch;
 pub mod format_guard;
 pub mod handshake;
 pub mod measure;

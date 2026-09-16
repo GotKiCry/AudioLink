@@ -566,6 +566,20 @@ async fn run_event_loop(app: AppHandle, engine: Arc<Engine>, cache: Arc<Mutex<Ca
                 } => {
                     tracing::info!(from_bps, to_bps, reason = %reason, "自适应码率变更");
                 }
+                // §7 预约播放生效（接收端按 epoch 排播）：这里只记日志 ——
+                // 时间线由内核发出，UI 侧的同步质量展示属于 M3 的同步组面板那一项。
+                EngineEvent::PlayoutScheduled {
+                    epoch_id,
+                    target_local_us,
+                    wait_us,
+                } => {
+                    tracing::info!(
+                        epoch_id,
+                        target_local_us,
+                        wait_us,
+                        "§7 预约播放：接收端已按 epoch 排播"
+                    );
+                }
                 // 契约 §6 只冻结了三个前端事件，没有"错误"事件；
                 // 命令路径的错误已由返回值承载，这里记录即可（架构 §11：要么处理要么上报）。
                 EngineEvent::Error { code, context } => {
