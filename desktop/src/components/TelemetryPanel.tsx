@@ -11,6 +11,7 @@
 
 import type { TelemetryRow, TelemetryView } from "../types";
 import { bpsToKbps, usToMs } from "../types";
+import { t } from "../i18n";
 
 interface TelemetryPanelProps {
   telemetry: TelemetryView | null;
@@ -76,7 +77,7 @@ function Sparkline({ label, unit, values, latest }: SparklineProps) {
         preserveAspectRatio="none"
         className="mt-1 h-8 w-full text-indigo-500"
         role="img"
-        aria-label={`${label} 最近 ${values.length} 个采样点`}
+        aria-label={t("tm.samples_aria", { label, count: values.length })}
       >
         {ready ? (
           <polyline
@@ -88,7 +89,7 @@ function Sparkline({ label, unit, values, latest }: SparklineProps) {
           />
         ) : (
           <text x="50" y="20" textAnchor="middle" className="fill-slate-300 text-[8px]">
-            等待采样…
+            {t("tm.waiting")}
           </text>
         )}
       </svg>
@@ -104,20 +105,20 @@ export function TelemetryPanel({ telemetry, history, open, exporting, onExport }
   // 没有快照（水合中）或没有会话时，遥测是内核给的全零值 —— 显示 "—" 而不是假的 0.0 ms
   const idle = telemetry === null || telemetry.peers === 0 || telemetry.e2eLatencyUs === 0;
   const dash = "—";
-  const t = telemetry;
+  const tele = telemetry;
   // `at(-1)` 在严格模式下是 `T | undefined`：显式收敛成 null，避免四处各写一遍下标。
   const last = history.at(-1) ?? null;
 
   return (
     <section
       id="telemetry-panel"
-      aria-label="遥测"
+      aria-label={t("tm.title")}
       className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-950"
     >
       <header className="mb-3 flex items-center gap-3">
-        <h2 className="text-sm font-medium">遥测</h2>
+        <h2 className="text-sm font-medium">{t("tm.title")}</h2>
         <span className="text-xs text-slate-400">
-          后端每 500 ms 推送一次；曲线为最近 {history.length} 个采样点
+          {t("tm.footer", { count: history.length })}
         </span>
         <button
           type="button"
@@ -125,51 +126,51 @@ export function TelemetryPanel({ telemetry, history, open, exporting, onExport }
           disabled={exporting || history.length === 0}
           className="ml-auto rounded-md border border-slate-300 px-2 py-1 text-xs transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:hover:bg-slate-900"
         >
-          {exporting ? "导出中…" : `导出 CSV（${history.length} 点）`}
+          {exporting ? t("tm.exporting") : t("tm.export", { count: history.length })}
         </button>
       </header>
 
       <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]">
-        <Metric label="对端数" value={t === null ? dash : String(t.peers)} />
-        <Metric label="RTT" value={t === null || idle ? dash : usToMs(t.rttUs)} unit="ms" />
-        <Metric label="抖动" value={t === null || idle ? dash : usToMs(t.jitterUs)} unit="ms" />
-        <Metric label="丢包" value={t === null || idle ? dash : t.lossPct.toFixed(2)} unit="%" />
-        <Metric label="码率" value={t === null || idle ? dash : bpsToKbps(t.bitrateBps)} unit="kbps" />
-        <Metric label="缓冲水位" value={t === null || idle ? dash : usToMs(t.bufferLevelUs)} unit="ms" />
-        <Metric label="欠载" value={t === null ? dash : String(t.underruns)} unit="次" />
-        <Metric label="端到端" value={t === null || idle ? dash : usToMs(t.e2eLatencyUs)} unit="ms" />
-        <Metric label="端到端 P50" value={t === null || idle ? dash : usToMs(t.e2eP50Us)} unit="ms" />
-        <Metric label="端到端 P95" value={t === null || idle ? dash : usToMs(t.e2eP95Us)} unit="ms" />
+        <Metric label={t("tm.peers")} value={tele === null ? dash : String(tele.peers)} />
+        <Metric label="RTT" value={tele === null || idle ? dash : usToMs(tele.rttUs)} unit="ms" />
+        <Metric label={t("tm.jitter")} value={tele === null || idle ? dash : usToMs(tele.jitterUs)} unit="ms" />
+        <Metric label={t("tm.loss")} value={tele === null || idle ? dash : tele.lossPct.toFixed(2)} unit="%" />
+        <Metric label={t("tm.bitrate")} value={tele === null || idle ? dash : bpsToKbps(tele.bitrateBps)} unit="kbps" />
+        <Metric label={t("tm.buffer")} value={tele === null || idle ? dash : usToMs(tele.bufferLevelUs)} unit="ms" />
+        <Metric label={t("tm.underruns")} value={tele === null ? dash : String(tele.underruns)} unit={t("tm.count")} />
+        <Metric label={t("tm.e2e")} value={tele === null || idle ? dash : usToMs(tele.e2eLatencyUs)} unit="ms" />
+        <Metric label={t("tm.e2e_p50")} value={tele === null || idle ? dash : usToMs(tele.e2eP50Us)} unit="ms" />
+        <Metric label={t("tm.e2e_p95")} value={tele === null || idle ? dash : usToMs(tele.e2eP95Us)} unit="ms" />
       </div>
 
       <div className="mt-3 grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(200px,1fr))]">
         <Sparkline
-          label="端到端延迟"
+          label={t("tm.e2e_latency")}
           unit="ms"
           values={history.map((row) => row.e2eLatencyUs)}
           latest={usToMs(last?.e2eLatencyUs ?? 0)}
         />
         <Sparkline
-          label="缓冲水位"
+          label={t("tm.buffer")}
           unit="ms"
           values={history.map((row) => row.bufferLevelUs)}
           latest={usToMs(last?.bufferLevelUs ?? 0)}
         />
         <Sparkline
-          label="码率"
+          label={t("tm.bitrate")}
           unit="kbps"
           values={history.map((row) => row.bitrateBps)}
           latest={bpsToKbps(last?.bitrateBps ?? 0)}
         />
         <Sparkline
-          label="丢包率"
+          label={t("tm.loss_rate")}
           unit="%"
           values={history.map((row) => Math.round(row.lossPct * 100))}
           latest={(last?.lossPct ?? 0).toFixed(2)}
         />
       </div>
 
-      {idle ? <p className="mt-3 text-xs text-slate-400">未推流：数字与曲线都还没有真实数据。</p> : null}
+      {idle ? <p className="mt-3 text-xs text-slate-400">{t("tm.idle")}</p> : null}
     </section>
   );
 }

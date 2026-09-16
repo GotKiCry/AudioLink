@@ -15,6 +15,7 @@
 import { useEffect, useState } from "react";
 
 import { isPinWellFormed, type PairRequiredPayload } from "../types";
+import { t } from "../i18n";
 
 /** 配对码有效期。载荷里没有过期时刻，这里按协议常量（`docs/03-protocol.md` §5：60 s）本地倒计时。 */
 const PIN_TTL_SECONDS = 60;
@@ -69,40 +70,40 @@ export function PairDialog({ request, reason, onSubmit, onDismiss }: PairDialogP
         className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-800 dark:bg-slate-950"
       >
         <h2 id="pair-title" className="text-base font-medium">
-          与「{request.name}」配对
+          {t("pair.title", { name: request.name })}
         </h2>
         <p className="mt-1 font-mono text-xs text-slate-400">fp:{request.idShort}</p>
 
         {displayMode ? (
           <>
             <p className="mt-3 text-xs text-slate-500">
-              请在对方的设备上输入下面这 6 位数字；两端显示一致才说明中间没有第三台设备。
+              {t("pair.receive")}
             </p>
             {/* 大号等宽数字：要照着念、照着敲，字号与字距优先 */}
             <output
               className="mt-2 block rounded-lg bg-slate-50 py-3 text-center font-mono text-3xl tracking-[0.3em] tabular-nums dark:bg-slate-900"
-              aria-label="配对码"
+              aria-label={t("pair.code")}
             >
               {request.pin}
             </output>
             <p className="mt-2 text-xs text-slate-400">
-              {expired ? "已超过 60 秒，请让对方重新发起连接" : `有效期剩余 ${remaining} 秒`}
+              {expired ? t("pair.expired_receive") : t("pair.ttl", { seconds: remaining })}
             </p>
             <button
               type="button"
               onClick={onDismiss}
               className="mt-4 h-9 w-full rounded-lg border border-slate-200 text-sm dark:border-slate-700"
             >
-              知道了
+              {t("pair.got_it")}
             </button>
           </>
         ) : (
           <>
             <p className="mt-3 text-xs text-slate-500">
-              对方要求配对。请输入对方设备屏幕上显示的 6 位数字。
+              {t("pair.send")}
             </p>
             <label className="mt-3 block text-xs text-slate-500" htmlFor="pair-pin">
-              6 位配对码
+              {t("pair.input")}
             </label>
             <input
               id="pair-pin"
@@ -129,7 +130,7 @@ export function PairDialog({ request, reason, onSubmit, onDismiss }: PairDialogP
             )}
 
             <p className="mt-2 text-xs text-slate-400">
-              {expired ? "配对码已过期，请让对方重新发起连接" : `有效期剩余 ${remaining} 秒`}
+              {expired ? t("pair.expired_send") : t("pair.ttl", { seconds: remaining })}
             </p>
 
             <div className="mt-4 flex gap-2">
@@ -138,7 +139,7 @@ export function PairDialog({ request, reason, onSubmit, onDismiss }: PairDialogP
                 onClick={onDismiss}
                 className="h-9 flex-1 rounded-lg border border-slate-200 text-sm dark:border-slate-700"
               >
-                稍后再说
+                {t("pair.later")}
               </button>
               <button
                 type="button"
@@ -146,7 +147,7 @@ export function PairDialog({ request, reason, onSubmit, onDismiss }: PairDialogP
                 onClick={() => void submit()}
                 className="h-9 flex-1 rounded-lg bg-indigo-600 text-sm font-medium text-white disabled:opacity-50"
               >
-                {submitting ? "校验中…" : "确认配对"}
+                {submitting ? t("pair.verifying") : t("pair.confirm")}
               </button>
             </div>
           </>

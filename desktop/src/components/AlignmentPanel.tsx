@@ -13,6 +13,7 @@
 import { useState } from "react";
 
 import type { AlignmentView, AlignmentVerdict } from "../types";
+import { t, type MessageKey } from "../i18n";
 
 interface AlignmentPanelProps {
   alignment: AlignmentView | null;
@@ -21,11 +22,15 @@ interface AlignmentPanelProps {
   onBroadcast: (leadMs: number) => void;
 }
 
-const VERDICT_TEXT: Record<AlignmentVerdict, string> = {
-  aligned: "已对齐",
-  drifting: "错位",
-  unknown: "读数不足",
-};
+/** 对齐结论文案：同样写成函数（理由见 `types.ts` 的 `peerStateLabel`）。 */
+function verdictText(verdict: AlignmentVerdict): string {
+  const key: Record<AlignmentVerdict, MessageKey> = {
+    aligned: "align.aligned",
+    drifting: "align.drifting",
+    unknown: "align.unknown",
+  };
+  return t(key[verdict]);
+}
 
 const VERDICT_STYLE: Record<AlignmentVerdict, string> = {
   aligned: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
@@ -50,14 +55,14 @@ export function AlignmentPanel({ alignment, busy, onBroadcast }: AlignmentPanelP
     <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
       <header className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-sm font-semibold">多源对齐（M4）</h2>
+          <h2 className="text-sm font-semibold">{t("align.title")}</h2>
           <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-            跨度 = 用同一个「现在」推算各路样本编号的差值；一帧 = 960 样本 / 20 ms。
+            {t("align.hint")}
           </p>
         </div>
         <div className="flex items-center gap-2">
           <label className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
-            提前量
+            {t("group.lead")}
             <input
               type="number"
               min={0}
@@ -75,30 +80,32 @@ export function AlignmentPanel({ alignment, busy, onBroadcast }: AlignmentPanelP
             onClick={() => onBroadcast(leadMs)}
             className="rounded bg-sky-600 px-2 py-1 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50"
           >
-            {busy ? "广播中…" : "广播共同基准"}
+            {busy ? t("align.busy") : t("align.broadcast")}
           </button>
           <span className={`rounded px-2 py-0.5 text-xs font-medium ${VERDICT_STYLE[verdict]}`}>
-            {VERDICT_TEXT[verdict]}
+            {verdictText(verdict)}
           </span>
         </div>
       </header>
 
       {alignment === null || alignment.axes.length === 0 ? (
-        <p className="text-xs text-slate-400">还没有会话：接受对端推流后这里会显示每一路的读数。</p>
+        <p className="text-xs text-slate-400">{t("align.no_session")}</p>
       ) : (
         <>
           <p className="mb-2 text-xs text-slate-600 dark:text-slate-300">
             {spreadSamples === null
-              ? "有效读数不足两路，无法比较（需要至少两路同时在收音频）。"
-              : `当前跨度：${spreadSamples} 样本${spreadMs === null ? "" : ` ≈ ${spreadMs} ms`}`}
+              ? t("align.need_two")
+              : spreadMs === null
+                ? t("align.spread", { samples: spreadSamples })
+                : t("align.spread_ms", { samples: spreadSamples, ms: spreadMs })}
           </p>
           <table className="w-full text-xs">
             <thead className="text-slate-500 dark:text-slate-400">
               <tr>
-                <th className="text-left font-medium">对端</th>
-                <th className="text-right font-medium">最近编号</th>
-                <th className="text-right font-medium">推算编号</th>
-                <th className="text-right font-medium">到达 (ms)</th>
+                <th className="text-left font-medium">{t("align.peer")}</th>
+                <th className="text-right font-medium">{t("align.recent")}</th>
+                <th className="text-right font-medium">{t("align.estimated")}</th>
+                <th className="text-right font-medium">{t("align.arrival")}</th>
               </tr>
             </thead>
             <tbody>

@@ -4,6 +4,7 @@
 
 import type { LocalStatus, TelemetryView } from "../types";
 import { bpsToKbps, usToMs } from "../types";
+import { t } from "../i18n";
 
 interface StatusStripProps {
   local: LocalStatus | null;
@@ -25,7 +26,7 @@ export function StatusStrip({
   return (
     <section className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-slate-200 px-4 py-3 text-sm dark:border-slate-800">
       <span>
-        本机「{local?.name ?? "…"}」{" "}
+        {t("status.local", { name: local?.name ?? "…" })}
         {/* 指纹短码用等宽字体：数字/字母混排时不可读性最高（UI 规格 §5 等宽数字要求） */}
         <span className="font-mono text-slate-400">fp:{local?.idShort ?? "--------"}</span>
       </span>
@@ -33,13 +34,12 @@ export function StatusStrip({
 
       <span className="inline-flex items-center gap-1.5">
         <span className={`h-2 w-2 rounded-full ${active ? "bg-emerald-500" : "bg-slate-400"}`} />
-        {active ? `推送中 ${streamingCount} 台` : "未在推流"}
+        {active ? t("status.streaming", { count: streamingCount }) : t("status.idle")}
       </span>
 
       {active && telemetry ? (
         <span className="tabular-nums text-slate-500">
-          端到端 {usToMs(telemetry.e2eLatencyUs)} ms · {bpsToKbps(telemetry.bitrateBps)} kbps · 丢包{" "}
-          {telemetry.lossPct.toFixed(2)}%
+          {t("status.summary", { e2e: usToMs(telemetry.e2eLatencyUs), rate: bpsToKbps(telemetry.bitrateBps), loss: telemetry.lossPct.toFixed(2) })}
         </span>
       ) : null}
 
@@ -50,7 +50,7 @@ export function StatusStrip({
         aria-controls="telemetry-panel"
         className="ml-auto h-8 rounded-lg border border-slate-200 px-3 text-sm hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
       >
-        遥测 {telemetryOpen ? "▾" : "▸"}
+        {t("status.telemetry", { arrow: telemetryOpen ? "▾" : "▸" })}
       </button>
     </section>
   );

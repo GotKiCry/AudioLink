@@ -6,6 +6,7 @@
  */
 
 import { useState } from "react";
+import { t } from "../i18n";
 
 interface AddManualCardProps {
   connecting: boolean;
@@ -24,20 +25,20 @@ export function AddManualCard({ connecting, onConnect }: AddManualCardProps) {
         void onConnect(addr);
       }}
     >
-      <div className="text-sm font-medium">手动添加设备</div>
+      <div className="text-sm font-medium">{t("manual.title")}</div>
       <p className="mt-1 text-xs text-slate-500">
-        两台设备需在同一 Wi-Fi/局域网；若自动发现失效（AP 客户端隔离），用对方「本机状态条」上的地址直连。
+        {t("manual.hint")}
       </p>
 
       <label className="mt-3 block text-xs text-slate-500" htmlFor="peer-addr">
-        对方地址
+        {t("manual.address")}
       </label>
       <input
         id="peer-addr"
         name="addr"
         value={addr}
         onChange={(event) => setAddr(event.target.value)}
-        placeholder="192.168.1.23 或 192.168.1.23:58290"
+        placeholder={t("manual.placeholder")}
         inputMode="url"
         autoComplete="off"
         spellCheck={false}
@@ -50,7 +51,7 @@ export function AddManualCard({ connecting, onConnect }: AddManualCardProps) {
         disabled={connecting || addr.trim() === ""}
         className="mt-3 h-9 w-full rounded-lg bg-indigo-600 text-sm font-medium text-white disabled:opacity-50"
       >
-        {connecting ? "连接中…" : "连接"}
+        {connecting ? t("manual.connecting") : t("manual.connect")}
       </button>
     </form>
   );

@@ -7,6 +7,7 @@
  */
 
 import type { CommandError } from "../types";
+import { t } from "../i18n";
 
 interface ErrorBannerProps {
   error: CommandError;
@@ -32,10 +33,10 @@ export function ErrorBanner({ error, onDismiss }: ErrorBannerProps) {
       <button
         type="button"
         onClick={onDismiss}
-        aria-label="关闭提示"
+        aria-label={t("banner.dismiss")}
         className="ml-auto h-6 shrink-0 rounded px-2 text-xs text-red-600 hover:bg-red-100 dark:hover:bg-red-900"
       >
-        关闭
+        {t("banner.close")}
       </button>
     </div>
   );

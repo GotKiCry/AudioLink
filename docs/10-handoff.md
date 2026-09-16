@@ -143,6 +143,22 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   需求文档是契约，既不该凭「现代设备都是 arm64」收窄，也不该凭「模拟器方便」扩张。
   **仍未验**：两个包装到真机跑一遍（真机阻塞项）。详见 `docs/42-m5-release-pipeline.md` §9。
 
+- **M5 桌面端中英双语落地：139 条界面文案变成「一张表 + 一个函数」**。此前文案全散在 JSX 里写死中文（`App.tsx` 顶部还留着
+  「不做：双语」的 M1 范围注释）。新增 `desktop/src/i18n.ts`：`zh` 表 139 条（`as const` 定义键集合）+ `en` 表声明为
+  `Record<MessageKey, string>`（英文漏一条 tsc 就红）、模块级 `t(key, vars)` 与 `useLocale()`（`useSyncExternalStore` 订阅，
+  语言一变 App 重渲染，`t` 是渲染期求值所以整棵树跟着换）；语言偏好走 `settings.json` 的 `locale` 键（新命令 `locale` /
+  `set_locale`，`set_locale` 只接受 `zh-CN` / `en-US`，切换顺序是**先立即生效、再落盘**）。18 个文件；可机械化的部分
+  （字符串字面量 / JSX 属性 / 单独成行的文本节点）用脚本按「中文原文 → 键」一次替换 —— **字典即映射表**，
+  不另维护对照表；13 处模板串与混合节点手工改。**残留中文 UI 文案 0**。**两个值得单独记的坑**：
+  ① `PEER_STATE_LABEL` 与 `VERDICT_TEXT` 原本是**模块级常量** —— 常量只在模块加载那一刻求值，语言切换后整个界面都变了、
+  只有这几个字不动，且不报错不崩溃，最容易留在发布版里；两个都改成函数并写明理由。② `TelemetryPanel` 里 `const t = telemetry;`
+  把翻译函数**遮蔽**了，`t("tm.peers")` 被解析成「调用一个遥测对象」，改名 `tele` 才过。**新增护栏**
+  `desktop/scripts/check-i18n.mjs`（已接进 `pnpm build`）：键集合 + 占位符集合 + 空文案三项 —— tsc 管不了占位符，
+  英文漏写 `{name}` 会在界面上静默少一个值；破坏性验证过（去掉 `en` 的 `{name}` → exit 1，恢复 → exit 0）。
+  验证：`pnpm build` 通过（36 modules）、残留扫描 0、`cargo clippy -p audiolink-desktop -D warnings` 零警告、desktop 测试通过。
+  **未验**：没有真实 GUI 会话实际切换语言看观感（中英文案长度差异导致的换行/按钮宽度未看）；Android 侧仍是单语言
+  （`values-en/` 未做 —— 路线图 M5 的「中英双语」写在桌面交付物里，不擅自扩张）。详见 `docs/45-m5-bilingual.md`。
+
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
 Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本数**，`receive_audio()` 又乘了声道数，

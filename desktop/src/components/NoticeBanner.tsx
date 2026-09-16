@@ -6,6 +6,7 @@
  * 用户接下来要做的是输配对码（见 `EngineBridge::connect` 的注释）。
  * 把它丢进红色错误横幅，等于教用户"连接失败了，重试吧"，那是错的指引。
  */
+import { t } from "../i18n";
 
 interface NoticeBannerProps {
   message: string;
@@ -25,10 +26,10 @@ export function NoticeBanner({ message, onDismiss }: NoticeBannerProps) {
       <button
         type="button"
         onClick={onDismiss}
-        aria-label="关闭提示"
+        aria-label={t("banner.dismiss")}
         className="ml-auto h-6 shrink-0 rounded px-2 text-xs text-indigo-600 hover:bg-indigo-100 dark:hover:bg-indigo-900"
       >
-        关闭
+        {t("banner.close")}
       </button>
     </div>
   );

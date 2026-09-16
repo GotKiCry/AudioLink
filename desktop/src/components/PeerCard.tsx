@@ -4,11 +4,12 @@
  * 保留：名字 / 短指纹 / 状态 / 是否受信 / 地址 / 开始·停止推流。
  * 音量滑块：§4.1 的 SET_GAIN 已在引擎侧生效（M3），外壳经 set_peer_gain 命令下发（渐变 200 ms）。
  * 不做：`⋯` 菜单、重命名、延迟补偿（M2/M5）。
- * 断开后卡片**不消失**（UI 规格 §2.2 微交互）：M1 里"已断开"由 `state: failed` 表达。
+ * 断开后卡片**不消失**（UI 规格 §2.2 微交互）：M1 里t("state.failed")由 `state: failed` 表达。
  */
 
 import type { PeerView } from "../types";
-import { PEER_STATE_LABEL, PEER_STATE_STYLE } from "../types";
+import { PEER_STATE_STYLE, peerStateLabel } from "../types";
+import { t } from "../i18n";
 
 interface PeerCardProps {
   peer: PeerView;
@@ -60,45 +61,45 @@ export function PeerCard({
         <span className="truncate font-medium">{peer.name}</span>
         {/* 状态同时给图标 + 文字：不靠颜色单独传达信息（UI 规格 §5） */}
         <span className={`ml-auto shrink-0 text-xs ${style.text}`}>
-          {style.icon} {PEER_STATE_LABEL[peer.state]}
+          {style.icon} {peerStateLabel(peer.state)}
         </span>
       </header>
 
       <dl className="mt-3 space-y-1 pl-1 text-xs text-slate-500">
         <div className="flex gap-2">
-          <dt className="shrink-0">指纹</dt>
+          <dt className="shrink-0">{t("peer.fingerprint")}</dt>
           <dd className="font-mono">{peer.idShort}</dd>
         </div>
         <div className="flex gap-2">
-          <dt className="shrink-0">地址</dt>
+          <dt className="shrink-0">{t("peer.address")}</dt>
           <dd className="truncate font-mono">{peer.addr}</dd>
         </div>
         <div className="flex gap-2">
-          <dt className="shrink-0">信任</dt>
+          <dt className="shrink-0">{t("peer.trust")}</dt>
           <dd className={peer.trusted ? "text-emerald-600" : "text-amber-600"}>
-            {peer.trusted ? "已配对（白名单命中）" : "未配对"}
+            {peer.trusted ? t("peer.trusted") : t("peer.untrusted")}
           </dd>
         </div>
       </dl>
 
       {peer.state === "degraded" ? (
         <p className="mt-3 rounded-lg bg-amber-50 px-2 py-1 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-300">
-          网络不稳，已自动降码率
+          {t("peer.degraded")}
         </p>
       ) : null}
 
       {/* §4.1 音量：只在推流中给入口（引擎侧 SET_GAIN 已生效，渐变 200 ms） */}
       {streaming ? (
         <label className="mt-3 flex items-center gap-2 pl-1 text-xs text-slate-500 dark:text-slate-400">
-          <span className="shrink-0">音量</span>
+          <span className="shrink-0">{t("peer.volume")}</span>
           <input
             type="range"
             min={0}
             max={2}
             step={0.05}
             defaultValue={1}
-            aria-label="对端音量"
-            title="对端音量（0–200%），拖动时按 200 ms 渐变生效"
+            aria-label={t("peer.volume_label")}
+            title={t("peer.volume_hint")}
             onChange={(event) => onGain(Number(event.target.value))}
             className="flex-1"
           />
@@ -115,16 +116,16 @@ export function PeerCard({
               onClick={() => onBeginPair(peer.idShort)}
               className="h-9 flex-1 rounded-lg bg-indigo-600 text-sm font-medium text-white"
             >
-              输入配对码
+              {t("peer.pin_entry")}
             </button>
           ) : (
             <button
               type="button"
               disabled
-              title="对方需要在它的设备上输入本机显示的 6 位配对码"
+              title={t("peer.pin_hint")}
               className="h-9 flex-1 rounded-lg border border-slate-200 text-sm text-slate-400 dark:border-slate-700"
             >
-              等待配对
+              {t("peer.waiting")}
             </button>
           )
         ) : streaming ? (
@@ -135,7 +136,7 @@ export function PeerCard({
 
             className="h-9 flex-1 rounded-lg border border-slate-300 text-sm font-medium disabled:opacity-50 dark:border-slate-600"
           >
-            {busy ? "停止中…" : "停止推流"}
+            {busy ? t("peer.stopping") : t("peer.stop")}
           </button>
         ) : (
           <button
@@ -144,7 +145,7 @@ export function PeerCard({
             onClick={() => void onStart(peer.idShort)}
             className="h-9 flex-1 rounded-lg bg-indigo-600 text-sm font-medium text-white disabled:opacity-50"
           >
-            {busy ? "启动中…" : "开始推流"}
+            {busy ? t("peer.starting") : t("peer.start")}
           </button>
         )}
       </div>

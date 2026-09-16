@@ -98,6 +98,10 @@ export const api = {
    * 没开、没记录、连不上都返回 `null`（**不报错**）：用户什么都没点，不该弹错误横幅。
    */
   tryAutoConnect: (): Promise<PeerView | null> => invoke<PeerView | null>("try_auto_connect"),
+  /** `locale` —— M5：界面语言偏好（null = 用户还没选过，前端跟随系统语言）。 */
+  locale: (): Promise<string | null> => invoke<string | null>("locale"),
+  /** `set_locale` —— M5：保存界面语言偏好（只接受 zh-CN / en-US）。 */
+  setLocale: (tag: string): Promise<null> => invoke<null>("set_locale", { tag }),
   /** `set_autostart` —— M5：开关开机自启。 */
   setAutostart: (enabled: boolean): Promise<null> =>
     invoke<null>("set_autostart", { enabled }),

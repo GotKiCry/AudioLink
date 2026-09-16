@@ -44,6 +44,8 @@ use std::path::PathBuf;
 const SETTINGS_FILE: &str = "settings.json";
 /// 「启动时自动连接上次设备」开关。
 const KEY_AUTO_CONNECT: &str = "auto_connect";
+/// 界面语言偏好（`zh-CN` / `en-US`）；键缺失 = 用户还没选过（前端跟随系统语言）。
+const KEY_LOCALE: &str = "locale";
 /// 上一次成功连接的地址。
 const KEY_LAST_PEER: &str = "last_peer";
 
@@ -458,6 +460,37 @@ impl EngineBridge {
     pub async fn alignment(&self) -> Result<AlignmentView, CommandError> {
         let engine = self.engine().await?;
         Ok(alignment_view(&engine.stream_axes(), engine.monotonic_ms()))
+    }
+
+    /// M5：界面语言偏好（`zh-CN` / `en-US`）；`None` = 用户还没选过，前端跟随系统语言。
+    pub async fn locale(&self) -> Result<Option<String>, CommandError> {
+        let Ok(store) = self.app.store(SETTINGS_FILE) else {
+            return Ok(None);
+        };
+        Ok(store
+            .get(KEY_LOCALE)
+            .and_then(|value| value.as_str().map(str::to_string)))
+    }
+
+    /// M5：保存界面语言偏好。
+    ///
+    /// 只接受受支持的两个标记：`settings.json` 是可以被手改的，写进来一个 `ja-JP` 不该让界面
+    /// 变成「查不到的键都显示键名」—— 拒掉非法值，前端会回落到跟随系统语言。
+    pub async fn set_locale(&self, tag: String) -> Result<(), CommandError> {
+        if !matches!(tag.as_str(), "zh-CN" | "en-US") {
+            return Err(CommandError::busy(
+                format!("不支持的语言标记：{tag}"),
+                "set_locale",
+            ));
+        }
+        let store = self.app.store(SETTINGS_FILE).map_err(|error| {
+            CommandError::busy(format!("打开设置失败：{error}"), "set_locale")
+        })?;
+        store.set(KEY_LOCALE, serde_json::Value::String(tag));
+        store.save().map_err(|error| {
+            CommandError::busy(format!("保存设置失败：{error}"), "set_locale")
+        })?;
+        Ok(())
     }
 
     /// M5：自动重连的当前设置（开关 + 上次设备）。

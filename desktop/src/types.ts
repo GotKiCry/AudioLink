@@ -9,6 +9,7 @@
  * - `PeerView` / `TelemetryView` / `LocalStatus` 是 camelCase；
  * - `start_send` 的入参是 `{ id_short }`、返回是 `{ stream_id }` —— snake_case。
  */
+import { t, type MessageKey } from "./i18n";
 
 /** 会话状态。与 Rust 侧 `view::PeerState` 一一对应（契约 §6 的联合类型）。 */
 export type PeerState = "idle" | "handshaking" | "streaming" | "degraded" | "failed";
@@ -80,7 +81,7 @@ export interface CommandError {
   context: string;
 }
 
-/** 把任意 rejection 归一成 `CommandError`，保证 UI 永远有可显示的原因（不允许"未知错误"）。 */
+/** 把任意 rejection 归一成 `CommandError`，保证 UI 永远有可显示的原因（不允许t("err.unknown")）。 */
 export function toCommandError(raw: unknown): CommandError {
   if (typeof raw === "object" && raw !== null) {
     const candidate = raw as Partial<CommandError>;
@@ -94,7 +95,7 @@ export function toCommandError(raw: unknown): CommandError {
   }
   return {
     code: 0,
-    message: "界面与内核通信失败，请重试；若持续出现请查看日志",
+    message: t("err.ipc"),
     context: typeof raw === "string" ? raw : String(raw),
   };
 }
@@ -106,14 +107,22 @@ export function isPinWellFormed(pin: string): boolean {
   return PIN_PATTERN.test(pin);
 }
 
-/** 状态文案（`docs/08-ui-spec.md` §1 的状态色语义表；M1 不做双语，只出中文）。 */
-export const PEER_STATE_LABEL: Record<PeerState, string> = {
-  idle: "空闲",
-  handshaking: "连接中",
-  streaming: "推送中",
-  degraded: "网络不稳",
-  failed: "已断开",
-};
+/**
+ * 状态文案（`docs/08-ui-spec.md` §1 的状态色语义表）。
+ *
+ * **写成函数而不是常量**：语言可以在运行期切换，而模块级常量会把文案固定在**加载那一刻**的语言上 ——
+ * 切换语言后整个界面都变了、只有这几个字不动，这类 bug 一眼看不出来。
+ */
+export function peerStateLabel(state: PeerState): string {
+  const key: Record<PeerState, MessageKey> = {
+    idle: "state.idle",
+    handshaking: "state.handshaking",
+    streaming: "state.streaming",
+    degraded: "state.degraded",
+    failed: "state.failed",
+  };
+  return t(key[state]);
+}
 
 /** 状态样式：颜色 + 图标（**不允许只靠颜色传达信息**，见 UI 规格 §5 视觉验收清单）。 */
 export const PEER_STATE_STYLE: Record<PeerState, { dot: string; text: string; icon: string }> = {

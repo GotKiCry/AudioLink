@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import type { GroupView, PeerView } from "../types";
+import { t } from "../i18n";
 
 /**
  * 临时同步组面板（M3 交付物 4 / FR-22）。
@@ -44,19 +45,19 @@ export function GroupPanel({
     <section className="rounded-lg border border-neutral-800 bg-neutral-900/50 p-4">
       <header className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-neutral-200">
-          同步组（临时组 · 组内对齐靠 epoch 排播）
+          {t("group.title")}
         </h2>
         <button
           type="button"
           className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
           onClick={onRefresh}
         >
-          刷新
+          {t("group.refresh")}
         </button>
       </header>
 
       <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-neutral-300">
-        <span>提前量</span>
+        <span>{t("group.lead")}</span>
         <input
           type="number"
           min={0}
@@ -72,12 +73,12 @@ export function GroupPanel({
           className="rounded bg-emerald-700 px-3 py-1 text-xs font-medium text-white disabled:opacity-40"
           onClick={() => onCreate(selected, leadMs)}
         >
-          {busy ? "处理中…" : `建组（已选 ${selected.length} 台）`}
+          {busy ? t("group.busy") : t("group.create", { count: selected.length })}
         </button>
       </div>
 
       {selectable.length === 0 ? (
-        <p className="text-xs text-neutral-500">还没有可加入的设备：先连接并对端进入会话。</p>
+        <p className="text-xs text-neutral-500">{t("group.no_peers")}</p>
       ) : (
         <ul className="mb-3 space-y-1 text-xs">
           {selectable.map((peer) => (
@@ -96,7 +97,7 @@ export function GroupPanel({
       )}
 
       {groups.length === 0 ? (
-        <p className="text-xs text-neutral-500">当前没有同步组。</p>
+        <p className="text-xs text-neutral-500">{t("group.none")}</p>
       ) : (
         <ul className="space-y-2">
           {groups.map((group) => (
@@ -106,7 +107,7 @@ export function GroupPanel({
             >
               <div className="mb-1 flex items-center justify-between">
                 <span className="font-medium text-neutral-200">
-                  组 #{group.groupId} · {group.members.length} 台 · 提前量 {group.leadMs} ms
+                  {t("group.summary", { id: group.groupId, count: group.members.length, lead: group.leadMs })}
                 </span>
                 <span className="text-neutral-500">epoch {group.epochId}</span>
               </div>
@@ -127,18 +128,18 @@ export function GroupPanel({
                       }
                       title={
                         member.offsetUs === null
-                          ? "还没有时钟估计"
-                          : `偏移 ${member.offsetUs} µs`
+                          ? t("group.no_clock")
+                          : t("group.offset", { us: member.offsetUs })
                       }
                     >
-                      {member.quality === "poor" ? "同步质量差" : member.quality}
+                      {member.quality === "poor" ? t("group.poor") : member.quality}
                     </span>
                     <button
                       type="button"
                       className="text-neutral-400 hover:text-red-400"
                       onClick={() => onLeave(member.idShort, group.groupId)}
                     >
-                      退出
+                      {t("group.leave")}
                     </button>
                   </li>
                 ))}

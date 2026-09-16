@@ -10,7 +10,7 @@
  * 采集端点选择器通过真实 WASAPI 枚举与 start_send 的可选端点 ID 接线。
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { AboutPanel } from "./components/AboutPanel";
 import { AddManualCard } from "./components/AddManualCard";
@@ -25,11 +25,33 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { StatusStrip } from "./components/StatusStrip";
 import { TelemetryPanel } from "./components/TelemetryPanel";
 import { TopBar } from "./components/TopBar";
+import { api } from "./lib/ipc";
 import { useAudioLink } from "./lib/useAudioLink";
+import { detectLocale, setLocale, t, useLocale, type Locale } from "./i18n";
 
 export default function App() {
   const al = useAudioLink();
   const [telemetryOpen, setTelemetryOpen] = useState(true);
+  // 订阅语言：语言一变，App 重渲染 → 整棵子树跟着换文案（`t` 是渲染期求值的模块函数）。
+  const locale = useLocale();
+
+  // 语言偏好与自启 / 自动重连同一条路（设置文件）；没存过就跟随系统语言，并把推断结果写回去。
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
+
+  useEffect(() => {
+    void api
+      .locale()
+      .then((saved) => {
+        const next: Locale = saved === "zh-CN" || saved === "en-US" ? saved : detectLocale();
+        setLocale(next);
+        if (saved === null) void api.setLocale(next);
+      })
+      .catch(() => {
+        // 读设置失败不该打扰用户：回落跟随系统语言即可。
+      });
+  }, []);
 
   const streamingCount = al.peers.filter((peer) => peer.state === "streaming").length;
 
@@ -106,7 +128,7 @@ export default function App() {
 
         {al.peers.length === 0 ? (
           <p className="text-xs text-slate-400">
-            还没有设备。填入对方 IP 手动连接；自动发现（mDNS/广播）属 M2，本轮不做。
+            {t("empty.devices")}
           </p>
         ) : null}
       </main>

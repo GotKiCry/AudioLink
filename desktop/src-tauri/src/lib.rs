@@ -197,6 +197,21 @@ async fn set_auto_connect(
     bridge.set_auto_connect(enabled).await
 }
 
+/// M5：界面语言偏好（null = 还没选过，前端跟随系统语言）。
+#[tauri::command]
+async fn locale(bridge: State<'_, EngineBridge>) -> Result<Option<String>, CommandError> {
+    bridge.locale().await
+}
+
+/// M5：保存界面语言偏好（只接受 zh-CN / en-US）。
+#[tauri::command]
+async fn set_locale(
+    bridge: State<'_, EngineBridge>,
+    tag: String,
+) -> Result<(), CommandError> {
+    bridge.set_locale(tag).await
+}
+
 /// M5：启动时试一次自动重连（没开 / 没记录 / 连不上都返回 null，不报错）。
 #[tauri::command]
 async fn try_auto_connect(
@@ -280,7 +295,9 @@ pub fn run() {
             set_autostart,
             auto_connect_state,
             set_auto_connect,
-            try_auto_connect
+            try_auto_connect,
+            locale,
+            set_locale
         ])
         .setup(|app| {
             // 桥接层必须在窗口加载**之前**就位：前端一挂载就会 invoke，拿不到 State 会直接报错。

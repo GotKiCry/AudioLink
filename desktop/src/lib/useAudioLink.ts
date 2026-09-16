@@ -26,6 +26,7 @@ import {
   type TelemetryView,
   telemetryRowOf,
 } from "../types";
+import { t } from "../i18n";
 
 export interface AudioLinkController {
   /** 外壳版本号（`version` command）。 */
@@ -72,9 +73,9 @@ export interface AudioLinkController {
   notice: string | null;
   /**
    * 需要**本机输入**配对码的对端（来自 `PinNeeded`）。
-   * 用途：弹窗被"稍后再说"关掉后，用户还得有一条路把输入框叫回来 ——
+   * 用途：弹窗被t("pair.later")关掉后，用户还得有一条路把输入框叫回来 ——
    * 而 `PinNeeded` 是一次性事件，不会重发。
-   * 接收端（对端来输码）不在这个集合里，卡片上也不会出现"输入配对码"。
+   * 接收端（对端来输码）不在这个集合里，卡片上也不会出现t("peer.pin_entry")。
    */
   pairableIds: string[];
   /** `connect` 进行中（按钮禁用用）。 */
@@ -201,7 +202,7 @@ export function useAudioLink(): AudioLinkController {
       .tryAutoConnect()
       .then((peer) => {
         if (peer !== null) {
-          setNotice(`已自动连接上次设备 ${peer.idShort}`);
+          setNotice(t("toast.auto_connected", { peer: peer.idShort }));
         }
       })
       .catch(() => undefined);
@@ -374,7 +375,7 @@ export function useAudioLink(): AudioLinkController {
     (idShort: string): void => {
       const peer = peers.find((item) => item.idShort === idShort);
       setPairReason("");
-      setPairRequest({ idShort, name: peer?.name ?? "该设备", pin: "" });
+      setPairRequest({ idShort, name: peer?.name ?? t("toast.this_device"), pin: "" });
     },
     [peers],
   );
@@ -382,13 +383,13 @@ export function useAudioLink(): AudioLinkController {
   /** 导出遥测历史：成功用 notice 报路径，失败用 error 报人话原因。 */
   const exportTelemetryLog = useCallback(async (): Promise<void> => {
     if (telemetryHistory.length === 0) {
-      setNotice("还没有遥测历史可导出：先连接并开始推流。");
+      setNotice(t("toast.no_telemetry"));
       return;
     }
     setExportingTelemetry(true);
     try {
       const path = await api.exportTelemetry(telemetryHistory);
-      setNotice(`已导出 ${telemetryHistory.length} 个采样点：${path}`);
+      setNotice(t("toast.exported", { count: telemetryHistory.length, path }));
     } catch (raw) {
       setError(toCommandError(raw));
     } finally {
@@ -400,7 +401,7 @@ export function useAudioLink(): AudioLinkController {
   const setPeerGain = useCallback(async (idShort: string, gain: number): Promise<void> => {
     try {
       await api.setPeerGain(idShort, gain, 200);
-      setNotice(`${idShort} 音量已设为 ${Math.round(gain * 100)}%`);
+      setNotice(t("toast.gain", { peer: idShort, pct: Math.round(gain * 100) }));
     } catch (raw) {
       setError(toCommandError(raw));
     }
@@ -419,13 +420,13 @@ export function useAudioLink(): AudioLinkController {
   const createGroup = useCallback(
     async (idShorts: string[], leadMs: number): Promise<void> => {
       if (idShorts.length === 0) {
-        setNotice("先勾选至少一台已连接设备再建组。");
+        setNotice(t("toast.pick_peer"));
         return;
       }
       setGroupBusy(true);
       try {
         const groupId = await api.createGroup(idShorts, leadMs);
-        setNotice(`已建组 #${groupId}，成员 ${idShorts.length} 台`);
+        setNotice(t("toast.group_created", { id: groupId, count: idShorts.length }));
       } catch (raw) {
         setError(toCommandError(raw));
       } finally {
@@ -442,7 +443,7 @@ export function useAudioLink(): AudioLinkController {
       setGroupBusy(true);
       try {
         await api.joinGroup(idShort, groupId);
-        setNotice(`已把 ${idShort} 加入组 #${groupId}`);
+        setNotice(t("toast.group_joined", { peer: idShort, id: groupId }));
       } catch (raw) {
         setError(toCommandError(raw));
       } finally {
@@ -463,7 +464,7 @@ export function useAudioLink(): AudioLinkController {
       setAlignmentBusy(true);
       try {
         const sent = await api.broadcastEpoch(leadMs);
-        setNotice(`已向 ${sent} 条会话广播共同基准（提前量 ${leadMs} ms）`);
+        setNotice(t("toast.epoch_sent", { count: sent, lead: leadMs }));
       } catch (raw) {
         setError(toCommandError(raw));
       } finally {
@@ -480,7 +481,7 @@ export function useAudioLink(): AudioLinkController {
       setGroupBusy(true);
       try {
         await api.leaveGroup(idShort, groupId);
-        setNotice(`已让 ${idShort} 退出组 #${groupId}`);
+        setNotice(t("toast.group_left", { peer: idShort, id: groupId }));
       } catch (raw) {
         setError(toCommandError(raw));
       } finally {

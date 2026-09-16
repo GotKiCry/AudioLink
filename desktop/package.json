@@ -6,7 +6,8 @@
   "description": "AudioLink 桌面端（Tauri 2 + React）",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && node scripts/check-i18n.mjs && vite build",
+    "i18n:check": "node scripts/check-i18n.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
