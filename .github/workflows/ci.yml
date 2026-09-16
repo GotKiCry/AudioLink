@@ -10,17 +10,20 @@ env:
   RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: always
 
-# 设计说明（2026-09-11 优化）：
-#   四个 job **互不依赖、全部并行** —— 它们的唯一共享物是代码本身，不存在构建产物依赖。
+# 设计说明（2026-09-11 优化，2026-09-16 再优化）：
+#   五个 job **互不依赖、全部并行** —— 它们的唯一共享物是代码本身，不存在构建产物依赖。
 #   早先版本让 android/desktop `needs: rust`，导致总时长 = rust(27min) + max(android, desktop)，
-#   首轮实测 49 分钟。现在总时长 ≈ max(各 job) ≈ 22~27 分钟。
+#   首轮实测 49 分钟。现在总时长 ≈ max(各 job)，实测 3~4 分钟（依赖树已被 rust-cache 全覆盖）。
 #   另外把「内核 lint/test」与「桌面外壳构建」拆开：内核几个 crate 依赖极轻，能在数分钟内给出反馈，
 #   不必等 tauri 那一整套依赖编完。
+# 2026-09-16：core 本身是墙钟关键路径（实测 236-256 s），再拆成 core-light（types/proto/identity，
+#   协议层 golden vectors 的快反馈通道）与 core-heavy（其余内核 crate）。依据与实测见 docs/26。
 
 jobs:
-  # ---------- 快速反馈：内核格式 / lint / 单元测试（协议 golden vectors 在此把关）----------
-  core:
-    name: core (fmt + clippy + test)
+  # ---------- 快速反馈：轻内核（fmt + clippy + test；协议 golden vectors 在此把关）----------
+  # 这三个 crate 不依赖 net/engine/audio，编译与链接极轻 —— 协议层的结论不必等重内核编完。
+  core-light:
+    name: core-light (fmt + proto/identity)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4          # TODO: pin to SHA
@@ -29,13 +32,30 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2        # TODO: pin to SHA
       - run: cargo fmt --all --check
-      # 排除桌面外壳：它的 tauri 依赖编译很重，放到独立的 desktop job 里
-      - name: Clippy (kernel crates)
-        run: cargo clippy --workspace --exclude audiolink-desktop --all-targets --all-features -- -D warnings
-      # --lib --tests：跳过 doctests（内核各 crate 目前 doctest 全为 0 项，只为它们链 rustdoc 不划算）；
+      - name: Clippy (light kernel crates)
+        run: cargo clippy -p audiolink-types -p audiolink-proto -p audiolink-identity --all-targets --all-features -- -D warnings
+      # --lib --tests：跳过 doctests（内核各 crate 目前 doctest 全为 0 项，只为它们链 rustdoc 不划算）
+      - name: Test (light kernel crates)
+        run: cargo test -p audiolink-types -p audiolink-proto -p audiolink-identity --lib --tests
+
+  # ---------- 重内核：其余全部内核 crate ----------
+  # 用 --workspace --exclude <轻内核三件> 而不是逐个 -p：将来新增 crate 会**自动**落进重 job，
+  # 不会悄悄漏测（漏测比慢贵得多）。两个 job 的 crate 并集 = 除桌面外壳外的全部成员，交集为空。
+  core-heavy:
+    name: core-heavy (audio/net/engine/ffi/tools)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4          # TODO: pin to SHA
+      - uses: dtolnay/rust-toolchain@stable # TODO: pin to SHA；实际版本由 rust-toolchain.toml 决定
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2        # TODO: pin to SHA
+      # 排除桌面外壳（tauri 依赖重，在 desktop job 里）与已在 core-light 覆盖的三个轻内核
+      - name: Clippy (heavy kernel crates)
+        run: cargo clippy --workspace --exclude audiolink-desktop --exclude audiolink-types --exclude audiolink-proto --exclude audiolink-identity --all-targets --all-features -- -D warnings
       # 无 #[test] 的 bin 已在各自 Cargo.toml 里标 test = false，不再为它们各链一个测试二进制
-      - name: Test (kernel crates)
-        run: cargo test --workspace --exclude audiolink-desktop --lib --tests
+      - name: Test (heavy kernel crates)
+        run: cargo test --workspace --exclude audiolink-desktop --exclude audiolink-types --exclude audiolink-proto --exclude audiolink-identity --lib --tests
 
   # ---------- Android：Rust 交叉编译 + 组装 debug APK ----------
   android:
