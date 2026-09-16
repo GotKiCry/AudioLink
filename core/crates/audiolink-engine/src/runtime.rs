@@ -3740,17 +3740,28 @@ fn playout_main(
             if frames.len() >= target {
                 depth_state = PlayoutDepthState::new(target);
                 primed = true;
-                // §7 起播对齐：把**拍点锚到全局帧网格**（`now_monotonic_us()` 的 frame_us 整数倍）。
+                // §7 起播对齐：有排播时**首拍直接落在该帧的 target 上**，没有排播时才退回全局帧网格。
                 //
-                // 为什么必须锚（2026-09-17 定位到的真缺陷）：拍点就是排播判定的时刻，而目标时刻
-                // 也对齐到同一网格。两端线程各自从「启动那一刻」起拍，相位互不相同 —— 一个拍点落在
-                // 目标之前、另一个落在之后，于是一头等一拍、一头立刻播，**起播整整差一帧**
-                // （回环实测反复出现 0 或 ~20 ms 两种结果，扣掉这一帧后抖动 < 1 ms）。
-                // 锚到同一网格后，两端在**同一拍**上做同一个决定。
-                let frame_us = frame_ms.max(1) * 1_000;
-                let remainder = now_monotonic_us() % frame_us;
-                next_write = Instant::now() + Duration::from_micros(frame_us - remainder);
-                // 这一拍只用来对齐相位，不写数据；下一拍起就在网格上，与对端一致。
+                // 为什么必须锚到 target 本身（2026-09-17 第三层修复，两次尝试的结论）：
+                // ① 拍点原本锚在**全局**帧网格（相位 0），而 target 也被向上取整到同一个全局网格 ——
+                //    两端的时钟估计只差 ε，各自取整就可能落到**相邻两格**，整段音频差一帧（实测 20~40%）；
+                // ② 把拍点改成「该帧 target 的相位」也**不够**：相位点可能落在 target **之前**，这一端
+                //    要多等一拍（+20 ms）才播，另一端恰好 ≥ target 立刻播 —— 依然差一帧（实测 10 轮 2 轮）。
+                // 锚到 target 之后，两端的首拍只差各自的 ε（回环约 2 ms），此后每拍 +frame 与 target 序列同步。
+                // 详见 docs/49-m3-group-start-phase.md。
+                let now_us = i64::try_from(now_monotonic_us()).unwrap_or(i64::MAX);
+                let (anchor_us, sched_frame_us) =
+                    playout_start_anchor(&sync, &frames, &mut pending);
+                if sched_frame_us > 0 {
+                    let wait_us = anchor_us.saturating_sub(now_us).max(0);
+                    next_write = Instant::now() + Duration::from_micros(wait_us as u64);
+                } else {
+                    let frame_us = i64::try_from(period.as_micros()).unwrap_or(20_000).max(1);
+                    let remainder = now_us.rem_euclid(frame_us);
+                    next_write =
+                        Instant::now() + Duration::from_micros((frame_us - remainder) as u64);
+                }
+                // 这一拍只用来对齐起拍，不写数据；下一拍起就在 target 序列上，与对端一致。
                 continue;
             } else {
                 continue;
@@ -3771,9 +3782,11 @@ fn playout_main(
         }
         // §7 预约播放：有组基准时，起播时刻由 epoch 决定，而不是「队列攒够就播」。
         // 等待与丢弃都补静音（保持时间轴推进），但等待**不**推进游标 —— 那帧还要在目标时刻播。
+        let mut scheduled_mode = false;
         if let Some((action, sample_index)) =
             schedule_action(&sync, peek_frame(&frames, &mut pending))
         {
+            scheduled_mode = true;
             match action {
                 PlayoutAction::Wait { wait_us } => {
                     report_playout_scheduled(
@@ -3813,7 +3826,16 @@ fn playout_main(
             }
         }
 
-        match depth_state.action(requested_target, buffered_frames) {
+        // §7：**有排播时不参与**抖动缓冲的「升档补余量」。
+        //
+        // 为什么（2026-09-17 第四次定位）：`Hold` 会「写一拍静音、不推进序号」—— 在本地游标模式下这
+        // 是建立余量的正当手段，但在排播模式下它等于把这一端**整条时间轴后移一帧**。两端各自自适应升档，
+        // 只要一端触发、另一端没触发，就出现「组内偏差不是 0 就是整整一帧」的失败样本
+        // （实测 P50 20.03 ms、P95 20.38 ms，扣帧后 0.00 / 0.03 ms）。排播模式下时间轴由 epoch 说了算，
+        // 余量该由协议 §7 的 lead_ms 提供，不该靠插入静音。
+        let depth_action = depth_state.action(requested_target, buffered_frames);
+        match depth_action {
+            PlayoutDepthAction::Hold if scheduled_mode => {} // 排播模式：不 Hold，落到下面的正常取帧
             PlayoutDepthAction::Hold => {
                 if let Ok(mut telemetry) = telemetry.lock() {
                     telemetry.record_underrun();
@@ -3863,10 +3885,14 @@ fn playout_main(
                 if let Ok(mut telemetry) = telemetry.lock() {
                     telemetry.record_underrun();
                 }
-                let _ = jitter_depth.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
-                    Some((depth + 1).min(MAX_TARGET_FRAMES))
-                });
-                refill_after_underrun = true;
+                // §7：排播模式下不升档 —— 升档会引入「Hold 一拍」，而那会把整条时间轴后移一帧。
+                if !scheduled_mode {
+                    let _ =
+                        jitter_depth.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
+                            Some((depth + 1).min(MAX_TARGET_FRAMES))
+                        });
+                    refill_after_underrun = true;
+                }
                 if !write_frame(&mut sink, &mixer, mix_source, &silence, &mut mixed) {
                     break;
                 }
@@ -3949,6 +3975,35 @@ fn peek_frame<'a>(
     pending.as_ref()
 }
 
+/// 起拍锚点：返回（**待播帧的 target 时刻** µs，排播网格长度 µs）。没有排播 / 取不到待播帧时返回 (0, 0) ——
+/// 调用方据此退回全局帧网格（相位 0）。
+///
+/// 相位必须取自**待播帧自己的 target**：样本序号由首包给出（`PlayoutSync::sample_index_of`），
+/// 不能假设它对齐到某个全局网格 —— 用错参考系正是「组内起播差一整帧」的根因。
+fn playout_start_anchor(
+    sync: &PlayoutSyncHandle,
+    frames: &Receiver<PlaybackFrame>,
+    pending: &mut Option<PlaybackFrame>,
+) -> (i64, i64) {
+    let Ok(state) = sync.lock().map(|guard| *guard) else {
+        return (0, 0);
+    };
+    let Some(schedule) = state.schedule else {
+        return (0, 0);
+    };
+    let Some(frame) = peek_frame(frames, pending) else {
+        return (0, 0);
+    };
+    let Some(sample_index) = state.sample_index_of(frame.seq) else {
+        return (0, 0);
+    };
+    let frame_us = crate::epoch::frame_us(state.frame_samples);
+    if frame_us <= 0 {
+        return (0, 0);
+    }
+    (schedule.target_us(sample_index, state.offset_us), frame_us)
+}
+
 /// §7：有排播、且这一帧能换算成样本序号时给出判定；否则 `None`（走正常排播）。
 fn schedule_action(
     sync: &PlayoutSyncHandle,
@@ -3959,7 +4014,7 @@ fn schedule_action(
     let sample_index = state.sample_index_of(frame?.seq)?;
     let now_us = i64::try_from(now_monotonic_us()).unwrap_or(i64::MAX);
     Some((
-        schedule.action(now_us, sample_index, state.offset_us, state.frame_samples),
+        schedule.action(now_us, sample_index, state.offset_us),
         sample_index,
     ))
 }

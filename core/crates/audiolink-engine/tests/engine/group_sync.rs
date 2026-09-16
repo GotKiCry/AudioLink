@@ -231,9 +231,12 @@ async fn two_receivers_play_the_same_frame_within_ten_milliseconds() {
     // 断言现在直接盯 M3 的验收线（absolute，含起播差）。
     //
     // 曾经它只能断言扣掉起播差之后的 `aligned`：当时起播会偶发差一整帧（5 次里 2 次，19.7 ms），
-    // 一条会随机变红的断言只会被忽略。2026-09-17 定位并修掉了根因（两层：判定直接比微秒 + 播放线程
-    // 拍点相位各不同 —— 见 `EpochSchedule::frame_aligned_target_us` 与 runtime 的起播网格对齐），
-    // 修复后连跑 4 次都是 P50 0.00 ms / P95 ≤ 0.04 ms。所以护栏可以按验收线立：**这才是它该盯的东西**。
+    // 一条会随机变红的断言只会被忽略。2026-09-17 前后修了两轮：第一轮修判定精度与拍点相位；
+    // 第二轮（第三层，见 `docs/49-m3-group-start-phase.md`）才发现真正的问题是**参考系** ——
+    // 拍点锚在全局帧网格、target 又取整到同一网格，两端时钟估计只差 ε 就会落到相邻两格，
+    // 于是结果只有「0 或整整一帧」两种。改成「拍点相位由该帧 target 算出」
+    // （`EpochSchedule::phase_us` + runtime 的 `playout_start_anchor`）之后，绝对偏差实测
+    // P50 0.00 ms / P95 0.02 ms。所以护栏按验收线立：**这才是它该盯的东西**。
     assert!(
         absolute_p95 <= 10.0,
         "组内偏差 P95 = {absolute_p95:.2} ms 超过验收线 10 ms（两端播放同一帧的时刻差，含起播差）"
