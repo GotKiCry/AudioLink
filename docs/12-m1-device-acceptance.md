@@ -3,6 +3,7 @@
 > 设备：MI 8 Lite（platina）· adb cd46884 · Android 10 / API 29 · arm64-v8a · Wi-Fi 172.16.2.54
 > PC：Windows · 192.168.3.200（以太网）· Rust 1.96.1 · 工具：`tools/device-link`（本轮新增）· 2026-09-15
 > 性质：**验收报告**。所有数字标注 [实测] / [模型] / [未测]；模型值不混进实测值；未测不写 0。
+> 2026-09-16 更新：接收端重复乘声道数已修复，代码回归及本机推流结果见 §9。§0–§8 保留修复前的真机记录；用户随后确认新 APK 音频正常传输和播放（见 §9.2）；定量溢出及延迟尚待复测。
 
 ---
 
@@ -316,4 +317,64 @@ PC 侧已收到 `PAIR_REQUIRED`（工具打印「进入 PIN 配对分支」）�
 | `.gitignore` | 🔴 **`keystore.properties` 原本没被忽略**（只有 `*.jks`）→ PUBLIC 仓库存在口令入库风险 → 已修（顺带踩到本项目自己记录的坑：`.gitignore` 不支持行尾注释） |
 | MIUI 安装 | `adb install` release 包被拒 **Failure [-99]**（debug 包可装）→ 需开发者选项打开「USB 安装」；属环境项 |
 
+## 9. PCM 长度修复与回归（2026-09-16）
 
+对应 [Issue #1](https://github.com/GotKiCry/AudioLink/issues/1) 与看板 P0「内核→Kotlin PCM 推送 ≈2× 实时」。
+根因在 `audiolink-engine/src/runtime.rs::receive_audio()`：`OpusDecoder::decode_into()` 已返回交错样本数，
+接收端却再次乘以 2；解码缓冲又恰好分配了两包容量，导致每个 20 ms 包附加 20 ms 未写入的静音。
+FFI 按传入长度转交 PCM，并不是此次单位错误的来源。
+
+修复直接以解码返回长度截取 PCM，并将解码缓冲收缩为一包交错样本。
+同时修正 `depth_frames()` 的说明：`buffer_level_us` 只计引擎待播队列，
+不含 Android PCM 环和 AudioTrack；水位由起步攒帧、调度与收发速率差决定，不能承诺「通常 0–1 帧」。
+
+### 9.1 自动回归与本机观测
+
+`core/crates/audiolink-engine/tests/pcm_delivery.rs` 启动两个真实 Engine，经过 QUIC、PIN 配对、
+真实 Opus 编解码和播放线程，在 sink 边界记录连续 30 包正弦音频；不访问声卡。
+
+| 帧长 | 旧代码实际输出 / 期望 | 修复后 | 额外断言 |
+|---|---|---|---|
+| 20 ms / 2ch | 3840 / 1920 个交错样本，测试失败 | 每包 1920，测试通过 | 后半包保留音频能量、无非有限样本 |
+| 10 ms / 2ch | 1920 / 960 个交错样本，测试失败 | 每包 960，测试通过 | 同上；欠载补静音也检查包长度 |
+
+验证命令：
+
+```powershell
+cargo test -p audiolink-engine --test pcm_delivery -- --nocapture
+cargo fmt --all --check
+cargo clippy --workspace --exclude audiolink-desktop --all-targets --all-features -- -D warnings
+cargo test --workspace --exclude audiolink-desktop
+cargo run -p audiolink-tools --bin link-loop -- run --seconds 60 --frame-ms 20
+```
+
+上述检查均通过。本机 60 s 观测（Windows、合成采集、NullPlayout、127.0.0.1；期间同时交叉编译 Android）：
+
+| 指标 | [实测] |
+|---|---|
+| 帧封口 → sink 提交 | 3029 个配对样本；P50 **40.28 ms**、P95 **40.73 ms**、最大 43.74 ms |
+| 欠载 / 迟到丢弃 / PLC | **0 / 0 / 0** |
+| 结束时引擎队列水位 | **40 ms** |
+| 丢包率末值 | **0.00%** |
+
+原始日志：`target/evidence/pcm-fix/link-loop-20ms.log`（本地产物，不入库）。
+此处的 40.28 ms **不含采集半周期、组帧及设备输出**，不是手机声学端到端延迟。
+本轮未复现 §8.2 的持续积压，但没有手机侧证据，不能关闭该待办。
+
+计数口径补充：`link-loop` 在开始 60 s 观测前已推流 **600 ms**；配对样本总数包含这段起步时间。
+因此本轮的 3029/60、或历史同类总数除以名义观测秒数，均不能证明存在 50.5 fps 的稳态供给。
+要判断漂移，必须对同一连续推流区间的起止计数与单调时间取差；§4 #11 的真机队列斜率仍需独立测量。
+
+### 9.2 真机复测入口
+
+双 ABI（arm64-v8a / armeabi-v7a）的 release 内核、`assembleDebug` 与 `assembleRelease` 均构建成功，
+产物分别为 `android/app/build/outputs/apk/debug/app-debug.apk` 和 `android/app/build/outputs/apk/release/app-release.apk`。
+`cargo test -p audiolink-desktop` 的 9 个单测和 1 个真实引擎接缝测试通过；
+`testDebugUnitTest` 检查成功（Kotlin 未变更，Gradle 复用了已有测试结果）。
+
+**用户反馈（2026-09-16）**：新 APK 音频已能正常传输和播放。Issue #1 已按用户要求关闭，PCM 修复任务标为 **Done**。此反馈确认基本功能和试听恢复；尚无新的溢出增量、30 min 长跑或 P50/P95 数据，不能据此宣布整个 M1 定量验收达标。
+重新构建双 ABI release 内核后，用新 APK 执行以下复测：
+
+1. 默认档连续推流至少 60 s，在推流中的同一区间记录 PCM 环溢出、读空、引擎水位、AudioTrack queuedFrames 和时间戳；计数采用增量。
+2. 同连接切 30 ms 档 A/B，重新测量实际欠载代价和听感，不沿用错误 PCM 供给下的旧结论。
+3. 用正确供给重复 30 min 连续播放，并测量含设备输出的端到端 P50/P95；若引擎队列仍持续增长，再处理独立的节奏问题。

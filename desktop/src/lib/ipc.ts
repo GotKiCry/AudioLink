@@ -10,6 +10,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  CaptureDeviceView,
   LocalStatus,
   PairRequiredPayload,
   PeerView,
@@ -31,11 +32,13 @@ export const api = {
   localStatus: (): Promise<LocalStatus> => invoke<LocalStatus>("local_status"),
   /** `list_peers` —— 当前对端列表（首屏水合用；之后靠 `audiolink://peer` 事件）。 */
   listPeers: (): Promise<PeerView[]> => invoke<PeerView[]>("list_peers"),
+  listCaptureDevices: (): Promise<CaptureDeviceView[]> => invoke("list_capture_devices"),
+  activeCaptureDevice: (): Promise<CaptureDeviceView | null> => invoke("active_capture_device"),
   /** `connect` —— 手工 IP 连接。 */
   connect: (addr: string): Promise<PeerView> => invoke<PeerView>("connect", { addr }),
   /** `start_send` —— 开始推流；返回 `{ stream_id }`。 */
-  startSend: (idShort: string): Promise<StartSendResult> =>
-    invoke<StartSendResult>("start_send", { id_short: idShort }),
+  startSend: (idShort: string, captureDeviceId: string | null): Promise<StartSendResult> =>
+    invoke<StartSendResult>("start_send", { id_short: idShort, capture_device_id: captureDeviceId }),
   /** `stop_send` —— 停止推流（无入参，返回 `null`）。 */
   stopSend: (): Promise<null> => invoke<null>("stop_send"),
   /**

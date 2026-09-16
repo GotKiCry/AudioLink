@@ -294,6 +294,7 @@ impl Engine {
     /// 把「需要 PIN」当成连接失败会让 UI 只能整条重连，白白丢掉已完成的 QUIC 握手与 HELLO 交换。
     pub async fn connect(self: &Arc<Self>, addr: SocketAddr) -> Result<NodeId, AudioLinkError>;
     /// 开始向对端推流（发送方向）。
+    /// 等本地采集/编码初始化和 OPEN_STREAM 写出，失败直接返回；尚不代表远端已开始播放。
     pub async fn start_send(&self, peer: NodeId) -> Result<(), AudioLinkError>;
     /// 停止推流（保留连接与信任）。
     pub async fn stop_send(&self, peer: NodeId) -> Result<(), AudioLinkError>;
@@ -363,7 +364,7 @@ pub enum SessionState { Idle, Handshaking, Streaming, Degraded, Reconnecting, Fa
 
 ## 6. 桌面端契约（所有者：desktop-ui）
 
-`desktop/src-tauri` 对前端暴露以下 **Tauri command**（形状冻结；名称与字段名不许改）：
+`desktop/src-tauri` 对前端暴露以下 **Tauri command**（既有名称/字段保持兼容；2026-09-16 为看板采集端点选择器补充可选入参与两个查询）：
 
 | command | 入参 | 返回（JSON） |
 |---|---|---|
@@ -371,7 +372,9 @@ pub enum SessionState { Idle, Handshaking, Streaming, Degraded, Reconnecting, Fa
 | `local_status` | — | `{ id_short: string, name: string, addr: string, platform: string }` |
 | `list_peers` | — | `PeerView[]` |
 | `connect` | `{ addr: string }` | `PeerView` |
-| `start_send` | `{ id_short: string }` | `{ stream_id: number }` |
+| `list_capture_devices` | — | `CaptureDeviceView[]`（活动的 Windows 输出端点） |
+| `active_capture_device` | — | `CaptureDeviceView \| null`（实际正在采集的端点） |
+| `start_send` | `{ id_short: string, capture_device_id?: string \| null }` | `{ stream_id: number }` |
 | `stop_send` | — | `null` |
 | `submit_pin` | `{ id_short: string, pin: string }` | `{ ok: boolean, reason: string }` |
 | `telemetry` | — | `TelemetryView` |
@@ -387,13 +390,23 @@ type TelemetryView = {
   bitrateBps: number; bufferLevelUs: number; underruns: number;
   e2eLatencyUs: number; e2eP50Us: number; e2eP95Us: number;
 };
+type CaptureDeviceView = {
+  id: string; name: string; isDefault: boolean; isVirtual: boolean;
+  sampleRate: number; channels: number; unavailableReason: string | null;
+};
 ```
+
+采集选择语义：省略或 `null` 在**每次开流**时解析系统默认输出；显式 ID 精确匹配活动端点，
+不存在或格式不支持则拒绝，不回退默认设备。采集工厂在自己的线程里打开 WASAPI 并记录实际端点名字、ID、格式。
+`start_send` 等待设备/编码初始化与 OPEN_STREAM 写出，失败不会把桌面卡片标成推流中；成功仍不代表远端已开始播放。
+开始/停止操作在桌面桥中串行化；更换端点前需停止推流。选择保留在当前界面会话中。
+`active_capture_device` 的快照不会随 Windows 默认设备变化而改变；停止或断连后返回 `null`。
 
 **事件**（后端 → 前端，`listen` 订阅名冻结）：`audiolink://peer`（`PeerView[]`）、
 `audiolink://telemetry`（`TelemetryView`，**500 ms** 节流）、`audiolink://pair-required`（`{ idShort, name, pin }`）。
 
 **UI 范围（M1 最小版）**：手工输入 IP → 连接 → 显示对端卡片与状态 → 开始/停止推流 → 遥测数字面板 +
-连接失败原因。**不做**：托盘 / 自启 / 双语 / 设备列表 / 曲线图（属 M5/M2）。
+连接失败原因；补充本机采集端点选择、刷新、不可用原因及实际端点展示。**不做**：托盘 / 自启 / 双语 / 局域网自动发现设备列表 / 曲线图（属 M5/M2）。
 
 **验收**：`pnpm build`（TS 严格 + Vite 构建）通过；`cargo check -p audiolink-desktop` 通过。
 engine 尚未就绪时，Rust 侧 command 可先返回**明确的 mock**，但必须留 `TODO(M1)` 并在引擎落地后替换 —— 不允许把 mock 当成交付。

@@ -51,7 +51,7 @@ use audiolink_types::{
     Platform, Ptype, StreamStats,
 };
 use crossbeam_channel::{Receiver, Sender};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::clock::{
     ClockProbeState, ClockProbeStats, STEADY_INTERVAL_MS, now_monotonic_us, publish_clock,
@@ -233,10 +233,10 @@ pub enum EngineEvent {
 }
 
 /// 应用 → 会话任务的指令。
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum SessionCommand {
     /// 向对端开流（发送方向）。
-    StartSend,
+    StartSend(oneshot::Sender<Result<(), AudioLinkError>>),
     /// 关闭当前流（保留连接）。
     CloseStream {
         /// 关闭原因。
@@ -546,8 +546,14 @@ impl Engine {
     }
 
     /// 向已连接对端开流（发送方向）。
+    /// 等采集设备与编码器初始化、OPEN_STREAM 写出后返回；不代表对端已开始播放。
     pub async fn start_send(&self, peer: NodeId) -> Result<(), AudioLinkError> {
-        self.send_command(peer, SessionCommand::StartSend).await
+        let (ready_tx, ready_rx) = oneshot::channel();
+        self.send_command(peer, SessionCommand::StartSend(ready_tx))
+            .await?;
+        ready_rx.await.map_err(|_| {
+            AudioLinkError::bad_request("session ended or is not ready to start capture")
+        })?
     }
 
     /// 关闭与对端的流（保留连接与信任）。
@@ -897,7 +903,7 @@ async fn run_session(
         }
     };
 
-    let mut pcm = vec![0f32; codec.interleaved_frame() * 2];
+    let mut pcm = vec![0f32; codec.interleaved_frame()];
     let mut dispatch_stats = DispatchStats::default();
 
     let mut expected_seq: Option<u32> = None;
@@ -921,18 +927,36 @@ async fn run_session(
             command = commands.recv() => {
                 let Some(command) = command else { break; };
                 match command {
-                    SessionCommand::StartSend => {
+                    SessionCommand::StartSend(ready) => {
+                        if ready.is_closed() {
+                            continue;
+                        }
+                        if capture.is_some() {
+                            let _ = ready.send(Err(AudioLinkError::owned(
+                                ErrorCode::Busy, "capture is already running".to_string(),
+                            )));
+                            continue;
+                        }
                         match start_send_pipeline(&inner, &session, &codec) {
                             Ok((handle, epoch)) => {
                                 capture = Some(handle);
                                 epoch_id = epoch;
                                 stream_id = Some(1);
-                                let _ = send_control(
+                                let result = send_control(
                                     &mut control,
                                     &ControlRequest::OpenStream(open_stream_payload(&codec)),
                                 ).await;
+                                if let Err(error) = &result {
+                                    stop_capture(&mut capture);
+                                    stream_id = None;
+                                    report_error(&inner, &session, error);
+                                }
+                                let _ = ready.send(result);
                             }
-                            Err(error) => report_error(&inner, &session, &error),
+                            Err(error) => {
+                                report_error(&inner, &session, &error);
+                                let _ = ready.send(Err(error));
+                            }
                         }
                     }
                     SessionCommand::CloseStream { reason } => {
@@ -1317,7 +1341,8 @@ impl PlayoutHandle {
     /// # 口径说明（别把它读成「播放器里积压了多少」）
     ///
     /// 这是**已解码、还没被播放线程取走**的帧数 —— 也就是 M1 的抖动缓冲本身。
-    /// 时钟驱动的播放线程每拍取走一帧，所以它在 1 Hz 采样下通常只有 0–1 帧。
+    /// 起步攒 `PRIME_FRAMES` 帧，此后每拍取走一帧；水位受调度抖动与收发速率差影响，
+    /// 上限为 `PLAYBACK_QUEUE_FRAMES`。它不包含 sink、Android PCM 环或 AudioTrack 的水位。
     /// 曾经试过改用 `PlayoutSink::buffered_frames()`（播放器内部积压），但那是个**实现自定义**的量：
     /// 真实 WASAPI sink 与合成 sink 的语义不同，同一份遥测在两端会给出不可比的数字。
     /// 与其发布一个语义漂移的指标，不如发布一个定义精确的。
@@ -1618,9 +1643,9 @@ fn receive_audio(
         return; // 对端在开流协商前就发了音频：忽略
     };
 
-    // `decoded` 是**每声道**样本数（坑清单 #13），转成交错样本数要乘声道数。
-    let interleaved = decoded.saturating_mul(2);
-    let Some(frame) = pcm.get(..interleaved) else {
+    // 本项目的 OpusDecoder 封装已把底层每声道样本数换算为交错样本数。
+    // 直接使用有效长度；再次乘声道数会把缓冲尾部也送进播放队列（Issue #1）。
+    let Some(frame) = pcm.get(..decoded) else {
         return;
     };
 

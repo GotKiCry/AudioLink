@@ -21,6 +21,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use audiolink_audio::{CaptureSource, NullPlayout, PlayoutSink, SyntheticCapture};
@@ -41,8 +42,17 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
 }
 
 /// 合成采集（无声卡）。
-fn synthetic_capture() -> audiolink_engine::CaptureFactory {
-    Arc::new(|| {
+fn synthetic_capture(
+    fail: Arc<AtomicBool>,
+    opened: Arc<AtomicBool>,
+) -> audiolink_engine::CaptureFactory {
+    Arc::new(move || {
+        if fail.swap(false, Ordering::SeqCst) {
+            return Err(audiolink_audio::AudioError::device_unavailable(
+                "selected endpoint was unplugged",
+            ));
+        }
+        opened.store(true, Ordering::SeqCst);
         SyntheticCapture::new(20, 440.0).map(|capture| Box::new(capture) as Box<dyn CaptureSource>)
     })
 }
@@ -83,7 +93,12 @@ async fn pairing_and_streaming_flow_matches_bridge_assumptions() {
         // A = 发起端（推流方向），B = 接收端（播放方向）
         let mut config_a = EngineConfig::new("node-a", &dir_a);
         config_a.listen = "127.0.0.1:0".parse().expect("listen a");
-        config_a.capture = Some(synthetic_capture());
+        let fail_capture = Arc::new(AtomicBool::new(true));
+        let capture_opened = Arc::new(AtomicBool::new(false));
+        config_a.capture = Some(synthetic_capture(
+            Arc::clone(&fail_capture),
+            Arc::clone(&capture_opened),
+        ));
 
         let mut config_b = EngineConfig::new("node-b", &dir_b);
         config_b.listen = "127.0.0.1:0".parse().expect("listen b");
@@ -178,7 +193,23 @@ async fn pairing_and_streaming_flow_matches_bridge_assumptions() {
         );
 
         // ---- 6) 开流：合成采集 → Opus → QUIC → 空播放，应当真的流动起来 ----
+        // 驱动在采集线程里拒绝打开时，command 必须返回错误，不能把“已入队”当作成功。
+        let error = engine_a
+            .start_send(peer_id)
+            .await
+            .expect_err("采集设备打开失败必须回传");
+        assert_eq!(error.code(), ErrorCode::CaptureLost);
+        assert!(error.context().contains("unplugged"));
+        assert!(!capture_opened.load(Ordering::SeqCst));
+
+        // 失败后同一连接可以重试；成功返回时采集工厂已经运行。
         engine_a.start_send(peer_id).await.expect("start_send");
+        assert!(capture_opened.load(Ordering::SeqCst));
+        let duplicate = engine_a
+            .start_send(peer_id)
+            .await
+            .expect_err("拒绝重复开流，保留已有采集线程");
+        assert_eq!(duplicate.code(), ErrorCode::Busy);
         let stream_id = engine_a
             .telemetry(peer_id)
             .map(|s| s.stream_id)

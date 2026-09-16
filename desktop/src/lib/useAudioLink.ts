@@ -10,12 +10,13 @@
  * 引 zustand/jotai 只会多一层需要同步的真相（而且遥测是"覆盖式最新值"，天然适合 setState）。
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, subscribeEvents } from "./ipc";
 import {
   toCommandError,
   type CommandError,
+  type CaptureDeviceView,
   type LocalStatus,
   type PairRequiredPayload,
   type PeerView,
@@ -54,6 +55,15 @@ export interface AudioLinkController {
   connecting: boolean;
   /** 正在 start/stop 的对端 id（防连点；null = 无）。 */
   busyPeer: string | null;
+  captureDevices: CaptureDeviceView[];
+  captureLoading: boolean;
+  captureError: CommandError | null;
+  selectedCaptureId: string;
+  activeCapture: CaptureDeviceView | null;
+  captureLocked: boolean;
+  canStartCapture: boolean;
+  selectCapture: (id: string) => void;
+  refreshCaptureDevices: () => Promise<void>;
 
   connect: (addr: string) => Promise<boolean>;
   startSend: (idShort: string) => Promise<void>;
@@ -93,6 +103,49 @@ export function useAudioLink(): AudioLinkController {
   const [pairableIds, setPairableIds] = useState<string[]>([]);
   const [connecting, setConnecting] = useState(false);
   const [busyPeer, setBusyPeer] = useState<string | null>(null);
+  const [captureDevices, setCaptureDevices] = useState<CaptureDeviceView[]>([]);
+  const [captureLoading, setCaptureLoading] = useState(true);
+  const [captureError, setCaptureError] = useState<CommandError | null>(null);
+  const [selectedCaptureId, setSelectedCaptureId] = useState("");
+  const [activeCapture, setActiveCapture] = useState<CaptureDeviceView | null>(null);
+  const captureRequest = useRef(0);
+  const activeRequest = useRef(0);
+  const captureLocked = busyPeer !== null || peers.some((peer) => peer.state === "streaming" || peer.state === "degraded");
+  const selectedCapture = captureDevices.find((device) => selectedCaptureId === "" ? device.isDefault : device.id === selectedCaptureId);
+  const canStartCapture = !captureLoading && captureError === null && selectedCapture !== undefined && selectedCapture.unavailableReason === null;
+
+  const refreshCaptureDevices = useCallback(async () => {
+    const request = ++captureRequest.current;
+    setCaptureLoading(true);
+    setCaptureError(null);
+    try {
+      const devices = await api.listCaptureDevices();
+      if (request === captureRequest.current) setCaptureDevices(devices);
+    } catch (raw) {
+      if (request === captureRequest.current) setCaptureError(toCommandError(raw));
+    } finally {
+      if (request === captureRequest.current) setCaptureLoading(false);
+    }
+  }, []);
+
+  const refreshActiveCapture = useCallback(async () => {
+    const request = ++activeRequest.current;
+    try {
+      const device = await api.activeCaptureDevice();
+      if (request === activeRequest.current) setActiveCapture(device);
+    } catch (raw) {
+      if (request === activeRequest.current) setError(toCommandError(raw));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshCaptureDevices();
+    return () => { captureRequest.current += 1; activeRequest.current += 1; };
+  }, [refreshCaptureDevices]);
+
+  useEffect(() => {
+    void refreshActiveCapture();
+  }, [captureLocked, refreshActiveCapture]);
 
   useEffect(() => {
     // 订阅必须在挂载时就绪：配对请求可能在用户还没做任何动作时由对端发起
@@ -180,22 +233,28 @@ export function useAudioLink(): AudioLinkController {
     setError(null);
     setBusyPeer(idShort);
     try {
-      await api.startSend(idShort);
+      await api.startSend(idShort, selectedCaptureId === "" ? null : selectedCaptureId);
+      await refreshActiveCapture();
     } catch (raw) {
       setError(toCommandError(raw));
     } finally {
       setBusyPeer(null);
     }
-  }, []);
+  }, [selectedCaptureId, refreshActiveCapture]);
 
   const stopSend = useCallback(async (): Promise<void> => {
     setError(null);
+    const sending = peers.find((peer) => peer.state === "streaming" || peer.state === "degraded");
+    setBusyPeer(sending?.idShort ?? null);
     try {
       await api.stopSend();
+      await refreshActiveCapture();
     } catch (raw) {
       setError(toCommandError(raw));
+    } finally {
+      setBusyPeer(null);
     }
-  }, []);
+  }, [peers, refreshActiveCapture]);
 
   const submitPin = useCallback(async (idShort: string, pin: string): Promise<boolean> => {
     try {
@@ -245,6 +304,15 @@ export function useAudioLink(): AudioLinkController {
     pairableIds,
     connecting,
     busyPeer,
+    captureDevices,
+    captureLoading,
+    captureError,
+    selectedCaptureId,
+    activeCapture,
+    captureLocked,
+    canStartCapture,
+    selectCapture: (id) => { if (!captureLocked) setSelectedCaptureId(id); },
+    refreshCaptureDevices,
     connect,
     startSend,
     stopSend,

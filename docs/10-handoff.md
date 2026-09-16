@@ -1,7 +1,7 @@
 # AudioLink 交接文档（Handoff）
 
 > **性质**：过程性文档。新会话接手本项目时先读本文，再按 `docs/05-roadmap.md` 推进。
-> **最后更新**：2026-09-14（M1 主线大会战后）· 远端 https://github.com/GotKiCry/AudioLink（PUBLIC）
+> **最后更新**：2026-09-16（用户确认 PCM 修复有效，桌面采集端点选择已完成）· 远端 https://github.com/GotKiCry/AudioLink（PUBLIC）
 
 ---
 
@@ -10,7 +10,8 @@
 M0 全部完成。M1 的代码面已全部落地；**2026-09-15 真机（MI 8 Lite / Android 10 / API 29）接上后，M1 真机验收首次跑通**：
 PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → AudioTrack 低延迟输出）已通，**设备侧两项硬指标达标**
 （`getPerformanceMode()=LOW_LATENCY`、全链路 48 kHz 零重采样），四轮 60/60/90/75 s 推流零断流。
-**唯一未达标的是 e2e 延迟**（目标 P50 ≤ 110 ms；实测下限 ≥115 ms + 设备输出 80–101 ms），根因已定位（见 §4）。
+**e2e 延迟未达标**（目标 P50 ≤ 110 ms；此前实测下限 ≥115 ms + 设备输出 80–101 ms），另有用户试听断续与队列增长问题（`docs/12` §8.2）。
+**2026-09-16：Issue #1 的 PCM 长度错误已修复**，真实 Engine/QUIC 收发测试覆盖 10/20 ms；用户已确认新 APK 音频正常传输和播放，Issue #1 已关闭；历史延迟数字仍属修复前结果，定量延迟和长跑验收需另测。
 
 | 项 | 状态 |
 |---|---|
@@ -29,7 +30,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 | 引擎编排（状态机 / 收发管线 / 遥测 / 对端遥测 / 配对死线） | `core/crates/audiolink-engine` | 73 单测 + 6 集成测试 |
 | FFI 桥（UniFFI + 跨端 golden vectors 夹具） | `core/crates/audiolink-ffi` | 18 测试 + aarch64 交叉检查 |
 | Android 低延迟播放 + **配对 PIN UI** + **队列水位档位** | `android/app/src/main/kotlin/.../` | APK 构建 + **69** JVM 用例 + 真机验证 |
-| 桌面最小 UI（真实引擎，无 mock） | `desktop/` | `pnpm build` + 10 Rust 测试 |
+| 桌面最小 UI（真实引擎，无 mock） | `desktop/` | `pnpm build` + 12 Rust 测试（含接缝）+ 4 端点手工 WASAPI 测试 |
 | **PC→真机验收工具**（连接/PIN/推流/跨机账本） | `core/crates/audiolink-tools/src/bin/device_link.rs` | 真机四轮实测 + 本机自检 e1–e8 证据 |
 | PC↔PC 端到端验收工具 | `core/crates/audiolink-tools/src/bin/link_loop.rs` | 见上表实测数字 |
 
@@ -79,9 +80,22 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 
 ## 4. 下一次开工
 
-### 4.1 第一优先：**修「内核→Kotlin PCM 推送 ≈2× 实时」**（M1 延迟达标的唯一入口）
 
-真机验收已经把预算吃在哪一段量清楚了（`docs/12-m1-device-acceptance.md`）：
+### 4.0 最新开发结果与下一项
+
+- Issue #1 已按用户要求关闭，PCM 修复任务 Done；用户确认新 APK 音频正常传输和播放。
+- 桌面采集端点选择器已完成：真实枚举/刷新、指定完整 ID、失效与格式提示、实际端点展示；修正开流失败回传。4 个真实 WASAPI 端点验证及 Tauri 窗口检查通过，详见 `docs/13-desktop-capture-selection.md`。
+- 后续可推进看板 P1「Android PIN 卡有时不显示」，检查事件订阅时序、状态缓存与断开清理；定量延迟及队列长跑仍按 §4.1 独立验收。
+
+### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
+
+Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本数**，`receive_audio()` 又乘了声道数，
+导致每包音频追加等长静音。接收端现按实际返回长度截取，解码缓冲收缩为单包容量。
+`tests/pcm_delivery.rs` 通过两个真实 Engine、QUIC、PIN 配对和 Opus 验证 sink 实际收到的内容：
+20 ms → 1920 个样本，10 ms → 960 个样本；两项测试在旧代码上均失败，修复后通过。
+用户已确认音频正常传输和播放，PCM 修复看板已标 **Done**，Issue #1 已关闭；环溢出增量、队列斜率和延迟仍留在独立验收项。详见 `docs/12` §9。
+
+以下为**修复前**的预算（`docs/12-m1-device-acceptance.md`）：
 
 | 段 | 值 | 性质 |
 |---|---|---|
@@ -95,11 +109,12 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 两条根因（都在 §12 §4 的缺陷表里）：
 1. **内核→Kotlin PCM 推送 ≈ 2× 实时**（区间增量实测：推流 78 s 环溢出 +3 791 040 帧 = 48 603 帧/s，读空 +0）
    → 环始终满、消费侧永不缺数据；**设备侧省的 50–66 ms 只是搬进环里排队，总量不降**。
-   写域：`audiolink-ffi` + `audiolink-engine`（目前无 owner）。
-2. PC 侧封口 50.5 fps vs 手机消费 50 fps（+1%，≈ +1 ms/s 水位增长）→ M2 的速率匹配/漂移补偿负责。
+   代码根因与修复位于 `audiolink-engine/src/runtime.rs`，FFI 原样转交长度的行为无需更改。
+2. 接收队列持续增长仍需独立复测；此前封口总数与观测窗口可能含起步阶段，不能直接当成稳态速率差。
+   历史报告也已注明 50.5 fps 与 +1 ms/s 的量级不一致（`docs/12` §4 #11），暂不据此实施漂移补偿。
 
-设备侧的现成杠杆（已量好、等上游修好即可兑现）：**队列目标 30 ms 档 = −50 ms 且零欠载代价**
-（`DEFAULT_QUEUE_TARGET_FRAMES` 一行常量；A/B 见 §12 §2.1b）。
+复测顺序：新 APK 默认档先建立基线 → 同连接切换 30 ms 档 A/B → 连续播放与端到端延迟验收。
+此前 30 ms 档曾节省设备侧 50 ms，但在正确 PCM 供给下的欠载代价须重新测量，不能沿用旧结论。
 
 ### 4.2 已完成：30 min soak（结论已回填）
 
@@ -111,7 +126,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 
 | 项 | 说明 | 优先级 |
 |---|---|---|
-| 推送 ≈2× 实时 | §4.1 第 1 条（`audiolink-ffi`/`audiolink-engine`） | **P0**（M1 延迟达标依赖） |
+| PCM 长度修复后的真机复测 | 代码修复与 10/20 ms 回归已完成；待测溢出增量、队列斜率、听感和延迟 | **P0**（M1 延迟达标依赖） |
 | ~~30 min soak~~ | ✅ 已完成（§4.2）：无断连，但水位/迟到/欠载暴露接收管线问题 | ✅ |
 | FFI 不清 PIN | `engine_bridge.rs::apply_event()` 只在 `PairCompleted{ok:true}` 清缓存；`PeerDisconnected`/失败落进 `_ => {}` → 屏幕挂失效 PIN（UI 侧已标注，根治在 ffi） | P1 |
 | 设备侧 `queuedFrames` 进遥测 | 现在账本看不到「对端 AudioTrack」那一段，设备侧省下的 50 ms 在报告里不可见 | P1 |
@@ -163,7 +178,8 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 10. **共享模式缓冲下限 22 ms**、引擎周期 10 ms —— 别再把「10–20 ms 缓冲」当可实现目标；
 11. **`autoconvert=true` 会静默重采样**，本项目一律关；
 12. **空闲端点零数据**：采集超时不是错误，要计数不要报错；
-13. **`opus-rs` 48k 只接受 240/480/960 帧样本**（2.5 ms 会 panic）；`decode` 返回**每声道**样本数；
+13. **`opus-rs` 48k 只接受 240/480/960 帧样本**（2.5 ms 会 panic）；底层 `decode` 返回**每声道**样本数，
+    **本项目 `OpusDecoder::decode_into()` 已换算成交错样本数**，调用方不可再乘声道数（Issue #1）；
 14. **CELT-only 没有真 PLC**（第 2 个丢失帧起硬静音）→ M2 必须自建掩盖，别指望 `packet_loss_perc`。
 
 ### 本轮（M1 主线）新踩的坑
@@ -218,7 +234,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 
 | 项 | 说明 | 优先级 |
 |---|---|---|
-| **推送 ≈2× 实时** | 内核→Kotlin PCM 推送 ≈2× 实时（环持续溢出 48.6k 帧/s）—— M1 延迟达标的唯一入口，见 §4.1 | **P0** |
+| **PCM 长度修复后的真机复测** | 修复已落地、真实收发回归通过；新 APK 仍待连接手机验证（见 §4.1 / `docs/12` §9） | **P0** |
 | ~~30 min soak~~ | ✅ 已完成（§4.2 / `docs/12` §5.1） | ✅ |
 | FFI 不清 PIN | `apply_event()` 补 `PeerDisconnected` / `PairCompleted{ok:false}` 的清空分支 | P1 |
 | 设备侧 queuedFrames 进遥测 | 否则账本看不见「对端 AudioTrack」那一段 | P1 |

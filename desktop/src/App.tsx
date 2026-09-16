@@ -7,13 +7,13 @@
  * 本轮范围（`docs/11-m1-contract.md` §6）：手工 IP → 连接 → 对端卡片 → 开始/停止推流 →
  * 遥测数字面板 → 失败原因可见 → 未配对弹 6 位 PIN。
  * **不做**：托盘、开机自启、双语、设备自动发现列表、曲线图（属 M5/M2）——
- * 所以这里没有同步组操作条、没有音量滑块、没有采集设备选择器：契约里没有对应 command，
- * 画出来就是假控件。
+ * 采集端点选择器通过真实 WASAPI 枚举与 start_send 的可选端点 ID 接线。
  */
 
 import { useState } from "react";
 
 import { AddManualCard } from "./components/AddManualCard";
+import { CaptureSourcePanel } from "./components/CaptureSourcePanel";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { NoticeBanner } from "./components/NoticeBanner";
 import { PairDialog } from "./components/PairDialog";
@@ -49,7 +49,11 @@ export default function App() {
           <NoticeBanner message={al.notice} onDismiss={al.dismissNotice} />
         )}
 
-        <TelemetryPanel telemetry={al.telemetry} open={telemetryOpen} />
+        <CaptureSourcePanel
+          devices={al.captureDevices} selectedId={al.selectedCaptureId} active={al.activeCapture}
+          loading={al.captureLoading} locked={al.captureLocked} error={al.captureError}
+          onSelect={al.selectCapture} onRefresh={al.refreshCaptureDevices}
+        />
 
         <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(260px,1fr))]">
           <AddManualCard connecting={al.connecting} onConnect={al.connect} />
@@ -58,6 +62,7 @@ export default function App() {
               key={peer.idShort}
               peer={peer}
               busy={al.busyPeer === peer.idShort}
+              canStart={al.canStartCapture && !al.captureLocked}
               canInputPin={al.pairableIds.includes(peer.idShort)}
               onStart={al.startSend}
               onStop={al.stopSend}
@@ -65,6 +70,8 @@ export default function App() {
             />
           ))}
         </div>
+
+        <TelemetryPanel telemetry={al.telemetry} open={telemetryOpen} />
 
         {al.peers.length === 0 ? (
           <p className="text-xs text-slate-400">

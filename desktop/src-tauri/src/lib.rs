@@ -19,6 +19,7 @@
 // 启动期初始化失败无法恢复，允许直接终止（非实时路径，与内核的 no-panic 纪律不冲突）。
 #![allow(clippy::expect_used)]
 
+mod capture;
 mod engine_bridge;
 mod error;
 mod view;
@@ -27,7 +28,21 @@ use tauri::{Manager, State};
 
 use engine_bridge::EngineBridge;
 use error::CommandError;
-use view::{LocalStatus, PeerView, StartSendResult, SubmitPinResult, TelemetryView};
+use view::{
+    CaptureDeviceView, LocalStatus, PeerView, StartSendResult, SubmitPinResult, TelemetryView,
+};
+
+#[tauri::command]
+async fn list_capture_devices() -> Result<Vec<CaptureDeviceView>, CommandError> {
+    capture::list_devices().await
+}
+
+#[tauri::command]
+async fn active_capture_device(
+    bridge: State<'_, EngineBridge>,
+) -> Result<Option<CaptureDeviceView>, CommandError> {
+    bridge.active_capture_device().await
+}
 
 /// 版本号单一来源：Cargo workspace（CI 校验三处一致，见 tools/check-version.ps1）
 #[tauri::command]
@@ -66,8 +81,9 @@ async fn connect(bridge: State<'_, EngineBridge>, addr: String) -> Result<PeerVi
 async fn start_send(
     bridge: State<'_, EngineBridge>,
     id_short: String,
+    capture_device_id: Option<String>,
 ) -> Result<StartSendResult, CommandError> {
-    bridge.start_send(&id_short).await
+    bridge.start_send(&id_short, capture_device_id).await
 }
 
 /// 停止推流（契约 §6 `stop_send`，无入参，返回 `null`）。幂等。
@@ -115,6 +131,8 @@ pub fn run() {
             version,
             local_status,
             list_peers,
+            list_capture_devices,
+            active_capture_device,
             connect,
             start_send,
             stop_send,

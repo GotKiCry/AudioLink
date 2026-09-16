@@ -21,6 +21,17 @@ export interface LocalStatus {
   platform: string;
 }
 
+/** Windows 活动输出端点。id 是完整实例 ID，不能用展示名代替。 */
+export interface CaptureDeviceView {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  isVirtual: boolean;
+  sampleRate: number;
+  channels: number;
+  unavailableReason: string | null;
+}
+
 /** `list_peers` 的元素 / `connect` 的返回 / `audiolink://peer` 的元素。 */
 export interface PeerView {
   idShort: string;

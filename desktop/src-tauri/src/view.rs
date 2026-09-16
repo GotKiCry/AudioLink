@@ -9,6 +9,19 @@
 
 use serde::Serialize;
 
+/// Windows 活动输出端点；完整 ID 用于选择，同名设备仍各自独立。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureDeviceView {
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+    pub is_virtual: bool,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub unavailable_reason: Option<String>,
+}
+
 /// `local_status` 的返回。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]

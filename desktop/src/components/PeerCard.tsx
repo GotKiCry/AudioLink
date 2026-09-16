@@ -13,6 +13,7 @@ interface PeerCardProps {
   peer: PeerView;
   /** 该对端正在执行 start/stop（防连点）。 */
   busy: boolean;
+  canStart: boolean;
   /**
    * 本机是否需要为这个对端**输入**配对码（即配对由本机发起）。
    * 为 false 时说明是对方在等我们亮码（接收端场景），此时不该给输入入口。
@@ -23,9 +24,9 @@ interface PeerCardProps {
   onBeginPair: (idShort: string) => void;
 }
 
-export function PeerCard({ peer, busy, canInputPin, onStart, onStop, onBeginPair }: PeerCardProps) {
+export function PeerCard({ peer, busy, canStart, canInputPin, onStart, onStop, onBeginPair }: PeerCardProps) {
   const style = PEER_STATE_STYLE[peer.state];
-  const streaming = peer.state === "streaming";
+  const streaming = peer.state === "streaming" || peer.state === "degraded";
 
   return (
     <article
@@ -108,7 +109,7 @@ export function PeerCard({ peer, busy, canInputPin, onStart, onStop, onBeginPair
         ) : (
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || !canStart || peer.state === "failed"}
             onClick={() => void onStart(peer.idShort)}
             className="h-9 flex-1 rounded-lg bg-indigo-600 text-sm font-medium text-white disabled:opacity-50"
           >

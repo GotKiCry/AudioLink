@@ -34,10 +34,11 @@ use audiolink_types::{AudioLinkError, DEFAULT_QUIC_PORT, ErrorCode, NodeId, Stre
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{broadcast, watch};
 
+use crate::capture::{self, SharedCapture};
 use crate::error::CommandError;
 use crate::view::{
-    LocalStatus, PairRequiredPayload, PeerState, PeerView, StartSendResult, SubmitPinResult,
-    TelemetryView,
+    CaptureDeviceView, LocalStatus, PairRequiredPayload, PeerState, PeerView, StartSendResult,
+    SubmitPinResult, TelemetryView,
 };
 
 // ---------------------------------------------------------------------------
@@ -128,6 +129,9 @@ pub struct EngineBridge {
     app: AppHandle,
     state_rx: watch::Receiver<EngineState>,
     cache: Arc<Mutex<Cache>>,
+    capture: SharedCapture,
+    /// 串行化开始/停止：更换端点与开流必须属于同一次操作。
+    send_operation: tokio::sync::Mutex<()>,
 }
 
 impl EngineBridge {
@@ -135,13 +139,21 @@ impl EngineBridge {
     pub fn new(app: AppHandle) -> Self {
         let (state_tx, state_rx) = watch::channel(EngineState::Starting);
         let cache = Arc::new(Mutex::new(Cache::default()));
+        let capture = SharedCapture::default();
         // 发送端交给启动任务持有：它的生命周期就是应用的生命周期，
         // 命令层只在"还没就绪"时才会去等这个通道。
-        tauri::async_runtime::spawn(boot(app.clone(), state_tx, Arc::clone(&cache)));
+        tauri::async_runtime::spawn(boot(
+            app.clone(),
+            state_tx,
+            Arc::clone(&cache),
+            Arc::clone(&capture),
+        ));
         Self {
             app,
             state_rx,
             cache,
+            capture,
+            send_operation: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -213,7 +225,12 @@ impl EngineBridge {
     }
 
     /// 开始推流（`start_send`）。
-    pub async fn start_send(&self, id_short: &str) -> Result<StartSendResult, CommandError> {
+    pub async fn start_send(
+        &self,
+        id_short: &str,
+        capture_device_id: Option<String>,
+    ) -> Result<StartSendResult, CommandError> {
+        let _operation = self.send_operation.lock().await;
         let engine = self.engine().await?;
         let peer = resolve_peer(&engine, id_short)?;
 
@@ -233,10 +250,29 @@ impl EngineBridge {
             ));
         }
 
-        engine
-            .start_send(peer)
-            .await
-            .map_err(|error| engine_error("start_send", &error))?;
+        let devices = capture::list_devices().await?;
+        capture::validate_selection(&devices, capture_device_id.as_deref())?;
+        {
+            let mut selection = lock(&self.capture);
+            selection.requested_id = capture_device_id;
+            selection.opened = None;
+        }
+        if let Err(error) = engine.start_send(peer).await {
+            lock(&self.capture).opened = None;
+            return Err(match error.code() {
+                ErrorCode::CaptureLost => engine_error_with_message(
+                    "start_send",
+                    &error,
+                    "无法打开所选输出设备，请检查设备连接，刷新后重试",
+                ),
+                ErrorCode::CapUnsupported => engine_error_with_message(
+                    "start_send",
+                    &error,
+                    "所选输出设备的格式不受支持，请检查 Windows 声音设置或选择其他设备",
+                ),
+                _ => engine_error("start_send", &error),
+            });
+        }
 
         lock(&self.cache).sending = Some(peer);
         let (peers, _) = refresh(&engine, &self.cache);
@@ -254,12 +290,14 @@ impl EngineBridge {
 
     /// 停止推流（`stop_send`）。幂等：没有在推流时也返回成功。
     pub async fn stop_send(&self) -> Result<(), CommandError> {
+        let _operation = self.send_operation.lock().await;
         let engine = self.engine().await?;
         let Some(peer) = lock(&self.cache).sending else {
             return Ok(());
         };
         // 先清标记：即使引擎侧报错（比如会话已经没了），UI 也不该卡在"推流中"。
         lock(&self.cache).sending = None;
+        lock(&self.capture).opened = None;
         let result = engine
             .stop_send(peer)
             .await
@@ -267,6 +305,16 @@ impl EngineBridge {
         let (peers, _) = refresh(&engine, &self.cache);
         emit_peer(&self.app, &self.cache, &peers);
         result
+    }
+
+    /// 返回实际打开的端点；默认设备改变时不把正在采集的端点改写成新的默认设备。
+    pub async fn active_capture_device(&self) -> Result<Option<CaptureDeviceView>, CommandError> {
+        let engine = self.engine().await?;
+        refresh(&engine, &self.cache);
+        if lock(&self.cache).sending.is_none() {
+            return Ok(None);
+        }
+        Ok(lock(&self.capture).opened.clone())
     }
 
     /// 提交 6 位配对码（`submit_pin`）。
@@ -399,8 +447,13 @@ fn timeout_result() -> SubmitPinResult {
 /// 启动失败不是"世界末日"：它被记进 `EngineState::Failed`，
 /// 之后每条命令都以同一个真实原因（原错误码 + 上下文）失败，
 /// 用户看到的是人话而不是"未知错误"。
-async fn boot(app: AppHandle, state_tx: watch::Sender<EngineState>, cache: Arc<Mutex<Cache>>) {
-    let config = match engine_config(&app) {
+async fn boot(
+    app: AppHandle,
+    state_tx: watch::Sender<EngineState>,
+    cache: Arc<Mutex<Cache>>,
+    capture: SharedCapture,
+) {
+    let config = match engine_config(&app, capture) {
         Ok(config) => config,
         Err(error) => {
             let _ = state_tx.send(EngineState::Failed {
@@ -509,7 +562,7 @@ async fn run_event_loop(app: AppHandle, engine: Arc<Engine>, cache: Arc<Mutex<Ca
 }
 
 /// 引擎配置：身份/信任库落盘位置 + QUIC 监听 + 音频工厂。
-fn engine_config(app: &AppHandle) -> Result<EngineConfig, CommandError> {
+fn engine_config(app: &AppHandle, capture: SharedCapture) -> Result<EngineConfig, CommandError> {
     // 路径口径：用 Tauri 的 `app_config_dir()`（Windows 下 = `%APPDATA%\<identifier>`）。
     // 架构 §9 写的是 `%APPDATA%\AudioLink\` —— 只差目录名；这里选 Tauri 口径，
     // 因为自己拼 `%APPDATA%` 在跨平台/沙箱下都会踩坑，且只影响落盘位置，不影响任何协议行为。
@@ -539,25 +592,11 @@ fn engine_config(app: &AppHandle) -> Result<EngineConfig, CommandError> {
     // 所以**不能**在这里把对象建好 —— 只能交出"怎么建"，由音频线程自己调用。
     #[cfg(windows)]
     {
-        config.capture = Some(capture_factory());
+        config.capture = Some(capture::factory(capture));
         config.playout = Some(playout_factory());
     }
 
     Ok(config)
-}
-
-/// 采集源工厂：默认渲染端点的 loopback（= 系统内录）。
-#[cfg(windows)]
-fn capture_factory() -> audiolink_engine::CaptureFactory {
-    use audiolink_audio::CaptureSource;
-    use audiolink_audio::wasapi::{DeviceSelector, LoopbackCapture};
-
-    Arc::new(|| {
-        // COM 必须**在这个线程**初始化（工厂正是在音频线程里被调用的）。
-        audiolink_audio::wasapi::init_thread_mta()?;
-        let capture = LoopbackCapture::open(&DeviceSelector::Default, WASAPI_BUFFER_MS)?;
-        Ok(Box::new(capture) as Box<dyn CaptureSource>)
-    })
 }
 
 /// 播放输出工厂：默认渲染端点（收到对方音频时出声）。
