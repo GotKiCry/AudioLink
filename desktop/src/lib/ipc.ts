@@ -56,6 +56,8 @@ export const api = {
   /** `export_telemetry` —— 把前端累积的采样点写成 CSV，返回落盘路径（M2 的日志导出）。 */
   exportTelemetry: (rows: TelemetryRow[]): Promise<string> =>
     invoke<string>("export_telemetry", { rows }),
+  setPeerGain: (idShort: string, gain: number, rampMs: number): Promise<null> =>
+    invoke<null>("set_peer_gain", { id_short: idShort, gain, ramp_ms: rampMs }),
   listGroups: (): Promise<GroupView[]> => invoke<GroupView[]>("list_groups"),
   createGroup: (idShorts: string[], leadMs: number): Promise<number> =>
     invoke<number>("create_group", { id_shorts: idShorts, lead_ms: leadMs }),

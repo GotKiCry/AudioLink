@@ -102,6 +102,7 @@ export function PeerCard({ peer, busy, canStart, canInputPin, onStart, onStop, o
             type="button"
             disabled={busy}
             onClick={() => void onStop()}
+
             className="h-9 flex-1 rounded-lg border border-slate-300 text-sm font-medium disabled:opacity-50 dark:border-slate-600"
           >
             {busy ? "停止中…" : "停止推流"}

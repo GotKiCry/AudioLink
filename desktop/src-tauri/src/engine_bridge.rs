@@ -392,6 +392,21 @@ impl EngineBridge {
     ///
     /// **不弹文件对话框**（那要引入 dialog 插件，且无头/CI 下没法用）：目录固定在用户目录下，
     /// 路径由本命令返回、UI 原样显示。导出本身不依赖引擎状态 —— 会话已经结束也允许导历史。
+    /// §4.1：调对端音量（发送方 →）。非法值在引擎边界就被拒绝，UI 会收到人话原因。
+    pub async fn set_peer_gain(
+        &self,
+        id_short: &str,
+        gain: f32,
+        ramp_ms: u32,
+    ) -> Result<(), CommandError> {
+        let engine = self.engine().await?;
+        let peer = resolve_peer(&engine, id_short)?;
+        engine
+            .set_peer_gain(peer, gain, ramp_ms)
+            .await
+            .map_err(|error| engine_error("set_peer_gain", &error))
+    }
+
     /// 同步组列表（§7 / M3 交付物 4）。
     pub async fn list_groups(&self) -> Result<Vec<GroupView>, CommandError> {
         let engine = self.engine().await?;

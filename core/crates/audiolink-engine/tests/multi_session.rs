@@ -83,7 +83,26 @@ async fn one_capture_feeds_three_receivers() {
         }
 
         // 三台各自都要真的收到流：接收侧看到的链路码率非零
+        let sender_id = sender.info().id;
         tokio::time::sleep(Duration::from_secs(6)).await;
+
+        // 接收端必须**看得见发起端**。
+        //
+        // 这条断言是补上的：前一轮我在测试**关闭之后**（shutdown 已经跑过）查过这张表，
+        // 看到 0 个对端，就把它记成「接收端不登记对端」的疑点。本轮按时序采样后看清了 ——
+        // 链路上时它一直是 1，0 只出现在 shutdown 之后，那是正常清理而不是缺陷。
+        // 这里把它钉成正式断言，免得下次再被同一个时序骗一遍。
+        for (receiver, _accept) in &receivers {
+            let peers = receiver.peers();
+            assert_eq!(peers.len(), 1, "接收端应当恰好看到发起端一条会话");
+            let peer = peers.first().expect("发起端会话");
+            assert_eq!(peer.id, sender_id, "看到的必须是发起端");
+            assert!(
+                matches!(peer.state, SessionState::Streaming | SessionState::Degraded),
+                "会话应当在链路上，实际 {:?}",
+                peer.state
+            );
+        }
         ids.iter()
             .map(|id| (*id, receiver_bitrate(&receivers, &sender, *id)))
             .collect::<Vec<_>>()
@@ -108,17 +127,12 @@ async fn one_capture_feeds_three_receivers() {
         );
     }
     // 「在出声」的判据用**接收侧自己看到的链路码率**：三台都必须真的在收帧。
-    //
-    // 注意（本轮实测发现，记在这里而不是悄悄绕开）：接收端的 `peers()` 里查不到发起端
-    // （accept 一侧的会话表没有登记对方），所以不能用接收端的状态来断言这件事。
-    // 这是既有行为、与本轮改动无关，已记进 docs/33 的「发现」一节待核。
-    let sender_id = sender.info().id;
+    // 关闭之后对端表必须清干净：会话都走了还留着「幽灵对端」，UI 上就会一直挂着不存在的设备。
     for (receiver, _accept) in &receivers {
-        let seen = receiver.peers().iter().any(|peer| peer.id == sender_id);
-        println!(
-            "接收端 {}：对端可见 {seen}，链路码率 {:?}",
-            receiver.info().name,
-            receiver.telemetry(sender_id).map(|stats| stats.bitrate_bps)
+        assert!(
+            receiver.peers().is_empty(),
+            "关闭后不该留下对端记录（{} 台还在）",
+            receiver.peers().len()
         );
     }
 }

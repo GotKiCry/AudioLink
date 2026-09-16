@@ -160,6 +160,17 @@ async fn leave_group(
     bridge.leave_group(&id_short, group_id).await
 }
 
+/// §4.1 调对端音量（0.0–2.0；ramp_ms 是渐变时长）。
+#[tauri::command(rename_all = "snake_case")]
+async fn set_peer_gain(
+    bridge: State<'_, EngineBridge>,
+    id_short: String,
+    gain: f32,
+    ramp_ms: u32,
+) -> Result<(), CommandError> {
+    bridge.set_peer_gain(&id_short, gain, ramp_ms).await
+}
+
 pub fn run() {
     tauri::Builder::default()
         // 单实例：第二次启动时唤出已有窗口（旧版靠 Mutex + 命名管道手写）
@@ -190,7 +201,8 @@ pub fn run() {
             list_groups,
             create_group,
             join_group,
-            leave_group
+            leave_group,
+            set_peer_gain
         ])
         .setup(|app| {
             // 桥接层必须在窗口加载**之前**就位：前端一挂载就会 invoke，拿不到 State 会直接报错。

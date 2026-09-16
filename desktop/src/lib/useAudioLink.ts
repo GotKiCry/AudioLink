@@ -41,6 +41,8 @@ export interface AudioLinkController {
   groups: GroupView[];
   /** 组操作进行中（建组 / 加入 / 退出）。 */
   groupBusy: boolean;
+  /** §4.1：调某台对端的音量（0.0–2.0）。 */
+  setPeerGain: (idShort: string, gain: number) => Promise<void>;
   refreshGroups: () => Promise<void>;
   joinGroup: (idShort: string, groupId: number) => Promise<void>;
   leaveGroup: (idShort: string, groupId: number) => Promise<void>;
@@ -348,6 +350,16 @@ export function useAudioLink(): AudioLinkController {
     }
   }, [telemetryHistory]);
 
+  /** §4.1：调对端音量。渐变 200 ms：拖滑块不该有咔哒声。 */
+  const setPeerGain = useCallback(async (idShort: string, gain: number): Promise<void> => {
+    try {
+      await api.setPeerGain(idShort, gain, 200);
+      setNotice(`${idShort} 音量已设为 ${Math.round(gain * 100)}%`);
+    } catch (raw) {
+      setError(toCommandError(raw));
+    }
+  }, []);
+
   /** 刷新同步组列表（M3）：操作后由调用方刷新，UI 不自己缓存真相。 */
   const refreshGroups = useCallback(async (): Promise<void> => {
     try {
@@ -420,6 +432,7 @@ export function useAudioLink(): AudioLinkController {
     telemetryHistory,
     groups,
     groupBusy,
+    setPeerGain,
     refreshGroups,
     createGroup,
     joinGroup,
