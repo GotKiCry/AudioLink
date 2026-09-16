@@ -239,6 +239,51 @@ pwsh tools/gradlew.ps1 -JavaHome <JDK17> :app:assembleRelease
 - **装到真机上跑**：本轮验的是「能打出一个签名有效、R8 生效的 release APK」，不是「这个包装上能用」；
 - 测试 keystore 只是本地验证用（密码就写在文档里），**不能用于发布**。
 
+---
+
+## 8. 发布链路跑到底：草稿 Release 真的建出来了（2026-09-16 第四轮）
+
+§2.3 说的「没有发布流程」这一轮补齐并**跑到了最后一步**。过程中又发现一个自己的设计缺陷。
+
+### 8.1 缺陷：手动 dispatch 时会把分支名当 tag
+
+`release` job 的条件是 `tag 推送 || publish == true`，而创建 Release 用的 tag 取自 `GITHUB_REF_NAME`。
+手动 dispatch 时那是**分支名**（`main`）—— 于是会创建一个叫 `main` 的 Release。
+
+修法是让手动路径**必须显式给版本号**：加一个 `version` 输入，并在 job 里先把 tag 解析出来
+（tag 触发用 tag 名，手动触发用 `v{version}`），解析不出来就 `::error::` 直接失败 ——
+宁可这一步红，也不要建出一个名字错误的 Release。
+
+### 8.2 实测（run `35126756341`，`workflow_dispatch` + `publish=true` + `version=0.1.1`）
+
+| job | 结果 |
+|---|---|
+| `desktop installer` | **success**，612 s |
+| `android apk` | success，112 s |
+| `publish release` | **success**，12 s |
+
+创建出来的草稿 Release：
+
+| 核对项 | 结果 |
+|---|---|
+| Release | `v0.1.1`，**`draft = true`** |
+| 资产 | `AudioLink_0.1.0_x64-setup.exe`（3803 KB）、`app-debug.apk`（19 770.2 KB） |
+| **对外可见吗** | `GET /releases/latest` → **404 Not Found** —— 草稿确实不对外 |
+| 打 tag 了吗 | **没有**（`git ls-remote --tags` 为空）—— 草稿发布不打 tag，这是 GitHub 的行为 |
+
+验证完就把这个测试草稿删掉了（`gh release delete`），仓库回到没有 Release 的状态。
+
+### 8.3 一个如实的观察
+
+资产里的 APK 是 **`app-debug.apk`**：因为没配 keystore secrets，Android 走的是降级分支。
+这正是设计要的效果（降级 + `::warning::`），但也说明：**要出真 release APK，还得配 secrets**（已立看板待办）。
+
+### 8.4 剩下的
+
+- **真发布**（把草稿点成正式）：一步人工动作，且要版本号真的对得上（`tools/check-version.ps1` 会保证三处一致）；
+- 配好 secrets 之后，`latest.json` 才会随 Release 一起出去 —— 那才是自动更新真正可用的时刻。
+
+
 
 
 
