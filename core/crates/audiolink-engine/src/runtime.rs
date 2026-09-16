@@ -64,11 +64,12 @@ use crate::clock::{
 use crate::dispatch::{ControlRequest, DispatchStats, dispatch_into};
 use crate::epoch::{EpochSchedule, PlayoutAction};
 use crate::format_guard::require_unified_format;
+use crate::gain::{GainState, gain_x1000_from_f32};
 use crate::handshake::{Handshake, HandshakeEvent, HandshakeStep, Outgoing, Role};
 use crate::measure::MeasurementTap;
 use crate::payload::{
     CloseStreamPayload, CodecPref, GroupCreatePayload, GroupEpochPayload, GroupJoinPayload,
-    GroupLeavePayload, OpenStreamAckPayload, OpenStreamPayload, SourceKind,
+    GroupLeavePayload, OpenStreamAckPayload, OpenStreamPayload, SetGainPayload, SourceKind,
 };
 use crate::runtime::jitter::{
     AdaptiveJitterDepth, DEFAULT_TARGET_FRAMES, EncodedAudioPacket, MAX_TARGET_FRAMES,
@@ -291,6 +292,15 @@ enum SessionCommand {
     Shutdown,
     /// §7：向对端广播组基准（发送方 → `GROUP_EPOCH`）。
     AnnounceGroupEpoch(GroupEpochPayload),
+    /// §4.1：向对端下发音量变更（发送方 →）。
+    SetGain {
+        /// 目标增益（0.0–2.0，与协议一致）。
+        gain: f32,
+        /// 渐变时长（ms）。
+        ramp_ms: u32,
+        /// 完成回执。
+        reply: oneshot::Sender<Result<(), AudioLinkError>>,
+    },
     /// §7：向对端发送组管理帧（`GROUP_CREATE` / `GROUP_JOIN` / `GROUP_LEAVE`）。
     SendGroupFrame(GroupFrame),
     /// §7：给接收侧设置（或清除）预约播放基准；`None` 表示回到本地游标排播。
@@ -757,6 +767,30 @@ impl Engine {
                 .await?;
         }
         Ok(())
+    }
+
+    /// §4.1：向对端下发音量变更（发送方 →）。
+    ///
+    /// 音量状态在**接收端的播放侧**、每会话一份 —— 所以多会话时每台可以各自调音量，
+    /// 而采样时间轴仍然共享（M3 交付物 1 的「每会话独立音量」）。
+    pub async fn set_peer_gain(
+        &self,
+        peer: NodeId,
+        gain: f32,
+        ramp_ms: u32,
+    ) -> Result<(), AudioLinkError> {
+        let (reply, wait) = oneshot::channel();
+        self.send_command(
+            peer,
+            SessionCommand::SetGain {
+                gain,
+                ramp_ms,
+                reply,
+            },
+        )
+        .await?;
+        wait.await
+            .map_err(|_| AudioLinkError::bad_request("session task is gone"))?
     }
 
     /// §7 同步组：向某个对端广播组基准（发送方 → `GROUP_EPOCH`）。
@@ -1474,6 +1508,20 @@ async fn run_session(
                             ),
                             Err(error) => report_error(&inner, &session, &error),
                         }
+                    }
+                    SessionCommand::SetGain { gain, ramp_ms, reply } => {
+                        // 参数在这里先验一次：非法值不该发到线上，更不该让对方以为生效了。
+                        let result = if gain_x1000_from_f32(gain).is_err() {
+                            Err(AudioLinkError::bad_request("invalid gain value"))
+                        } else {
+                            let payload = SetGainPayload {
+                                stream_id: crate::payload::STREAM_ID_ALL,
+                                gain,
+                                ramp_ms: u16::try_from(ramp_ms).unwrap_or(u16::MAX),
+                            };
+                            send_control(&mut control, &ControlRequest::SetGain(payload)).await
+                        };
+                        let _ = reply.send(result);
                     }
                     SessionCommand::SendGroupFrame(frame) => {
                         let request = match frame {
@@ -2280,6 +2328,8 @@ struct PlayoutHandle {
     stop: Arc<AtomicBool>,
     join: Option<std::thread::JoinHandle<()>>,
     sync: PlayoutSyncHandle,
+    /// §4.1 音量：**每会话一份**（多会话各调各的），播放线程每帧取一次并走一个步长。
+    gain: Arc<Mutex<GainState>>,
 }
 
 impl PlayoutHandle {
@@ -2292,6 +2342,22 @@ impl PlayoutHandle {
         {
             sync.base = Some((seq, sample_index));
         }
+    }
+
+    /// §4.1：把 SET_GAIN 落到本会话的播放上。
+    ///
+    /// 非法值（NaN / 负数 / 超上限）在这里就被拒绝 —— 上层据此记一条警告，
+    /// 而不是让用户以为「音量调了但没反应」。
+    fn set_gain(
+        &self,
+        gain: f32,
+        ramp_ms: u32,
+        frame_ms: u32,
+    ) -> Result<u32, crate::gain::GainError> {
+        let target = gain_x1000_from_f32(gain)?;
+        let mut state = self.gain.lock().unwrap_or_else(|e| e.into_inner());
+        state.set_target(target, ramp_ms, frame_ms)?;
+        Ok(state.target_x1000())
     }
 
     /// §7：设置（或清除）预约播放基准，并返回是否真的启用了排播。
@@ -3012,9 +3078,36 @@ async fn handle_control(
             report_error(inner, session, &error);
         }
 
-        // SetGain / SetMute / ClockResult / Ping / Pong / 及其它 M2/M3 命令：
-        // M1 尚无对应效果，**明确不做**而不是假装接受 ——
-        // 假装接受了 `SET_GAIN`，用户会以为音量真的变了，然后来查「为什么调音量没用」。
+        ControlRequest::SetGain(payload) => {
+            // §4.1：音量属于**会话的播放侧** —— 每会话一份状态，多会话各调各的。
+            let applies = payload.stream_id == crate::payload::STREAM_ID_ALL
+                || Some(payload.stream_id) == *stream_id;
+            if !applies {
+                tracing::debug!(stream_id = payload.stream_id, "SET_GAIN 指向别的流，忽略");
+            } else if let Some(handle) = playback.as_ref() {
+                match handle.set_gain(payload.gain, u32::from(payload.ramp_ms), codec.frame_ms) {
+                    Ok(target) => tracing::info!(
+                        target_x1000 = target,
+                        ramp_ms = payload.ramp_ms,
+                        "§4.1 音量已更新"
+                    ),
+                    Err(error) => tracing::warn!(%error, "SET_GAIN 参数非法，已拒绝"),
+                }
+            }
+        }
+
+        ControlRequest::SetMute(payload) => {
+            let applies = payload.stream_id == crate::payload::STREAM_ID_ALL
+                || Some(payload.stream_id) == *stream_id;
+            if applies && let Some(handle) = playback.as_ref() {
+                let gain = if payload.mute { 0.0 } else { 1.0 };
+                // 50 ms 渐变：静音/恢复都不该有咔哒声。
+                let _ = handle.set_gain(gain, 50, codec.frame_ms);
+            }
+        }
+
+        // ClockResult / Ping / Pong 及其它 M2/M3 命令：仍然**明确不做**而不是假装接受 ——
+        // 音量这两条现在已经真的生效（见上面两个分支）。
         _ => {}
     }
 }
@@ -3071,6 +3164,9 @@ fn spawn_playout_thread(
     // §7 排播状态：会话任务写、播放线程读；默认关闭（没有组基准时一切照旧）。
     let sync: PlayoutSyncHandle = Arc::new(Mutex::new(PlayoutSync::default()));
     let thread_sync = Arc::clone(&sync);
+    // §4.1：音量状态每会话一份；起始 1.0（不做渐变起步）。
+    let gain: Arc<Mutex<GainState>> = Arc::new(Mutex::new(GainState::new(1_000)));
+    let thread_gain = Arc::clone(&gain);
     let events = inner.events.clone();
 
     let factory = Arc::clone(factory);
@@ -3092,6 +3188,7 @@ fn spawn_playout_thread(
                 jitter_depth,
                 thread_sync,
                 events,
+                thread_gain,
                 frame_rx,
                 ready_tx,
             );
@@ -3106,6 +3203,7 @@ fn spawn_playout_thread(
             stop,
             join: Some(join),
             sync,
+            gain,
         }),
         Ok(Err(error)) => Err(error),
         Err(_) => Err(AudioLinkError::bad_request(
@@ -3125,6 +3223,7 @@ fn playout_main(
     jitter_depth: Arc<AtomicUsize>,
     sync: PlayoutSyncHandle,
     events: broadcast::Sender<EngineEvent>,
+    gain_state: Arc<Mutex<GainState>>,
     frames: Receiver<PlaybackFrame>,
     ready_tx: std::sync::mpsc::Sender<Result<(), AudioLinkError>>,
 ) {
@@ -3279,7 +3378,17 @@ fn playout_main(
         }
 
         match take_due_frame(&frames, &mut pending, &mut expected_seq, &telemetry) {
-            DueFrame::Ready(frame) => {
+            DueFrame::Ready(mut frame) => {
+                // §4.1：音量在**播放前**应用，并按帧走一个步长（硬切增益就是爆音）。
+                let gain = gain_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .next_frame_gain();
+                if (gain - 1.0).abs() > f32::EPSILON {
+                    for sample in frame.samples.iter_mut() {
+                        *sample *= gain;
+                    }
+                }
                 if sink.write(&frame.samples).is_err() {
                     break;
                 }

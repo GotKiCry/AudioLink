@@ -33,6 +33,7 @@ pub mod clock;
 pub mod dispatch;
 pub mod epoch;
 pub mod format_guard;
+pub mod gain;
 pub mod handshake;
 pub mod measure;
 pub mod payload;
