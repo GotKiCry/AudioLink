@@ -285,6 +285,49 @@ pwsh tools/gradlew.ps1 -JavaHome <JDK17> :app:assembleRelease
 
 ---
 
+## 10. 绿色版（便携包）：同一个 exe 的另一种形态（2026-09-17）
+
+路线图 M5 交付物 3 要求发布「Windows 安装包 + 绿色版 + APK×2 ABI」。安装包与双 ABI APK 前两轮补齐了，
+这一轮补绿色版：`tools/tauri-portable.ps1` 把桌面端 exe + 第三方声明 + 使用说明打成一个 zip。
+
+| 项 | 值 |
+|---|---|
+| 产物 | `AudioLink_0.1.0_x64_portable.zip`，**5,373.7 KB**（exe 14,826 KB 压缩后） |
+| 内含 | `AudioLink.exe` / `THIRD-PARTY-NOTICES.md`（1,032 KB）/ `README-portable.txt` |
+| 校验和 | `target/evidence/release/portable/SHA256SUMS.txt` |
+
+### 10.1 一个真实的正确性点：声明必须与 exe 同级
+
+Tauri 的 `resource_dir()` 在**便携形态下就是 exe 所在目录**。安装版里 `bundle.resources` 会把
+`THIRD-PARTY-NOTICES.md` 摆进资源目录，绿色版没人替它摆 —— 不摆的话「关于 / 第三方声明」面板会显示
+「未找到声明文件」，而那是**合规项**，不是装饰。脚本把声明复制到与 exe 同级，并把理由写进脚本注释。
+
+### 10.2 配置写用户目录（而不是 zip 里）
+
+绿色版没有「配置随身携带」这个语义：`settings.json` / `trust.json` / `identity/*.pem` 都在
+`%APPDATA%\com.gotkicry.audiolink`。这与路线图 M5 的验收一致（「绿色版解压即用，配置写用户目录」），
+README 里也写清楚了 —— 否则用户把目录拷去另一台机器，会以为设置「丢了」（其实是设计如此）。
+
+### 10.3 验证
+
+| 项 | 结果 |
+|---|---|
+| 打 zip | `pwsh tools/tauri-portable.ps1` → 5,373.7 KB + SHA256 |
+| zip 内容 | 三个条目，用 zip 目录逐条核对（名称与体积都对得上） |
+| **解压即用** | `-Verify`：解压到临时目录 → 启动 exe → **进程存活 8 s**（不是「应该能启动」，是真启动过） |
+| CI | `release.yml` 的 desktop job 加了打包步骤；产物随 artifact 进 Release（`files: dist/**/*` 自动带上） |
+
+### 10.4 未验 / 说明
+
+- 「启动后写用户目录」这一次**没有**观察到 `window-state.json` 的时间戳变化 —— 因为 `-Verify` 用
+  `Stop-Process -Force` 结束进程，而窗口状态是**正常退出**时才写的；AudioLink 又是「关窗不退出」
+  （托盘常驻）的设计，无法在不做 GUI 交互的前提下优雅退出。这一条按**代码事实**陈述：
+  配置路径来自 `app_config_dir()`，与安装形态无关（现有的 `trust.json` / `identity/` 就在那里）；
+- README 里写的 WebView2 依赖只做了说明，没有在**缺 WebView2 的机器**上实测（本机有，这条属真机环境）；
+- 绿色版**没有**做代码签名：与安装包同一条待办（`[M5] Windows 代码签名证书`）。
+
+---
+
 ## 9. 分 ABI 打包：把「双 ABI」变成「两个包」（2026-09-17）
 
 此前 `assembleRelease` 产出**一个** `app-release.apk`（7.84 MB），里面同时装着 arm64-v8a 与 armeabi-v7a

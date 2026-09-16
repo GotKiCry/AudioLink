@@ -159,6 +159,19 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   **未验**：没有真实 GUI 会话实际切换语言看观感（中英文案长度差异导致的换行/按钮宽度未看）；Android 侧仍是单语言
   （`values-en/` 未做 —— 路线图 M5 的「中英双语」写在桌面交付物里，不擅自扩张）。详见 `docs/45-m5-bilingual.md`。**补记（流程漏项）**：这次 CI 第一轮挂在 `core-light` 的 `cargo fmt --all --check` —— 本地只跑了 clippy 与 test、没跑 fmt 就提交了；已格式化并重跑。**门禁清单里 fmt 不是可选项**。
 
+- **M5 绿色版（便携包）落地：同一个 exe 的另一种形态**。路线图 M5 交付物 3 要的是「安装包 + 绿色版 + APK×2 ABI」，
+  前两轮补了后两项，这一轮补绿色版：新增 `tools/tauri-portable.ps1` —— 把 exe + `THIRD-PARTY-NOTICES.md` +
+  `README-portable.txt` 打成一个 zip（**5,373.7 KB**，exe 14,826 KB 压缩后），并输出 SHA256 校验和文件。
+  **一个真实的正确性点**：Tauri 的 `resource_dir()` 在便携形态下**就是 exe 所在目录**，所以第三方声明必须与 exe
+  同级 —— 不摆的话「关于 / 第三方声明」面板显示「未找到声明文件」，而那是合规项不是装饰；安装版由
+  `bundle.resources` 处理，绿色版得自己摆。配置仍写用户目录（`%APPDATA%\com.gotkicry.audiolink`），README 里
+  写明「设置不跟着 zip 走」，免得用户拷到另一台机器以为丢了。**验证**：zip 内容逐条核对；`-Verify` 开关
+  解压到临时目录并**真启动一次**（进程存活 8 s，不是「应该能启动」）；CI 侧 `release.yml` 的 desktop job
+  加了打包步骤，产物随 artifact 进 Release（`files: dist/**/*` 自动带上）。**未验**：`window-state.json` 的
+  时间戳在这次启动里没变 —— 因为 `-Verify` 用 `Stop-Process -Force` 收尾，而窗口状态是正常退出时才写，
+  且 AudioLink 是「关窗不退出」（托盘常驻），无法在不做 GUI 交互的前提下优雅退出；「配置写用户目录」因此按**代码事实**
+  陈述（`app_config_dir()`，与安装形态无关）。绿色版也没做代码签名（与安装包同一条待办）。详见 `docs/42-m5-release-pipeline.md` §10。
+
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
 Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本数**，`receive_audio()` 又乘了声道数，

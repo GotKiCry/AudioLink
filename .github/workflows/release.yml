@@ -75,6 +75,11 @@ jobs:
           } else {
             Write-Host "::warning::没有 .sig（未签名构建），跳过 latest.json"
           }
+      # 绿色版（便携包）：同一个 exe 的另一种形态 —— 路线图 M5 交付物 3 要求安装包与绿色版都给。
+      - name: Build portable zip
+        shell: pwsh
+        run: pwsh tools/tauri-portable.ps1
+
       - name: Collect desktop artifacts
         shell: pwsh
         run: |
@@ -83,6 +88,8 @@ jobs:
           Copy-Item "$dir/*.exe" out/ -ErrorAction SilentlyContinue
           Copy-Item "$dir/*.sig" out/ -ErrorAction SilentlyContinue
           Copy-Item "target/evidence/release/latest.json" out/ -ErrorAction SilentlyContinue
+          Copy-Item "target/evidence/release/portable/*.zip" out/ -ErrorAction SilentlyContinue
+          Copy-Item "target/evidence/release/portable/SHA256SUMS.txt" out/ -ErrorAction SilentlyContinue
           $found = Get-ChildItem out -ErrorAction SilentlyContinue
           if (-not $found) { throw "没有收集到任何产物 —— 检查 target 路径是否变了（.cargo/config.toml）" }
           $found | Format-Table Name, Length
