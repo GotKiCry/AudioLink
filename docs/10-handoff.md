@@ -16,7 +16,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 | 项 | 状态 |
 |---|---|
 | 远端仓库 | **PUBLIC** · main 分支 · 看板 https://github.com/users/GotKiCry/projects/2 |
-| 本地三条链 | ✅ 内核 workspace（engine 83 + audio 50 + …）· ✅ Android `assembleDebug` + **73** JVM 用例 · ✅ 桌面 `pnpm build` + Tauri `cargo test` |
+| 本地三条链 | ✅ 内核 workspace（engine 95 + audio 50 + …）· ✅ Android `assembleDebug` + **73** JVM 用例 · ✅ 桌面 `pnpm build` + Tauri `cargo test` |
 | 质量门 | ✅ `cargo fmt --all --check` 干净 · ✅ workspace clippy `-D warnings` 干净（独立复核者自跑 exit 0） |
 | M1 真机验收 | ✅ **已跑通**（2026-09-15，真机 MI 8 Lite）：自检 PASS(5/5) / 低延迟模式 ✅ / 零重采样 ✅ / PIN 配对 ✅ / 四轮零断流 ✅ |
 | M1 延迟指标 | ⏳ **未完成**：PHK110 修复后待播队列 P50/P95/max = 40/40/60 ms，不再增长；已有段模型下限约 73 ms，但对端解码与 AudioTrack 输出仍未纳入上限 |
@@ -27,7 +27,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 |---|---|---|
 | QUIC 通道（控制流 #0 + 数据报 + **§6 时钟同步接线**） | `core/crates/audiolink-net` + `audiolink-engine/src/clock.rs` | 20 单测 + 6 真 QUIC 集成；真机 60/60 探针样本、收敛 1.01 s |
 | 自签证书 / 指纹 / 信任库 / PIN 配对 | `core/crates/audiolink-identity` | 22 单测 + 8 黑盒验收 + 真机配对（人工节奏延迟 ≥25 s 提交） |
-| 引擎编排（状态机 / 收发管线 / 遥测 / 对端遥测 / 配对死线） | `core/crates/audiolink-engine` | 83 单测 + 10 集成测试 |
+| 引擎编排（状态机 / 收发管线 / 遥测 / 对端遥测 / 配对死线） | `core/crates/audiolink-engine` | 95 单测 + 10 集成测试 |
 | FFI 桥（UniFFI + 跨端 golden vectors 夹具） | `core/crates/audiolink-ffi` | 24 单测 + 2 真 QUIC/FFI 配对与重启回归 + 双 ABI 构建 |
 | Android 低延迟播放 + **配对 PIN UI** + **队列水位档位** | `android/app/src/main/kotlin/.../` | APK 构建 + **73** JVM 用例 + 真机验证 |
 | 桌面最小 UI（真实引擎，无 mock） | `desktop/` | `pnpm build` + 12 Rust 测试（含接缝）+ 4 端点手工 WASAPI 测试 |
@@ -90,7 +90,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 - Android PIN 缺失/残留已改为 Engine 同步快照，清除丢广播缓存；同时修复旧连接退出误删重连会话。3 项内核回归 + 1 项真 QUIC/FFI 配对回归通过，旧 FFI 对照在断开清 PIN 处失败。详见 `docs/14-pairing-state.md`；PHK110 真机已验证显示/错误/成功/断开/到期/锁定，PIN 看板转 Done（`docs/16`）。
 - 同端口重启任务已完成：Engine 等全部任务与音频线程退出，net 等真实套接字释放，FFI 启停串行且取消后不遗留半成品。新增 5 项回归，覆盖 15 次五状态重启、并发、取消、IO poller 和未完成 QUIC 握手；既有 PIN 回归恢复同端口。详见 `docs/15-engine-restart.md`。
 - PHK110（Android 16 / API 36）真机复现并修复 Android 服务销毁后旧协程回写“运行中”：进程级启停队列 + 实例代次 + 主线程状态发布，4 项新增 JVM 回归及手机普通/快速/推流中/配对中重启通过。新 APK 已安装后回拉核对，详见 `docs/16-android-service-lifecycle.md`。
-- 接收待播队列增长已修复并通过 PHK110 180 s 复测（P50/P95/max 40/40/60 ms，首尾 40 ms）。M2 自建 PCM 丢包掩盖也已完成：120 ms 淡出、2.5 ms 恢复交叉淡化、迟到包预解码丢弃及长空洞限流；约 2% 确定性丢包与 120 ms 突发回归通过，PHK110 正常链路 60 s 队列 P50/P95/max 均为 40 ms。下一步推进有界重排与自适应抖动缓冲，并继续 M1 声学延迟与修复后长跑验收；详见 `docs/17-m2-pcm-concealment.md`。
+- 接收待播队列增长与 PCM 丢包掩盖已完成；其后的 M2 自适应抖动深度和有界重排也已落地。接收侧按 P95 抖动/欠载在 20 / 40 / 60 ms 三档调整，升档按实际缺口补水、稳定 30 s 后逐档下降；60 ms 档等待一帧修复乱序。PHK110 90 s 回归队列 P50/P95/max 均为 60 ms、零链路丢包，欠载/迟到 52/51 且最后 21 s 无新增；活跃 AudioTrack underrun 0、FastMixer writeErrors 0。下一步推进冗余双发/NACK、码率自适应、真实弱网与 8 h soak；详见 `docs/18-m2-adaptive-jitter.md`。
 
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
@@ -138,7 +138,7 @@ Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本�
 | 设备侧 `queuedFrames` 进遥测 | 现在账本看不到「对端 AudioTrack」那一段，设备侧省下的 50 ms 在报告里不可见 | P1 |
 | `EngineEvent::Telemetry` 加 `peer: NodeId` | 对端遥测与本机采样共用同一事件，**多对端会串**（M3 必须修） | P1（M3） |
 | PCM 回调装箱开销 | UniFFI 0.29 无 `FloatArray` 映射 → `List<Float>` 每帧约 30 KB 装箱；逃生通道写在 `audiolink-ffi/src/audio_bridge.rs` 顶部。真机 GC 抖动仍未专门测 | P1（M2） |
-| 抖动缓冲 | M1 只做「起步攒 2 帧 + 时钟驱动提交」（`PRIME_FRAMES`，只是 40 ms 开播门槛；队列容量 = `PLAYBACK_QUEUE_FRAMES` = 16 帧 = 320 ms）。自适应深度属 M2 | M2 |
+| ~~抖动缓冲第一阶段~~ | ✅ M2 已完成 20 / 40 / 60 ms 自适应深度、30 s 降档迟滞、一帧有界重排和有界重缓冲；完整仿真缓冲/IIR/漂移微调及弱网验收继续留在 M2（`docs/18`） | ✅ / M2 继续 |
 | 跨机时钟的工程边界 | `now_monotonic_us()` 在 Android 是**进程相对**基准（`CLOCK_MONOTONIC`，深睡停走）⇒ offset **只在同一次连接内有效**；M3 若要挂起后续播，需改用 `CLOCK_BOOTTIME` 或显式检测阶跃后重收敛 | M3 |
 | `docs/06-dev-environment.md` 脱敏 | 含 `C:\Users\liuzh\...` 等本机路径，仓库已公开 | 低（用户未决） |
 

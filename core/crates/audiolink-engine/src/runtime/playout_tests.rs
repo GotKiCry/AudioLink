@@ -26,6 +26,28 @@ fn rms(samples: &[f32]) -> f32 {
     (samples.iter().map(|value| value * value).sum::<f32>() / samples.len() as f32).sqrt()
 }
 
+fn deliver_reorder_batch(
+    receiver: &mut AudioReceiver,
+    batch: ReorderBatch,
+    output: &mut Vec<PlaybackFrame>,
+) -> ReceiveReport {
+    let mut total = ReceiveReport {
+        late_drops: batch.late_drops,
+        ..ReceiveReport::default()
+    };
+    for EncodedAudioPacket { seq, payload, .. } in batch.ready {
+        let report = receiver.receive(seq, &payload, |frame| {
+            output.push(frame);
+            true
+        });
+        total.expected = total.expected.saturating_add(report.expected);
+        total.lost = total.lost.saturating_add(report.lost);
+        total.plc = total.plc.saturating_add(report.plc);
+        total.late_drops = total.late_drops.saturating_add(report.late_drops);
+    }
+    total
+}
+
 fn frame(seq: u32) -> PlaybackFrame {
     PlaybackFrame {
         seq,
@@ -252,4 +274,76 @@ fn six_frame_burst_fades_instead_of_becoming_hard_silence() {
     );
     let recovered = rms(&output[7].samples);
     assert!(recovered > 0.02, "恢复帧必须回到真实音频：rms={recovered}");
+}
+
+#[test]
+fn bounded_reordering_repairs_packet_order_before_opus_decode() {
+    let packets = encoded_packets(3);
+    let now = Instant::now();
+    let mut reorder = PacketReorderBuffer::new(Duration::from_millis(20));
+    reorder.set_target_frames(3);
+    let mut receiver = AudioReceiver::new(CodecConfig::m1_default()).unwrap();
+    let mut output = Vec::new();
+    let mut total = ReceiveReport::default();
+
+    for (seq, at) in [(0usize, 0u64), (2, 20), (1, 25)] {
+        let report = deliver_reorder_batch(
+            &mut receiver,
+            reorder.push(
+                seq as u32,
+                packets[seq].clone(),
+                now + Duration::from_millis(at),
+            ),
+            &mut output,
+        );
+        total.expected = total.expected.saturating_add(report.expected);
+        total.lost = total.lost.saturating_add(report.lost);
+        total.plc = total.plc.saturating_add(report.plc);
+        total.late_drops = total.late_drops.saturating_add(report.late_drops);
+    }
+
+    assert_eq!(total.lost, 0);
+    assert_eq!(total.plc, 0);
+    assert_eq!(total.late_drops, 0);
+    assert_eq!(
+        output.iter().map(|frame| frame.seq).collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+}
+
+#[test]
+fn reorder_deadline_falls_back_to_plc_and_rejects_the_late_packet() {
+    let packets = encoded_packets(3);
+    let now = Instant::now();
+    let mut reorder = PacketReorderBuffer::new(Duration::from_millis(20));
+    reorder.set_target_frames(3);
+    let mut receiver = AudioReceiver::new(CodecConfig::m1_default()).unwrap();
+    let mut output = Vec::new();
+
+    deliver_reorder_batch(
+        &mut receiver,
+        reorder.push(0, packets[0].clone(), now),
+        &mut output,
+    );
+    assert!(
+        reorder
+            .push(2, packets[2].clone(), now + Duration::from_millis(20))
+            .ready
+            .is_empty()
+    );
+    let expired = deliver_reorder_batch(
+        &mut receiver,
+        reorder.flush_expired(now + Duration::from_millis(40)),
+        &mut output,
+    );
+    let late = reorder.push(1, packets[1].clone(), now + Duration::from_millis(41));
+
+    assert_eq!(expired.lost, 1);
+    assert_eq!(expired.plc, 1);
+    assert_eq!(late.late_drops, 1);
+    assert_eq!(
+        output.iter().map(|frame| frame.seq).collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+    assert!(rms(&output[1].samples) > 0.02);
 }

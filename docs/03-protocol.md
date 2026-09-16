@@ -389,6 +389,8 @@ pub struct StreamStats {
 }
 ```
 
+接收侧自适应抖动深度不改变冻结的 `StreamStats` 结构。`buffer_level_us` 报告已解码待播 PCM 队列的实际水位；数据报在进入有界乱序窗时计入接收码率，乱序截止后才确认 `loss_pct_x100` / `plc_count`，重复和过期包计入 `late_drops`。当前 20 / 40 / 60 ms 三档规则与验证见 `docs/18-m2-adaptive-jitter.md`。
+
 `CodecStats` 字段（v1 冻结）：
 
 ```rust

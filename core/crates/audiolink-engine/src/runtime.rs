@@ -18,10 +18,10 @@
 //! 只能持有**工厂**（`Fn() -> Result<Box<dyn ...>>`），由目标线程自己去建。
 //! 这是 ADR-010「内核不持有平台音频线程」的直接推论，不是实现细节。
 //!
-//! # M1 刻意不做的事（属 M2/M3，做了就是范围蔓延）
+//! # 尚未落地的 M2/M3 能力
 //!
-//! - **不做抖动缓冲**：播放侧一到即播，队列深度由发送帧率自然形成。代价是网络抖动直接变成欠载，
-//!   而这恰好是 M2 要解决的对象 —— M1 先把它**量出来**（`underruns` / `late_drops`）。
+//! - **抖动缓冲已完成第一阶段**：20--60 ms 自适应目标深度 + 一帧有界重排；
+//!   预约播放、跨设备同步和基于 epoch 的绝对目标时刻仍属 M3。
 //! - **不做预约播放 / 同步组**：§7 的 epoch 驱动排播属 M3 —— 那是「**用** offset 排播」，
 //!   与「**算** offset」是两件事。§6 的时钟同步**已经接线**（见 [`crate::clock`]）：
 //!   `CLOCK_PROBE` / `CLOCK_REPLY` 的收发节奏都在会话任务里，估计结果写进
@@ -35,13 +35,13 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use audiolink_audio::{
     AudioError, CONCEAL_FADE_MS, CaptureSource, CodecConfig, FrameChunker, OpusDecoder,
-    OpusEncoder, PcmConcealer, PlayoutSink,
+    OpusEncoder, PcmConcealer, PlayoutSink, SampleStats,
 };
 use audiolink_identity::{IdentityError, NodeIdentity, PIN_TTL, TrustEntry, TrustStore};
 use audiolink_net::{
@@ -66,6 +66,11 @@ use crate::measure::MeasurementTap;
 use crate::payload::{
     CloseStreamPayload, CodecPref, OpenStreamAckPayload, OpenStreamPayload, SourceKind,
 };
+use crate::runtime::jitter::{
+    AdaptiveJitterDepth, DEFAULT_TARGET_FRAMES, EncodedAudioPacket, MAX_TARGET_FRAMES,
+    MIN_TARGET_FRAMES, PacketReorderBuffer, PlayoutDepthAction, PlayoutDepthState, ReorderBatch,
+    publish_target,
+};
 use crate::session::{SessionEvent, SessionMachine, SessionState};
 use crate::telemetry::TelemetryAggregator;
 
@@ -85,13 +90,6 @@ const PLAYBACK_QUEUE_FRAMES: usize = 16;
 
 /// 编码帧队列深度（帧数）。采集线程比网络快时，满队列意味着积压 —— 丢最旧而不是阻塞采集。
 const ENCODE_QUEUE_FRAMES: usize = 8;
-
-/// 播放**起步前**要攒够的帧数（20 ms 帧下 = 40 ms）。
-///
-/// 一帧都不攒就开播，任何一次到达抖动都会立刻变成欠载 —— 欠载率会变成 100% 量级，
-/// 于是「M1 的欠载数字」既不能反映链路质量，也不能作为 M2 的基线。
-/// 这是 M1 的**最小**抖动吸收量；完整的自适应抖动缓冲（15–60 ms 动态深度）属 M2。
-const PRIME_FRAMES: usize = 2;
 
 /// §5 握手的**非配对阶段**死线：10 s（[`EngineConfig::handshake_timeout`] 的默认值）。
 ///
@@ -1009,6 +1007,13 @@ async fn run_session(
     let mut dispatch_stats = DispatchStats::default();
 
     let mut last_datagram_at: Option<Instant> = None;
+    let frame_period = Duration::from_millis(u64::from(codec.frame_ms.max(1)));
+    let frame_us = codec.frame_ms.max(1).saturating_mul(1_000);
+    let jitter_depth = Arc::new(AtomicUsize::new(DEFAULT_TARGET_FRAMES));
+    let mut adaptive_jitter = AdaptiveJitterDepth::new();
+    let mut arrival_jitter = SampleStats::new(256);
+    let mut packet_reorder = PacketReorderBuffer::new(frame_period);
+    let mut last_adaptive_underruns = 0u32;
     let mut playback: Option<PlayoutHandle> = None;
     let mut next_stream_id: u32 = 1;
 
@@ -1024,6 +1029,9 @@ async fn run_session(
     let mut probe_deadline = tokio::time::Instant::now();
 
     loop {
+        let reorder_deadline = packet_reorder
+            .next_deadline()
+            .map(tokio::time::Instant::from_std);
         tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { break; };
@@ -1102,6 +1110,7 @@ async fn run_session(
                     &mut stream_id,
                     &mut next_stream_id,
                     &codec,
+                    &jitter_depth,
                 ).await;
             }
 
@@ -1153,17 +1162,29 @@ async fn run_session(
                                 u32::try_from(now.saturating_duration_since(previous).as_micros())
                                     .unwrap_or(u32::MAX);
                             let nominal_us = u32::try_from(frame_ms).unwrap_or(20) * 1_000;
+                            let jitter_us = interval_us.abs_diff(nominal_us);
+                            arrival_jitter.push(jitter_us);
                             if let Ok(mut telemetry) = session.telemetry.lock() {
-                                telemetry.record_jitter(interval_us.abs_diff(nominal_us));
+                                telemetry.record_jitter(jitter_us);
                             }
                         }
 
-                        receive_audio(
+                        if let Ok(mut telemetry) = session.telemetry.lock() {
+                            telemetry.record_received(datagram.payload.len());
+                        }
+                        packet_reorder.set_target_frames(
+                            jitter_depth.load(Ordering::Relaxed),
+                        );
+                        let batch = packet_reorder.push(
+                            datagram.header.seq,
+                            datagram.payload.to_vec(),
+                            now,
+                        );
+                        deliver_reordered_audio(
                             &session,
                             &mut audio_receiver,
                             &playback,
-                            datagram.header.seq,
-                            datagram.payload,
+                            batch,
                         );
                     }
                     Err(error) => {
@@ -1171,6 +1192,16 @@ async fn run_session(
                         break;
                     }
                 }
+            }
+
+            _ = wait_for_optional_deadline(reorder_deadline) => {
+                let batch = packet_reorder.flush_expired(Instant::now());
+                deliver_reordered_audio(
+                    &session,
+                    &mut audio_receiver,
+                    &playback,
+                    batch,
+                );
             }
 
             frame = next_encoded(&mut capture) => {
@@ -1221,6 +1252,8 @@ async fn run_session(
 
             _ = ticker.tick() => {
                 let estimate = clock_estimate_of(&session);
+                let adaptive_jitter_p95 = arrival_jitter.summary().map(|summary| summary.p95);
+                arrival_jitter.clear();
                 let snapshot = match session.telemetry.lock() {
                     Ok(mut telemetry) => {
                         // rtt_us 只有一种口径：**QUIC 平滑 RTT**（`docs/03-protocol.md` §10 的定义），
@@ -1241,6 +1274,30 @@ async fn run_session(
                     Err(_) => StreamStats::default(),
                 };
 
+                let new_underruns = snapshot.underruns.saturating_sub(last_adaptive_underruns);
+                last_adaptive_underruns = snapshot.underruns;
+                let observed_target = jitter_depth.load(Ordering::Relaxed);
+                adaptive_jitter.raise_to(observed_target);
+                let desired_target = adaptive_jitter.observe(
+                    adaptive_jitter_p95,
+                    new_underruns,
+                    frame_us,
+                );
+                let target_frames = publish_target(
+                    &jitter_depth,
+                    observed_target,
+                    desired_target,
+                );
+                adaptive_jitter.raise_to(target_frames);
+                packet_reorder.set_target_frames(target_frames);
+                let batch = packet_reorder.flush_expired(Instant::now());
+                deliver_reordered_audio(
+                    &session,
+                    &mut audio_receiver,
+                    &playback,
+                    batch,
+                );
+
                 // §10：`STREAM_STATS` 是**双方互发**的 1 Hz 上报，不是「只发本地事件」。
                 // 漏掉这一条发送的后果很具体：推流端的面板永远看不到 e2e 延迟、播放环水位、
                 // 欠载次数 —— 而那三个量**只有接收侧才量得到**。
@@ -1253,7 +1310,6 @@ async fn run_session(
         }
     }
 
-    let _ = frame_ms; // 帧长已在 codec 里体现，这里只用于文档可读性
     stop_capture(&mut capture).await;
     stop_playout(&mut playback).await;
     drop_session(&inner, &session, "session closed");
@@ -1454,8 +1510,8 @@ impl PlayoutHandle {
     ///
     /// # 口径说明（别把它读成「播放器里积压了多少」）
     ///
-    /// 这是**已解码、还没被播放线程取走**的帧数 —— 也就是 M1 的抖动缓冲本身。
-    /// 起步攒 `PRIME_FRAMES` 帧，此后每拍取走一帧；水位受调度抖动与收发速率差影响，
+    /// 这是**已解码、还没被播放线程取走**的帧数 —— 也就是引擎抖动缓冲本身。
+    /// 起步按自适应目标攒 1--3 帧，此后每拍取走一帧；水位受调度抖动与收发速率差影响，
     /// 上限为 `PLAYBACK_QUEUE_FRAMES`。它不包含 sink、Android PCM 环或 AudioTrack 的水位。
     /// 曾经试过改用 `PlayoutSink::buffered_frames()`（播放器内部积压），但那是个**实现自定义**的量：
     /// 真实 WASAPI sink 与合成 sink 的语义不同，同一份遥测在两端会给出不可比的数字。
@@ -1839,9 +1895,31 @@ fn receive_audio(
     if let Ok(mut telemetry) = session.telemetry.lock() {
         telemetry.record_expected_frames(report.expected);
         telemetry.record_lost(report.lost);
-        telemetry.record_received(payload.len());
         telemetry.record_plc_frames(report.plc);
         telemetry.record_late_drops(report.late_drops);
+    }
+}
+
+fn deliver_reordered_audio(
+    session: &Arc<PeerSession>,
+    receiver: &mut AudioReceiver,
+    playback: &Option<PlayoutHandle>,
+    batch: ReorderBatch,
+) {
+    if batch.late_drops > 0
+        && let Ok(mut telemetry) = session.telemetry.lock()
+    {
+        telemetry.record_late_drops(batch.late_drops);
+    }
+    for EncodedAudioPacket { seq, payload, .. } in batch.ready {
+        receive_audio(session, receiver, playback, seq, &payload);
+    }
+}
+
+async fn wait_for_optional_deadline(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
     }
 }
 
@@ -1990,6 +2068,7 @@ async fn handle_control(
     stream_id: &mut Option<u32>,
     next_stream_id: &mut u32,
     codec: &CodecConfig,
+    jitter_depth: &Arc<AtomicUsize>,
 ) {
     match request {
         ControlRequest::OpenStream(open) => {
@@ -2012,7 +2091,7 @@ async fn handle_control(
             *next_stream_id = next_stream_id.saturating_add(1);
             *stream_id = Some(id);
 
-            match spawn_playout_thread(inner, session, codec) {
+            match spawn_playout_thread(inner, session, codec, Arc::clone(jitter_depth)) {
                 Ok(handle) => *playback = Some(handle),
                 Err(error) => {
                     report_error(inner, session, &error);
@@ -2114,6 +2193,7 @@ fn spawn_playout_thread(
     inner: &Arc<Inner>,
     session: &Arc<PeerSession>,
     codec: &CodecConfig,
+    jitter_depth: Arc<AtomicUsize>,
 ) -> Result<PlayoutHandle, AudioLinkError> {
     let Some(factory) = inner.config.playout.as_ref() else {
         return Err(AudioLinkError::cap_unsupported(
@@ -2142,6 +2222,7 @@ fn spawn_playout_thread(
                 telemetry,
                 tap,
                 thread_stop,
+                jitter_depth,
                 frame_rx,
                 ready_tx,
             );
@@ -2171,6 +2252,7 @@ fn playout_main(
     telemetry: Arc<Mutex<TelemetryAggregator>>,
     tap: Option<Arc<MeasurementTap>>,
     stop: Arc<AtomicBool>,
+    jitter_depth: Arc<AtomicUsize>,
     frames: Receiver<PlaybackFrame>,
     ready_tx: std::sync::mpsc::Sender<Result<(), AudioLinkError>>,
 ) {
@@ -2194,11 +2276,12 @@ fn playout_main(
     let period = Duration::from_millis(frame_ms);
     let silence = vec![0f32; pcm_len];
     let mut primed = false;
+    let mut depth_state = PlayoutDepthState::new(jitter_depth.load(Ordering::Relaxed));
     let mut next_write = Instant::now();
     let mut expected_seq: Option<u32> = None;
     let mut pending: Option<PlaybackFrame> = None;
 
-    while !stop.load(Ordering::Relaxed) {
+    'playout: while !stop.load(Ordering::Relaxed) {
         // 睡到下一个提交时刻。节奏必须由**本地时钟**决定，数据到没到只影响
         // 「这一拍写什么」，不影响「什么时候写」—— 否则每一个网络到达抖动都会直接
         // 变成出声时间抖动，§7 的「由 epoch 驱动而非到达时间驱动」就落空了。
@@ -2226,14 +2309,51 @@ fn playout_main(
         }
         next_write += period;
 
-        // 起步攒帧：不足 `PRIME_FRAMES` 就继续等。这一拍**不补静音也不算欠载** ——
+        // 起步攒帧：不足当前目标深度就继续等。这一拍**不补静音也不算欠载** ——
         // 还没开始播，谈不上「欠」；把攒帧期算成欠载会让欠载率失去意义。
         if !primed {
-            if frames.len() >= PRIME_FRAMES {
+            let target = jitter_depth
+                .load(Ordering::Relaxed)
+                .clamp(MIN_TARGET_FRAMES, MAX_TARGET_FRAMES);
+            if frames.len() >= target {
+                depth_state = PlayoutDepthState::new(target);
                 primed = true;
             } else {
                 continue;
             }
+        }
+
+        // 升档必须真的建立出额外余量。若队列还没攒到新目标，这一拍写静音但不推进序号；
+        // 最多从 20/40 ms 升到 60 ms，因此重缓冲有严格上界，不会恢复成永久增长。
+        let requested_target = jitter_depth
+            .load(Ordering::Relaxed)
+            .clamp(MIN_TARGET_FRAMES, MAX_TARGET_FRAMES);
+        match depth_state.action(
+            requested_target,
+            frames.len() + usize::from(pending.is_some()),
+        ) {
+            PlayoutDepthAction::Hold => {
+                if let Ok(mut telemetry) = telemetry.lock() {
+                    telemetry.record_underrun();
+                }
+                if sink.write(&silence).is_err() {
+                    break;
+                }
+                continue;
+            }
+            PlayoutDepthAction::DropOldest(count) => {
+                for _ in 0..count {
+                    match take_due_frame(&frames, &mut pending, &mut expected_seq, &telemetry) {
+                        DueFrame::Ready(_) | DueFrame::Missing => {
+                            if let Ok(mut telemetry) = telemetry.lock() {
+                                telemetry.record_late_drop();
+                            }
+                        }
+                        DueFrame::Disconnected => break 'playout,
+                    }
+                }
+            }
+            PlayoutDepthAction::Play => {}
         }
 
         match take_due_frame(&frames, &mut pending, &mut expected_seq, &telemetry) {
@@ -2251,6 +2371,9 @@ fn playout_main(
                 if let Ok(mut telemetry) = telemetry.lock() {
                     telemetry.record_underrun();
                 }
+                let _ = jitter_depth.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
+                    Some((depth + 1).min(MAX_TARGET_FRAMES))
+                });
                 if sink.write(&silence).is_err() {
                     break;
                 }
@@ -2339,6 +2462,7 @@ fn new_stop_flag() -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
+mod jitter;
 #[cfg(test)]
 mod pairing_tests;
 #[cfg(test)]
