@@ -204,6 +204,42 @@ _up_/_up_/docs/compliance/THIRD-PARTY-NOTICES.md
 
 **仍未验**：`tag → 创建 Release` 这一段（要真的打 tag，那是对外动作）。
 
+---
+
+## 7. Android release 链路：本地把「签名 + R8」跑通（2026-09-16）
+
+§2.4 那条「CI 里只有 `assembleDebug`」这一轮往前推了一步：**release 打包本身被真正验证过了**。
+
+之前的问题是：CI 里没有 keystore secrets，所以那条 `assembleRelease` 路径永远是**降级**走的，
+等于「配置写了但从没跑过」—— 和 release.yml 一开始的状态是同一类毛病。
+
+于是本地用**测试 keystore** 把它跑了一遍：
+
+```text
+keytool -genkeypair ... -keystore android/release.jks      # 测试用，不入库（.gitignore 已含 *.jks）
+（写 android/keystore.properties，同样不入库）
+pwsh tools/gradlew.ps1 -JavaHome <JDK17> :app:assembleRelease
+  → BUILD SUCCESSFUL in 1m 34s
+  → app-release.apk  7.84 MB
+```
+
+| 核对项 | 结果 |
+|---|---|
+| 构建 | **BUILD SUCCESSFUL**，1m 34s |
+| 体积 | release **7.84 MB** vs debug **19.17 MB** → **R8/minify 确实生效**（降 59%） |
+| 签名 | `apksigner verify --print-certs` 通过：**V2 Signer**，证书 `CN=AudioLink Test, OU=Dev, O=AudioLink…` |
+| 声明仍随包 | `assets\THIRD-PARTY-NOTICES.md`（1 056 775 B）在 **release** APK 里也在 |
+
+**为什么 `7z l` 看不到 `META-INF/*.RSA` 是正常的**：现代 Android 用 **APK Signature Scheme v2**，
+签名信息在 zip 结构里而不是 `META-INF`。以 `apksigner` 的输出为准，不以「有没有 RSA 文件」为准。
+
+### 7.1 仍未验的
+
+- **CI 侧的真 release 路径**：需要把 keystore 配进 secrets（人工操作，属仓库设置）；
+- **装到真机上跑**：本轮验的是「能打出一个签名有效、R8 生效的 release APK」，不是「这个包装上能用」；
+- 测试 keystore 只是本地验证用（密码就写在文档里），**不能用于发布**。
+
+
 
 
 
