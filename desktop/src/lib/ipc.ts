@@ -83,6 +83,11 @@ export const api = {
    * 懒加载：只在用户真的点了「查看」时才拉（它 1 MB，不该在启动时白付）。
    */
   thirdPartyNotices: (): Promise<NoticesView> => invoke<NoticesView>("third_party_notices"),
+  /** `autostart_enabled` —— M5：读取开机自启状态。 */
+  autostartEnabled: (): Promise<boolean> => invoke<boolean>("autostart_enabled"),
+  /** `set_autostart` —— M5：开关开机自启。 */
+  setAutostart: (enabled: boolean): Promise<null> =>
+    invoke<null>("set_autostart", { enabled }),
   createGroup: (idShorts: string[], leadMs: number): Promise<number> =>
     invoke<number>("create_group", { id_shorts: idShorts, lead_ms: leadMs }),
   joinGroup: (idShort: string, groupId: number): Promise<null> =>

@@ -21,6 +21,7 @@ import { GroupPanel } from "./components/GroupPanel";
 import { NoticeBanner } from "./components/NoticeBanner";
 import { PairDialog } from "./components/PairDialog";
 import { PeerCard } from "./components/PeerCard";
+import { SettingsPanel } from "./components/SettingsPanel";
 import { StatusStrip } from "./components/StatusStrip";
 import { TelemetryPanel } from "./components/TelemetryPanel";
 import { TopBar } from "./components/TopBar";
@@ -84,6 +85,8 @@ export default function App() {
           onJoin={(idShort, groupId) => void al.joinGroup(idShort, groupId)}
           onLeave={(idShort, groupId) => void al.leaveGroup(idShort, groupId)}
         />
+
+        <SettingsPanel />
 
         <AboutPanel />
 

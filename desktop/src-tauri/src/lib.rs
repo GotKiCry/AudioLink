@@ -24,6 +24,8 @@ mod engine_bridge;
 mod error;
 mod view;
 
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, State};
 
 use engine_bridge::EngineBridge;
@@ -177,6 +179,28 @@ async fn alignment(bridge: State<'_, EngineBridge>) -> Result<AlignmentView, Com
     bridge.alignment().await
 }
 
+/// M5：开机自启状态（FR-31 的一部分）。
+#[tauri::command]
+async fn autostart_enabled(app: tauri::AppHandle) -> Result<bool, CommandError> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|error| {
+        CommandError::busy(format!("读取自启状态失败：{error}"), "autostart_enabled")
+    })
+}
+
+/// M5：开关开机自启。
+#[tauri::command]
+async fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), CommandError> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    let outcome = if enabled {
+        manager.enable()
+    } else {
+        manager.disable()
+    };
+    outcome.map_err(|error| CommandError::busy(format!("设置自启失败：{error}"), "set_autostart"))
+}
+
 /// M5：第三方组件声明（用户看得见的投放）。
 #[tauri::command]
 async fn third_party_notices(bridge: State<'_, EngineBridge>) -> Result<NoticesView, CommandError> {
@@ -225,22 +249,90 @@ pub fn run() {
             set_peer_gain,
             alignment,
             broadcast_epoch,
-            third_party_notices
+            third_party_notices,
+            autostart_enabled,
+            set_autostart
         ])
         .setup(|app| {
             // 桥接层必须在窗口加载**之前**就位：前端一挂载就会 invoke，拿不到 State 会直接报错。
             // 引擎真正的启动是异步的（`Engine::start`），命令层会等到它就绪（见 engine_bridge.rs）。
             let _managed = app.manage(EngineBridge::new(app.handle().clone()));
 
-            // TODO(M5)：TrayIconBuilder 托盘菜单（连接/断开/静音/显示主窗口/退出）
             // TODO(M5)：启动后自动连接上次设备（FR-31，可关）
-            // TODO(M5)：退出时调 `Engine::shutdown()` 优雅关闭会话并给对方发 BYE
-            //           （需要换成 Builder::build + RunEvent::ExitRequested，属托盘/退出行为那一批）
+            build_tray(app)?;
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
             }
             Ok(())
         })
+        .on_window_event(|window, event| {
+            // 关掉窗口 ≠ 退出程序：这是个常驻的音频工具，窗口只是它的一个面。
+            // 真退出在托盘菜单里（见 quit_app），而那里会让引擎先给对方发 BYE。
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running AudioLink desktop");
+}
+
+/// 托盘图标与菜单：显示主窗口 / 退出。
+///
+/// 为什么值得做：这是「后台常驻」的音频工具 —— 关掉窗口不该等于退出程序；
+/// 而托盘是用户唯一能「叫回窗口」和「真正退出」的地方。
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+
+    let mut builder = TrayIconBuilder::with_id("main")
+        .tooltip("AudioLink")
+        .menu(&menu)
+        // 左键留给「唤出窗口」，菜单走右键（与常见桌面应用一致）。
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => show_main_window(app),
+            "quit" => quit_app(app),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+
+    // 图标来自 bundle 的默认窗口图标；没有就只建一个无图标的托盘（不 panic）。
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
+/// 唤出主窗口（可能被隐藏到托盘了）。
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// 退出：**先让引擎优雅收尾**（给对方发 `BYE`），再退进程。
+///
+/// 这条路径最容易一直没人管，而它的代价落在对端身上 —— 对方要多等一次 QUIC 空闲
+/// 超时才能把会话判掉。桥接层内部有 3 s 上限，所以最坏情况也不会卡住用户。
+fn quit_app(app: &tauri::AppHandle) {
+    if let Some(bridge) = app.try_state::<EngineBridge>() {
+        // 托盘事件跑在主线程；用 Tauri 的 block_on 等这一步是安全的。
+        if let Err(error) = tauri::async_runtime::block_on(bridge.shutdown_engine()) {
+            eprintln!("audiolink: 退出前收尾未完成：{error}");
+        }
+    }
+    app.exit(0);
 }

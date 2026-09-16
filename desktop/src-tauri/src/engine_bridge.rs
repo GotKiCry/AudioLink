@@ -424,6 +424,22 @@ impl EngineBridge {
         Ok(alignment_view(&engine.stream_axes(), engine.monotonic_ms()))
     }
 
+    /// M5：退出前的优雅收尾 —— 给对方发 `BYE`，而不是让对端等 QUIC 空闲超时。
+    ///
+    /// 为什么值得单独一条命令：这类「退出时才走」的路径最容易一直没人管，
+    /// 而它的代价落在**对端**身上（对方要多等一次超时才把会话判掉）。
+    /// 内部带 3 s 上限：退出路径不能因为对端没响应就卡住用户。
+    pub async fn shutdown_engine(&self) -> Result<(), CommandError> {
+        let engine = self.engine().await?;
+        match tokio::time::timeout(std::time::Duration::from_secs(3), engine.shutdown()).await {
+            Ok(()) => Ok(()),
+            Err(_) => Err(CommandError::busy(
+                "退出时等待会话收尾超时（3 秒），仍会退出",
+                "shutdown_engine",
+            )),
+        }
+    }
+
     /// M5：第三方组件声明 —— 让用户**看得见**，而不是只躺在仓库里。
     ///
     /// 两处依次找：打包后的**资源目录**（安装版在这里）、再退回仓库内的生成路径（开发版）。
