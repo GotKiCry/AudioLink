@@ -6,3 +6,10 @@
 slow-timeout = { period = "60s", terminate-after = 3 }
 # 失败不早停：CI 排错时要看到全部失败面，而不是第一个就收摊
 fail-fast = false
+
+# 延迟护栏会把自己量到的 P50/P95/P99 与配对帧数打到 stdout。nextest 默认**捕获成功测试的输出**，
+# 也就是说「CI 日志里能读到那个数字」这件事默认不成立 —— 只失败时才可见，等于平时看不到趋势。
+# 精确到这一个测试：全量放开会让几百个测试的输出把日志淹掉。
+[[profile.default.overrides]]
+filter = 'test(latency_budget)'
+success-output = "final"
