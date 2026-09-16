@@ -81,3 +81,50 @@ CI 墙钟 = **max(各 job) = core 的 236 s**，所以只有 core 值得动。
   重内核（net/engine/ffi/tools）另一个 job —— 墙钟仍由重 job 决定（≈3.5 min），收益在「协议改动的反馈时间」。
 - android 若还要压，继续往 Gradle 上做（`--configuration-cache`、只跑必要 task）。
 - rust-cache 的恢复固定要 53 s（core）/ 45 s（desktop），属缓存粒度问题，改动收益与风险都不小，先记账。
+
+---
+
+## 7. 再拆一次：core → core-light / core-heavy（2026-09-16 第二轮）
+
+§6 说的「只剩并行拆分」这一轮做了。理由是依赖深度**实测差异很大**（`cargo metadata`）：
+- `audiolink-types` 无任何内部依赖；`audiolink-proto` / `audiolink-identity` 只依赖 `types`；
+- `audiolink-engine` 依赖 `audio` + `identity` + `net` + `proto` + `types`；`ffi` / `tools` 拉全栈。
+
+所以协议层（golden vectors 就在 proto）完全不必等 QUIC 与音频栈编完。
+
+| job | 命令要点 |
+|---|---|
+| `core-light` | `fmt` + clippy/test 只针对 `audiolink-types` / `-proto` / `-identity` |
+| `core-heavy` | `--workspace --exclude audiolink-desktop --exclude audiolink-types --exclude audiolink-proto --exclude audiolink-identity` |
+
+**重 job 用 `--exclude` 而不是逐个 `-p`**：将来新增 crate 会**自动**落进重 job。漏测一个 crate 比 CI 慢贵得多。
+覆盖正确性本地校验（`cargo metadata` 计算集合，非目测）：非桌面成员 9 个 = 轻 3 + 重 6，**交集为空**。
+
+本地热缓存真跑一遍两组命令（不是估算）：
+
+| 组 | fmt | clippy | test |
+|---|---|---|---|
+| light（3 crate） | 0.8 s | 2.7 s | 6.3 s |
+| heavy（6 crate） | — | 1.7 s | **73.3 s**（27 个测试二进制，其中 engine 占 13 个） |
+
+### 7.1 第一次 CI 运行（run `35097376811`）：冷缓存的代价，如实记录
+
+| job | 总时长 | 分步 |
+|---|---|---|
+| `core-light` | **198 s** | cache 16 / clippy 75 / test 37 / post-cache 50 |
+| `core-heavy` | **744 s** | cache 16 / **clippy 295** / **test 354** / post-cache 59 |
+| android | 102 s | （既有） |
+| desktop | 111 s | （既有） |
+| version-consistency | 8 s | |
+
+墙钟 **744 s**，比拆分前的 236 s **慢了 508 s**。原因不是拆分本身，而是 **`Swatinem/rust-cache` 的 key 含 job 名**：
+两个新 job 各自冷启动，整棵依赖树（quinn / rustls / tokio / cpal 一行不少）要重编一次。这是「新增 job」的
+**一次性成本**，稳态要看第二次运行。
+
+但收益在第一次运行里已经能直接读出来：**`core-light` 198 s 全绿收工的那一刻，`core-heavy` 才刚走完 clippy（295 s）**，
+协议层结论比另一个 job 早 **546 s** 到手。
+
+## 8. 稳态（第二次运行，缓存按 job 各自命中后）
+
+<!-- STEADY-STATE-PENDING -->
+
