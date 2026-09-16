@@ -154,6 +154,12 @@ pub struct EngineConfig {
     /// 进入配对等待（发出 / 收到 `PAIR_REQUIRED`）后，握手死线顺延到本值**从此刻起算**
     /// —— 理由见 [`DEFAULT_PIN_WAIT_TIMEOUT`] 的文档。
     pub pin_wait_timeout: Duration,
+    /// §13 能力协商：本端声明的能力位图；默认 [`audiolink_types::Capabilities::CURRENT`]。
+    ///
+    /// **为什么要可注入**：`CURRENT` 说的是「**内核**能做到什么」，而真实设备还有平台差异 ——
+    /// Windows 有 WASAPI loopback（系统内录），Android 的内录尚未实现。平台侧在构造引擎时
+    /// 声明自己的能力，能力协商才有意义；把它写死成常量，等于让所有设备都说自己一样。
+    pub capabilities: u32,
 }
 
 impl EngineConfig {
@@ -171,7 +177,15 @@ impl EngineConfig {
             measurement: None,
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
             pin_wait_timeout: DEFAULT_PIN_WAIT_TIMEOUT,
+            capabilities: audiolink_types::Capabilities::CURRENT,
         }
+    }
+
+    /// 声明本端能力（见 [`EngineConfig::capabilities`]）。
+    #[must_use]
+    pub const fn with_capabilities(mut self, capabilities: u32) -> Self {
+        self.capabilities = capabilities;
+        self
     }
 }
 
@@ -1395,7 +1409,9 @@ async fn run_session(
     };
 
     let trusted_before = session.trusted.load(Ordering::Relaxed);
-    let mut handshake = Handshake::new(role, inner.local.clone(), peer_id, trusted_before);
+    // §13：握手带上**本机声明的**能力（默认是内核能力，平台侧可覆写，见 `EngineConfig::capabilities`）。
+    let mut handshake = Handshake::new(role, inner.local.clone(), peer_id, trusted_before)
+        .with_capabilities(inner.config.capabilities);
     let mut queue: VecDeque<Outgoing> = VecDeque::new();
     enqueue(&mut queue, handshake.start());
     if let Err(error) = flush_control(&mut control, &mut queue).await {

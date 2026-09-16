@@ -226,6 +226,17 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   `pnpm build`（tsc 严格 + i18n 护栏）全过，fmt / clippy 零警告。**仍未做**：无损档 PCM16 与混音路数在界面上
   还没有控件，等有了按同一模式处理；平台能力注入仍缺（口子已开）。详见 `docs/46-m4-capability-negotiation.md` §9。
 
+- **M4 平台能力注入落地：把「内核能做什么」与「这台机器能做什么」分开**。此前 `Capabilities::CURRENT`
+  被写死在握手构造函数里，于是「所有设备都声称自己一样」—— 能力协商只剩形式。现在 `EngineConfig.capabilities`
+  （默认仍是 `CURRENT`）由**平台侧**声明并带进握手：桌面端（Tauri）声明 `CURRENT | SYSTEM_LOOPBACK`
+  （WASAPI loopback 采集已实现），Android（FFI）保持 `CURRENT` 不声明内录 —— **未实现的就不声明**，
+  并留了注释说明接上之后怎么打开那一位。**端到端证据**（不是「字段赋值对不对」）：新增
+  `core/crates/audiolink-engine/tests/engine/capability_negotiation.rs`，起两个真实 Engine（真 QUIC + PIN 配对），
+  一端声明内录、另一端不声明，断言**对端** `peers()` 里读到的那份能力：`peer` 位含内录、`local` 位不含、
+  `agreed` 交集不含 —— 正是界面按 `missingKeys` 置灰用的输入。验证：types + engine **172 项**测试全过
+  （新增 1 项端到端）、desktop 27 项、fmt / clippy 零警告。**仍未做**：Android 内录本身（`AudioPlaybackCapture`）、
+  无损档 PCM16 与混音路数在界面上还没有控件。详见 `docs/46-m4-capability-negotiation.md` §8.3.5。
+
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
 Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本数**，`receive_audio()` 又乘了声道数，

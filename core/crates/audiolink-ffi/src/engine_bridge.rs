@@ -365,6 +365,9 @@ pub async fn engine_start(
             }
         }
 
+        // §13 能力：Android 侧**不**声明系统内录 —— `AudioPlaybackCapture` 尚未实现，
+        // 保持内核默认（`Capabilities::CURRENT`）就是此刻的实话。接上之后在这里加
+        // `|= Capabilities::SYSTEM_LOOPBACK`，能力协商会自动把它带给对端。
         let mut engine_config = EngineConfig::new(
             config.node_name.clone(),
             PathBuf::from(config.data_dir.clone()),

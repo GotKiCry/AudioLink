@@ -873,6 +873,10 @@ fn engine_config(app: &AppHandle, capture: SharedCapture) -> Result<EngineConfig
 
     let identity_dir = dir.join("identity");
     let mut config = EngineConfig::new(node_name(), &identity_dir);
+    // §13：桌面端跑在 Windows 上，系统内录（WASAPI loopback）是**已实现**的采集源，所以敢声明它。
+    // 能力由外壳按平台声明、而不是内核写死 —— 内核并不知道自己跑在谁的机器上。
+    config.capabilities =
+        audiolink_types::Capabilities::CURRENT | audiolink_types::Capabilities::SYSTEM_LOOPBACK;
     // 身份材料在 `<config>/identity/`，信任库在 `<config>/trust.json`（架构 §9 的分工）。
     config.trust_store_path = dir.join("trust.json");
     config.listen = SocketAddr::from(([0, 0, 0, 0], DEFAULT_QUIC_PORT));

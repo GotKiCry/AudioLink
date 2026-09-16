@@ -175,6 +175,23 @@
 
 - 其余依赖能力的入口（无损档 `PCM16`、混音路数）**界面上目前还没有对应控件**，等有了再按同一模式处理；
 - 平台能力注入仍是缺口（Windows loopback 已有、Android 内录未实现）—— `with_capabilities` 的口子已经开好。
+#### 8.3.5 平台能力注入：把「内核能做什么」与「这台机器能做什么」分开
+
+`Capabilities::CURRENT` 说的是**内核**能做到什么；而真实设备还有平台差异 —— Windows 有 WASAPI loopback
+（系统内录），Android 的 `AudioPlaybackCapture` 尚未实现。在这之前，那个常量被写死在握手构造函数里，
+于是「所有设备都声称自己一样」—— 能力协商也就只剩形式。
+
+现在 `EngineConfig.capabilities`（默认仍是 `CURRENT`）由**平台侧**声明，握手直接用它：
+
+| 侧 | 声明 | 依据 |
+|---|---|---|
+| 桌面端（Tauri） | `CURRENT \| SYSTEM_LOOPBACK` | WASAPI loopback 采集已实现（`docs/13`） |
+| Android（FFI） | `CURRENT`（不含内录） | `AudioPlaybackCapture` 尚未实现 —— 保持默认就是此刻的实话 |
+
+**端到端证据**：`core/crates/audiolink-engine/tests/engine/capability_negotiation.rs` 起两个真实 Engine
+（真 QUIC + PIN 配对），一端声明内录、另一端不声明，断言**对端** `peers()` 里读到的那份能力：
+`peer` 位含内录、`local` 位不含、`agreed` 交集不含 —— 也就是界面按 `missingKeys` 置灰用的那个输入。
+这条测试回答的是「注入的位真的出网了吗」，而不是「字段赋值对不对」。
 ### 8.4 仍未做（第一轮时记下的）
 
 - **真正的「置灰」**：现在卡片上**说明**了缺什么，但依赖该能力的入口（比如建组时勾选对端）还没有

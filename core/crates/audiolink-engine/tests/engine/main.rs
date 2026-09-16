@@ -13,6 +13,7 @@
 //! 文件里的 `//!` 与 `#![allow(...)]` 在模块内都是合法的（模块允许内部属性）。
 
 mod adaptive_bitrate;
+mod capability_negotiation;
 mod clock_sync;
 mod engine_shutdown;
 mod gain_control;
