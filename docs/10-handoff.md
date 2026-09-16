@@ -90,7 +90,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 - Android PIN 缺失/残留已改为 Engine 同步快照，清除丢广播缓存；同时修复旧连接退出误删重连会话。3 项内核回归 + 1 项真 QUIC/FFI 配对回归通过，旧 FFI 对照在断开清 PIN 处失败。详见 `docs/14-pairing-state.md`；PHK110 真机已验证显示/错误/成功/断开/到期/锁定，PIN 看板转 Done（`docs/16`）。
 - 同端口重启任务已完成：Engine 等全部任务与音频线程退出，net 等真实套接字释放，FFI 启停串行且取消后不遗留半成品。新增 5 项回归，覆盖 15 次五状态重启、并发、取消、IO poller 和未完成 QUIC 握手；既有 PIN 回归恢复同端口。详见 `docs/15-engine-restart.md`。
 - PHK110（Android 16 / API 36）真机复现并修复 Android 服务销毁后旧协程回写“运行中”：进程级启停队列 + 实例代次 + 主线程状态发布，4 项新增 JVM 回归及手机普通/快速/推流中/配对中重启通过。新 APK 已安装后回拉核对，详见 `docs/16-android-service-lifecycle.md`。
-- 护栏与工具补齐（三项）：① **定长载荷自洽护栏** —— 长度常量改成「字段偏移 + 字段宽度」算式，编解码偏移同源，新增 §3 载荷表独立副本测试 9 项（三组人为破坏均被当场抓红）；② `docs/` 本机绝对路径全部换成占位符（`docs/06` §1 有对照表）；③ `alp2-dump` 支持 pcap / pcapng（按 magic 自动分派、默认按 58290 端口过滤、9 项合成夹具回归 + 端到端实测）。内核 fmt / clippy / 全量测试通过；详见 `docs/20-guards-and-tooling.md`。
+- 护栏与工具补齐（三项）：① **定长载荷自洽护栏** —— 长度常量改成「字段偏移 + 字段宽度」算式，编解码偏移同源，新增 §3 载荷表独立副本测试 9 项（三组人为破坏均被当场抓红）；② `docs/` 本机绝对路径全部换成占位符（`docs/06` §1 有对照表）；③ `alp2-dump` 支持 pcap / pcapng（按 magic 自动分派、默认按 58290 端口过滤、9 项合成夹具回归 + 端到端实测）。内核 fmt / clippy / 全量测试通过；详见 `docs/20-guards-and-tooling.md`。提交 `6419333` / `402636f` / `2a01879` 已推送 `main`，CI run `35069992337` 四个 job（core / android / desktop / version-consistency）全绿。
 - 接收待播队列增长、PCM 丢包掩盖、自适应抖动/有界重排和默认冗余双发均已落地。副本延迟一帧并标记 `FEC_REDUNDANT`，接收侧按序号去重且 jitter 只取首个有效副本；60 ms 最高档欠载现在也能按现档重新补水。PC 双 Engine 20 s 稳态码率 320.8 kbps、零欠载/迟到；PHK110 90 s 码率末值/均值 320.8 kbps，队列 P50/P95/max 均 60 ms，链路丢包/PLC 0，欠载/迟到 24/22 且第 75--90 s 无新增，AudioTrack underrun 0、FastMixer writeErrors 0。下一步推进 NACK、码率自适应、真实弱网与 8 h soak；详见 `docs/18-m2-adaptive-jitter.md`、`docs/19-m2-redundant-send.md`。
 
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
