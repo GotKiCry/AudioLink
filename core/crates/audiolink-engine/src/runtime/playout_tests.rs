@@ -466,3 +466,19 @@ fn epoch_schedule_gates_playout_by_the_target_time() {
     // 手上没有帧就不做判定
     assert!(schedule_action(&sync, None).is_none());
 }
+#[test]
+fn hub_clock_hands_out_one_timeline_to_every_session() {
+    // 共享采集的核心承诺：全组拿到的是同一套编号（这也是「同一根时间轴」的全部含义）。
+    let mut clock = HubClock::default();
+    assert_eq!(clock.next(960), (0, 0));
+    assert_eq!(clock.next(960), (1, 960));
+    assert_eq!(clock.next(960), (2, 1_920));
+
+    // 序号回绕仍按 u32 语义（接收侧本来就按回绕判丢包）
+    let mut wrapped = HubClock {
+        seq: u32::MAX,
+        sample_index: u32::MAX - 100,
+    };
+    assert_eq!(wrapped.next(960), (u32::MAX, u32::MAX - 100));
+    assert_eq!(wrapped.next(960), (0, 859));
+}

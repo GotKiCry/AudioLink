@@ -402,6 +402,8 @@ struct Inner {
     listen_addr: std::net::SocketAddr,
     /// §7 临时同步组的账本（发送侧写、查询用）：组 ID → 基准与成员。
     groups: Mutex<HashMap<u32, GroupState>>,
+    /// M3 多会话：引擎级共享采集枢纽（第一个会话启流时创建，最后一个停止时摘掉）。
+    capture_hub: Mutex<Option<Arc<CaptureHub>>>,
 }
 
 impl Inner {
@@ -506,6 +508,7 @@ impl Engine {
                 config,
                 peers: Mutex::new(HashMap::new()),
                 groups: Mutex::new(HashMap::new()),
+                capture_hub: Mutex::new(None),
                 events,
                 shutdown: AtomicBool::new(false),
                 tasks: Mutex::new(TaskTracker::new()),
@@ -525,6 +528,32 @@ impl Engine {
     }
 
     /// 订阅引擎事件。
+    /// M3 多会话：一次给多台接收端同时开流（≥8 台也走这一条路径）。
+    ///
+    /// 采集是**引擎级共享**的：所有会话拿到的是同一串帧、同一套 seq / sample_index，
+    /// 所以各接收端按同一 epoch 播放时的偏差不会被采集端偷偷加上去。
+    /// 每台的结果各自返回 —— 一台失败不影响其它：调用方按设备逐条报错。
+    pub async fn start_send_many(
+        &self,
+        peers: &[NodeId],
+    ) -> Result<Vec<(NodeId, Result<(), AudioLinkError>)>, AudioLinkError> {
+        let mut results = Vec::with_capacity(peers.len());
+        for peer in peers {
+            let (ready_tx, ready_rx) = oneshot::channel();
+            let outcome = self
+                .send_command(*peer, SessionCommand::StartSend(ready_tx))
+                .await;
+            let result = match outcome {
+                Ok(()) => ready_rx
+                    .await
+                    .unwrap_or_else(|_| Err(AudioLinkError::bad_request("session task is gone"))),
+                Err(error) => Err(error),
+            };
+            results.push((*peer, result));
+        }
+        Ok(results)
+    }
+
     /// §7 同步组：创建临时组并把组基准广播给成员（发送方）。
     ///
     /// 返回组 ID。epoch_local_us 取本机单调时刻，成员各自换算到本机轴后排播 ——
@@ -1968,23 +1997,228 @@ fn start_send_pipeline(
     session: &Arc<PeerSession>,
     codec: &CodecConfig,
 ) -> Result<(CaptureHandle, u64), AudioLinkError> {
-    let Some(factory) = inner.config.capture.as_ref() else {
-        return Err(AudioLinkError::cap_unsupported(
-            "this node has no capture source configured",
+    // M3 多会话：采集是**引擎级共享**的，所以同一引擎内所有会话必须用同一帧长
+    // （枢纽按引擎默认帧长切片，各会话编码器拿到的输入长度必须与它一致）。
+    if codec.frame_ms != inner.config.codec.frame_ms {
+        return Err(AudioLinkError::bad_request(
+            "all sessions on one engine must share the same frame length",
         ));
-    };
-
-    let handle = spawn_capture_thread(
-        factory,
+    }
+    let hub = acquire_capture_hub(inner)?;
+    let handle = spawn_session_encoder(
+        hub,
         *codec,
         Arc::clone(&session.telemetry),
-        inner.config.measurement.clone(),
         new_stop_flag(),
         Arc::new(AtomicI32::new(codec.bitrate_bps)),
     )?;
 
     Ok((handle, random_u64()))
 }
+
+/// 取得（必要时创建）引擎级采集枢纽，并把本会话登记成一个使用中的订阅者。
+fn acquire_capture_hub(inner: &Arc<Inner>) -> Result<Arc<CaptureHub>, AudioLinkError> {
+    let mut slot = inner
+        .capture_hub
+        .lock()
+        .map_err(|_| AudioLinkError::bad_request("capture hub poisoned"))?;
+    if let Some(hub) = slot.as_ref() {
+        if !hub.is_stopped() {
+            hub.subscribers.fetch_add(1, Ordering::AcqRel);
+            return Ok(Arc::clone(hub));
+        }
+        // 上一轮的枢纽已经随最后一个会话停掉了：摘掉它，下面重建一个。
+        *slot = None;
+    }
+    let factory = inner.config.capture.clone().ok_or_else(|| {
+        AudioLinkError::cap_unsupported("this node has no capture source configured")
+    })?;
+    let hub = Arc::new(start_capture_hub(
+        factory,
+        inner.config.measurement.clone(),
+        inner.config.codec.frame_ms,
+    )?);
+    hub.subscribers.fetch_add(1, Ordering::AcqRel);
+    *slot = Some(Arc::clone(&hub));
+    Ok(hub)
+}
+
+/// 每会话一个编码线程：订阅共享采集帧 → 用**本会话**的 codec 编码 → 交给会话循环发送。
+///
+/// 编码留在会话侧有两个好处：各会话可以有自己的码率（§8 的自适应按对端丢包各自决策），
+/// 而采样时间轴仍然是全组共享的。
+fn spawn_session_encoder(
+    hub: Arc<CaptureHub>,
+    codec: CodecConfig,
+    telemetry: Arc<Mutex<TelemetryAggregator>>,
+    stop: Arc<AtomicBool>,
+    target_bitrate_bps: Arc<AtomicI32>,
+) -> Result<CaptureHandle, AudioLinkError> {
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), AudioLinkError>>();
+    let (frame_tx, frame_rx) = mpsc::channel::<EncodedFrame>(ENCODE_QUEUE_FRAMES);
+    let thread_stop = Arc::clone(&stop);
+    let hub_frames = hub.frames.subscribe();
+    let owned_hub = Arc::clone(&hub);
+    let thread_bitrate = Arc::clone(&target_bitrate_bps);
+
+    let join = std::thread::Builder::new()
+        .name("audiolink-encode".to_string())
+        .spawn(move || {
+            session_encoder_main(
+                hub_frames,
+                codec,
+                telemetry,
+                thread_stop,
+                thread_bitrate,
+                frame_tx,
+                ready_tx,
+            );
+        })
+        .map_err(|_| AudioLinkError::bad_request("failed to spawn session encoder thread"))?;
+
+    match ready_rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(Ok(())) => Ok(CaptureHandle {
+            frames: frame_rx,
+            stop,
+            join: Some(join),
+            target_bitrate_bps,
+            hub: Some(owned_hub),
+        }),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(AudioLinkError::bad_request(
+            "session encoder did not report readiness in time",
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn session_encoder_main(
+    mut hub_frames: broadcast::Receiver<HubFrame>,
+    codec: CodecConfig,
+    telemetry: Arc<Mutex<TelemetryAggregator>>,
+    stop: Arc<AtomicBool>,
+    target_bitrate_bps: Arc<AtomicI32>,
+    frame_tx: mpsc::Sender<EncodedFrame>,
+    ready_tx: std::sync::mpsc::Sender<Result<(), AudioLinkError>>,
+) {
+    let mut encoder = match OpusEncoder::new(codec) {
+        Ok(encoder) => encoder,
+        Err(error) => {
+            let _ = ready_tx.send(Err(audio_error(&error)));
+            return;
+        }
+    };
+    let _ = ready_tx.send(Ok(()));
+
+    let mut opus_buf = vec![0u8; audiolink_types::DATAGRAM_MAX_PAYLOAD];
+    let mut applied_bitrate_bps = codec.bitrate_bps;
+
+    while !stop.load(Ordering::Relaxed) {
+        let frame = match hub_frames.try_recv() {
+            Ok(frame) => frame,
+            Err(broadcast::error::TryRecvError::Empty) => {
+                std::thread::sleep(Duration::from_millis(2));
+                continue;
+            }
+            // 慢会话被采集甩开：丢旧帧（与「不阻塞采集」同一条纪律），继续处理最新的。
+            Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(broadcast::error::TryRecvError::Closed) => break,
+        };
+
+        let requested_bps = target_bitrate_bps.load(Ordering::Relaxed);
+        if requested_bps != applied_bitrate_bps {
+            match encoder.set_bitrate(requested_bps) {
+                Ok(()) => applied_bitrate_bps = requested_bps,
+                // 非法取值只可能来自实现缺陷：拒绝这次变更并保持原码率，绝不中断编码。
+                Err(_) => applied_bitrate_bps = encoder.config().bitrate_bps,
+            }
+        }
+
+        let Ok(written) = encoder.encode_into(&frame.pcm, &mut opus_buf) else {
+            break;
+        };
+        if written == 0 {
+            continue; // DTX 静默帧：不占序号
+        }
+        let packet = EncodedFrame {
+            seq: frame.seq,
+            sample_index: frame.sample_index,
+            payload: opus_buf[..written].to_vec(),
+            sealed_at: frame.sealed_at,
+        };
+        // 队列满 = 编码比网络快：丢最旧（与「不阻塞采集」同一条纪律）。
+        if frame_tx.try_send(packet).is_err()
+            && let Ok(mut telemetry) = telemetry.lock()
+        {
+            telemetry.record_late_drop();
+        }
+    }
+}
+
+/// 采集枢纽（M3 多会话）：**一路采集** → N 个会话共享同一串 PCM 帧。
+///
+/// 为什么必须共享（不是优化，而是正确性）：每个会话各自开一路采集，读取起点不同、
+/// 丢样各不同，于是各会话的 seq / sample_index 时间轴彼此错开几十毫秒。接收端按**同一个
+/// epoch** 播放时，这点错位会原封不动加到组内偏差上 —— 而 M3 的验收是「组内 ±10 ms」。
+/// 共享采集把「同一帧编号」变成全组公共的起点。
+struct CaptureHub {
+    /// 广播给所有会话的编码线程；容量按「几帧」算，慢会话丢旧帧而不是拖住采集。
+    frames: broadcast::Sender<HubFrame>,
+    stop: Arc<AtomicBool>,
+    join: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// 还在用这路采集的会话数：降到 0 就停采集线程、并把枢纽从引擎上摘掉。
+    subscribers: AtomicUsize,
+}
+
+impl CaptureHub {
+    /// 一个会话放手；最后一个会话放手才真正停采集。
+    ///
+    /// 采集线程自己会在这之后退出，这里只放下它的句柄（detach）—— 不在会话停止的路径上
+    /// 阻塞等采集线程收尾：它可能正卡在一次 200 ms 的读取里，而会话该走就走。
+    fn release(&self) {
+        if self.subscribers.fetch_sub(1, Ordering::AcqRel) != 1 {
+            return;
+        }
+        self.stop.store(true, Ordering::Relaxed);
+        if let Ok(mut guard) = self.join.lock() {
+            let _ = guard.take();
+        }
+    }
+
+    /// 采集线程是否已经停了（最后一个会话放手之后为 true，新的会话要重建枢纽）。
+    fn is_stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+}
+
+/// 共享采集帧：seq / sample_index 由枢纽**统一分配**，这就是「同一根时间轴」。
+#[derive(Clone)]
+struct HubFrame {
+    seq: u32,
+    sample_index: u32,
+    pcm: Arc<Vec<f32>>,
+    sealed_at: Instant,
+}
+
+/// 帧编号分配器（枢纽里唯一被所有会话共享的状态；单独成类型是为了能单测）。
+#[derive(Debug, Clone, Copy, Default)]
+struct HubClock {
+    seq: u32,
+    sample_index: u32,
+}
+
+impl HubClock {
+    /// 取下一帧的编号并推进；序号回绕按 u32 语义（接收侧本来就按回绕判丢包）。
+    fn next(&mut self, frame_samples: u32) -> (u32, u32) {
+        let current = (self.seq, self.sample_index);
+        self.seq = self.seq.wrapping_add(1);
+        self.sample_index = self.sample_index.wrapping_add(frame_samples);
+        current
+    }
+}
+
+/// 共享采集帧在广播里的排队上限（帧数）。
+const HUB_QUEUE_FRAMES: usize = 8;
 
 /// 采集线程句柄。
 struct CaptureHandle {
@@ -1996,6 +2230,8 @@ struct CaptureHandle {
     /// 用 `AtomicI32` 而不是 channel：采集线程是实时线程，读一个原子量不会阻塞也不会分配；
     /// 丢一拍读到的旧值最多让新码率晚 20 ms 生效，没有别的代价。
     target_bitrate_bps: Arc<AtomicI32>,
+    /// M3 多会话：本会话挂在哪个共享采集枢纽上（停止时用来放手）。
+    hub: Option<Arc<CaptureHub>>,
 }
 
 /// 采集线程产出的一个已编码帧。
@@ -2098,6 +2334,10 @@ async fn stop_capture(handle: &mut Option<CaptureHandle>) {
     if let Some(handle) = handle.take() {
         handle.stop.store(true, Ordering::Relaxed);
         join_audio_thread(handle.join).await;
+        // 放手共享采集：最后一个会话放手时采集线程才会停（M3 多会话）。
+        if let Some(hub) = handle.hub.as_ref() {
+            hub.release();
+        }
     }
 }
 
@@ -2125,47 +2365,43 @@ async fn next_encoded(handle: &mut Option<CaptureHandle>) -> Option<EncodedFrame
     }
 }
 
-/// 采集线程：**在本线程内**创建 `CaptureSource`（`!Send`，谁用谁建）。
-fn spawn_capture_thread(
-    factory: &CaptureFactory,
-    codec: CodecConfig,
-    telemetry: Arc<Mutex<TelemetryAggregator>>,
+/// 采集枢纽线程：**在本线程内**创建 `CaptureSource`（`!Send`，谁用谁建）。
+///
+/// 它只干一件事：把采集到的 PCM 切成固定帧长、编号、广播出去。编码留给各会话自己 ——
+/// 于是「同一串帧、同一套编号」被全组共享，而每会话仍可各用自己的码率。
+fn start_capture_hub(
+    factory: CaptureFactory,
     tap: Option<Arc<MeasurementTap>>,
-    stop: Arc<AtomicBool>,
-    target_bitrate_bps: Arc<AtomicI32>,
-) -> Result<CaptureHandle, AudioLinkError> {
+    frame_ms: u32,
+) -> Result<CaptureHub, AudioLinkError> {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), AudioLinkError>>();
-    let (frame_tx, frame_rx) = mpsc::channel::<EncodedFrame>(ENCODE_QUEUE_FRAMES);
+    let (frames, _rx) = broadcast::channel::<HubFrame>(HUB_QUEUE_FRAMES);
+    let frames_tx = frames.clone();
+    let stop = new_stop_flag();
     let thread_stop = Arc::clone(&stop);
-    let thread_bitrate = Arc::clone(&target_bitrate_bps);
-    // 先把工厂的 `Arc` 克隆出来再进线程：闭包里借用 `&Arc` 会让引用逃逸出函数体，
-    // 而线程闭包要求 `'static`。
-    let factory = Arc::clone(factory);
 
     let join = std::thread::Builder::new()
-        .name("audiolink-capture".to_string())
+        .name("audiolink-capture-hub".to_string())
         .spawn(move || {
-            capture_main(
+            hub_main(
                 factory.as_ref(),
-                codec,
-                telemetry,
                 tap,
+                frame_ms,
                 thread_stop,
-                Arc::clone(&thread_bitrate),
-                frame_tx,
+                frames_tx,
                 ready_tx,
             );
         })
-        .map_err(|_| AudioLinkError::bad_request("failed to spawn capture thread"))?;
+        .map_err(|_| AudioLinkError::bad_request("failed to spawn capture hub thread"))?;
 
     // 等采集源建好并过了「零重采样」断言再返回 —— 否则调用方会以为推流已经开始，
     // 而失败只留在一条日志里（旧版「异常即永久静音」的复发路径）。
     match ready_rx.recv_timeout(Duration::from_secs(5)) {
-        Ok(Ok(())) => Ok(CaptureHandle {
-            frames: frame_rx,
+        Ok(Ok(())) => Ok(CaptureHub {
+            frames,
             stop,
-            join: Some(join),
-            target_bitrate_bps,
+            join: Mutex::new(Some(join)),
+            subscribers: AtomicUsize::new(0),
         }),
         Ok(Err(error)) => Err(error),
         Err(_) => Err(AudioLinkError::bad_request(
@@ -2175,14 +2411,12 @@ fn spawn_capture_thread(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn capture_main(
+fn hub_main(
     factory: &(dyn Fn() -> Result<Box<dyn CaptureSource>, AudioError> + Send + Sync),
-    codec: CodecConfig,
-    telemetry: Arc<Mutex<TelemetryAggregator>>,
     tap: Option<Arc<MeasurementTap>>,
+    frame_ms: u32,
     stop: Arc<AtomicBool>,
-    target_bitrate_bps: Arc<AtomicI32>,
-    frame_tx: mpsc::Sender<EncodedFrame>,
+    frames: broadcast::Sender<HubFrame>,
     ready_tx: std::sync::mpsc::Sender<Result<(), AudioLinkError>>,
 ) {
     let mut capture = match factory() {
@@ -2201,15 +2435,8 @@ fn capture_main(
         return;
     }
 
-    let mut chunker = match FrameChunker::new(codec.frame_ms, ENCODE_QUEUE_FRAMES * 2) {
+    let mut chunker = match FrameChunker::new(frame_ms, HUB_QUEUE_FRAMES * 2) {
         Ok(chunker) => chunker,
-        Err(error) => {
-            let _ = ready_tx.send(Err(audio_error(&error)));
-            return;
-        }
-    };
-    let mut encoder = match OpusEncoder::new(codec) {
-        Ok(encoder) => encoder,
         Err(error) => {
             let _ = ready_tx.send(Err(audio_error(&error)));
             return;
@@ -2218,15 +2445,11 @@ fn capture_main(
 
     let _ = ready_tx.send(Ok(()));
 
-    let frame_samples = u32::try_from(codec.frame_samples()).unwrap_or(960);
-    let mut samples: Vec<f32> = Vec::with_capacity(codec.interleaved_frame() * 2);
-    // 编码输出缓冲：取协议的最大载荷（§3），这样「编码器写不下」这件事永远不会先于
-    // 「超过数据报预算」发生 —— 前者是本地缓冲不够（实现 bug），后者才是要报给用户的配置问题。
-    let mut opus_buf = vec![0u8; audiolink_types::DATAGRAM_MAX_PAYLOAD];
-    let mut seq = 0u32;
-    let mut sample_index = 0u32;
-    // §8 自适应码率：只在这里读，读到变化就应用到编码器（下一帧生效，不重建编码器）。
-    let mut applied_bitrate_bps = codec.bitrate_bps;
+    // 编号由枢纽统一分配：这是「全组同一根时间轴」的唯一来源。
+    let mut clock = HubClock::default();
+    let frame_samples = frame_ms.saturating_mul(48_000) / 1000;
+    let mut samples: Vec<f32> =
+        Vec::with_capacity(usize::try_from(frame_samples.saturating_mul(8)).unwrap_or(7_680));
 
     while !stop.load(Ordering::Relaxed) {
         match capture.read(&mut samples, Duration::from_millis(200)) {
@@ -2234,58 +2457,30 @@ fn capture_main(
                 chunker.push(&samples);
             }
             Ok(None) => {
-                // 空闲端点零数据不是错误（坑清单 #12）：计数即可，绝不报错断流。
-                if let Ok(mut telemetry) = telemetry.lock() {
-                    telemetry.set_buffer_level_us(0);
-                }
+                // 空闲端点零数据不是错误（坑清单 #12）：什么都不做，绝不报错断流。
+                // 采集侧不再直接写会话遥测 —— 枢纽是引擎级的，没有「属于哪个会话」这回事。
             }
-            Err(error) => {
-                // 采集源失效：计数并结束线程。引擎侧由会话状态机迁移到 Failed（架构 §4 铁律 2）。
-                if let Ok(mut telemetry) = telemetry.lock() {
-                    telemetry.record_late_drop();
-                }
-                let _ = error;
+            Err(_) => {
+                // 采集源失效：结束枢纽线程。会话状态机会各自迁移到 Failed（架构 §4 铁律 2）。
                 break;
             }
         }
 
         while let Some(frame) = chunker.next_frame() {
-            let requested_bps = target_bitrate_bps.load(Ordering::Relaxed);
-            if requested_bps != applied_bitrate_bps {
-                match encoder.set_bitrate(requested_bps) {
-                    Ok(()) => applied_bitrate_bps = requested_bps,
-                    // 非法取值只可能来自实现缺陷：拒绝这次变更并保持原码率，绝不中断采集。
-                    Err(_) => applied_bitrate_bps = encoder.config().bitrate_bps,
-                }
-            }
             let sealed_at = Instant::now();
-            let Ok(written) = encoder.encode_into(frame, &mut opus_buf) else {
-                break;
-            };
-            if written == 0 {
-                continue; // DTX 静默帧：不占序号
+            let (seq, sample_index) = clock.next(frame_samples);
+            // 探针记在枢纽这一层：一帧只封口一次，多会话不会各记一遍。
+            if let Some(tap) = tap.as_ref() {
+                tap.record_sealed(seq, sealed_at);
             }
-
-            let packet = EncodedFrame {
+            let hub_frame = HubFrame {
                 seq,
                 sample_index,
-                payload: opus_buf[..written].to_vec(),
+                pcm: Arc::new(frame.to_vec()),
                 sealed_at,
             };
-
-            if tap.is_none() {
-                // 没装探针时不需要封口时刻，但序号仍要推进（对端按 seq 判丢包）。
-            }
-
-            // 队列满 = 编码比网络快：丢最旧（与「不阻塞采集」同一条纪律）。
-            if frame_tx.try_send(packet).is_err()
-                && let Ok(mut telemetry) = telemetry.lock()
-            {
-                telemetry.record_late_drop();
-            }
-
-            seq = seq.wrapping_add(1);
-            sample_index = sample_index.wrapping_add(frame_samples);
+            // 没有订阅者时发送会失败（旧的帧被丢掉）—— 那是「会话都停了、采集还没停」的正常瞬态。
+            let _ = frames.send(hub_frame);
         }
     }
 
