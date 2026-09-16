@@ -147,6 +147,11 @@ jobs:
         working-directory: desktop
       - name: Cargo check (shell)
         run: cargo check -p audiolink-desktop
+      # M5 合规：依赖许可审计（Rust 全量 + 桌面前端）。
+      # 为什么放在这个 job：它同时有 cargo 与 pnpm（两边都能采到），不必再加一个 job。
+      # 护栏的意义是「新引入一个不能分发的依赖」在 CI 里就红，而不是等发布前才发现。
+      - name: License audit (Rust + frontend)
+        run: pwsh tools/license-audit.ps1
 
   # ---------- 版本一致性：单一来源校验（旧版靠人工同步三处，必错）----------
   version-consistency:

@@ -73,3 +73,11 @@ name = "netem-sim"
 path = "src/bin/netem_sim.rs"
 # 该 bin 内没有 #[test]：关掉 test harness，CI 不在它身上再链一个测试二进制
 test = false
+
+# M5 合规：依赖许可审计（读 cargo metadata / pnpm licenses 的 JSON，逻辑与单测在 license.rs）
+[[bin]]
+name = "license-audit"
+path = "src/bin/license_audit.rs"
+# 该 bin 内没有 #[test]：关掉 test harness，CI 不在它身上再链一个测试二进制
+test = false
+
