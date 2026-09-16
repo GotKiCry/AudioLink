@@ -172,7 +172,7 @@ flowchart LR
 |---|---|
 | 安装 | 全新 Windows 机器安装后可用（含 WebView2 检测与引导） |
 | 便携 | 绿色版解压即用，配置写用户目录 |
-| Android | 双 ABI 安装包在 API 24 与 API 34 真机均可用 |
+| Android | 分 ABI 的两个安装包（arm64-v8a / armeabi-v7a）在 API 26 与 API 34 真机均可用（minSdk = 26，见 `android/app/build.gradle.kts`） |
 | 更新 | 桌面端检测到新版本并完成签名校验更新 |
 | 合规 | 仓库无密钥、无第三方私有 API 调用、NOTICE 完整 |
 

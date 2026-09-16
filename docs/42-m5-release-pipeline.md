@@ -14,7 +14,7 @@
 | 桌面安装包配置 | ✅ 配置就绪 | `bundle.targets = ["nsis"]`，`nsis.languages = [SimpChinese, English]`，`webviewInstallMode = downloadBootstrapper` |
 | 打包工具链 | ✅ 本地就绪 | `@tauri-apps/cli` 2.11 已装；NSIS 与 WixTools 缓存已在 `%LOCALAPPDATA%/tauri` |
 | 桌面内核检查 | ✅ | CI `desktop` job：`pnpm build`（tsc 严格 + vite）+ `cargo check -p audiolink-desktop` |
-| Android debug 包 | ✅ | CI `android` job：`cargo ndk`（arm64-v8a + armeabi-v7a）+ `assembleDebug` + artifact 上传 |
+| Android debug 包 | ✅ | CI `android` job：`cargo ndk`（arm64-v8a + armeabi-v7a）+ `assembleDebug` + artifact 上传。2026-09-17 起分 ABI 产出两个：`app-arm64-v8a-debug.apk` / `app-armeabi-v7a-debug.apk`（见 §9） |
 | Android release 签名 | ✅ 曾打通 | 签名 keystore + R8 规则（见 `docs/12` §8.5） |
 | 合规材料 | ✅ | 许可审计 + 第三方声明 + 随包投放（`docs/41`） |
 
@@ -170,7 +170,7 @@ _up_/_up_/docs/compliance/THIRD-PARTY-NOTICES.md
 | `push v*.*.*` tag | 构建 → 创建 **草稿** Release（`draft: true`） |
 | 有 `TAURI_SIGNING_PRIVATE_KEY` | 完整路径：签名 + 生成 `latest.json` |
 | 没有签名密钥 | 降级构建（`--config` 临时关掉更新产物）+ `::warning::` 明确说「这份产物不能用于自动更新」 |
-| 有 Android keystore secrets | `assembleRelease`（双 ABI） |
+| 有 Android keystore secrets | `assembleRelease`（分 ABI 两个包，见 §9） |
 | 没有 | 降级 `assembleDebug` + `::warning::`「不是发布物」 |
 | 产物收集为空 | **抛错**（不再是一张空表） |
 
@@ -282,6 +282,62 @@ pwsh tools/gradlew.ps1 -JavaHome <JDK17> :app:assembleRelease
 
 - **真发布**（把草稿点成正式）：一步人工动作，且要版本号真的对得上（`tools/check-version.ps1` 会保证三处一致）；
 - 配好 secrets 之后，`latest.json` 才会随 Release 一起出去 —— 那才是自动更新真正可用的时刻。
+
+---
+
+## 9. 分 ABI 打包：把「双 ABI」变成「两个包」（2026-09-17）
+
+此前 `assembleRelease` 产出**一个** `app-release.apk`（7.84 MB），里面同时装着 arm64-v8a 与 armeabi-v7a
+两份 `libaudiolink_ffi.so` 加两份 `libjnidispatch.so` —— 也就是每台设备都下载一份永远用不到的本地库。
+路线图 M5 交付物 3 写的是「APK×2 ABI」，本轮把它落成 `splits.abi`：
+
+```kotlin
+splits {
+    abi {
+        isEnable = true
+        reset()
+        include("arm64-v8a", "armeabi-v7a") // FR-40 的契约，也是本文件的唯一声明处
+        isUniversalApk = false
+    }
+}
+```
+
+| 产物 | 体积 | 内含 `lib/` | 签名 |
+|---|---|---|---|
+| `app-arm64-v8a-release.apk` | **5.21 MB**（原 7.84 MB，−33.5%） | arm64-v8a × 4 | V2 Signer `CN=AudioLink Test` |
+| `app-armeabi-v7a-release.apk` | **3.84 MB**（−51.0%） | armeabi-v7a × 4 | V2 Signer `CN=AudioLink Test` |
+
+两个包的 `lib/` 用 zip 目录逐条核对过：arm64 包里只有 `lib/arm64-v8a/*`，v7a 包里只有 `lib/armeabi-v7a/*`。
+debug 变体同样分 ABI（16.54 / 15.17 MB，原 universal debug 19.17 MB）。
+
+### 9.1 踩到的真缺陷：ABI 不能两处声明
+
+第一版把 ABI 列表同时写在 `defaultConfig.ndk.abiFilters` 与 `splits.abi.include`，AGP 直接拒绝：
+
+```text
+Conflicting configuration : 'armeabi-v7a,arm64-v8a' in ndk abiFilters
+cannot be present when splits abi filters are set : armeabi-v7a,arm64-v8a
+```
+
+修法是把 `ndk { abiFilters }` 整块删掉，ABI 集合只在 `splits.abi.include` 声明**一处**。
+两处各写一份的下场是「改了一处、另一处悄悄还在」；这次 AGP 把它变成硬错误，算是走运。
+
+### 9.2 顺带补的护栏：清理不再构建的 ABI 产物
+
+`build-rust.ps1` 过去只往 `jniLibs/<abi>/` 写，从不清理。ABI 集合一变，旧 ABI 的 `.so` 就留在目录里**骗人**：
+打包时会把它挡在包外，但目录看起来仍像「这个 ABI 还在支持」。现在脚本会删掉不属于本次 `-Abi` 的目录。
+
+### 9.3 仍未验的（诚实清单）
+
+- 两个分 ABI 的包**装到真机**跑一遍（arm64 真机 / 32 位真机）—— 与 M1/M2 真机验收是同一条阻塞；
+- CI 侧的产物搬运是通用的（`find android/app/build/outputs/apk -name "*.apk"`），**不需要改**；
+  下次 tag 发布会看到两个 APK 一起进 Release 资产。
+
+### 9.4 一个必须写下来的判断：FR-40 的 ABI 集合没有被动
+
+本轮最初把「双 ABI」理解成 arm64-v8a + x86_64（真机 + 模拟器），改完才发现 `docs/01` 的 **FR-40 写的是
+arm64-v8a + armeabi-v7a**。已全部回退 —— 需求文档是契约，支持面既不该凭「现代设备都是 arm64」收窄，
+也不该凭「模拟器方便」扩张。要改这个集合，先改 FR-40 并写清理由，再动代码。
 
 
 

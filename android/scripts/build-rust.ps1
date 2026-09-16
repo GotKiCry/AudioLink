@@ -90,6 +90,18 @@ else { Write-Warning "未找到 NDK 目录，cargo-ndk 可能失败（可用 -Nd
 $targets = @($Abi -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 if ($targets.Count -eq 0) { throw "未指定任何 ABI" }
 
+# 清掉不属于本次 targets 的旧 ABI 目录。
+# 为什么必须清：`abiFilters` 会把它们挡在包外，但残留的 .so 会**骗人** ——
+# 目录里躺着 armeabi-v7a/，看起来像"这个 ABI 还在支持"，而包里其实早没有它了。
+if (Test-Path $jniLibs) {
+    Get-ChildItem $jniLibs -Directory |
+        Where-Object { $targets -notcontains $_.Name } |
+        ForEach-Object {
+            Write-Host "==> 清理不再构建的 ABI 产物：$($_.Name)" -ForegroundColor DarkYellow
+            Remove-Item $_.FullName -Recurse -Force
+        }
+}
+
 Write-Host "==> 交叉编译 Rust 内核 ($cargoProfile)：$($targets -join ', ')" -ForegroundColor Cyan
 $ndkArgs = @("ndk", "-o", $jniLibs)
 foreach ($t in $targets) { $ndkArgs += @("-t", $t) }

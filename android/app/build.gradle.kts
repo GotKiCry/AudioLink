@@ -28,12 +28,33 @@ android {
         versionCode = 1
         versionName = "0.1.0" // CI 校验：必须与 Cargo.toml workspace version 一致
 
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
-        }
+        // ABI 集合**只在一处声明**：下面的 `splits.abi.include`。
+        // 不在这里再写 `ndk { abiFilters }`，是因为 AGP 直接拒绝二者并存：
+        //   Conflicting configuration : ndk abiFilters cannot be present when splits abi filters are set
+        // 两处各写一份的下场就是「改了一处、另一处悄悄还在」，所以留单点。
 
         // 由 android/scripts/build-rust.ps1 生成的 Rust 内核（UniFFI 绑定 + .so）
         // 产物路径：app/src/main/jniLibs/<abi>/libaudiolink_core.so
+    }
+
+    /**
+     * 分 ABI 打包：`assembleRelease` 产出两个 APK，每个只带本 ABI 的本地库（路线图 M5：APK×2 ABI）。
+     *
+     * 支持的 ABI 是 FR-40 的契约（arm64-v8a + armeabi-v7a），也是**本文件的唯一声明处**：
+     * 32 位 ARM 在 minSdk 26 的存量里仍占一部分，不要凭「现代设备都是 arm64」擅自收窄。
+     *
+     * 不发 universal 单包的理由：本项目 .so 是 3.9 MB 量级，JNA 的 libjnidispatch 也按 ABI 各一份 ——
+     * 合包等于让每台设备多下载一份永远用不到的本地库。`isUniversalApk = true` 只在
+     * 「分发渠道强制单包」时才有价值，本项目没有这个约束；真要临时要单包，
+     * 把它改成 true 再 `assembleRelease` 即可。
+     */
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = false
+        }
     }
 
     buildTypes {

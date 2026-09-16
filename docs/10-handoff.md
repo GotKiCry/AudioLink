@@ -130,6 +130,19 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   用四个夹具自测：`smoke.json` → exit 0、`negative.json` → 6 条 `bitrate_out_of_range` / exit 1、缺失路径与非 JSON → exit 2；
   8 h 与 90 s 报告均已复算（旧 schema 报告仍可解析）。提交 `fc05568`。详见 `docs/22-m2-soak-runner.md` §8。
 
+- **M5 分 ABI 打包：`assembleRelease` 从「一个 7.84 MB 的合包」变成「两个按 ABI 的包」**。路线图 M5 交付物 3 写的是
+  「APK×2 ABI」，此前产出的却是 universal 单包 —— 每台设备都下载一份用不到的本地库。改为 `splits.abi`
+  （`isEnable` + `include(arm64-v8a, armeabi-v7a)` + `isUniversalApk = false`）：`app-arm64-v8a-release.apk` **5.21 MB**（−33.5%）、
+  `app-armeabi-v7a-release.apk` **3.84 MB**（−51.0%）；两个包都用 `apksigner verify --print-certs` 验过 **V2 签名**，
+  并用 zip 目录逐条核对「每个包只含自己的 ABI」；debug 变体同样分 ABI（16.54 / 15.17 MB，原 19.17 MB）。
+  **踩到一个真缺陷**：ABI 列表先被写在 `ndk.abiFilters` 与 `splits.abi.include` 两处，AGP 直接以
+  `Conflicting configuration ... cannot be present when splits abi filters are set` 拒绝 —— 现在 ABI 只在
+  `splits.abi.include` 声明一处。顺带给 `build-rust.ps1` 补护栏：清理不属于本次 `-Abi` 的旧 ABI 产物
+  （残留的 `.so` 会被挡在包外，却让人误以为那个 ABI 还在支持）。
+  **支持集合保持 FR-40 的 arm64-v8a + armeabi-v7a 不变**：我先按常识假设成 x86_64，读到 FR-40 后全部回退 ——
+  需求文档是契约，既不该凭「现代设备都是 arm64」收窄，也不该凭「模拟器方便」扩张。
+  **仍未验**：两个包装到真机跑一遍（真机阻塞项）。详见 `docs/42-m5-release-pipeline.md` §9。
+
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
 Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本数**，`receive_audio()` 又乘了声道数，
