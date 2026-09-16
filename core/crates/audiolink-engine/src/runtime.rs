@@ -3683,6 +3683,18 @@ fn playout_main(
             if frames.len() >= target {
                 depth_state = PlayoutDepthState::new(target);
                 primed = true;
+                // §7 起播对齐：把**拍点锚到全局帧网格**（`now_monotonic_us()` 的 frame_us 整数倍）。
+                //
+                // 为什么必须锚（2026-09-17 定位到的真缺陷）：拍点就是排播判定的时刻，而目标时刻
+                // 也对齐到同一网格。两端线程各自从「启动那一刻」起拍，相位互不相同 —— 一个拍点落在
+                // 目标之前、另一个落在之后，于是一头等一拍、一头立刻播，**起播整整差一帧**
+                // （回环实测反复出现 0 或 ~20 ms 两种结果，扣掉这一帧后抖动 < 1 ms）。
+                // 锚到同一网格后，两端在**同一拍**上做同一个决定。
+                let frame_us = frame_ms.max(1) * 1_000;
+                let remainder = now_monotonic_us() % frame_us;
+                next_write = Instant::now() + Duration::from_micros(frame_us - remainder);
+                // 这一拍只用来对齐相位，不写数据；下一拍起就在网格上，与对端一致。
+                continue;
             } else {
                 continue;
             }

@@ -228,12 +228,20 @@ async fn two_receivers_play_the_same_frame_within_ten_milliseconds() {
     println!(
         "[group-sync] 扣掉起播差后（偏移 {shift} 帧）：样本 {aligned_samples} · P50 {aligned_p50:.2} ms · P95 {aligned_p95:.2} ms"
     );
-    // 断言用**扣掉起播差**之后的值：这一条护栏要盯的是「排播稳不稳」（免得机器抖动让它随机变红）。
-    // 起播差本身是 M3 验收线（组内 ±10 ms）关心的量，但它现在是**已知未达标**的（≈ 一帧），
-    // 记在下面的输出与看板里，不用一条必然失败的断言来表达 —— 那样的断言只会被忽略。
+    // 断言现在直接盯 M3 的验收线（absolute，含起播差）。
+    //
+    // 曾经它只能断言扣掉起播差之后的 `aligned`：当时起播会偶发差一整帧（5 次里 2 次，19.7 ms），
+    // 一条会随机变红的断言只会被忽略。2026-09-17 定位并修掉了根因（两层：判定直接比微秒 + 播放线程
+    // 拍点相位各不同 —— 见 `EpochSchedule::frame_aligned_target_us` 与 runtime 的起播网格对齐），
+    // 修复后连跑 4 次都是 P50 0.00 ms / P95 ≤ 0.04 ms。所以护栏可以按验收线立：**这才是它该盯的东西**。
     assert!(
-        aligned_p95 <= 10.0,
-        "扣掉起播差后组内偏差 P95 = {aligned_p95:.2} ms 超过 10 ms（排播抖动）"
+        absolute_p95 <= 10.0,
+        "组内偏差 P95 = {absolute_p95:.2} ms 超过验收线 10 ms（两端播放同一帧的时刻差，含起播差）"
+    );
+    // 附带一条更严的自检：扣掉起播差后仍应当远小于一帧 —— 它若变大，说明排播本身开始抖了。
+    assert!(
+        aligned_p95 <= 5.0,
+        "扣掉起播差后仍有 {aligned_p95:.2} ms（偏移 {shift} 帧）—— 排播抖动不该这么大"
     );
 
     accept_a.abort();
