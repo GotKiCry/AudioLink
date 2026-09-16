@@ -20,7 +20,9 @@ import {
   type LocalStatus,
   type PairRequiredPayload,
   type PeerView,
+  type TelemetryRow,
   type TelemetryView,
+  telemetryRowOf,
 } from "../types";
 
 export interface AudioLinkController {
@@ -32,6 +34,12 @@ export interface AudioLinkController {
   peers: PeerView[];
   /** 最近一次遥测快照；无会话时是内核给的全零值。 */
   telemetry: TelemetryView | null;
+  /** 遥测历史（500 ms 一个采样点，最多保留 `TELEMETRY_HISTORY_LIMIT` 条）—— 曲线与导出都用它。 */
+  telemetryHistory: TelemetryRow[];
+  /** 把当前遥测历史导出成 CSV；成功时用 `notice` 报出落盘路径。 */
+  exportTelemetryLog: () => Promise<void>;
+  /** 导出进行中（按钮禁用用）。 */
+  exportingTelemetry: boolean;
   /** 待处理的配对请求；非 null 时 UI 必须弹 PIN 输入框。 */
   pairRequest: PairRequiredPayload | null;
   /** 配对提交失败的原因（来自 `submit_pin` 的 `reason`，人话整句）。 */
@@ -80,6 +88,21 @@ export interface AudioLinkController {
 /** `1002 NOT_PAIRED`：不是失败，而是"请去输配对码"。 */
 const CODE_NOT_PAIRED = 1002;
 
+/**
+ * 遥测历史的长度上限：500 ms 一个采样点 × 600 = **5 分钟**曲线。
+ *
+ * 为什么是 5 分钟：这是「看出趋势、又不用翻页」的尺度；更长的历史由导出的 CSV 承担。
+ */
+const TELEMETRY_HISTORY_LIMIT = 600;
+
+/** 追加一个采样点并截断到上限（纯函数，便于在无浏览器环境里推演）。 */
+function appendTelemetryRow(history: TelemetryRow[], view: TelemetryView): TelemetryRow[] {
+  const next = [...history, telemetryRowOf(view, Date.now())];
+  return next.length > TELEMETRY_HISTORY_LIMIT
+    ? next.slice(next.length - TELEMETRY_HISTORY_LIMIT)
+    : next;
+}
+
 /** 把单个对端并入列表（事件到达前先本地乐观更新，避免"点了没反应"）。 */
 function upsert(peers: PeerView[], peer: PeerView): PeerView[] {
   const index = peers.findIndex((item) => item.idShort === peer.idShort);
@@ -96,6 +119,8 @@ export function useAudioLink(): AudioLinkController {
   const [local, setLocal] = useState<LocalStatus | null>(null);
   const [peers, setPeers] = useState<PeerView[]>([]);
   const [telemetry, setTelemetry] = useState<TelemetryView | null>(null);
+  const [telemetryHistory, setTelemetryHistory] = useState<TelemetryRow[]>([]);
+  const [exportingTelemetry, setExportingTelemetry] = useState(false);
   const [pairRequest, setPairRequest] = useState<PairRequiredPayload | null>(null);
   const [pairReason, setPairReason] = useState("");
   const [error, setError] = useState<CommandError | null>(null);
@@ -172,7 +197,10 @@ export function useAudioLink(): AudioLinkController {
           }),
         );
       },
-      onTelemetry: setTelemetry,
+      onTelemetry: (view) => {
+        setTelemetry(view);
+        setTelemetryHistory((current) => appendTelemetryRow(current, view));
+      },
       onPairRequired: (payload) => {
         setPairRequest(payload);
         setPairReason("");
@@ -292,11 +320,31 @@ export function useAudioLink(): AudioLinkController {
     [peers],
   );
 
+  /** 导出遥测历史：成功用 notice 报路径，失败用 error 报人话原因。 */
+  const exportTelemetryLog = useCallback(async (): Promise<void> => {
+    if (telemetryHistory.length === 0) {
+      setNotice("还没有遥测历史可导出：先连接并开始推流。");
+      return;
+    }
+    setExportingTelemetry(true);
+    try {
+      const path = await api.exportTelemetry(telemetryHistory);
+      setNotice(`已导出 ${telemetryHistory.length} 个采样点：${path}`);
+    } catch (raw) {
+      setError(toCommandError(raw));
+    } finally {
+      setExportingTelemetry(false);
+    }
+  }, [telemetryHistory]);
+
   return {
     version,
     local,
     peers,
     telemetry,
+    telemetryHistory,
+    exportTelemetryLog,
+    exportingTelemetry,
     pairRequest,
     pairReason,
     error,

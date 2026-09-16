@@ -29,7 +29,8 @@ use tauri::{Manager, State};
 use engine_bridge::EngineBridge;
 use error::CommandError;
 use view::{
-    CaptureDeviceView, LocalStatus, PeerView, StartSendResult, SubmitPinResult, TelemetryView,
+    CaptureDeviceView, LocalStatus, PeerView, StartSendResult, SubmitPinResult, TelemetryRow,
+    TelemetryView,
 };
 
 #[tauri::command]
@@ -112,6 +113,17 @@ async fn telemetry(bridge: State<'_, EngineBridge>) -> Result<TelemetryView, Com
     bridge.telemetry().await
 }
 
+/// 导出遥测历史为 CSV（M2 的「日志导出」；契约 §6 把它列在「不做」里，本轮解除）。
+///
+/// 入参是前端累积的采样点（形状 = `TelemetryView` + `atUnixMs`），返回落盘路径。
+#[tauri::command(rename_all = "snake_case")]
+fn export_telemetry(
+    bridge: State<'_, EngineBridge>,
+    rows: Vec<TelemetryRow>,
+) -> Result<String, CommandError> {
+    bridge.export_telemetry(&rows)
+}
+
 pub fn run() {
     tauri::Builder::default()
         // 单实例：第二次启动时唤出已有窗口（旧版靠 Mutex + 命名管道手写）
@@ -137,7 +149,8 @@ pub fn run() {
             start_send,
             stop_send,
             submit_pin,
-            telemetry
+            telemetry,
+            export_telemetry
         ])
         .setup(|app| {
             // 桥接层必须在窗口加载**之前**就位：前端一挂载就会 invoke，拿不到 State 会直接报错。

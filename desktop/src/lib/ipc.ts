@@ -16,6 +16,7 @@ import type {
   PeerView,
   StartSendResult,
   SubmitPinResult,
+  TelemetryRow,
   TelemetryView,
 } from "../types";
 
@@ -51,6 +52,9 @@ export const api = {
     invoke<SubmitPinResult>("submit_pin", { id_short: idShort, pin }),
   /** `telemetry` —— 遥测快照（首屏水合用；之后靠 `audiolink://telemetry` 事件）。 */
   telemetry: (): Promise<TelemetryView> => invoke<TelemetryView>("telemetry"),
+  /** `export_telemetry` —— 把前端累积的采样点写成 CSV，返回落盘路径（M2 的日志导出）。 */
+  exportTelemetry: (rows: TelemetryRow[]): Promise<string> =>
+    invoke<string>("export_telemetry", { rows }),
 };
 
 /**

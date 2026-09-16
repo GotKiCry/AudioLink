@@ -38,7 +38,7 @@ use crate::capture::{self, SharedCapture};
 use crate::error::CommandError;
 use crate::view::{
     CaptureDeviceView, LocalStatus, PairRequiredPayload, PeerState, PeerView, StartSendResult,
-    SubmitPinResult, TelemetryView,
+    SubmitPinResult, TelemetryRow, TelemetryView, render_telemetry_csv,
 };
 
 // ---------------------------------------------------------------------------
@@ -382,6 +382,21 @@ impl EngineBridge {
         let engine = self.engine().await?;
         let (_, view) = refresh(&engine, &self.cache);
         Ok(view)
+    }
+
+    /// 把前端累积的遥测历史导出成 CSV，返回落盘路径。
+    ///
+    /// **不弹文件对话框**（那要引入 dialog 插件，且无头/CI 下没法用）：目录固定在用户目录下，
+    /// 路径由本命令返回、UI 原样显示。导出本身不依赖引擎状态 —— 会话已经结束也允许导历史。
+    pub fn export_telemetry(&self, rows: &[TelemetryRow]) -> Result<String, CommandError> {
+        let dir = telemetry_export_dir();
+        let path = write_telemetry_csv(&dir, rows).map_err(|error| {
+            CommandError::bad_request(
+                format!("无法写入导出文件：{error}"),
+                format!("dir={}", dir.display()),
+            )
+        })?;
+        Ok(path.display().to_string())
     }
 
     /// 等到引擎就绪；未就绪时给出**可读**的原因（启动失败的原码与上下文原样带上，便于排查）。
@@ -966,12 +981,70 @@ fn human_message(code: ErrorCode) -> &'static str {
     }
 }
 
+/// 把遥测 CSV 写进 `dir`（文件名带毫秒时间戳），返回落盘路径。
+///
+/// 与命令层分离的理由：命令要 `AppHandle`（没法单测），而「文件真的写出来了、内容对不对」
+/// 恰恰是导出功能最该被测到的一半。
+fn write_telemetry_csv(
+    dir: &std::path::Path,
+    rows: &[TelemetryRow],
+) -> std::io::Result<std::path::PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(format!("telemetry-{}.csv", unix_millis()));
+    std::fs::write(&path, render_telemetry_csv(rows))?;
+    Ok(path)
+}
+
+/// 遥测导出的目录：`<用户目录>\AudioLink`（取不到用户目录时退回当前目录下的 `audiolink-export`）。
+fn telemetry_export_dir() -> std::path::PathBuf {
+    let base = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    base.join("AudioLink")
+}
+
+/// 当前 Unix 毫秒（导出文件名用）。
+fn unix_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 // 测试里断言失败就该炸：显式放行 panic 系列 lint。
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::view::TELEMETRY_CSV_HEADER;
     use audiolink_types::StreamStats;
+
+    /// 导出：文件真的落盘、首行是表头、一行一个采样点。
+    #[test]
+    fn export_writes_a_csv_file_with_one_row_per_sample() {
+        let dir =
+            std::env::temp_dir().join(format!("audiolink-export-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let rows = [TelemetryRow::from_view(
+            1_700_000_000_000,
+            &TelemetryView::zeros(1),
+        )];
+        let path = write_telemetry_csv(&dir, &rows).expect("写导出文件");
+        let text = std::fs::read_to_string(&path).expect("读回导出文件");
+
+        assert!(text.starts_with(TELEMETRY_CSV_HEADER), "首行必须是表头");
+        assert_eq!(text.lines().count(), 2, "表头 + 1 行采样点");
+        assert!(
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("telemetry-")),
+            "文件名要带时间戳：{}",
+            path.display()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn parse_endpoint_accepts_bare_ip_and_full_addr() {

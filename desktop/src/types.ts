@@ -133,3 +133,30 @@ export function usToMs(us: number): string {
 export function bpsToKbps(bps: number): string {
   return Math.round(bps / 1000).toString();
 }
+
+/**
+ * 导出用的遥测样本（与 Rust 侧 `view::TelemetryRow` 一一对应）。
+ *
+ * 为什么不让后端导出 `TelemetryView`：CSV 是**跨版本持久化**的东西，
+ * 列名一旦写进用户的文件就不该再跟着界面字段漂 —— 所以这里多一个 `atUnixMs`，
+ * 并且 `telemetryRowOf` 的字段与 `TelemetryView` 严格同形（漏一个 TS 就报错）。
+ */
+export interface TelemetryRow {
+  /** 采样时刻（Unix 毫秒）。 */
+  atUnixMs: number;
+  peers: number;
+  rttUs: number;
+  jitterUs: number;
+  lossPct: number;
+  bitrateBps: number;
+  bufferLevelUs: number;
+  underruns: number;
+  e2eLatencyUs: number;
+  e2eP50Us: number;
+  e2eP95Us: number;
+}
+
+/** 按界面快照造一行导出样本。 */
+export function telemetryRowOf(view: TelemetryView, atUnixMs: number): TelemetryRow {
+  return { atUnixMs, ...view };
+}

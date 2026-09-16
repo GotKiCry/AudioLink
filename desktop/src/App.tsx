@@ -71,7 +71,13 @@ export default function App() {
           ))}
         </div>
 
-        <TelemetryPanel telemetry={al.telemetry} open={telemetryOpen} />
+        <TelemetryPanel
+          telemetry={al.telemetry}
+          history={al.telemetryHistory}
+          open={telemetryOpen}
+          exporting={al.exportingTelemetry}
+          onExport={() => void al.exportTelemetryLog()}
+        />
 
         {al.peers.length === 0 ? (
           <p className="text-xs text-slate-400">
