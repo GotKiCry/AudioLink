@@ -249,6 +249,18 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   这个数字**不能**用来宣称 M1 验收通过，它只回答「延迟有没有突然变坏」。验证：engine 167 项全过（含本项）、fmt / clippy 零警告。
   详见 `docs/47-m1-latency-guard.md`。
 
+- **M5 更新清单与产物同源校验：真的验了一次签，并当场抓到「清单过期」**。自动更新链路是「读 `latest.json` → 下载 →
+  **验签** → 安装」，前两步肉眼可查、第三步只有算一遍才知道。新增 `tools/check-update.mjs`：读清单与 `tauri.conf.json`
+  的公钥，对本地安装包做**真正的 Ed25519 验签**（minisign prehashed 模式，签名对象是 `BLAKE2b-512(file)`）。
+  **为什么用 Node 而不是 PowerShell**：Ed25519 与 BLAKE2b-512 都是 Node 内置，而 PowerShell 的 .NET 没有 BLAKE2b、
+  也不保证有 Ed25519 —— 自己实现一遍密码学不是这里该做的事。**第一次运行就报错**：清单里的签名（420 字符 base64）
+  与 `.sig` 文件（560 字符）不是同一份，时间戳显示清单比产物**旧了 9 小时**（清单是当初生成的，之后重新构建过安装包
+  而没人重新生成清单）—— 客户端拿这份清单更新会**验签必然失败**，用户看到的是一句「签名不匹配」，真正原因藏在别处。
+  已用 `tools/tauri-latest-json.ps1` 重新生成并**验签通过**。验证（含破坏性）：同源 → ✓ 通过 [prehashed (BLAKE2b-512)]；
+  **改一个字节 → ✗ 失败**（证明真在验密码学）；用过期副本 → ✗ 失败（能区分串不串）。已接进 `release.yml`：
+  生成清单后跑一次，**清单过期会让发布流程当场失败**。**仍未做**：真正的「装上去」（两版本 + Release 托管 + 干净机器）。
+  详见 `docs/42-m5-release-pipeline.md` §11。
+
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
 Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本数**，`receive_audio()` 又乘了声道数，

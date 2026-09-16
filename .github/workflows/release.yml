@@ -80,6 +80,13 @@ jobs:
         shell: pwsh
         run: pwsh tools/tauri-portable.ps1
 
+      # 清单与产物**同源**校验：签名对不对只有算一遍才知道。
+      # 有清单时才跑 —— 降级构建（无签名）不生成 latest.json，不该因此误伤。
+      - name: Verify update manifest against the artifacts
+        if: ${{ hashFiles('target/evidence/release/latest.json') != '' }}
+        shell: pwsh
+        run: node tools/check-update.mjs --dir target/x86_64-pc-windows-msvc/release/bundle/nsis
+
       - name: Collect desktop artifacts
         shell: pwsh
         run: |
