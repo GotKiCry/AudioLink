@@ -2124,6 +2124,8 @@ fn playout_main(
     let silence = vec![0f32; pcm_len];
     let mut primed = false;
     let mut next_write = Instant::now();
+    let mut expected_seq: Option<u32> = None;
+    let mut pending: Option<PlaybackFrame> = None;
 
     while !stop.load(Ordering::Relaxed) {
         // 睡到下一个提交时刻。节奏必须由**本地时钟**决定，数据到没到只影响
@@ -2133,11 +2135,25 @@ fn playout_main(
         if next_write > now {
             std::thread::sleep(next_write - now);
         }
-        next_write += period;
-        // 落后太多（进程被抢占 / 系统挂起）就重新对齐，避免连续追赶式提交。
-        if next_write < Instant::now() {
-            next_write = Instant::now() + period;
+
+        // 后端阻塞或系统抢占超过一帧时，那些播放拍已经过去，不能通过随后慢慢提交旧帧来
+        // “补回来”：那会把一次短暂停顿变成余下整段音频的固定延迟。推进序号游标，随后由
+        // take_due_frame 丢掉这些过期帧；保留当前所在的时钟相位，避免追赶式突发写入。
+        let current = Instant::now();
+        if primed && current > next_write {
+            let missed = current.duration_since(next_write).as_nanos() / period.as_nanos();
+            if missed > 0 {
+                let missed = u32::try_from(missed).unwrap_or(u32::MAX);
+                if let Some(seq) = expected_seq.as_mut() {
+                    *seq = seq.wrapping_add(missed);
+                }
+                if let Ok(mut telemetry) = telemetry.lock() {
+                    telemetry.record_underruns(missed);
+                }
+                next_write += period.saturating_mul(missed);
+            }
         }
+        next_write += period;
 
         // 起步攒帧：不足 `PRIME_FRAMES` 就继续等。这一拍**不补静音也不算欠载** ——
         // 还没开始播，谈不上「欠」；把攒帧期算成欠载会让欠载率失去意义。
@@ -2149,8 +2165,8 @@ fn playout_main(
             }
         }
 
-        match frames.try_recv() {
-            Ok(frame) => {
+        match take_due_frame(&frames, &mut pending, &mut expected_seq, &telemetry) {
+            DueFrame::Ready(frame) => {
                 if sink.write(&frame.samples).is_err() {
                     break;
                 }
@@ -2158,7 +2174,7 @@ fn playout_main(
                     tap.record_played(frame.seq, Instant::now());
                 }
             }
-            Err(crossbeam_channel::TryRecvError::Empty) => {
+            DueFrame::Missing => {
                 // 欠载（§7 第 4 条）：补齐静音并计数。**不**静默忽略 ——
                 // 「能听出卡顿」与「遥测显示欠载」必须是同一件事。
                 if let Ok(mut telemetry) = telemetry.lock() {
@@ -2168,11 +2184,66 @@ fn playout_main(
                     break;
                 }
             }
-            Err(crossbeam_channel::TryRecvError::Disconnected) => break,
+            DueFrame::Disconnected => break,
         }
     }
 
     sink.stop();
+}
+
+enum DueFrame {
+    Ready(PlaybackFrame),
+    Missing,
+    Disconnected,
+}
+
+/// 取当前播放拍对应的帧；迟到帧直接丢弃，未来帧留到它自己的播放拍。
+///
+/// `expected_seq` 是播放时钟游标，而不是“最后收到的序号”。欠载写入静音后它照样推进，
+/// 因此刚错过死线才到达的包不会在下一拍被播放并永久增加延迟。半区间比较保留 u32 回绕语义。
+fn take_due_frame(
+    frames: &Receiver<PlaybackFrame>,
+    pending: &mut Option<PlaybackFrame>,
+    expected_seq: &mut Option<u32>,
+    telemetry: &Arc<Mutex<TelemetryAggregator>>,
+) -> DueFrame {
+    loop {
+        let frame = if let Some(frame) = pending.take() {
+            frame
+        } else {
+            match frames.try_recv() {
+                Ok(frame) => frame,
+                Err(crossbeam_channel::TryRecvError::Empty) => {
+                    if let Some(seq) = expected_seq.as_mut() {
+                        *seq = seq.wrapping_add(1);
+                    }
+                    return DueFrame::Missing;
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    return DueFrame::Disconnected;
+                }
+            }
+        };
+
+        let Some(expected) = *expected_seq else {
+            *expected_seq = Some(frame.seq.wrapping_add(1));
+            return DueFrame::Ready(frame);
+        };
+        let distance = frame.seq.wrapping_sub(expected);
+        if distance == 0 {
+            *expected_seq = Some(expected.wrapping_add(1));
+            return DueFrame::Ready(frame);
+        }
+        if distance < (1 << 31) {
+            *pending = Some(frame);
+            *expected_seq = Some(expected.wrapping_add(1));
+            return DueFrame::Missing;
+        }
+
+        if let Ok(mut telemetry) = telemetry.lock() {
+            telemetry.record_late_drop();
+        }
+    }
 }
 
 fn codec_pref(config: &CodecConfig) -> CodecPref {
@@ -2199,3 +2270,5 @@ fn new_stop_flag() -> Arc<AtomicBool> {
 
 #[cfg(test)]
 mod pairing_tests;
+#[cfg(test)]
+mod playout_tests;

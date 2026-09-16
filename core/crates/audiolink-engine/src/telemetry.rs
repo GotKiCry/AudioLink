@@ -134,12 +134,25 @@ impl TelemetryAggregator {
 
     /// 记录一次播放欠载（`2001`）。
     pub fn record_underrun(&mut self) {
-        self.underruns = self.underruns.saturating_add(1);
+        self.record_underruns(1);
+    }
+
+    /// 一次记录多个已经错过的播放拍。
+    ///
+    /// 系统挂起或音频后端短暂停顿时，播放线程可能跨过多帧；逐帧循环计数会让恢复路径
+    /// 与停顿时长成正比。聚合写入既保留真实账本，也让恢复成本保持常数级。
+    pub fn record_underruns(&mut self, count: u32) {
+        self.underruns = self.underruns.saturating_add(count);
     }
 
     /// 记录一次迟到丢弃（§7 第 3 条：超过目标时刻 20 ms 的块直接跳过）。
     pub fn record_late_drop(&mut self) {
-        self.late_drops = self.late_drops.saturating_add(1);
+        self.record_late_drops(1);
+    }
+
+    /// 一次记录多个过期帧丢弃。
+    pub fn record_late_drops(&mut self, count: u32) {
+        self.late_drops = self.late_drops.saturating_add(count);
     }
 
     /// 记录一次丢包隐藏（`plc_count`）。
