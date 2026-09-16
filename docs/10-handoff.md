@@ -314,6 +314,14 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   （恢复必须由晚于插回时刻的非静音样本证明 + 拔网期间 400 ms 后必须真的安静 + 恢复后 2 s 持续出声）。
   质量门：fmt / clippy -D warnings / 全套 engine 27 项测试全绿。提交 `fa2c466`（代码）与 `61601ea`（文档 + 看板），
   CI run `35151080904` 五个 job（core-light / core-heavy / android / desktop / version-consistency）全绿。
+- **新发现的真实缺陷（未修，已记账）**：CI run `35151576499` 的 `core-heavy` 红在 `group_sync::two_receivers_play_the_same_frame_within_ten_milliseconds` ——
+  绝对偏差 P50 **19.98 ms** / P95 **20.38 ms**（正好一帧），而扣掉起播差只有 0.01 / 0.02 ms：**排播准、起播差一整帧**。
+  复现率：CI 4 次里 1 次、本机 12 轮里 2 轮、单跑 3 次 0 次（负载相关，约 20～40%），重跑即绿。
+  根因：播放线程的起播锚点只把拍点对齐到**全局帧网格**（固定相位），但没有固定**落在哪一格** ——
+  两端进入攒帧完成分支的时刻相差 Δ，若 Δ 之间恰好夹着一个网格边界，两端就指向相邻两个边界，起播差一帧（踩中概率 ≈ Δ / frame_us ≈ 20～40%，与实测吻合）。
+  修法（未实施，见 `docs/49-m3-group-start-phase.md`）：① 首拍锚到 `EpochSchedule` 的**绝对目标时刻**（与各自准备时刻无关）；
+  ② `frame_aligned_target_us` 的取整从「向上取整」改为「贴近最近边界」（两端目标只差 ≤2 ms 的时钟估计误差，snap 后必然同界）。
+  看板已新增 In Progress 行跟踪；验证基线 = 连跑 20 轮统计失败轮数。
 
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
