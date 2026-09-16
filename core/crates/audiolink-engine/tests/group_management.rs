@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use audiolink_audio::{NullPlayout, PlayoutSink, SyntheticCapture};
 use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
+use audiolink_types::ClockQuality;
 use audiolink_types::ErrorCode;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -103,11 +104,14 @@ async fn creating_a_group_schedules_the_member_and_leaving_converges() {
     let snapshot = after_create.first().expect("组快照");
     assert_eq!(snapshot.group_id, group_id);
     assert_eq!(snapshot.lead_ms, lead_ms);
-    assert_eq!(
-        snapshot.members,
-        vec![receiver_id],
-        "成员表应记下被点名的成员"
-    );
+    let member_ids: Vec<audiolink_types::NodeId> =
+        snapshot.members.iter().map(|member| member.id).collect();
+    assert_eq!(member_ids, vec![receiver_id], "成员表应记下被点名的成员");
+    // 质量分级必须给出确定值：没有时钟估计时按 Poor 处理，§7 要求 UI 能据此明示「同步质量差」
+    assert!(matches!(
+        snapshot.members.first().map(|member| member.quality),
+        Some(ClockQuality::Good | ClockQuality::Fair | ClockQuality::Poor)
+    ));
     assert_eq!(
         scheduled_epoch, snapshot.epoch_id,
         "成员排播用的基准必须就是建组帧里的那个 epoch"

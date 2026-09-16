@@ -117,6 +117,22 @@ export function GroupPanel({
                     className="flex items-center gap-1 rounded bg-neutral-800 px-2 py-0.5"
                   >
                     <span className="text-neutral-200">fp:{member.idShort}</span>
+                    <span
+                      className={
+                        member.quality === "poor"
+                          ? "text-red-400"
+                          : member.quality === "fair"
+                            ? "text-amber-400"
+                            : "text-emerald-400"
+                      }
+                      title={
+                        member.offsetUs === null
+                          ? "还没有时钟估计"
+                          : `偏移 ${member.offsetUs} µs`
+                      }
+                    >
+                      {member.quality === "poor" ? "同步质量差" : member.quality}
+                    </span>
                     <button
                       type="button"
                       className="text-neutral-400 hover:text-red-400"

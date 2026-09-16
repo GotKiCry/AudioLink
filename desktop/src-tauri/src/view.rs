@@ -60,6 +60,10 @@ pub enum PeerState {
 #[serde(rename_all = "camelCase")]
 pub struct GroupMemberView {
     pub id_short: String,
+    /// §6.5 的质量分级（`good` / `fair` / `poor`）：UI 据此明示「该设备同步质量差」。
+    pub quality: String,
+    /// 时钟偏移估计（对端 − 本机，µs）；还没有估计时为 null。
+    pub offset_us: Option<i64>,
 }
 
 /// 临时同步组（list_groups 的元素）。

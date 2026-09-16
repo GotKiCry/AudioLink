@@ -50,8 +50,8 @@ use audiolink_net::{
 };
 use audiolink_proto::{AudioDatagram, AudioDatagramHeader, NackList};
 use audiolink_types::{
-    AudioLinkError, Caps, DATAGRAM_MAX_LEN, DEFAULT_QUIC_PORT, ErrorCode, Flags, NodeId, NodeInfo,
-    Platform, Ptype, StreamStats,
+    AudioLinkError, Caps, ClockQuality, DATAGRAM_MAX_LEN, DEFAULT_QUIC_PORT, ErrorCode, Flags,
+    NodeId, NodeInfo, Platform, Ptype, StreamStats,
 };
 use crossbeam_channel::{Receiver, Sender};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -425,6 +425,20 @@ struct GroupState {
     members: BTreeSet<NodeId>,
 }
 
+/// 组内一个成员及其同步质量（§6.5 / §7）。
+///
+/// 质量必须随成员表一起出去：§7 明写「若某成员 Poor 质量 → UI 必须明示该设备同步质量差」——
+/// 而 UI 要判断这件事，只能靠这里给出的分级，不能自己去猜 RTT。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupMember {
+    /// 成员（证书指纹）。
+    pub id: NodeId,
+    /// §6.5 的时钟质量分级；还没有时钟估计时按 Poor 处理。
+    pub quality: ClockQuality,
+    /// 时钟偏移估计（对端 − 本机，µs）；还没有估计时为 None。
+    pub offset_us: Option<i64>,
+}
+
 /// 同步组快照（UI 与验收报告的数据源）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupSnapshot {
@@ -434,8 +448,8 @@ pub struct GroupSnapshot {
     pub epoch_id: u64,
     /// 预约提前量（ms）。
     pub lead_ms: u32,
-    /// 成员（证书指纹，有序）。
-    pub members: Vec<NodeId>,
+    /// 成员及其同步质量（按指纹排序）。
+    pub members: Vec<GroupMember>,
 }
 
 /// AudioLink 引擎：一个进程一个实例，管理全部对端会话。
@@ -639,24 +653,57 @@ impl Engine {
     }
 
     /// 同步组快照（组 ID 升序）。
+    ///
+    /// 成员的同步质量取自**每个会话自己的**时钟估计：所以这里先放掉组表锁再去查会话表，
+    /// 避免「组表 ⇄ 对端表」两把锁被同时持有（那是最容易锁死的地方）。
     pub fn groups(&self) -> Vec<GroupSnapshot> {
-        self.inner
+        let raw: Vec<(u32, u64, u32, Vec<NodeId>)> = self
+            .inner
             .groups
             .lock()
             .map(|table| {
-                let mut list: Vec<GroupSnapshot> = table
+                table
                     .iter()
-                    .map(|(group_id, state)| GroupSnapshot {
-                        group_id: *group_id,
-                        epoch_id: state.epoch.epoch_id,
-                        lead_ms: state.lead_ms,
-                        members: state.members.iter().copied().collect(),
+                    .map(|(group_id, state)| {
+                        (
+                            *group_id,
+                            state.epoch.epoch_id,
+                            state.lead_ms,
+                            state.members.iter().copied().collect(),
+                        )
                     })
-                    .collect();
-                list.sort_by_key(|snapshot| snapshot.group_id);
-                list
+                    .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        let peers = self
+            .inner
+            .peers
+            .lock()
+            .map(|table| table.clone())
+            .unwrap_or_default();
+
+        let mut list: Vec<GroupSnapshot> = raw
+            .into_iter()
+            .map(|(group_id, epoch_id, lead_ms, members)| GroupSnapshot {
+                group_id,
+                epoch_id,
+                lead_ms,
+                members: members
+                    .into_iter()
+                    .map(|id| {
+                        let estimate = peers.get(&id).and_then(clock_estimate_of);
+                        GroupMember {
+                            id,
+                            quality: estimate.map_or(ClockQuality::Poor, |value| value.quality),
+                            offset_us: estimate.map(|value| value.offset_us),
+                        }
+                    })
+                    .collect(),
+            })
+            .collect();
+        list.sort_by_key(|snapshot| snapshot.group_id);
+        list
     }
 
     /// 把一帧组管理消息发给组内全部成员。

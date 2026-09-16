@@ -144,6 +144,10 @@ export function bpsToKbps(bps: number): string {
 /** 同步组的一个成员（M3）：短码与 PeerView.idShort 同一口径。 */
 export interface GroupMemberView {
   idShort: string;
+  /** §6.5 的时钟质量分级：good / fair / poor。 */
+  quality: string;
+  /** 时钟偏移估计（对端 − 本机，µs）；还没有估计时为 null。 */
+  offsetUs: number | null;
 }
 
 /**

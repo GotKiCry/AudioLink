@@ -32,7 +32,9 @@ use std::time::{Duration, Instant};
 use audiolink_engine::{
     Engine, EngineConfig, EngineEvent, GroupSnapshot, PeerStatus, SessionState,
 };
-use audiolink_types::{AudioLinkError, DEFAULT_QUIC_PORT, ErrorCode, NodeId, StreamStats};
+use audiolink_types::{
+    AudioLinkError, ClockQuality, DEFAULT_QUIC_PORT, ErrorCode, NodeId, StreamStats,
+};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{broadcast, watch};
 
@@ -958,10 +960,21 @@ fn group_view_of(snapshot: &GroupSnapshot) -> GroupView {
         members: snapshot
             .members
             .iter()
-            .map(|id| GroupMemberView {
-                id_short: id.short(),
+            .map(|member| GroupMemberView {
+                id_short: member.id.short(),
+                quality: quality_name(member.quality).to_string(),
+                offset_us: member.offset_us,
             })
             .collect(),
+    }
+}
+
+/// §6.5 的质量分级 → 前端可读字符串（契约里 UI 只认这三个词）。
+fn quality_name(quality: ClockQuality) -> &'static str {
+    match quality {
+        ClockQuality::Good => "good",
+        ClockQuality::Fair => "fair",
+        ClockQuality::Poor => "poor",
     }
 }
 
@@ -1102,6 +1115,7 @@ fn unix_millis() -> u128 {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use audiolink_engine::GroupMember;
 
     #[test]
     fn group_view_keeps_the_epoch_as_a_string_and_shortens_members() {
@@ -1110,7 +1124,11 @@ mod tests {
             group_id: 7,
             epoch_id: 0x1122_3344_5566_7788,
             lead_ms: 120,
-            members: vec![member],
+            members: vec![GroupMember {
+                id: member,
+                quality: ClockQuality::Poor,
+                offset_us: Some(-2_500),
+            }],
         };
         let view = group_view_of(&snapshot);
         assert_eq!(view.group_id, 7);
@@ -1124,6 +1142,12 @@ mod tests {
             view.members.first().map(|m| m.id_short.as_str()),
             Some(member.short().as_str())
         );
+        // §7：质量随成员一起出网，UI 才有依据明示「该设备同步质量差」
+        assert_eq!(
+            view.members.first().map(|m| m.quality.as_str()),
+            Some("poor")
+        );
+        assert_eq!(view.members.first().and_then(|m| m.offset_us), Some(-2_500));
     }
     use crate::view::TELEMETRY_CSV_HEADER;
     use audiolink_types::StreamStats;
