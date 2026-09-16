@@ -40,6 +40,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use audiolink_audio::mixer::{MixFormat, PcmMixer};
 use audiolink_audio::{
     AudioError, CONCEAL_FADE_MS, CaptureSource, CodecConfig, FrameChunker, OpusDecoder,
     OpusEncoder, PcmConcealer, PlayoutSink, SampleStats,
@@ -414,6 +415,8 @@ struct Inner {
     groups: Mutex<HashMap<u32, GroupState>>,
     /// M3 多会话：引擎级共享采集枢纽（第一个会话启流时创建，最后一个停止时摘掉）。
     capture_hub: Mutex<Option<Arc<CaptureHub>>>,
+    /// M4 汇聚：引擎级混音器（第一个接收会话创建 sink，后续会话把自己的帧混进来）。
+    playout_mixer: Mutex<Option<Arc<Mutex<PcmMixer>>>>,
 }
 
 impl Inner {
@@ -519,6 +522,7 @@ impl Engine {
                 peers: Mutex::new(HashMap::new()),
                 groups: Mutex::new(HashMap::new()),
                 capture_hub: Mutex::new(None),
+                playout_mixer: Mutex::new(None),
                 events,
                 shutdown: AtomicBool::new(false),
                 tasks: Mutex::new(TaskTracker::new()),
@@ -2330,6 +2334,9 @@ struct PlayoutHandle {
     sync: PlayoutSyncHandle,
     /// §4.1 音量：**每会话一份**（多会话各调各的），播放线程每帧取一次并走一个步长。
     gain: Arc<Mutex<GainState>>,
+    /// M4 汇聚：本会话挂在哪台混音器上、用的是哪个源号（停止时要把这一路摘掉）。
+    mixer: Option<PlayoutMix>,
+    mix_source: Option<u32>,
 }
 
 impl PlayoutHandle {
@@ -2412,6 +2419,12 @@ async fn stop_capture(handle: &mut Option<CaptureHandle>) {
 async fn stop_playout(handle: &mut Option<PlayoutHandle>) {
     if let Some(handle) = handle.take() {
         handle.stop.store(true, Ordering::Relaxed);
+        // M4：把这一路从混音器里摘掉 —— 停了就不该再占路数（否则重连几次就会撞上 8 路上限）。
+        if let (Some(mixer), Some(source)) = (handle.mixer.as_ref(), handle.mix_source)
+            && let Ok(mut guard) = mixer.lock()
+        {
+            guard.remove_source(source);
+        }
         drop(handle.frames);
         join_audio_thread(handle.join).await;
     }
@@ -3145,6 +3158,87 @@ fn report_peer_gone(inner: &Arc<Inner>, session: &Arc<PeerSession>, error: &Audi
 // ---------------------------------------------------------------------------
 
 /// 播放线程：**在本线程内**创建 `PlayoutSink`（`!Send`）。
+/// 引擎级混音器句柄（M4 汇聚）。
+type PlayoutMix = Arc<Mutex<PcmMixer>>;
+
+/// 混音源号的全局计数器（混音器按 id 认路，不能让不同会话撞号）。
+static NEXT_MIX_SOURCE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+/// 混音路数超过 FR-12 上限时的错误上下文。
+const MIXER_FULL: &str = "mixer is full (FR-12 allows 8 sources)";
+
+/// 取得（必要时创建）引擎级混音器，并给本会话分配一个源号。
+///
+/// 返回 (混音器, 源号, 是否是 owner)：只有 owner 会真的打开播放设备，
+/// 其余会话把解码后的 PCM 混进来 —— 这就是 M4 的「同一接收端多路混音」。
+/// 路数超过 FR-12 的上限时明确报 STREAM_LIMIT，而不是悄悄丢掉一路。
+fn acquire_playout_mixer(
+    inner: &Arc<Inner>,
+    codec: &CodecConfig,
+) -> Result<(Option<PlayoutMix>, Option<u32>, bool), AudioLinkError> {
+    let mut slot = inner
+        .playout_mixer
+        .lock()
+        .map_err(|_| AudioLinkError::bad_request("playout mixer poisoned"))?;
+    let source = NEXT_MIX_SOURCE.fetch_add(1, Ordering::Relaxed);
+    // 协议 §3 锁定 48 kHz / 2ch：多路混音的前提就是同一时间轴、同一格式（NFR-13）。
+    let format = MixFormat {
+        sample_rate: 48_000,
+        channels: 2,
+    };
+    match slot.as_ref() {
+        Some(mixer) => {
+            let mut guard = mixer.lock().unwrap_or_else(|e| e.into_inner());
+            guard
+                .add_source(source)
+                .map_err(|_| AudioLinkError::stream_limit(MIXER_FULL))?;
+            Ok((Some(Arc::clone(mixer)), Some(source), false))
+        }
+        None => {
+            let mixer = Arc::new(Mutex::new(PcmMixer::new(
+                format,
+                codec.frame_samples(),
+                PLAYBACK_QUEUE_FRAMES,
+            )));
+            {
+                let mut guard = mixer.lock().unwrap_or_else(|e| e.into_inner());
+                guard
+                    .add_source(source)
+                    .map_err(|_| AudioLinkError::stream_limit(MIXER_FULL))?;
+            }
+            *slot = Some(Arc::clone(&mixer));
+            Ok((Some(mixer), Some(source), true))
+        }
+    }
+}
+
+/// 写出一帧。
+///
+/// 没接混音器时就是直通 sink（M1 起的行为）；接上之后本路先把样本混进去，
+/// 只有 owner（真正持有设备的那一路）才把混音结果写出去 —— 于是多路只开一次设备。
+fn write_frame(
+    sink: &mut Option<Box<dyn PlayoutSink>>,
+    mixer: &Option<Arc<Mutex<PcmMixer>>>,
+    mix_source: Option<u32>,
+    samples: &[f32],
+    mixed: &mut Vec<f32>,
+) -> bool {
+    let (Some(mixer), Some(source)) = (mixer.as_ref(), mix_source) else {
+        return sink.as_mut().is_none_or(|open| open.write(samples).is_ok());
+    };
+    let Ok(mut guard) = mixer.lock() else {
+        return false;
+    };
+    if guard.push(source, samples).is_err() {
+        return false;
+    }
+    let Some(open) = sink.as_mut() else {
+        return true; // 非 owner：混进去就完事
+    };
+    guard.mix_frame(mixed);
+    open.write(mixed).is_ok()
+}
+
 fn spawn_playout_thread(
     inner: &Arc<Inner>,
     session: &Arc<PeerSession>,
@@ -3169,17 +3263,27 @@ fn spawn_playout_thread(
     let thread_gain = Arc::clone(&gain);
     let events = inner.events.clone();
 
-    let factory = Arc::clone(factory);
     let telemetry = Arc::clone(&session.telemetry);
     let tap = inner.config.measurement.clone();
     let frame_ms = u64::from(codec.frame_ms.max(1));
     let pcm = codec.interleaved_frame();
 
+    // M4 汇聚：混音器是**引擎级**的。第一个接收会话是 owner（真正打开 sink），
+    // 后续会话把自己的帧混进来 —— 同一台设备只被打开一次，多路在软件侧求和 + 软限幅。
+    let (mixer, mix_source, is_owner) = acquire_playout_mixer(inner, codec)?;
+    let thread_mixer = mixer.clone();
+    // 只有 owner 会真的建 sink；其余会话只把帧混进去。
+    let factory = if is_owner {
+        Some(Arc::clone(factory))
+    } else {
+        None
+    };
+
     let join = std::thread::Builder::new()
         .name("audiolink-playout".to_string())
         .spawn(move || {
             playout_main(
-                factory.as_ref(),
+                factory.as_ref().map(|factory| factory.as_ref()),
                 frame_ms,
                 pcm,
                 telemetry,
@@ -3189,6 +3293,8 @@ fn spawn_playout_thread(
                 thread_sync,
                 events,
                 thread_gain,
+                thread_mixer.clone(),
+                mix_source,
                 frame_rx,
                 ready_tx,
             );
@@ -3204,6 +3310,8 @@ fn spawn_playout_thread(
             join: Some(join),
             sync,
             gain,
+            mixer,
+            mix_source,
         }),
         Ok(Err(error)) => Err(error),
         Err(_) => Err(AudioLinkError::bad_request(
@@ -3214,7 +3322,7 @@ fn spawn_playout_thread(
 
 #[allow(clippy::too_many_arguments)]
 fn playout_main(
-    factory: &(dyn Fn() -> Result<Box<dyn PlayoutSink>, AudioError> + Send + Sync),
+    factory: Option<&(dyn Fn() -> Result<Box<dyn PlayoutSink>, AudioError> + Send + Sync)>,
     frame_ms: u64,
     pcm_len: usize,
     telemetry: Arc<Mutex<TelemetryAggregator>>,
@@ -3224,19 +3332,27 @@ fn playout_main(
     sync: PlayoutSyncHandle,
     events: broadcast::Sender<EngineEvent>,
     gain_state: Arc<Mutex<GainState>>,
+    mixer: Option<PlayoutMix>,
+    mix_source: Option<u32>,
     frames: Receiver<PlaybackFrame>,
     ready_tx: std::sync::mpsc::Sender<Result<(), AudioLinkError>>,
 ) {
-    let mut sink = match factory() {
-        Ok(sink) => sink,
-        Err(error) => {
-            let _ = ready_tx.send(Err(audio_error(&error)));
-            return;
-        }
+    let mut sink: Option<Box<dyn PlayoutSink>> = match factory {
+        Some(factory) => match factory() {
+            Ok(sink) => Some(sink),
+            Err(error) => {
+                let _ = ready_tx.send(Err(audio_error(&error)));
+                return;
+            }
+        },
+        // 非 owner：本路不建 sink，样本只混进 owner 的输出。
+        None => None,
     };
 
-    // 「零重采样」硬闸（NFR-13）：播放侧同样不得静默 SRC。
-    if let Err(error) = require_unified_format("playout", sink.backend_name(), sink.device_format())
+    // 「零重采样」硬闸（NFR-13）：播放侧同样不得静默 SRC（只有真的打开设备的那一路才需要查）。
+    if let Some(open) = sink.as_ref()
+        && let Err(error) =
+            require_unified_format("playout", open.backend_name(), open.device_format())
     {
         let _ = ready_tx.send(Err(error));
         return;
@@ -3253,6 +3369,7 @@ fn playout_main(
     let mut pending: Option<PlaybackFrame> = None;
     let mut refill_after_underrun = false;
     let mut scheduled_reported = false;
+    let mut mixed: Vec<f32> = Vec::new();
 
     'playout: while !stop.load(Ordering::Relaxed) {
         // 睡到下一个提交时刻。节奏必须由**本地时钟**决定，数据到没到只影响
@@ -3322,7 +3439,7 @@ fn playout_main(
                         wait_us,
                         &mut scheduled_reported,
                     );
-                    if sink.write(&silence).is_err() {
+                    if !write_frame(&mut sink, &mixer, mix_source, &silence, &mut mixed) {
                         break;
                     }
                     continue;
@@ -3337,7 +3454,7 @@ fn playout_main(
                         telemetry.record_late_drop();
                     }
                     tracing::debug!(late_us, "§7 预约播放：过期帧已丢弃");
-                    if sink.write(&silence).is_err() {
+                    if !write_frame(&mut sink, &mixer, mix_source, &silence, &mut mixed) {
                         break;
                     }
                     continue;
@@ -3357,7 +3474,7 @@ fn playout_main(
                 if let Ok(mut telemetry) = telemetry.lock() {
                     telemetry.record_underrun();
                 }
-                if sink.write(&silence).is_err() {
+                if !write_frame(&mut sink, &mixer, mix_source, &silence, &mut mixed) {
                     break;
                 }
                 continue;
@@ -3389,7 +3506,7 @@ fn playout_main(
                         *sample *= gain;
                     }
                 }
-                if sink.write(&frame.samples).is_err() {
+                if !write_frame(&mut sink, &mixer, mix_source, &frame.samples, &mut mixed) {
                     break;
                 }
                 if let Some(tap) = tap.as_ref() {
@@ -3406,7 +3523,7 @@ fn playout_main(
                     Some((depth + 1).min(MAX_TARGET_FRAMES))
                 });
                 refill_after_underrun = true;
-                if sink.write(&silence).is_err() {
+                if !write_frame(&mut sink, &mixer, mix_source, &silence, &mut mixed) {
                     break;
                 }
             }
@@ -3414,7 +3531,9 @@ fn playout_main(
         }
     }
 
-    sink.stop();
+    if let Some(open) = sink.as_mut() {
+        open.stop();
+    }
 }
 
 enum DueFrame {

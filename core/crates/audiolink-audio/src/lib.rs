@@ -36,6 +36,7 @@ pub mod conceal;
 pub mod error;
 pub mod format;
 pub mod latency;
+pub mod mixer;
 pub mod ring;
 pub mod sink;
 pub mod source;
