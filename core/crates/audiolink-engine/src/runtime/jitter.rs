@@ -115,6 +115,14 @@ impl PlayoutDepthState {
         self.active_frames
     }
 
+    /// 已在当前档位发生欠载时，按现有目标重新建立真实水位。
+    ///
+    /// 调用方只在队列重新出现数据后触发；完全断流时继续推进播放游标，不能反复补静音冻结时间轴。
+    pub(super) fn refill_after_underrun(&mut self, buffered_frames: usize) {
+        self.planned_frames = self.active_frames;
+        self.holds_remaining = self.active_frames.saturating_sub(buffered_frames);
+    }
+
     /// 升档用有界静音建立余量；降档只在确有积压时丢最旧帧，让目标深度真实下降。
     pub(super) fn action(
         &mut self,
@@ -137,6 +145,14 @@ impl PlayoutDepthState {
             };
         }
         if requested_frames == self.active_frames {
+            if buffered_frames >= requested_frames {
+                self.holds_remaining = 0;
+                return PlayoutDepthAction::Play;
+            }
+            if self.holds_remaining > 0 {
+                self.holds_remaining -= 1;
+                return PlayoutDepthAction::Hold;
+            }
             return PlayoutDepthAction::Play;
         }
 
@@ -171,6 +187,8 @@ pub(super) struct EncodedAudioPacket {
 pub(super) struct ReorderBatch {
     pub(super) ready: Vec<EncodedAudioPacket>,
     pub(super) late_drops: u32,
+    /// 这是该序号第一次进入窗口；重复副本和已经过期的包为 `false`。
+    pub(super) accepted_new_seq: bool,
 }
 
 /// 小型序号重排窗。
@@ -181,6 +199,7 @@ pub(super) struct ReorderBatch {
 pub(super) struct PacketReorderBuffer {
     expected_seq: Option<u32>,
     pending: Vec<EncodedAudioPacket>,
+    recent_delivered: Vec<u32>,
     frame_period: Duration,
     target_frames: usize,
 }
@@ -190,6 +209,7 @@ impl PacketReorderBuffer {
         Self {
             expected_seq: None,
             pending: Vec::with_capacity(REORDER_CAPACITY + 1),
+            recent_delivered: Vec::with_capacity(REORDER_CAPACITY * 2),
             frame_period,
             target_frames: DEFAULT_TARGET_FRAMES,
         }
@@ -204,7 +224,14 @@ impl PacketReorderBuffer {
         let expected = self.expected_seq.get_or_insert(seq);
         let distance = seq.wrapping_sub(*expected);
 
-        if distance >= (1 << 31) || self.pending.iter().any(|packet| packet.seq == seq) {
+        // 默认冗余双发会让同一序号出现两次。近期已交付或仍在窗口中的副本是正常去重，
+        // 不能污染 late_drops；从未交付却已越过播放游标的包仍按真正迟到记账。
+        if self.recent_delivered.contains(&seq)
+            || self.pending.iter().any(|packet| packet.seq == seq)
+        {
+            return batch;
+        }
+        if distance >= (1 << 31) {
             batch.late_drops = 1;
             return batch;
         }
@@ -212,9 +239,11 @@ impl PacketReorderBuffer {
         if distance >= DISCONTINUITY_FRAMES {
             batch.late_drops = u32::try_from(self.pending.len()).unwrap_or(u32::MAX);
             self.pending.clear();
+            self.recent_delivered.clear();
             self.expected_seq = Some(seq);
         }
 
+        batch.accepted_new_seq = true;
         self.pending.push(EncodedAudioPacket {
             seq,
             payload,
@@ -281,8 +310,17 @@ impl PacketReorderBuffer {
             }
             let packet = self.pending.remove(0);
             self.expected_seq = Some(expected.wrapping_add(1));
+            self.remember_delivered(packet.seq);
             ready.push(packet);
         }
+    }
+
+    fn remember_delivered(&mut self, seq: u32) {
+        const RECENT_CAPACITY: usize = REORDER_CAPACITY * 2;
+        if self.recent_delivered.len() >= RECENT_CAPACITY {
+            self.recent_delivered.remove(0);
+        }
+        self.recent_delivered.push(seq);
     }
 
     fn force_earliest(&mut self, ready: &mut Vec<EncodedAudioPacket>) {
@@ -368,6 +406,34 @@ mod tests {
     }
 
     #[test]
+    fn delayed_redundant_copies_are_silently_deduplicated() {
+        let now = Instant::now();
+        let mut buffer = PacketReorderBuffer::new(Duration::from_millis(20));
+        buffer.set_target_frames(3);
+
+        assert!(push(&mut buffer, 0, now).accepted_new_seq);
+        assert!(push(&mut buffer, 1, now + Duration::from_millis(20)).accepted_new_seq);
+        let duplicate = push(&mut buffer, 0, now + Duration::from_millis(20));
+        assert!(!duplicate.accepted_new_seq);
+        assert_eq!(duplicate.late_drops, 0);
+        assert!(duplicate.ready.is_empty());
+    }
+
+    #[test]
+    fn duplicate_pending_copy_does_not_consume_reorder_capacity() {
+        let now = Instant::now();
+        let mut buffer = PacketReorderBuffer::new(Duration::from_millis(20));
+        buffer.set_target_frames(3);
+
+        assert_eq!(seqs(&push(&mut buffer, 0, now)), [0]);
+        assert!(push(&mut buffer, 2, now).accepted_new_seq);
+        let duplicate = push(&mut buffer, 2, now + Duration::from_millis(1));
+        assert!(!duplicate.accepted_new_seq);
+        assert_eq!(duplicate.late_drops, 0);
+        assert_eq!(seqs(&push(&mut buffer, 1, now)), [1, 2]);
+    }
+
+    #[test]
     fn depth_rises_immediately_and_shrinks_only_after_stable_hysteresis() {
         let mut depth = AdaptiveJitterDepth::new();
         assert_eq!(depth.observe(Some(2_000), 1, 20_000), 3);
@@ -416,6 +482,17 @@ mod tests {
     fn playout_rebuffer_finishes_early_when_target_depth_arrives() {
         let mut state = PlayoutDepthState::new(2);
         assert_eq!(state.action(3, 1), PlayoutDepthAction::Hold);
+        assert_eq!(state.action(3, 3), PlayoutDepthAction::Play);
+        assert_eq!(state.active_frames(), 3);
+    }
+
+    #[test]
+    fn max_depth_underrun_can_refill_without_another_depth_raise() {
+        let mut state = PlayoutDepthState::new(3);
+        state.refill_after_underrun(1);
+
+        assert_eq!(state.action(3, 1), PlayoutDepthAction::Hold);
+        assert_eq!(state.action(3, 2), PlayoutDepthAction::Hold);
         assert_eq!(state.action(3, 3), PlayoutDepthAction::Play);
         assert_eq!(state.active_frames(), 3);
     }

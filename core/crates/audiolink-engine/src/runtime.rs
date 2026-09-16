@@ -26,7 +26,7 @@
 //!   与「**算** offset」是两件事。§6 的时钟同步**已经接线**（见 [`crate::clock`]）：
 //!   `CLOCK_PROBE` / `CLOCK_REPLY` 的收发节奏都在会话任务里，估计结果写进
 //!   `StreamStats.clock_offset_us` / `drift_ppm`。`buffer_level_us` 是「队列里的帧数 × 帧长」的换算值。
-//! - **不做 FEC / 双发 / NACK / 自适应码率**：数据报丢了就丢，只计数。
+//! - **冗余双发已落地，尚不做 NACK / 自适应码率**：双副本都丢时由 PCM 掩盖兜底。
 //!
 //! # 实时纪律
 //!
@@ -1018,6 +1018,7 @@ async fn run_session(
     let mut next_stream_id: u32 = 1;
 
     let mut capture: Option<CaptureHandle> = None;
+    let mut pending_redundant: Option<EncodedFrame> = None;
     let mut stream_id: Option<u32> = None;
     let mut epoch_id: u64 = 0;
 
@@ -1049,6 +1050,7 @@ async fn run_session(
                         match start_send_pipeline(&inner, &session, &codec) {
                             Ok((handle, epoch)) => {
                                 capture = Some(handle);
+                                pending_redundant = None;
                                 epoch_id = epoch;
                                 stream_id = Some(1);
                                 let result = send_control(
@@ -1079,6 +1081,7 @@ async fn run_session(
                             ).await;
                         }
                         stop_capture(&mut capture).await;
+                        pending_redundant = None;
                     }
                     SessionCommand::SubmitPin(pin) => {
                         let _ = send_control(
@@ -1149,26 +1152,11 @@ async fn run_session(
                                 }
                                 continue;
                             }
-                            // FEC / KEEPALIVE / NACK 属 M2。
+                            // FEC / KEEPALIVE / NACK 的处理仍属后续 M2。
                             _ => continue,
                         }
 
-                        // 到达间隔抖动：|实际间隔 − 标称帧长|（§10 的 jitter 口径）。
-                        // 必须真的量出来 —— 一个恒为 0 的 jitter 会让报告读起来像「网络完美」，
-                        // 而那只是「没测」的另一种写法。P50 决定缓冲该多深，P95 决定最坏会多深。
                         let now = Instant::now();
-                        if let Some(previous) = last_datagram_at.replace(now) {
-                            let interval_us =
-                                u32::try_from(now.saturating_duration_since(previous).as_micros())
-                                    .unwrap_or(u32::MAX);
-                            let nominal_us = u32::try_from(frame_ms).unwrap_or(20) * 1_000;
-                            let jitter_us = interval_us.abs_diff(nominal_us);
-                            arrival_jitter.push(jitter_us);
-                            if let Ok(mut telemetry) = session.telemetry.lock() {
-                                telemetry.record_jitter(jitter_us);
-                            }
-                        }
-
                         if let Ok(mut telemetry) = session.telemetry.lock() {
                             telemetry.record_received(datagram.payload.len());
                         }
@@ -1180,6 +1168,21 @@ async fn run_session(
                             datagram.payload.to_vec(),
                             now,
                         );
+                        // 到达间隔抖动只按每个序号的首个有效副本计算。冗余副本通常与下一主包
+                        // 背靠背到达，把它纳入会人为制造约 20 ms 的“抖动”。
+                        if batch.accepted_new_seq
+                            && let Some(previous) = last_datagram_at.replace(now)
+                        {
+                            let interval_us =
+                                u32::try_from(now.saturating_duration_since(previous).as_micros())
+                                    .unwrap_or(u32::MAX);
+                            let nominal_us = u32::try_from(frame_ms).unwrap_or(20) * 1_000;
+                            let jitter_us = interval_us.abs_diff(nominal_us);
+                            arrival_jitter.push(jitter_us);
+                            if let Ok(mut telemetry) = session.telemetry.lock() {
+                                telemetry.record_jitter(jitter_us);
+                            }
+                        }
                         deliver_reordered_audio(
                             &session,
                             &mut audio_receiver,
@@ -1212,13 +1215,27 @@ async fn run_session(
                     tap.record_sealed(frame.seq, frame.sealed_at);
                 }
 
-                if let Err(error) = transmit_audio(
+                let primary = transmit_audio(
                     &connection,
                     id,
                     epoch_id,
                     &frame,
                     &session,
-                ).await {
+                    AudioCopy::Primary,
+                ).await;
+                if let Err(error) = primary {
+                    report_error(&inner, &session, &error);
+                }
+                if let Some(redundant) = pending_redundant.replace(frame)
+                    && let Err(error) = transmit_audio(
+                        &connection,
+                        id,
+                        epoch_id,
+                        &redundant,
+                        &session,
+                        AudioCopy::Redundant,
+                    ).await
+                {
                     report_error(&inner, &session, &error);
                 }
             }
@@ -1709,13 +1726,20 @@ fn capture_main(
     capture.stop();
 }
 
-/// 发送一个音频数据报。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioCopy {
+    Primary,
+    Redundant,
+}
+
+/// 发送一个主音频数据报或延迟一帧的冗余副本。
 async fn transmit_audio(
     connection: &Connection,
     stream_id: u32,
     epoch_id: u64,
     frame: &EncodedFrame,
     session: &Arc<PeerSession>,
+    copy: AudioCopy,
 ) -> Result<(), AudioLinkError> {
     let budget = connection.max_audio_payload();
 
@@ -1737,7 +1761,10 @@ async fn transmit_audio(
     let header = AudioDatagramHeader {
         version: audiolink_types::PROTO_MAJOR,
         ptype: Ptype::Audio,
-        flags: audiolink_types::Flags::NONE,
+        flags: match copy {
+            AudioCopy::Primary => audiolink_types::Flags::NONE,
+            AudioCopy::Redundant => audiolink_types::Flags::FEC_REDUNDANT,
+        },
         stream_id,
         seq: frame.seq,
         sample_index: frame.sample_index,
@@ -1755,7 +1782,9 @@ async fn transmit_audio(
         .map_err(|e| net_error(&e))?;
 
     if let Ok(mut telemetry) = session.telemetry.lock() {
-        telemetry.record_expected();
+        if copy == AudioCopy::Primary {
+            telemetry.record_expected();
+        }
         telemetry.record_received(frame.payload.len());
     }
     Ok(())
@@ -2280,6 +2309,7 @@ fn playout_main(
     let mut next_write = Instant::now();
     let mut expected_seq: Option<u32> = None;
     let mut pending: Option<PlaybackFrame> = None;
+    let mut refill_after_underrun = false;
 
     'playout: while !stop.load(Ordering::Relaxed) {
         // 睡到下一个提交时刻。节奏必须由**本地时钟**决定，数据到没到只影响
@@ -2328,10 +2358,14 @@ fn playout_main(
         let requested_target = jitter_depth
             .load(Ordering::Relaxed)
             .clamp(MIN_TARGET_FRAMES, MAX_TARGET_FRAMES);
-        match depth_state.action(
-            requested_target,
-            frames.len() + usize::from(pending.is_some()),
-        ) {
+        let buffered_frames = frames.len() + usize::from(pending.is_some());
+        // 最高档位无法再靠“升档”触发补水。欠载后等到至少一个新帧到达，再按当前目标
+        // 重新建立余量；完全断流时不进入 Hold，播放游标仍按真实时间推进。
+        if refill_after_underrun && buffered_frames > 0 {
+            depth_state.refill_after_underrun(buffered_frames);
+            refill_after_underrun = false;
+        }
+        match depth_state.action(requested_target, buffered_frames) {
             PlayoutDepthAction::Hold => {
                 if let Ok(mut telemetry) = telemetry.lock() {
                     telemetry.record_underrun();
@@ -2374,6 +2408,7 @@ fn playout_main(
                 let _ = jitter_depth.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
                     Some((depth + 1).min(MAX_TARGET_FRAMES))
                 });
+                refill_after_underrun = true;
                 if sink.write(&silence).is_err() {
                     break;
                 }

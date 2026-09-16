@@ -45,7 +45,7 @@ Rust 内核（core/crates/*）
 | 传输 | **QUIC**（用户裁决；两条调研均建议裸 UDP，已记录理由与回退路径） | ADR-004 |
 | 内核 | Rust 写一次，两端共用（Android 走 JNI/UniFFI） | 用户 R4 |
 | 编码 | `opus-rs` 纯 Rust（零 C 依赖）+ `RESTRICTED_LOWDELAY` + 锁 48 kHz | ADR-003 / §8 |
-| 丢包对抗 | **NACK 重传 + PLC 为主**；音乐场景**关闭** in-band FEC | §8.1 |
+| 丢包对抗 | **默认冗余双发 + PCM 丢包掩盖为主，NACK 辅助**；音乐场景**关闭** in-band FEC | §8.1 |
 | 桌面端 | Tauri 2 + React 19 + TS + Tailwind 4 | 用户 R3 |
 | Android | Kotlin + Compose（完全重写），minSdk **26** | 用户 R3/R7 |
 | 同步 | 四时间戳时钟同步（200 样本中位数）+ 预约播放 | 用户 R4 |

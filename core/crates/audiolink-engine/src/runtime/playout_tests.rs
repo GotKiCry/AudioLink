@@ -312,6 +312,43 @@ fn bounded_reordering_repairs_packet_order_before_opus_decode() {
 }
 
 #[test]
+fn redundant_copy_recovers_a_missing_primary_without_duplicate_decode() {
+    let packets = encoded_packets(4);
+    let now = Instant::now();
+    let mut reorder = PacketReorderBuffer::new(Duration::from_millis(20));
+    reorder.set_target_frames(3);
+    let mut receiver = AudioReceiver::new(CodecConfig::m1_default()).unwrap();
+    let mut output = Vec::new();
+    let mut total = ReceiveReport::default();
+
+    // 主包 1 丢失；它的延迟副本在主包 2 之后到达。其他冗余副本必须静默去重。
+    for (seq, at) in [(0usize, 0u64), (0, 20), (2, 40), (1, 41), (3, 60), (2, 61)] {
+        let report = deliver_reorder_batch(
+            &mut receiver,
+            reorder.push(
+                seq as u32,
+                packets[seq].clone(),
+                now + Duration::from_millis(at),
+            ),
+            &mut output,
+        );
+        total.expected = total.expected.saturating_add(report.expected);
+        total.lost = total.lost.saturating_add(report.lost);
+        total.plc = total.plc.saturating_add(report.plc);
+        total.late_drops = total.late_drops.saturating_add(report.late_drops);
+    }
+
+    assert_eq!(total.expected, 4);
+    assert_eq!(total.lost, 0);
+    assert_eq!(total.plc, 0);
+    assert_eq!(total.late_drops, 0);
+    assert_eq!(
+        output.iter().map(|frame| frame.seq).collect::<Vec<_>>(),
+        [0, 1, 2, 3]
+    );
+}
+
+#[test]
 fn reorder_deadline_falls_back_to_plc_and_rejects_the_late_packet() {
     let packets = encoded_packets(3);
     let now = Instant::now();
