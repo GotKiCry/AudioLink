@@ -3890,7 +3890,7 @@ fn schedule_action(
     let sample_index = state.sample_index_of(frame?.seq)?;
     let now_us = i64::try_from(now_monotonic_us()).unwrap_or(i64::MAX);
     Some((
-        schedule.action(now_us, sample_index, state.offset_us),
+        schedule.action(now_us, sample_index, state.offset_us, state.frame_samples),
         sample_index,
     ))
 }

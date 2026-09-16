@@ -25,6 +25,12 @@ pub const SAMPLE_RATE_HZ: u64 = 48_000;
 /// 迟到门限（§7 第 3 条：超过目标时刻 20 ms 直接跳过）。
 pub const LATE_LIMIT_MS: u64 = 20;
 
+/// 一帧有多少微秒（`frame_samples / 48000 s`）。
+pub const fn frame_us(frame_samples: u32) -> i64 {
+    let samples = if frame_samples == 0 { 1 } else { frame_samples };
+    (samples as i64) * 1_000_000 / SAMPLE_RATE_HZ as i64
+}
+
 /// 发送端给出的组基准（来自 GROUP_EPOCH 控制帧，或会话默认）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EpochSchedule {
@@ -58,9 +64,39 @@ impl EpochSchedule {
             .saturating_add(self.lead_ms as i64 * 1_000)
     }
 
-    /// §7 的排播判定：等待 / 播放 / 丢弃。
-    pub fn action(&self, now_local_us: i64, sample_index: u32, offset_us: i64) -> PlayoutAction {
+    /// 目标时刻**对齐到帧边界**（向上取整）。
+    ///
+    /// 为什么要对齐 —— 2026-09-17 定位到的真缺陷：`action` 原本直接比较「现在 ≥ target」，
+    /// 而 target 是**任意**微秒时刻。两个接收端各自的判定时刻只要分别落在它前后 1 µs，
+    /// 就会一头「还没到、这一拍补静音」、一头「到了、立刻播」—— **组内偏差整整一帧（20 ms）**，
+    /// 直接破掉 M3 的 ±10 ms 验收线（回环实测 5 次踩中 2 次）。
+    /// 对齐到帧边界后，两端比较的是**同一个帧边界**，判定必然一致（时钟估计误差 ≤ 2 ms，远小于一帧）。
+    #[must_use]
+    pub fn frame_aligned_target_us(
+        &self,
+        sample_index: u32,
+        offset_us: i64,
+        frame_samples: u32,
+    ) -> i64 {
+        let frame = frame_us(frame_samples);
         let target = self.local_target_us(sample_index, offset_us);
+        let frames = target.div_euclid(frame);
+        let extra = i64::from(target.rem_euclid(frame) != 0);
+        frames.saturating_add(extra).saturating_mul(frame)
+    }
+
+    /// §7 的排播判定：等待 / 播放 / 丢弃。
+    ///
+    /// **等待判定在「帧边界」上做**（见 `frame_aligned_target_us`）；迟到门限仍按微秒算 ——
+    /// §7 说的是「超过 20 ms」，那是与帧长无关的固定窗口。
+    pub fn action(
+        &self,
+        now_local_us: i64,
+        sample_index: u32,
+        offset_us: i64,
+        frame_samples: u32,
+    ) -> PlayoutAction {
+        let target = self.frame_aligned_target_us(sample_index, offset_us, frame_samples);
         if now_local_us < target {
             return PlayoutAction::Wait {
                 wait_us: (target - now_local_us) as u64,
@@ -133,11 +169,11 @@ mod tests {
     fn action_waits_before_the_target() {
         let schedule = schedule();
         assert_eq!(
-            schedule.action(999_000, 0, 0),
+            schedule.action(999_000, 0, 0, 960),
             PlayoutAction::Wait { wait_us: 1_000 }
         );
         assert_eq!(
-            schedule.action(0, 0, 0),
+            schedule.action(0, 0, 0, 960),
             PlayoutAction::Wait { wait_us: 1_000_000 }
         );
     }
@@ -145,22 +181,53 @@ mod tests {
     #[test]
     fn action_plays_inside_the_late_window() {
         let schedule = schedule();
-        assert_eq!(schedule.action(1_000_000, 0, 0), PlayoutAction::Play);
-        assert_eq!(schedule.action(1_000_001, 0, 0), PlayoutAction::Play);
+        assert_eq!(schedule.action(1_000_000, 0, 0, 960), PlayoutAction::Play);
+        assert_eq!(schedule.action(1_000_001, 0, 0, 960), PlayoutAction::Play);
         // 恰好 20 ms：仍算赶上（§7 说的是「超过」20 ms 才丢）
-        assert_eq!(schedule.action(1_020_000, 0, 0), PlayoutAction::Play);
+        assert_eq!(schedule.action(1_020_000, 0, 0, 960), PlayoutAction::Play);
     }
 
     #[test]
     fn action_drops_when_too_late() {
         let schedule = schedule();
         assert_eq!(
-            schedule.action(1_020_001, 0, 0),
+            schedule.action(1_020_001, 0, 0, 960),
             PlayoutAction::Drop { late_us: 20_001 }
         );
         assert_eq!(
-            schedule.action(1_500_000, 0, 0),
+            schedule.action(1_500_000, 0, 0, 960),
             PlayoutAction::Drop { late_us: 500_000 }
+        );
+    }
+
+    /// 2026-09-17 那个真缺陷的回归测试：target 落在**帧中间**时，同一帧内的两端必须做同一个决定。
+    #[test]
+    fn both_ends_decide_the_same_within_one_frame() {
+        // epoch 在 1_010_000 µs —— 刻意不是 20 ms 的整数倍，落在帧中间。
+        let schedule = EpochSchedule::new(7, 1_010_000, 0);
+        let frame_samples = 960_u32; // 20 ms
+        let just_before = schedule.action(1_009_999, 0, 0, frame_samples);
+        let just_after = schedule.action(1_010_001, 0, 0, frame_samples);
+        assert!(
+            matches!(just_before, PlayoutAction::Wait { .. })
+                && matches!(just_after, PlayoutAction::Wait { .. }),
+            "同一帧内的两端必须都等：{just_before:?} vs {just_after:?}（修正前这里会一头等一头播）"
+        );
+        // 目标被抬到下一个帧边界 1_020_000，于是两端一起在这一刻播。
+        assert_eq!(
+            schedule.action(1_020_000, 0, 0, frame_samples),
+            PlayoutAction::Play
+        );
+        assert_eq!(
+            schedule.frame_aligned_target_us(0, 0, frame_samples),
+            1_020_000,
+            "目标必须被对齐到帧边界"
+        );
+        // 恰好落在帧边界上的目标不该被多推一帧。
+        let aligned = EpochSchedule::new(8, 1_020_000, 0);
+        assert_eq!(
+            aligned.frame_aligned_target_us(0, 0, frame_samples),
+            1_020_000
         );
     }
 
@@ -177,7 +244,7 @@ mod tests {
     fn epoch_before_boot_still_decides_sanely() {
         // epoch 早于本机开机（换算到本机轴上是负数）：现在当然已经过点 —— 要么播要么丢，不许不置可否
         let schedule = EpochSchedule::new(1, 1_000, 0);
-        let action = schedule.action(5_000_000, 0, 10_000_000);
+        let action = schedule.action(5_000_000, 0, 10_000_000, 960);
         assert!(matches!(
             action,
             PlayoutAction::Play | PlayoutAction::Drop { .. }
