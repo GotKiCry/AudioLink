@@ -109,3 +109,43 @@ _up_/_up_/docs/compliance/THIRD-PARTY-NOTICES.md
 - Android 侧完全没有对应流程（§2.4、§2.5）；
 - 安装包未签名（§2.2）。
 
+---
+
+## 5. 自动更新：从「配置在、功能不可用」到「签得出来」（2026-09-16 第二轮）
+
+§2.1 记的那条（`pubkey` 是占位符、`createUpdaterArtifacts = false`）本轮动掉了：
+
+| 步骤 | 结果 |
+|---|---|
+| 生成密钥对 | `pnpm tauri signer generate` → 私钥 `~/.tauri/audiolink.key`（**仓库外**），公钥写进 `tauri.conf.json` |
+| 打开更新产物 | `createUpdaterArtifacts: true` |
+| 签名打包 | `AudioLink_0.1.0_x64-setup.exe.sig`（0.4 KB，minisign 格式）实际产出 |
+| 更新清单 | `tools/tauri-latest-json.ps1` → `latest.json`（版本 / URL / 签名） |
+
+### 5.1 两个踩过的坑（都记下来）
+
+**坑一：环境变量名。** 用 `TAURI_SIGNING_PRIVATE_KEY_PATH` 指向私钥文件时，Tauri 报
+「A public key has been found, but no private key」—— 它要的是 `TAURI_SIGNING_PRIVATE_KEY`（私钥**内容**）。
+
+**坑二：`.sig` 不是可选的。** 没有签名的更新包会被客户端直接拒绝，而 `tauri build` 在缺私钥时
+**先产出安装包再报错** —— 于是很容易留下一个「看起来打好了、其实更新不可用」的包。
+清单生成脚本把这一条钉死了：找不到 `.sig` 就抛错，并提示是不是漏了 `TAURI_SIGNING_PRIVATE_KEY`。
+
+### 5.2 为什么单独写一个清单脚本
+
+`tauri build` 只产出「安装包 + `.sig`」，而 updater 要的是一个 JSON 清单。缺这一步，
+自动更新就永远停在「配置在、功能不可用」—— 这也正是 §2.1 那一条的实质。
+
+清单里的 URL 指向 `releases/latest/download/<安装包名>`，与 `tauri.conf.json` 的 `updater.endpoints`
+是同一个地址：**两处必须一致**，所以仓库名由脚本参数给出、不散落在各处。
+
+### 5.3 仍未验的（诚实清单）
+
+- **真实更新流程**：需要「旧版本 + 新版本 + Release 托管」三件东西同时在位 ——
+  即 v0.1.0 装好，v0.1.1 发布，客户端检测到 `latest.json` → 下载 → 用公钥验签 → 安装。
+  本轮做到的是「签得出来 + 清单能生成」，**不是**「装得上去」；
+- **CI secrets 未配**：私钥要进 `TAURI_SIGNING_PRIVATE_KEY`（仓库设置，需人工操作）；
+- **本地私钥是开发用的**：密码 `dev-only-change-me`，正式发布前应重新生成并妥善保管；
+- 安装包仍未签名（§2.2 的代码签名证书是另一回事）。
+
+
