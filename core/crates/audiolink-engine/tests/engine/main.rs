@@ -27,6 +27,7 @@ mod mixer_alignment;
 mod mixer_convergence;
 mod multi_session;
 mod nack_retransmit;
+mod network_outage;
 mod pcm_delivery;
 mod playout_recovery;
 mod receiver_epoch;

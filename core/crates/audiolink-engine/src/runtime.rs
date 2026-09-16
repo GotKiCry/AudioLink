@@ -127,6 +127,30 @@ const PIN_WAIT_MARGIN_SECS: u64 = 15;
 pub const DEFAULT_PIN_WAIT_TIMEOUT: Duration =
     Duration::from_secs(PIN_TTL.as_secs() + PIN_WAIT_MARGIN_SECS);
 
+/// QUIC 空闲超时的默认值（[`EngineConfig::idle_timeout`]）。
+///
+/// # 为什么是 30 s 而不是 10 s
+///
+/// `docs/05-roadmap.md` 的 M2 验收写的是「拔网 10 s 后 ≤ 3 s 恢复」。空闲超时一旦先于
+/// 「拔网 + 恢复预算」结束，连接就被判死，而引擎**没有**重拨路径（会话循环直接进
+/// `SessionState::Failed`，见 `report_peer_gone`）—— 插回网线也救不回来。
+///
+/// 旧值 10 s 正好卡在验收那条线上：2026-09-17 的实测（`tests/engine/network_outage.rs`）
+/// 拔网 10 s 后 8 s 观测窗内**完全没有恢复**，两侧会话表里连对端都被移除了。
+/// 30 s = 10 s（最长可容忍断网）+ 3 s（恢复预算）再留 2 倍余量，也给移动网络下的
+/// 切换/弱信号留出喘息。
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// QUIC 保活探测间隔的默认值（[`EngineConfig::keep_alive`]）。
+///
+/// # 为什么是 1 s 而不是 3 s
+///
+/// 拔网期间没有任何包能出去；插回后链路要等**下一次保活探测**才被重新点亮，
+/// 于是「恢复延迟」的上界就是保活间隔本身。旧值 3 s 时实测恢复延迟呈**双峰**
+/// （597 / 3417 / 3310 ms，见 `tests/engine/network_outage.rs`），峰值直接压过验收的 3 s 预算。
+/// 降到 1 s 后上界 ≈ 1 s，余量充足；代价是每个会话每秒一个几十字节的探测包。
+pub const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(1);
+
 /// 引擎配置。
 pub struct EngineConfig {
     /// 用户可见的节点名（仅展示，不参与身份判定）。
@@ -160,6 +184,17 @@ pub struct EngineConfig {
     /// Windows 有 WASAPI loopback（系统内录），Android 的内录尚未实现。平台侧在构造引擎时
     /// 声明自己的能力，能力协商才有意义；把它写死成常量，等于让所有设备都说自己一样。
     pub capabilities: u32,
+    /// QUIC 空闲超时；默认 [`DEFAULT_IDLE_TIMEOUT`]（30 s）。
+    ///
+    /// **这个值决定「拔网多久还能自愈」** —— 它必须大于「最长可容忍断网 + 恢复预算」，
+    /// 理由见 [`DEFAULT_IDLE_TIMEOUT`] 的文档与 `tests/engine/network_outage.rs` 的实测。
+    /// `Duration::ZERO` = 关闭空闲超时（QUIC 层面永不因静默判死）。
+    pub idle_timeout: Duration,
+    /// QUIC 保活探测间隔；默认 [`DEFAULT_KEEP_ALIVE`]（1 s）。
+    ///
+    /// 拔网期间没有任何包能出去，插回后链路要等**下一次保活探测**才被重新点亮 ——
+    /// 恢复延迟的上界就是它。`Duration::ZERO` = 关闭保活。
+    pub keep_alive: Duration,
 }
 
 impl EngineConfig {
@@ -178,6 +213,8 @@ impl EngineConfig {
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
             pin_wait_timeout: DEFAULT_PIN_WAIT_TIMEOUT,
             capabilities: audiolink_types::Capabilities::CURRENT,
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            keep_alive: DEFAULT_KEEP_ALIVE,
         }
     }
 
@@ -187,6 +224,26 @@ impl EngineConfig {
         self.capabilities = capabilities;
         self
     }
+
+    /// 覆盖链路层的两个时间参数（见 [`EngineConfig::idle_timeout`] / [`EngineConfig::keep_alive`]）。
+    ///
+    /// 成对覆盖：这两个值只有**一起**看才有意义 —— 空闲超时必须大于「最长可容忍断网」，
+    /// 保活间隔决定插回网线后多久被重新点亮。
+    #[must_use]
+    pub const fn with_link_timeouts(
+        mut self,
+        idle_timeout: Duration,
+        keep_alive: Duration,
+    ) -> Self {
+        self.idle_timeout = idle_timeout;
+        self.keep_alive = keep_alive;
+        self
+    }
+}
+
+/// `Duration` → QUIC 的毫秒字段（0 = 关闭该机制，与 `EndpointConfig` 的语义一致）。
+fn quic_ms(value: Duration) -> u32 {
+    u32::try_from(value.as_millis()).unwrap_or(u32::MAX)
 }
 
 /// 对端会话快照（UI 与验收报告的数据源）。
@@ -580,8 +637,8 @@ impl Engine {
             bind: config.listen,
             cert_der: identity.cert_der().to_vec(),
             key_der_pkcs8: identity.key_der_pkcs8().to_vec(),
-            idle_timeout_ms: 10_000,
-            keep_alive_ms: 3_000,
+            idle_timeout_ms: quic_ms(config.idle_timeout),
+            keep_alive_ms: quic_ms(config.keep_alive),
         })
         .await
         .map_err(|e| net_error(&e))?;
