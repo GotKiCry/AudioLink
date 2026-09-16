@@ -41,9 +41,29 @@ pub const MDNS_SERVICE_TYPE: &str = "_audiolink._udp.local.";
 /// 发现协议版本（广播头部 `ver` 与 TXT / JSON 的 `v` 字段，§9）。
 pub const DISCOVERY_VERSION: u8 = 1;
 
+/// 线上基础类型宽度（§1：多字节字段一律小端）。
+///
+/// 这些常量存在的唯一目的，是让「定长载荷长度」能写成**字段宽度之和**，而不是散落的字面量 ——
+/// 「改了字段宽度、忘了改 LEN」这类缺陷由此从源头消失。§3 载荷表的独立副本在
+/// `audiolink-proto/tests/payload_len_table.rs` 里再把它钉一遍（护栏测试）。
+pub const U8_LEN: usize = 1;
+
+/// 2 B 小端字段宽度。
+pub const U16_LEN: usize = 2;
+
+/// 4 B 小端字段宽度（`u32` / `i32`）。
+pub const U32_LEN: usize = 4;
+
+/// 8 B 小端字段宽度（`u64`）。
+pub const U64_LEN: usize = 8;
+
+/// 8 B 小端字段宽度（`i64`；与 [`U64_LEN`] 同宽，分开命名只为让载荷表自解释）。
+pub const I64_LEN: usize = 8;
+
 /// 音频数据报帧头长度（§3）：`ver`(1) + `ptype`(1) + `flags`(2) + `stream_id`(4)
-/// + `seq`(4) + `sample_index`(4) + `epoch_id`(8)。
-pub const DATAGRAM_HEADER_LEN: usize = 24;
+/// + `seq`(4) + `sample_index`(4) + `epoch_id`(8) = **24 B**。
+pub const DATAGRAM_HEADER_LEN: usize =
+    U8_LEN + U8_LEN + U16_LEN + U32_LEN + U32_LEN + U32_LEN + U64_LEN;
 
 /// 单个音频数据报总长上限（§3 MTU 约束，避免 QUIC 分片）。
 pub const DATAGRAM_MAX_LEN: usize = 1200;
@@ -51,11 +71,61 @@ pub const DATAGRAM_MAX_LEN: usize = 1200;
 /// 单个音频数据报的载荷上限（§3 载荷表：`DATAGRAM_MAX_LEN` − 帧头）。
 pub const DATAGRAM_MAX_PAYLOAD: usize = DATAGRAM_MAX_LEN - DATAGRAM_HEADER_LEN;
 
-/// 控制帧固定帧头长度（§4）：`ver`(1) + `type`(1) + `flags`(2) + `payload_len`(4)。
-pub const CONTROL_HEADER_LEN: usize = 8;
+/// 控制帧固定帧头长度（§4）：`ver`(1) + `type`(1) + `flags`(2) + `payload_len`(4) = **8 B**。
+///
+/// 其后的 `request_id`(4) 是 §4 的另一段固定前缀，见 `audiolink-proto::control::MIN_FRAME_LEN`。
+pub const CONTROL_HEADER_LEN: usize = U8_LEN + U8_LEN + U16_LEN + U32_LEN;
 
 /// 控制帧载荷上限（§4：单帧 64 KiB）。
 pub const CONTROL_MAX_PAYLOAD: usize = 64 * 1024;
+
+// ---------------------------------------------------------------------------
+// ptype 专用定长载荷的长度（docs/03-protocol.md §3 载荷表）
+//
+// 一律写成「字段宽度之和」：长度常量、`Ptype::payload_len_rule()` 与各类型的 `LEN`
+// 三处引用同一份算式，剩下的唯一错法是「算式本身与 §3 表不符」—— 那由护栏测试
+// `audiolink-proto/tests/payload_len_table.rs` 的独立副本负责抓。
+// ---------------------------------------------------------------------------
+
+/// `CLOCK_PROBE` 载荷内 `probe_seq` 偏移（§3）= 0。
+pub const CLOCK_PROBE_PROBE_SEQ_OFFSET: usize = 0;
+
+/// `CLOCK_PROBE` 载荷内 `t1` 偏移（§3）= `probe_seq` 之后。
+pub const CLOCK_PROBE_T1_OFFSET: usize = CLOCK_PROBE_PROBE_SEQ_OFFSET + U32_LEN;
+
+/// `CLOCK_PROBE` 载荷长度（§3）：`probe_seq`(u32) + `t1`(i64) = **12 B**。
+///
+/// 长度由**最后一个字段的偏移 + 该字段宽度**得出 —— 长度与偏移同源，不存在两份账本。
+pub const CLOCK_PROBE_PAYLOAD_LEN: usize = CLOCK_PROBE_T1_OFFSET + I64_LEN;
+
+/// `CLOCK_REPLY` 载荷内 `probe_seq` 偏移（§3）= 0。
+pub const CLOCK_REPLY_PROBE_SEQ_OFFSET: usize = 0;
+
+/// `CLOCK_REPLY` 载荷内 `t1` 偏移（§3）。
+pub const CLOCK_REPLY_T1_OFFSET: usize = CLOCK_REPLY_PROBE_SEQ_OFFSET + U32_LEN;
+
+/// `CLOCK_REPLY` 载荷内 `t2` 偏移（§3）。
+pub const CLOCK_REPLY_T2_OFFSET: usize = CLOCK_REPLY_T1_OFFSET + I64_LEN;
+
+/// `CLOCK_REPLY` 载荷内 `t3` 偏移（§3）。
+pub const CLOCK_REPLY_T3_OFFSET: usize = CLOCK_REPLY_T2_OFFSET + I64_LEN;
+
+/// `CLOCK_REPLY` 载荷长度（§3）：`probe_seq`(u32) + `t1`/`t2`/`t3`(i64) = **28 B**。
+///
+/// 同样由「最后一个字段的偏移 + 该字段宽度」得出。
+pub const CLOCK_REPLY_PAYLOAD_LEN: usize = CLOCK_REPLY_T3_OFFSET + I64_LEN;
+
+/// `KEEPALIVE` 载荷长度（§3：无载荷）= **0 B**。
+pub const KEEPALIVE_PAYLOAD_LEN: usize = 0;
+
+/// `NACK` 列表单项宽度（§3：`u32` 列表）。
+pub const NACK_ITEM_LEN: usize = U32_LEN;
+
+/// `NACK` 列表最少项数（§3：1 ≤ n）。
+pub const NACK_MIN_ITEMS: usize = 1;
+
+/// `NACK` 列表最多项数（§3：1 ≤ n ≤ 16）。
+pub const NACK_MAX_ITEMS: usize = 16;
 
 // ---------------------------------------------------------------------------
 // ptype（docs/03-protocol.md §3）
@@ -129,12 +199,18 @@ impl Ptype {
             Self::Audio | Self::Fec => PayloadLenRule::Opaque {
                 max: DATAGRAM_MAX_PAYLOAD,
             },
-            Self::ClockProbe => PayloadLenRule::Exact { len: 12 },
-            Self::ClockReply => PayloadLenRule::Exact { len: 28 },
-            Self::Keepalive => PayloadLenRule::Exact { len: 0 },
+            Self::ClockProbe => PayloadLenRule::Exact {
+                len: CLOCK_PROBE_PAYLOAD_LEN,
+            },
+            Self::ClockReply => PayloadLenRule::Exact {
+                len: CLOCK_REPLY_PAYLOAD_LEN,
+            },
+            Self::Keepalive => PayloadLenRule::Exact {
+                len: KEEPALIVE_PAYLOAD_LEN,
+            },
             Self::Nack => PayloadLenRule::U32List {
-                min_items: 1,
-                max_items: 16,
+                min_items: NACK_MIN_ITEMS,
+                max_items: NACK_MAX_ITEMS,
             },
         }
     }

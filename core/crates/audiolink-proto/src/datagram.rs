@@ -3,14 +3,18 @@
 //! 帧头 24 B 定长小端 + ptype 专用载荷（定长，**不使用 postcard**）；解码零拷贝（载荷借用原缓冲）。
 
 use audiolink_types::{
-    AudioLinkError, DATAGRAM_HEADER_LEN, DATAGRAM_MAX_LEN, Flags, PROTO_MAJOR, PayloadLenRule,
-    Ptype,
+    AudioLinkError, CLOCK_PROBE_PAYLOAD_LEN, CLOCK_PROBE_PROBE_SEQ_OFFSET, CLOCK_PROBE_T1_OFFSET,
+    CLOCK_REPLY_PAYLOAD_LEN, CLOCK_REPLY_PROBE_SEQ_OFFSET, CLOCK_REPLY_T1_OFFSET,
+    CLOCK_REPLY_T2_OFFSET, CLOCK_REPLY_T3_OFFSET, DATAGRAM_HEADER_LEN, DATAGRAM_MAX_LEN, Flags,
+    NACK_ITEM_LEN, NACK_MIN_ITEMS, PROTO_MAJOR, PayloadLenRule, Ptype,
 };
 
 use crate::{ERR_OUT_OF_SPACE, fixed_bytes, put};
 
 /// NACK 载荷最多携带的 seq 个数（§3：1 ≤ n ≤ 16）。
-pub const NACK_MAX_ITEMS: usize = 16;
+///
+/// 定义在 `audiolink-types`（与 §3 载荷表其余项同处一个账本），此处重导出以保持既有路径。
+pub use audiolink_types::NACK_MAX_ITEMS;
 
 /// 音频数据报帧头（§3，24 B 定长小端）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,7 +224,9 @@ fn u32_items(
     min_items: usize,
     max_items: usize,
 ) -> Result<usize, AudioLinkError> {
-    if !payload_len.is_multiple_of(4) || payload_len < min_items * 4 || payload_len > max_items * 4
+    if !payload_len.is_multiple_of(NACK_ITEM_LEN)
+        || payload_len < min_items * NACK_ITEM_LEN
+        || payload_len > max_items * NACK_ITEM_LEN
     {
         return Err(AudioLinkError::bad_request_owned(format!(
             "u32 list payload must be {}..={} items, got {} B",
@@ -264,36 +270,49 @@ pub struct ClockProbe {
 }
 
 impl ClockProbe {
-    /// 载荷长度（12 B = 4 + 8，§3 载荷表）。
-    pub const LEN: usize = 4 + 8;
+    /// 载荷长度（§3 载荷表；与 `audiolink-types` 的 `CLOCK_PROBE_PAYLOAD_LEN` 同一个算式）。
+    pub const LEN: usize = CLOCK_PROBE_PAYLOAD_LEN;
 
-    /// 解析载荷（长度必须恰为 12 B）。
+    /// 截断 / 超长时的统一拒绝原因 —— 期望长度从 [`ClockProbe::LEN`] 取，消息不可能与常量漂移。
+    fn length_error(actual: usize) -> AudioLinkError {
+        AudioLinkError::bad_request_owned(format!(
+            "CLOCK_PROBE payload must be exactly {} B, got {actual} B",
+            Self::LEN
+        ))
+    }
+
+    /// 解析载荷（长度必须恰为 [`ClockProbe::LEN`]）。
     pub fn decode(payload: &[u8]) -> Result<Self, AudioLinkError> {
         if payload.len() != Self::LEN {
-            return Err(AudioLinkError::bad_request(
-                "CLOCK_PROBE payload must be exactly 12 B",
-            ));
+            return Err(Self::length_error(payload.len()));
         }
+        const TRUNCATED: &str = "CLOCK_PROBE payload truncated";
         let probe_seq = u32::from_le_bytes(fixed_bytes::<4>(
             payload,
-            0,
-            "CLOCK_PROBE payload must be exactly 12 B",
+            CLOCK_PROBE_PROBE_SEQ_OFFSET,
+            TRUNCATED,
         )?);
-        let t1 = i64::from_le_bytes(fixed_bytes::<8>(
-            payload,
-            4,
-            "CLOCK_PROBE payload must be exactly 12 B",
-        )?);
+        let t1 = i64::from_le_bytes(fixed_bytes::<8>(payload, CLOCK_PROBE_T1_OFFSET, TRUNCATED)?);
         Ok(Self { probe_seq, t1 })
     }
 
-    /// 编码进缓冲，返回写入长度（12）。
+    /// 编码进缓冲，返回写入长度（[`ClockProbe::LEN`]）。
     pub fn encode_into(&self, out: &mut [u8]) -> Result<usize, AudioLinkError> {
         let dst = out
             .get_mut(..Self::LEN)
             .ok_or(AudioLinkError::bad_request(ERR_OUT_OF_SPACE))?;
-        put(dst, 0, &self.probe_seq.to_le_bytes(), ERR_OUT_OF_SPACE)?;
-        put(dst, 4, &self.t1.to_le_bytes(), ERR_OUT_OF_SPACE)?;
+        put(
+            dst,
+            CLOCK_PROBE_PROBE_SEQ_OFFSET,
+            &self.probe_seq.to_le_bytes(),
+            ERR_OUT_OF_SPACE,
+        )?;
+        put(
+            dst,
+            CLOCK_PROBE_T1_OFFSET,
+            &self.t1.to_le_bytes(),
+            ERR_OUT_OF_SPACE,
+        )?;
         Ok(Self::LEN)
     }
 
@@ -330,19 +349,31 @@ pub struct ClockReply {
 }
 
 impl ClockReply {
-    /// 载荷长度：`probe_seq(u32)` + `t1/t2/t3(i64)` = **28 B**（§3 载荷表）。
-    pub const LEN: usize = 4 + 8 + 8 + 8;
+    /// 载荷长度（§3 载荷表；与 `audiolink-types` 的 `CLOCK_REPLY_PAYLOAD_LEN` 同一个算式）。
+    pub const LEN: usize = CLOCK_REPLY_PAYLOAD_LEN;
 
-    /// 解析载荷（长度必须恰为 28 B）。
+    /// 截断 / 超长时的统一拒绝原因 —— 期望长度从 [`ClockReply::LEN`] 取。
+    fn length_error(actual: usize) -> AudioLinkError {
+        AudioLinkError::bad_request_owned(format!(
+            "CLOCK_REPLY payload must be exactly {} B, got {actual} B",
+            Self::LEN
+        ))
+    }
+
+    /// 解析载荷（长度必须恰为 [`ClockReply::LEN`]）。
     pub fn decode(payload: &[u8]) -> Result<Self, AudioLinkError> {
-        const BAD: &str = "CLOCK_REPLY payload must be exactly 28 B";
         if payload.len() != Self::LEN {
-            return Err(AudioLinkError::bad_request(BAD));
+            return Err(Self::length_error(payload.len()));
         }
-        let probe_seq = u32::from_le_bytes(fixed_bytes::<4>(payload, 0, BAD)?);
-        let t1 = i64::from_le_bytes(fixed_bytes::<8>(payload, 4, BAD)?);
-        let t2 = i64::from_le_bytes(fixed_bytes::<8>(payload, 12, BAD)?);
-        let t3 = i64::from_le_bytes(fixed_bytes::<8>(payload, 20, BAD)?);
+        const TRUNCATED: &str = "CLOCK_REPLY payload truncated";
+        let probe_seq = u32::from_le_bytes(fixed_bytes::<4>(
+            payload,
+            CLOCK_REPLY_PROBE_SEQ_OFFSET,
+            TRUNCATED,
+        )?);
+        let t1 = i64::from_le_bytes(fixed_bytes::<8>(payload, CLOCK_REPLY_T1_OFFSET, TRUNCATED)?);
+        let t2 = i64::from_le_bytes(fixed_bytes::<8>(payload, CLOCK_REPLY_T2_OFFSET, TRUNCATED)?);
+        let t3 = i64::from_le_bytes(fixed_bytes::<8>(payload, CLOCK_REPLY_T3_OFFSET, TRUNCATED)?);
         Ok(Self {
             probe_seq,
             t1,
@@ -351,15 +382,35 @@ impl ClockReply {
         })
     }
 
-    /// 编码进缓冲，返回写入长度（28）。
+    /// 编码进缓冲，返回写入长度（[`ClockReply::LEN`]）。
     pub fn encode_into(&self, out: &mut [u8]) -> Result<usize, AudioLinkError> {
         let dst = out
             .get_mut(..Self::LEN)
             .ok_or(AudioLinkError::bad_request(ERR_OUT_OF_SPACE))?;
-        put(dst, 0, &self.probe_seq.to_le_bytes(), ERR_OUT_OF_SPACE)?;
-        put(dst, 4, &self.t1.to_le_bytes(), ERR_OUT_OF_SPACE)?;
-        put(dst, 12, &self.t2.to_le_bytes(), ERR_OUT_OF_SPACE)?;
-        put(dst, 20, &self.t3.to_le_bytes(), ERR_OUT_OF_SPACE)?;
+        put(
+            dst,
+            CLOCK_REPLY_PROBE_SEQ_OFFSET,
+            &self.probe_seq.to_le_bytes(),
+            ERR_OUT_OF_SPACE,
+        )?;
+        put(
+            dst,
+            CLOCK_REPLY_T1_OFFSET,
+            &self.t1.to_le_bytes(),
+            ERR_OUT_OF_SPACE,
+        )?;
+        put(
+            dst,
+            CLOCK_REPLY_T2_OFFSET,
+            &self.t2.to_le_bytes(),
+            ERR_OUT_OF_SPACE,
+        )?;
+        put(
+            dst,
+            CLOCK_REPLY_T3_OFFSET,
+            &self.t3.to_le_bytes(),
+            ERR_OUT_OF_SPACE,
+        )?;
         Ok(Self::LEN)
     }
 
@@ -395,12 +446,13 @@ impl NackList {
     /// 最多可携带的 seq 个数。
     pub const MAX_ITEMS: usize = NACK_MAX_ITEMS;
 
-    /// 由切片构造（元素个数必须落在 `1..=16`）。
+    /// 由切片构造（元素个数必须落在 `NACK_MIN_ITEMS..=NACK_MAX_ITEMS`）。
     pub fn from_slice(seqs: &[u32]) -> Result<Self, AudioLinkError> {
-        if seqs.is_empty() || seqs.len() > NACK_MAX_ITEMS {
-            return Err(AudioLinkError::bad_request(
-                "NACK must carry 1..=16 seq values",
-            ));
+        if seqs.len() < NACK_MIN_ITEMS || seqs.len() > NACK_MAX_ITEMS {
+            return Err(AudioLinkError::bad_request_owned(format!(
+                "NACK must carry {NACK_MIN_ITEMS}..={NACK_MAX_ITEMS} seq values, got {}",
+                seqs.len()
+            )));
         }
         let mut items = [0u32; NACK_MAX_ITEMS];
         for (slot, value) in items.iter_mut().zip(seqs.iter()) {
@@ -412,15 +464,16 @@ impl NackList {
         })
     }
 
-    /// 解析载荷（长度必须为 4 的倍数且落在 4…64 B）。
+    /// 解析载荷（长度为 `NACK_ITEM_LEN` 的倍数，且元素个数落在 `NACK_MIN_ITEMS..=NACK_MAX_ITEMS`）。
     pub fn decode(payload: &[u8]) -> Result<Self, AudioLinkError> {
-        let count = u32_items(payload.len(), 1, NACK_MAX_ITEMS)?;
+        let count = u32_items(payload.len(), NACK_MIN_ITEMS, NACK_MAX_ITEMS)?;
         let mut items = [0u32; NACK_MAX_ITEMS];
         for (index, slot) in items.iter_mut().take(count).enumerate() {
+            // 长度已由 `u32_items` 校验，这里只兜底「逻辑上不可能」的截断。
             *slot = u32::from_le_bytes(fixed_bytes::<4>(
                 payload,
-                index * 4,
-                "NACK payload must be 4..=64 B",
+                index * NACK_ITEM_LEN,
+                "NACK payload truncated",
             )?);
         }
         Ok(Self { items, len: count })
@@ -431,9 +484,9 @@ impl NackList {
         self.items.get(..self.len).unwrap_or(&[])
     }
 
-    /// 载荷长度（字节）。
+    /// 载荷长度（字节）= 项数 × `NACK_ITEM_LEN`。
     pub const fn payload_len(&self) -> usize {
-        self.len * 4
+        self.len * NACK_ITEM_LEN
     }
 
     /// 编码进缓冲，返回写入长度。
@@ -443,7 +496,12 @@ impl NackList {
             .get_mut(..total)
             .ok_or(AudioLinkError::bad_request(ERR_OUT_OF_SPACE))?;
         for (index, value) in self.seqs().iter().enumerate() {
-            put(dst, index * 4, &value.to_le_bytes(), ERR_OUT_OF_SPACE)?;
+            put(
+                dst,
+                index * NACK_ITEM_LEN,
+                &value.to_le_bytes(),
+                ERR_OUT_OF_SPACE,
+            )?;
         }
         Ok(total)
     }
