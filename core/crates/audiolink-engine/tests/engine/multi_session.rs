@@ -9,10 +9,12 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use audiolink_audio::{NullPlayout, PlayoutSink, SyntheticCapture};
+use audiolink_audio::{
+    AudioError, DeviceFormat, NullPlayout, PlayoutSink, PlayoutStats, SyntheticCapture,
+};
 use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
 use audiolink_types::ErrorCode;
 
@@ -137,6 +139,206 @@ async fn one_capture_feeds_three_receivers() {
     }
 }
 
+/// 记「非静音样本数」与「首次非静音写出的时刻」的播放端（8 台压测用）。
+#[derive(Default)]
+struct Counters {
+    audible: usize,
+    first_audio: Option<Instant>,
+}
+
+struct CountingSink {
+    inner: NullPlayout,
+    counters: Arc<Mutex<Counters>>,
+}
+
+impl PlayoutSink for CountingSink {
+    fn device_format(&self) -> DeviceFormat {
+        self.inner.device_format()
+    }
+
+    fn requested_buffer_ms(&self) -> u32 {
+        self.inner.requested_buffer_ms()
+    }
+
+    fn effective_buffer_ms(&self) -> u32 {
+        self.inner.effective_buffer_ms()
+    }
+
+    fn buffered_frames(&mut self) -> u32 {
+        self.inner.buffered_frames()
+    }
+
+    fn write(&mut self, samples: &[f32]) -> Result<(), AudioError> {
+        self.inner.write(samples)?;
+        let audible = samples.iter().any(|sample| sample.abs() > 0.01);
+        if audible && let Ok(mut counters) = self.counters.lock() {
+            counters.audible += samples.len();
+            if counters.first_audio.is_none() {
+                counters.first_audio = Some(Instant::now());
+            }
+        }
+        Ok(())
+    }
+
+    fn stats(&self) -> PlayoutStats {
+        self.inner.stats()
+    }
+
+    fn stop(&mut self) {
+        self.inner.stop();
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "counting"
+    }
+}
+
+/// 把广播缓冲里累积的「首次排播」事件数出来：非零 = 这一路真的进了 epoch 排播。
+fn drain_scheduled(events: &mut tokio::sync::broadcast::Receiver<EngineEvent>) -> usize {
+    let mut count = 0;
+    while let Ok(event) = events.try_recv() {
+        if let EngineEvent::PlayoutScheduled { .. } = event {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// M3 交付物 1 的账面上写着「多会话（并行推 ≥ 8 台）未开始」—— 这条把它补上。
+///
+/// 盯三件事，都要是**直接证据**：
+/// 1. 一路采集能同时喂 8 台（批量开流每台都有各自的结论）；
+/// 2. 8 台**都在真的出声** —— 用非静音样本，而不是「链路码率非零」；
+/// 3. 8 台都进了 epoch 排播，且播放量同量级 —— 「有出声」抓不住「某台几乎不出声」
+///    （第 61 轮那个 join_group 缺陷就是这么漏过去的）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_capture_feeds_eight_receivers() {
+    const COUNT: usize = 8;
+    let dir = tempfile::TempDir::new().expect("临时目录");
+    let frame_ms = 20_u32;
+    let lead_ms = 120_u32;
+
+    let mut send_config = EngineConfig::new("sender", dir.path().join("sender"));
+    send_config.listen = "127.0.0.1:0".parse().unwrap();
+    send_config.codec.frame_ms = frame_ms;
+    send_config.capture = Some(Arc::new(move || {
+        Ok(Box::new(SyntheticCapture::new(frame_ms, 440.0)?))
+    }));
+    let sender = Engine::start(send_config).await.expect("发送引擎");
+
+    let mut receivers = Vec::new();
+    let mut counters: Vec<Arc<Mutex<Counters>>> = Vec::new();
+    for index in 0..COUNT {
+        let sink_counters = Arc::new(Mutex::new(Counters::default()));
+        let mut recv_config = EngineConfig::new(
+            format!("receiver-{index}"),
+            dir.path().join(format!("receiver-{index}")),
+        );
+        recv_config.listen = "127.0.0.1:0".parse().unwrap();
+        recv_config.codec.frame_ms = frame_ms;
+        let moved = Arc::clone(&sink_counters);
+        recv_config.playout = Some(Arc::new(move || {
+            Ok(Box::new(CountingSink {
+                inner: NullPlayout::new(60),
+                counters: Arc::clone(&moved),
+            }) as Box<dyn PlayoutSink>)
+        }));
+        let receiver = Engine::start(recv_config).await.expect("接收引擎");
+        let accept = receiver.spawn_accept_loop();
+        counters.push(sink_counters);
+        receivers.push((receiver, accept));
+    }
+
+    let mut events: Vec<_> = receivers
+        .iter()
+        .map(|(receiver, _)| receiver.subscribe())
+        .collect();
+
+    let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+        let mut ids = Vec::new();
+        for ((receiver, _), event_rx) in receivers.iter().zip(events.iter_mut()) {
+            let receiver_id = receiver.info().id;
+            let error = sender.connect(receiver.local_addr()).await.unwrap_err();
+            assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
+            let pin = loop {
+                if let EngineEvent::DisplayPin { pin, .. } = event_rx.recv().await.unwrap() {
+                    break pin;
+                }
+            };
+            sender
+                .submit_pin(receiver_id, &pin)
+                .await
+                .expect("PIN 配对");
+            ids.push(receiver_id);
+        }
+
+        for id in &ids {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !sender
+                .peers()
+                .iter()
+                .any(|peer| peer.id == *id && peer.state == SessionState::Streaming)
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "{id:?} 没有在 30 s 内进入 streaming"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+
+        // 8 台成一个组：它们要在同一个 epoch 基准上排播。
+        let _group_id = sender.create_group(&ids, lead_ms).await.expect("建组");
+        let results = sender.start_send_many(&ids).await.expect("批量开流");
+        assert_eq!(results.len(), COUNT, "每台都要有各自的结论");
+        for (id, result) in &results {
+            assert!(result.is_ok(), "{id:?} 开流失败：{result:?}");
+        }
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        ids
+    })
+    .await;
+    let ids = outcome.expect("120 s 内必须完成 8 台配对与批量开流");
+
+    let audible: Vec<usize> = counters
+        .iter()
+        .map(|counters| counters.lock().unwrap().audible)
+        .collect();
+    let scheduled: Vec<usize> = events.iter_mut().map(drain_scheduled).collect();
+    println!(
+        "[multi-8] 8 台非静音样本 {audible:?}（{COUNT} 台，其中 {} 路在链路上）；排播事件数 {scheduled:?}",
+        ids.len()
+    );
+
+    for (index, samples) in audible.iter().enumerate() {
+        assert!(
+            *samples > 0,
+            "第 {index} 台一个非静音样本都没写出来（8 台压测下也不许有哑的）"
+        );
+    }
+    for (index, count) in scheduled.iter().enumerate() {
+        assert!(
+            *count > 0,
+            "第 {index} 台没有排播事件 —— 它没拿到组基准（8 台同组必须都排播）"
+        );
+    }
+    let reference = audible[0];
+    for (index, samples) in audible.iter().enumerate() {
+        assert!(
+            *samples * 10 >= reference * 9,
+            "第 {index} 台的播放量 {samples} 比第 0 台的 {reference} 少了一成以上 —— 并行 8 路时某路被饿着了"
+        );
+    }
+
+    for (_receiver, accept) in receivers.iter() {
+        accept.abort();
+    }
+    sender.shutdown().await;
+    for (receiver, _accept) in &receivers {
+        receiver.shutdown().await;
+    }
+}
 /// 某台接收端看到的链路码率（它自己的遥测口径）。
 fn receiver_bitrate(
     receivers: &[(Arc<Engine>, tokio::task::JoinHandle<()>)],
