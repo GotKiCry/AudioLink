@@ -371,3 +371,56 @@ async fn wait_for_streaming(engine: &Arc<Engine>, peer: NodeId, timeout: Duratio
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+/// M3 验收「时钟」的回环版本：**稳定后 offset 抖动 ≤ 2 ms**。
+///
+/// 与上一条测试的分工很清楚：
+/// * 上一条量的是**收敛**（2 s 内攒够 8 个样本、单次 `|offset| ≤ 2 ms`）；
+/// * 这一条量的是**稳定之后抖不抖** —— 抓的是缓慢漂移、周期性跳变这类问题，
+///   它们不会体现在「一次快照」上。
+///
+/// 真机上的抖动还包含晶振漂移（靠 `drift_ppm` 做速率补偿），回环里没有硬件漂移，
+/// 所以这条主要证明**估计器本身是稳的**；硬件那部分仍属 M3 的真机验收（见 `docs/05`）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn offset_jitter_stays_within_two_milliseconds_after_convergence() {
+    let dir = tempfile::TempDir::new().expect("临时目录");
+    let engine_a = start_engine(dir.path(), "node-a", 20).await;
+    let engine_b = start_engine(dir.path(), "node-b", 20).await;
+    let _accept_a = engine_a.spawn_accept_loop();
+    let _accept_b = engine_b.spawn_accept_loop();
+    let peer_on_a = connect_and_pair(&engine_a, &engine_b).await;
+
+    // 每 100 ms 采一次（探测间隔也是 100 ms，所以这等于「每个新估计采一次」）。
+    let mut offsets: Vec<i64> = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(12);
+    while Instant::now() < deadline {
+        if let Some(estimate) = engine_a.clock_estimate(peer_on_a) {
+            offsets.push(estimate.offset_us);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // 丢掉前 2 s：那是收敛期，收敛过程本身不该算进「稳定后的抖动」。
+    let skip = 20;
+    assert!(
+        offsets.len() > skip + 50,
+        "稳定期样本太少：{}",
+        offsets.len()
+    );
+    let settled = &offsets[skip..];
+    let min = *settled.iter().min().expect("非空");
+    let max = *settled.iter().max().expect("非空");
+    let jitter = max - min;
+    println!(
+        "[clock-jitter] 稳定期 {} 个样本 · offset {}..{} µs · 抖动 {} µs（验收线 2000 µs）",
+        settled.len(),
+        min,
+        max,
+        jitter
+    );
+    assert!(
+        jitter <= 2_000,
+        "offset 抖动 {jitter} µs 超过 2 ms（区间 {min}..{max}，样本 {}）",
+        settled.len()
+    );
+}

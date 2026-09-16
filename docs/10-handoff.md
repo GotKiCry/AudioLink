@@ -293,6 +293,16 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   另加扣帧后 ≤ 5 ms 的自检 —— 当初不敢这么断言正是因为这个偶发缺陷。验证：engine 170 项全过、fmt / clippy 零警告。
   详见 `docs/33-m3-multi-session.md` §7.5–7.6。
 
+- **M3「时钟」验收补上回环证据：稳定后 offset 抖动 ≤ 2 ms**。验收表第 4 条写的是「稳定后 offset **抖动**」，
+  而 `clock_sync` 此前只断言了**收敛**（2 s 内攒够 8 个样本、单次 |offset| ≤ 2 ms）—— 那是「一次快照准不准」，
+  不是「稳定之后抖不抖」；缓慢漂移与周期性跳变都不会体现在一次快照上。新增
+  `offset_jitter_stays_within_two_milliseconds_after_convergence`：配对后每 100 ms 采一次估计
+  （探测间隔也是 100 ms），跑 12 s，丢掉前 2 s 收敛期，取稳定期 offset 的极差。**实测**：
+  `稳定期 83 个样本 · offset 21..24 µs · 抖动 3 µs` —— 比 2 ms 验收线低约 600 倍；同期收敛测试
+  offset = 73 µs、quality = Good、RTT P50 = 321 µs。**边界**：两引擎同进程共享单调时钟，真实偏移恒为 0，
+  所以 3 µs 完全是「估计器 + 收发节奏」的误差 —— 它证明估计器本身稳，真机上的晶振漂移仍属真机验收。
+  代价：这条跑 12 s，进 core-heavy 的 test 步骤。详见 `docs/33-m3-multi-session.md` §8。
+
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
 Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本数**，`receive_audio()` 又乘了声道数，
