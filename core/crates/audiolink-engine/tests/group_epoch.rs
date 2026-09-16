@@ -1,0 +1,116 @@
+//! §7 组基准（GROUP_EPOCH）的端到端回归：**真实双 Engine + 真实 QUIC**。
+//!
+//! 这条测试要证明的是**协议通道**，不是换算公式（公式由 epoch 模块的 8 项单测覆盖）：
+//!
+//! 1. 发送端 announce_group_epoch → 真的发出 0x43 控制帧；
+//! 2. 接收端解出载荷（epoch_id 原样到达）→ 用本机时钟偏移换算 → 排播生效；
+//! 3. 生效从 EngineEvent::PlayoutScheduled 出来 —— 验收「组内同步」看的就是这条时间线。
+//!
+//! 组内两台设备是否真的同时在同一个组时刻出声，要等第二台真机（属 M3 的真机验收项）；
+//! 这里先把「发送端指定 → 接收端排播」这条线钉死。
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use audiolink_audio::{NullPlayout, PlayoutSink, SyntheticCapture};
+use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
+use audiolink_types::ErrorCode;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn group_epoch_reaches_the_receiver_and_schedules_playout() {
+    let dir = tempfile::TempDir::new().expect("临时目录");
+    let frame_ms = 20_u32;
+    let lead_ms = 120_u32;
+    let epoch_id = 0x0BAD_C0DE_1234_5678_u64;
+
+    let mut send_config = EngineConfig::new("sender", dir.path().join("sender"));
+    send_config.listen = "127.0.0.1:0".parse().unwrap();
+    send_config.codec.frame_ms = frame_ms;
+    send_config.capture = Some(Arc::new(move || {
+        Ok(Box::new(SyntheticCapture::new(frame_ms, 440.0)?))
+    }));
+
+    let mut recv_config = EngineConfig::new("receiver", dir.path().join("receiver"));
+    recv_config.listen = "127.0.0.1:0".parse().unwrap();
+    recv_config.codec.frame_ms = frame_ms;
+    recv_config.playout = Some(Arc::new(move || {
+        Ok(Box::new(NullPlayout::new(60)) as Box<dyn PlayoutSink>)
+    }));
+
+    let receiver = Engine::start(recv_config).await.expect("接收引擎");
+    let accept = receiver.spawn_accept_loop();
+    let mut events = receiver.subscribe();
+    let receiver_id = receiver.info().id;
+
+    let sender = Engine::start(send_config).await.expect("发送引擎");
+    let sender_id = sender.info().id;
+
+    let outcome = tokio::time::timeout(Duration::from_secs(45), async {
+        let error = sender.connect(receiver.local_addr()).await.unwrap_err();
+        assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
+        let pin = loop {
+            if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
+                break pin;
+            }
+        };
+        sender
+            .submit_pin(receiver_id, &pin)
+            .await
+            .expect("PIN 配对");
+        while !sender
+            .peers()
+            .iter()
+            .any(|peer| peer.id == receiver_id && peer.state == SessionState::Streaming)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        sender.start_send(receiver_id).await.expect("开流");
+        // 等接收侧真的开始播：首帧数据报建立起序号 → 样本序号的换算基准
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        sender
+            .announce_group_epoch(receiver_id, epoch_id, lead_ms)
+            .await
+            .expect("广播 GROUP_EPOCH");
+
+        loop {
+            if let Ok(EngineEvent::PlayoutScheduled {
+                epoch_id: got,
+                target_local_us,
+                wait_us,
+            }) = events.recv().await
+            {
+                break (got, target_local_us, wait_us);
+            }
+        }
+    })
+    .await;
+
+    let (got_epoch, target_local_us, wait_us) =
+        outcome.expect("45 s 内必须完成配对、开流并观察到排播时间线");
+
+    sender.shutdown().await;
+    receiver.shutdown().await;
+    accept.abort();
+
+    println!(
+        "GROUP_EPOCH epoch={got_epoch:#x} target={target_local_us} µs wait={wait_us} µs（lead={lead_ms} ms）"
+    );
+    let _ = sender_id;
+    assert_eq!(got_epoch, epoch_id, "载荷里的 epoch_id 必须原样到达接收端");
+    assert!(target_local_us > 0, "目标时刻必须是换算后的本机 µs");
+    // 等待量的语义（这里有个容易想错的地方）：目标是
+    //   local(epoch) + sample_index / 48000 + lead_ms
+    // 所以它**不只等于 lead** —— 还要加上这一帧在流里的时刻。测试里推流了 2 s，
+    // 于是等待量 ≈ 2 s + 120 ms，这正是公式在正常工作（而不是"等得太久"）。
+    assert!(
+        wait_us >= u64::from(lead_ms) * 1_000,
+        "等待量至少要包含提前量：{wait_us} µs"
+    );
+    assert!(
+        wait_us <= 15_000_000,
+        "等待量应落在「帧的流内时刻 + 提前量」的量级：{wait_us} µs"
+    );
+}

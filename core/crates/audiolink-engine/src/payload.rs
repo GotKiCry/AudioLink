@@ -182,6 +182,17 @@ pub struct CloseStreamPayload {
     pub reason: String,
 }
 
+/// `GROUP_EPOCH`（`0x43`，发送方 →）：同步组的公共时间基准与预约提前量（§7）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupEpochPayload {
+    /// 组基准标识（会话重建后换新值）。
+    pub epoch_id: u64,
+    /// epoch 在**发送端**单调时钟上的对应时刻（µs）—— 接收端用时钟偏移换算到本机轴。
+    pub epoch_local_us: u64,
+    /// 预约提前量（ms）：接收端据此给排播留余量。
+    pub lead_ms: u32,
+}
+
 /// `SET_GAIN`（`0x20`，双方）。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SetGainPayload {

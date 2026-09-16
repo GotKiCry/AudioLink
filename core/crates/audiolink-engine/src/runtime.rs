@@ -67,7 +67,8 @@ use crate::format_guard::require_unified_format;
 use crate::handshake::{Handshake, HandshakeEvent, HandshakeStep, Outgoing, Role};
 use crate::measure::MeasurementTap;
 use crate::payload::{
-    CloseStreamPayload, CodecPref, OpenStreamAckPayload, OpenStreamPayload, SourceKind,
+    CloseStreamPayload, CodecPref, GroupEpochPayload, OpenStreamAckPayload, OpenStreamPayload,
+    SourceKind,
 };
 use crate::runtime::jitter::{
     AdaptiveJitterDepth, DEFAULT_TARGET_FRAMES, EncodedAudioPacket, MAX_TARGET_FRAMES,
@@ -271,6 +272,8 @@ enum SessionCommand {
     SubmitPin(String),
     /// 关闭整个会话。
     Shutdown,
+    /// §7：向对端广播组基准（发送方 → `GROUP_EPOCH`）。
+    AnnounceGroupEpoch(GroupEpochPayload),
     /// §7：给接收侧设置（或清除）预约播放基准；`None` 表示回到本地游标排播。
     SchedulePlayout {
         /// 组基准；`None` = 关闭预约。
@@ -465,6 +468,25 @@ impl Engine {
     }
 
     /// 订阅引擎事件。
+    /// §7 同步组：向某个对端广播组基准（发送方 → `GROUP_EPOCH`）。
+    ///
+    /// `epoch_local_us` 取本机 `now_monotonic_us()`；接收端用各自的时钟偏移换算到本机轴后排播，
+    /// 因此两台接收端会在**同一个组时刻**起播 —— 这正是「组内 ±10 ms」的定义。
+    pub async fn announce_group_epoch(
+        &self,
+        peer: NodeId,
+        epoch_id: u64,
+        lead_ms: u32,
+    ) -> Result<(), AudioLinkError> {
+        let payload = GroupEpochPayload {
+            epoch_id,
+            epoch_local_us: now_monotonic_us(),
+            lead_ms,
+        };
+        self.send_command(peer, SessionCommand::AnnounceGroupEpoch(payload))
+            .await
+    }
+
     /// §7 预约播放：给某个接收侧会话设置组基准（`None` = 回到本地游标排播）。
     ///
     /// 发送端在 `GROUP_EPOCH` 里给出 epoch 与提前量后由上层调用；只有本机是接收端
@@ -1149,6 +1171,18 @@ async fn run_session(
                             &mut control,
                             &ControlRequest::PairSubmit(crate::payload::PairSubmitPayload { pin }),
                         ).await;
+                    }
+                    SessionCommand::AnnounceGroupEpoch(payload) => {
+                        // §7：epoch_local_us 由调用方取「本机单调时刻」，接收端各自换算到本机轴。
+                        let request = ControlRequest::GroupEpoch(payload);
+                        match send_control(&mut control, &request).await {
+                            Ok(()) => tracing::info!(
+                                epoch_id = payload.epoch_id,
+                                lead_ms = payload.lead_ms,
+                                "§7 已广播 GROUP_EPOCH"
+                            ),
+                            Err(error) => report_error(&inner, &session, &error),
+                        }
                     }
                     SessionCommand::SchedulePlayout { schedule, reply } => {
                         let result = match playback.as_ref() {
@@ -2429,6 +2463,25 @@ async fn handle_control(
                 .send(EngineEvent::PeerUpdated(Box::new(session.snapshot())));
         }
 
+        ControlRequest::GroupEpoch(payload) => {
+            // §7：发送端指定组基准 → 接收侧据此排播（只有配了播放输出才真正生效）。
+            if let Some(handle) = playback.as_ref() {
+                let offset_us = clock_estimate_of(session)
+                    .map(|estimate| estimate.offset_us)
+                    .unwrap_or(0);
+                let frame_samples = codec.frame_ms.max(1) * 48;
+                let schedule =
+                    EpochSchedule::new(payload.epoch_id, payload.epoch_local_us, payload.lead_ms);
+                let enabled = handle.set_schedule(Some(schedule), offset_us, frame_samples);
+                tracing::info!(
+                    epoch_id = payload.epoch_id,
+                    lead_ms = payload.lead_ms,
+                    offset_us,
+                    enabled,
+                    "§7 GROUP_EPOCH：接收侧排播已更新"
+                );
+            }
+        }
         ControlRequest::CloseStream(_) => {
             stop_capture(capture).await;
             stop_playout(playback).await;

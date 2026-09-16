@@ -19,9 +19,9 @@ use audiolink_types::{AudioLinkError, OpCode, StreamStats};
 
 use crate::payload::{
     AuthChallengePayload, AuthResponsePayload, ByePayload, ClockResultPayload, CloseStreamPayload,
-    ErrorPayload, HelloAckPayload, HelloPayload, OpenStreamAckPayload, OpenStreamPayload,
-    PairRequiredPayload, PairResultPayload, PairSubmitPayload, PingPayload, SetGainPayload,
-    SetMutePayload, decode_payload, encode_payload,
+    ErrorPayload, GroupEpochPayload, HelloAckPayload, HelloPayload, OpenStreamAckPayload,
+    OpenStreamPayload, PairRequiredPayload, PairResultPayload, PairSubmitPayload, PingPayload,
+    SetGainPayload, SetMutePayload, decode_payload, encode_payload,
 };
 
 /// 分发结论 —— 调用方据此决定「继续处理」还是「只是记账」。
@@ -126,6 +126,8 @@ pub enum ControlRequest {
     SetMute(SetMutePayload),
     /// `0x30` 发送方 →：时钟同步结果（对端诊断）。
     ClockResult(ClockResultPayload),
+    /// `0x43` 发送方 →：同步组公共时间基准（§7 预约播放）。
+    GroupEpoch(GroupEpochPayload),
     /// `0x60` 双方：可靠流 ping。
     Ping(PingPayload),
     /// `0x61` 双方：可靠流 pong。
@@ -154,6 +156,7 @@ impl ControlRequest {
             Self::SetGain(_) => OpCode::SetGain,
             Self::SetMute(_) => OpCode::SetMute,
             Self::ClockResult(_) => OpCode::ClockResult,
+            Self::GroupEpoch(_) => OpCode::GroupEpoch,
             Self::Ping(_) => OpCode::Ping,
             Self::Pong(_) => OpCode::Pong,
             Self::Error(_) => OpCode::Error,
@@ -181,6 +184,7 @@ impl ControlRequest {
             Self::SetGain(v) => encode_payload(v),
             Self::SetMute(v) => encode_payload(v),
             Self::ClockResult(v) => encode_payload(v),
+            Self::GroupEpoch(v) => encode_payload(v),
             Self::Ping(v) => encode_payload(v),
             Self::Pong(v) => encode_payload(v),
             Self::Error(v) => encode_payload(v),
@@ -282,6 +286,7 @@ fn decode_control(op: OpCode, payload: &[u8]) -> Result<ControlRequest, DecodeFa
         OpCode::SetGain => bad(decode_payload(payload)).map(ControlRequest::SetGain),
         OpCode::SetMute => bad(decode_payload(payload)).map(ControlRequest::SetMute),
         OpCode::ClockResult => bad(decode_payload(payload)).map(ControlRequest::ClockResult),
+        OpCode::GroupEpoch => bad(decode_payload(payload)).map(ControlRequest::GroupEpoch),
         OpCode::Ping => bad(decode_payload(payload)).map(ControlRequest::Ping),
         OpCode::Pong => bad(decode_payload(payload)).map(ControlRequest::Pong),
         OpCode::Error => bad(decode_payload(payload)).map(ControlRequest::Error),
@@ -292,7 +297,6 @@ fn decode_control(op: OpCode, payload: &[u8]) -> Result<ControlRequest, DecodeFa
         | OpCode::GroupCreate
         | OpCode::GroupJoin
         | OpCode::GroupLeave
-        | OpCode::GroupEpoch
         | OpCode::TelemetryPush => Err(DecodeFailure::Unimplemented),
     }
 }
@@ -394,6 +398,11 @@ mod tests {
                 drift_ppm: 12,
                 quality: ClockQuality::Good,
             }),
+            ControlRequest::GroupEpoch(GroupEpochPayload {
+                epoch_id: 0x1122_3344_5566_7788,
+                epoch_local_us: 1_234_567,
+                lead_ms: 30,
+            }),
             ControlRequest::Ping(PingPayload { t1: 1, t2: 2 }),
             ControlRequest::Pong(PingPayload { t1: 1, t2: 2 }),
             ControlRequest::Error(ErrorPayload {
@@ -438,7 +447,6 @@ mod tests {
                     | OpCode::GroupCreate
                     | OpCode::GroupJoin
                     | OpCode::GroupLeave
-                    | OpCode::GroupEpoch
                     | OpCode::TelemetryPush
             );
             assert_eq!(
@@ -501,7 +509,6 @@ mod tests {
             OpCode::GroupCreate,
             OpCode::GroupJoin,
             OpCode::GroupLeave,
-            OpCode::GroupEpoch,
             OpCode::TelemetryPush,
             OpCode::SetVolumeLock,
         ] {
