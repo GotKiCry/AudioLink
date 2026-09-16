@@ -56,20 +56,27 @@ CI 墙钟 = **max(各 job) = core 的 236 s**，所以只有 core 值得动。
 
 ## 5. 改后的数字（诚实版）
 
-| 步骤 | 改前 `35079292910` | 改后第 1 次 `35080728329` | 说明 |
-|---|---|---|---|
-| core job 总计 | 236 s | 368 s | 变慢是**一次性**的：改 `Cargo.toml` 让 target 里 clippy 的 check 产物失效，clippy 步骤 25 → 92 s 重编一次 |
-| clippy | 25 s | 92 s | 同上（稳态应回到 ~25 s，见下次 run） |
-| test | 139 s | **138 s** | **削减 bin harness 与 doctests 的收益小于 run 间噪声** —— 本地确实少了 14 个 harness，CI 上测不出 |
-| android job 总计 | 192 s | 243 s | `actions/cache@v4` 步骤 0.0 s = **首轮 miss**（缓存由本轮 post 步骤写入，次轮才可能命中） |
-| assembleDebug | 130 s | 150 s | 首轮无缓存，且 Gradle 侧波动 |
+| 步骤 | 改前 `35079292910` | 第 1 次 `35080728329` | 第 2 次 `35081356931`（稳态） | 说明 |
+|---|---|---|---|---|
+| **core job 总计** | 236 s | 368 s | **256 s** | 墙钟关键路径；第 1 次的 368 s 是一次性代价（见下两行） |
+| core / clippy | 25 s | 92 s | **22 s** | 第 1 次改了 `Cargo.toml`，target 里的 clippy check 产物失效 → 重编一次；第 2 次回到稳态 |
+| core / test | 139 s | 138 s | 167 s | **削减 bin harness 与 doctests 的收益小于 run 间波动**（139 → 138 → 167 s），真正的测试运行只有 39 s |
+| **android job 总计** | 192 s | 243 s | **85 s** | **↓107 s** |
+| android / assembleDebug | 130 s | 150 s | **16 s** | Gradle 缓存生效：`actions/cache@v4` 从首轮 miss（0.0 s）变成命中（6 s） |
+| android / cargo-ndk 安装 | 1 s | 1 s | 0 s | 本来就被 rust-cache 覆盖 |
 
-**结论（不美化）**：本轮真正的产出是**把两条 CI 待办的前提证伪**（避免后人再去追一个不存在的时间），
-以及三项零风险改动落地；**没有可测的 core 时间回收**。
+**结论（不美化）**：
+
+- **有实测收益的只有 Gradle 缓存**：android job 192 → 85 s（assembleDebug 130 → 16 s）。
+  这正是「预编译 cargo-ndk 省 ~2 min」想要的 2 分钟，只是**该省的地方在 Gradle，不在 cargo-ndk**。
+- **core 没有可测收益**：139 → 138 → 167 s，波动大于改动本身。本地确实少了 14 个测试二进制
+  （41 suite → 27 suite / 仍是 355 项），但这层开销在 CI 上被噪声淹掉。
+- 两条旧待办的**前提都被证伪** —— 这是本轮最值钱的部分：依赖不是每次 run 都付费（cache 全命中），
+  cargo-ndk 也不是每次重编（1 s）。
 
 ## 6. 后续（还有哪里能压）
 
-- core 的 139 s 是「9 个 crate 编译 + 27 个测试二进制链接」的地板价，Windows 链接尤其贵。
+- core 的 139–167 s 是「9 个 crate 编译 + 27 个测试二进制链接」的地板价，Windows 链接尤其贵。
   想真正缩短反馈，只剩**并行拆分**：把 types/proto/identity 这类轻内核拆成独立的快反馈 job，
   重内核（net/engine/ffi/tools）另一个 job —— 墙钟仍由重 job 决定（≈3.5 min），收益在「协议改动的反馈时间」。
 - android 若还要压，继续往 Gradle 上做（`--configuration-cache`、只跑必要 task）。
