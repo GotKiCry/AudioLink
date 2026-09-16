@@ -35,8 +35,12 @@ jobs:
       - name: Clippy (light kernel crates)
         run: cargo clippy -p audiolink-types -p audiolink-proto -p audiolink-identity --all-targets --all-features -- -D warnings
       # --lib --tests：跳过 doctests（内核各 crate 目前 doctest 全为 0 项，只为它们链 rustdoc 不划算）
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked
+      # nextest 跨测试二进制并行调度（cargo test 是逐个二进制串行）。本地实测：heavy 集 78.2 s → 18.8 s
+      # （3/3 次一致，344 项与 cargo test --lib --tests 完全相同，无漏测）。首次安装由 rust-cache 缓存。
       - name: Test (light kernel crates)
-        run: cargo test -p audiolink-types -p audiolink-proto -p audiolink-identity --lib --tests
+        run: cargo nextest run -p audiolink-types -p audiolink-proto -p audiolink-identity --lib --tests
 
   # ---------- 重内核：其余全部内核 crate ----------
   # 用 --workspace --exclude <轻内核三件> 而不是逐个 -p：将来新增 crate 会**自动**落进重 job，
@@ -54,8 +58,10 @@ jobs:
       - name: Clippy (heavy kernel crates)
         run: cargo clippy --workspace --exclude audiolink-desktop --exclude audiolink-types --exclude audiolink-proto --exclude audiolink-identity --all-targets --all-features -- -D warnings
       # 无 #[test] 的 bin 已在各自 Cargo.toml 里标 test = false，不再为它们各链一个测试二进制
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked
       - name: Test (heavy kernel crates)
-        run: cargo test --workspace --exclude audiolink-desktop --exclude audiolink-types --exclude audiolink-proto --exclude audiolink-identity --lib --tests
+        run: cargo nextest run --workspace --exclude audiolink-desktop --exclude audiolink-types --exclude audiolink-proto --exclude audiolink-identity --lib --tests
 
   # ---------- Android：Rust 交叉编译 + 组装 debug APK ----------
   android:

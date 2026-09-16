@@ -1,0 +1,8 @@
+# cargo-nextest 配置。存在的理由：CI 上 4 核并发跑 26 个测试二进制，其中若干是真实 QUIC/tokio 的
+# 端到端用例，等待时间会被并发拉长 —— 给足余量，别把并发变成 flaky。
+
+[profile.default]
+# 单个测试超过 60 s 开始告警，连续 3 个周期仍不收敛就判失败（默认无超时，挂住会一直占着）
+slow-timeout = { period = "60s", terminate-after = 3 }
+# 失败不早停：CI 排错时要看到全部失败面，而不是第一个就收摊
+fail-fast = false
