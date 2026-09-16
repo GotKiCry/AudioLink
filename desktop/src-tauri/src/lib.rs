@@ -205,10 +205,7 @@ async fn locale(bridge: State<'_, EngineBridge>) -> Result<Option<String>, Comma
 
 /// M5：保存界面语言偏好（只接受 zh-CN / en-US）。
 #[tauri::command]
-async fn set_locale(
-    bridge: State<'_, EngineBridge>,
-    tag: String,
-) -> Result<(), CommandError> {
+async fn set_locale(bridge: State<'_, EngineBridge>, tag: String) -> Result<(), CommandError> {
     bridge.set_locale(tag).await
 }
 

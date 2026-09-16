@@ -157,7 +157,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   英文漏写 `{name}` 会在界面上静默少一个值；破坏性验证过（去掉 `en` 的 `{name}` → exit 1，恢复 → exit 0）。
   验证：`pnpm build` 通过（36 modules）、残留扫描 0、`cargo clippy -p audiolink-desktop -D warnings` 零警告、desktop 测试通过。
   **未验**：没有真实 GUI 会话实际切换语言看观感（中英文案长度差异导致的换行/按钮宽度未看）；Android 侧仍是单语言
-  （`values-en/` 未做 —— 路线图 M5 的「中英双语」写在桌面交付物里，不擅自扩张）。详见 `docs/45-m5-bilingual.md`。
+  （`values-en/` 未做 —— 路线图 M5 的「中英双语」写在桌面交付物里，不擅自扩张）。详见 `docs/45-m5-bilingual.md`。**补记（流程漏项）**：这次 CI 第一轮挂在 `core-light` 的 `cargo fmt --all --check` —— 本地只跑了 clippy 与 test、没跑 fmt 就提交了；已格式化并重跑。**门禁清单里 fmt 不是可选项**。
 
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 

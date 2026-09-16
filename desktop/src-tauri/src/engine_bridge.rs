@@ -483,13 +483,14 @@ impl EngineBridge {
                 "set_locale",
             ));
         }
-        let store = self.app.store(SETTINGS_FILE).map_err(|error| {
-            CommandError::busy(format!("打开设置失败：{error}"), "set_locale")
-        })?;
+        let store = self
+            .app
+            .store(SETTINGS_FILE)
+            .map_err(|error| CommandError::busy(format!("打开设置失败：{error}"), "set_locale"))?;
         store.set(KEY_LOCALE, serde_json::Value::String(tag));
-        store.save().map_err(|error| {
-            CommandError::busy(format!("保存设置失败：{error}"), "set_locale")
-        })?;
+        store
+            .save()
+            .map_err(|error| CommandError::busy(format!("保存设置失败：{error}"), "set_locale"))?;
         Ok(())
     }
 
