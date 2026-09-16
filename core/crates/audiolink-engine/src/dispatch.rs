@@ -19,9 +19,10 @@ use audiolink_types::{AudioLinkError, OpCode, StreamStats};
 
 use crate::payload::{
     AuthChallengePayload, AuthResponsePayload, ByePayload, ClockResultPayload, CloseStreamPayload,
-    ErrorPayload, GroupEpochPayload, HelloAckPayload, HelloPayload, OpenStreamAckPayload,
-    OpenStreamPayload, PairRequiredPayload, PairResultPayload, PairSubmitPayload, PingPayload,
-    SetGainPayload, SetMutePayload, decode_payload, encode_payload,
+    ErrorPayload, GroupCreatePayload, GroupEpochPayload, GroupJoinPayload, GroupLeavePayload,
+    HelloAckPayload, HelloPayload, OpenStreamAckPayload, OpenStreamPayload, PairRequiredPayload,
+    PairResultPayload, PairSubmitPayload, PingPayload, SetGainPayload, SetMutePayload,
+    decode_payload, encode_payload,
 };
 
 /// 分发结论 —— 调用方据此决定「继续处理」还是「只是记账」。
@@ -126,6 +127,12 @@ pub enum ControlRequest {
     SetMute(SetMutePayload),
     /// `0x30` 发送方 →：时钟同步结果（对端诊断）。
     ClockResult(ClockResultPayload),
+    /// `0x40` 发送方 →：创建临时同步组（§7）。
+    GroupCreate(GroupCreatePayload),
+    /// `0x41` 发送方 →：成员动态加入（§7）。
+    GroupJoin(GroupJoinPayload),
+    /// `0x42` 发送方 →：成员退出（§7）。
+    GroupLeave(GroupLeavePayload),
     /// `0x43` 发送方 →：同步组公共时间基准（§7 预约播放）。
     GroupEpoch(GroupEpochPayload),
     /// `0x60` 双方：可靠流 ping。
@@ -156,6 +163,9 @@ impl ControlRequest {
             Self::SetGain(_) => OpCode::SetGain,
             Self::SetMute(_) => OpCode::SetMute,
             Self::ClockResult(_) => OpCode::ClockResult,
+            Self::GroupCreate(_) => OpCode::GroupCreate,
+            Self::GroupJoin(_) => OpCode::GroupJoin,
+            Self::GroupLeave(_) => OpCode::GroupLeave,
             Self::GroupEpoch(_) => OpCode::GroupEpoch,
             Self::Ping(_) => OpCode::Ping,
             Self::Pong(_) => OpCode::Pong,
@@ -184,6 +194,9 @@ impl ControlRequest {
             Self::SetGain(v) => encode_payload(v),
             Self::SetMute(v) => encode_payload(v),
             Self::ClockResult(v) => encode_payload(v),
+            Self::GroupCreate(v) => encode_payload(v),
+            Self::GroupJoin(v) => encode_payload(v),
+            Self::GroupLeave(v) => encode_payload(v),
             Self::GroupEpoch(v) => encode_payload(v),
             Self::Ping(v) => encode_payload(v),
             Self::Pong(v) => encode_payload(v),
@@ -286,6 +299,9 @@ fn decode_control(op: OpCode, payload: &[u8]) -> Result<ControlRequest, DecodeFa
         OpCode::SetGain => bad(decode_payload(payload)).map(ControlRequest::SetGain),
         OpCode::SetMute => bad(decode_payload(payload)).map(ControlRequest::SetMute),
         OpCode::ClockResult => bad(decode_payload(payload)).map(ControlRequest::ClockResult),
+        OpCode::GroupCreate => bad(decode_payload(payload)).map(ControlRequest::GroupCreate),
+        OpCode::GroupJoin => bad(decode_payload(payload)).map(ControlRequest::GroupJoin),
+        OpCode::GroupLeave => bad(decode_payload(payload)).map(ControlRequest::GroupLeave),
         OpCode::GroupEpoch => bad(decode_payload(payload)).map(ControlRequest::GroupEpoch),
         OpCode::Ping => bad(decode_payload(payload)).map(ControlRequest::Ping),
         OpCode::Pong => bad(decode_payload(payload)).map(ControlRequest::Pong),
@@ -293,11 +309,7 @@ fn decode_control(op: OpCode, payload: &[u8]) -> Result<ControlRequest, DecodeFa
         OpCode::Bye => bad(decode_payload(payload)).map(ControlRequest::Bye),
 
         // M2/M3 的命令码（§4.1 里有定义，但本里程碑不实现）。
-        OpCode::SetVolumeLock
-        | OpCode::GroupCreate
-        | OpCode::GroupJoin
-        | OpCode::GroupLeave
-        | OpCode::TelemetryPush => Err(DecodeFailure::Unimplemented),
+        OpCode::SetVolumeLock | OpCode::TelemetryPush => Err(DecodeFailure::Unimplemented),
     }
 }
 
@@ -398,6 +410,21 @@ mod tests {
                 drift_ppm: 12,
                 quality: ClockQuality::Good,
             }),
+            ControlRequest::GroupCreate(GroupCreatePayload {
+                group_id: 7,
+                epoch_id: 0x1122_3344_5566_7788,
+                epoch_local_us: 1_234_567,
+                lead_ms: 30,
+                members: vec![NodeId::from_bytes([9u8; 32])],
+            }),
+            ControlRequest::GroupJoin(GroupJoinPayload {
+                group_id: 7,
+                member: NodeId::from_bytes([9u8; 32]),
+            }),
+            ControlRequest::GroupLeave(GroupLeavePayload {
+                group_id: 7,
+                member: NodeId::from_bytes([9u8; 32]),
+            }),
             ControlRequest::GroupEpoch(GroupEpochPayload {
                 epoch_id: 0x1122_3344_5566_7788,
                 epoch_local_us: 1_234_567,
@@ -441,14 +468,7 @@ mod tests {
         let covered: Vec<OpCode> = samples.iter().map(ControlRequest::op).collect();
 
         for op in OpCode::ALL {
-            let implemented = !matches!(
-                op,
-                OpCode::SetVolumeLock
-                    | OpCode::GroupCreate
-                    | OpCode::GroupJoin
-                    | OpCode::GroupLeave
-                    | OpCode::TelemetryPush
-            );
+            let implemented = !matches!(op, OpCode::SetVolumeLock | OpCode::TelemetryPush);
             assert_eq!(
                 covered.contains(&op),
                 implemented,
@@ -505,13 +525,7 @@ mod tests {
     fn unimplemented_opcodes_are_distinguished_from_bad_payloads() {
         // M2/M3 的命令码是「认识但本里程碑不做」——与「载荷烂了」是两件事，
         // 必须分开计数：前者说明对端功能更新，后者说明链路或对端有 bug。
-        for op in [
-            OpCode::GroupCreate,
-            OpCode::GroupJoin,
-            OpCode::GroupLeave,
-            OpCode::TelemetryPush,
-            OpCode::SetVolumeLock,
-        ] {
+        for op in [OpCode::TelemetryPush, OpCode::SetVolumeLock] {
             let mut stats = DispatchStats::default();
             let (request, outcome) = dispatch_into(Some(op), &[], &mut stats);
 

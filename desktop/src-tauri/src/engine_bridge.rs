@@ -566,6 +566,15 @@ async fn run_event_loop(app: AppHandle, engine: Arc<Engine>, cache: Arc<Mutex<Ca
                 } => {
                     tracing::info!(from_bps, to_bps, reason = %reason, "自适应码率变更");
                 }
+                // §7 同步组变化（建组 / 成员加入退出）：这里只记日志 ——
+                // UI 侧「勾选成组」的成组面板属于 M3 的同步组那一项。
+                EngineEvent::GroupUpdated {
+                    group_id,
+                    epoch_id,
+                    members,
+                } => {
+                    tracing::info!(group_id, epoch_id, members, "§7 同步组已更新");
+                }
                 // §7 预约播放生效（接收端按 epoch 排播）：这里只记日志 ——
                 // 时间线由内核发出，UI 侧的同步质量展示属于 M3 的同步组面板那一项。
                 EngineEvent::PlayoutScheduled {

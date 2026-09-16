@@ -56,6 +56,8 @@ pub use payload::{
     STREAM_ID_ALL, SetGainPayload, SetMutePayload, SourceKind, StreamStatsPayload, decode_payload,
     encode_payload,
 };
-pub use runtime::{CaptureFactory, Engine, EngineConfig, EngineEvent, PeerStatus, PlayoutFactory};
+pub use runtime::{
+    CaptureFactory, Engine, EngineConfig, EngineEvent, GroupSnapshot, PeerStatus, PlayoutFactory,
+};
 pub use session::{SessionEvent, SessionMachine, SessionState, SessionTransition, next_state};
 pub use telemetry::TelemetryAggregator;

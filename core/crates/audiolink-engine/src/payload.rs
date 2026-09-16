@@ -17,7 +17,7 @@
 //! 因此这里允许分配（`Vec` / `String`）—— 实时纪律约束的是音频线程，不是控制面。
 
 use audiolink_proto::payload_encode;
-use audiolink_types::{AudioLinkError, ClockQuality, NodeInfo, OpCode, StreamStats};
+use audiolink_types::{AudioLinkError, ClockQuality, NodeId, NodeInfo, OpCode, StreamStats};
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -180,6 +180,39 @@ pub struct CloseStreamPayload {
     pub stream_id: u32,
     /// 关闭原因。
     pub reason: String,
+}
+
+/// `GROUP_CREATE`（`0x40`，发送方 →）：创建临时同步组（§7 / FR-22）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupCreatePayload {
+    /// 组标识（发送方随机生成）。
+    pub group_id: u32,
+    /// 组基准标识。
+    pub epoch_id: u64,
+    /// epoch 在**发送端**单调时钟上的对应时刻（µs）。
+    pub epoch_local_us: u64,
+    /// 预约提前量（ms）。
+    pub lead_ms: u32,
+    /// 成员（证书指纹）：接收端据此确认自己在不在组里。
+    pub members: Vec<NodeId>,
+}
+
+/// `GROUP_JOIN`（`0x41`，发送方 →）：成员动态加入（§7）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupJoinPayload {
+    /// 组标识。
+    pub group_id: u32,
+    /// 加入的成员（证书指纹）。
+    pub member: NodeId,
+}
+
+/// `GROUP_LEAVE`（`0x42`，发送方 →）：成员退出（§7）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupLeavePayload {
+    /// 组标识。
+    pub group_id: u32,
+    /// 退出的成员（证书指纹）。
+    pub member: NodeId,
 }
 
 /// `GROUP_EPOCH`（`0x43`，发送方 →）：同步组的公共时间基准与预约提前量（§7）。

@@ -34,7 +34,7 @@
 //! 采集线程与播放线程的**稳态路径**里没有 `unwrap` / `expect` / 日志 / 堆分配；
 //! 错误一律上报并触发状态机迁移，绝不静默停止（架构 §4）。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -67,8 +67,8 @@ use crate::format_guard::require_unified_format;
 use crate::handshake::{Handshake, HandshakeEvent, HandshakeStep, Outgoing, Role};
 use crate::measure::MeasurementTap;
 use crate::payload::{
-    CloseStreamPayload, CodecPref, GroupEpochPayload, OpenStreamAckPayload, OpenStreamPayload,
-    SourceKind,
+    CloseStreamPayload, CodecPref, GroupCreatePayload, GroupEpochPayload, GroupJoinPayload,
+    GroupLeavePayload, OpenStreamAckPayload, OpenStreamPayload, SourceKind,
 };
 use crate::runtime::jitter::{
     AdaptiveJitterDepth, DEFAULT_TARGET_FRAMES, EncodedAudioPacket, MAX_TARGET_FRAMES,
@@ -240,6 +240,15 @@ pub enum EngineEvent {
         /// 触发原因（人类可读）。
         reason: String,
     },
+    /// §7 同步组变化（建组 / 成员加入退出）：成员表与基准的可见来源。
+    GroupUpdated {
+        /// 组 ID。
+        group_id: u32,
+        /// 组基准标识。
+        epoch_id: u64,
+        /// 当前成员数。
+        members: u32,
+    },
     /// §7 预约播放生效（接收端按 epoch 排播）：组内同步的验收时间线就看它。
     PlayoutScheduled {
         /// 组基准标识。
@@ -258,6 +267,14 @@ pub enum EngineEvent {
     },
 }
 
+/// §7 组管理帧（发送方 → 成员）。
+#[derive(Debug, Clone)]
+enum GroupFrame {
+    Create(GroupCreatePayload),
+    Join(GroupJoinPayload),
+    Leave(GroupLeavePayload),
+}
+
 /// 应用 → 会话任务的指令。
 #[derive(Debug)]
 enum SessionCommand {
@@ -274,6 +291,8 @@ enum SessionCommand {
     Shutdown,
     /// §7：向对端广播组基准（发送方 → `GROUP_EPOCH`）。
     AnnounceGroupEpoch(GroupEpochPayload),
+    /// §7：向对端发送组管理帧（`GROUP_CREATE` / `GROUP_JOIN` / `GROUP_LEAVE`）。
+    SendGroupFrame(GroupFrame),
     /// §7：给接收侧设置（或清除）预约播放基准；`None` 表示回到本地游标排播。
     SchedulePlayout {
         /// 组基准；`None` = 关闭预约。
@@ -381,6 +400,8 @@ struct Inner {
     /// 注册任务与关闭入口共用此锁，停止后不能再生成漏出清理范围的任务。
     tasks: Mutex<TaskTracker>,
     listen_addr: std::net::SocketAddr,
+    /// §7 临时同步组的账本（发送侧写、查询用）：组 ID → 基准与成员。
+    groups: Mutex<HashMap<u32, GroupState>>,
 }
 
 impl Inner {
@@ -394,6 +415,27 @@ impl Inner {
         }
         Ok(tasks.spawn(future))
     }
+}
+
+/// 一个临时同步组的账本条目（§7 / FR-22）。
+#[derive(Debug, Clone)]
+struct GroupState {
+    epoch: EpochSchedule,
+    lead_ms: u32,
+    members: BTreeSet<NodeId>,
+}
+
+/// 同步组快照（UI 与验收报告的数据源）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupSnapshot {
+    /// 组 ID。
+    pub group_id: u32,
+    /// 组基准标识。
+    pub epoch_id: u64,
+    /// 预约提前量（ms）。
+    pub lead_ms: u32,
+    /// 成员（证书指纹，有序）。
+    pub members: Vec<NodeId>,
 }
 
 /// AudioLink 引擎：一个进程一个实例，管理全部对端会话。
@@ -449,6 +491,7 @@ impl Engine {
                 endpoint,
                 config,
                 peers: Mutex::new(HashMap::new()),
+                groups: Mutex::new(HashMap::new()),
                 events,
                 shutdown: AtomicBool::new(false),
                 tasks: Mutex::new(TaskTracker::new()),
@@ -468,6 +511,178 @@ impl Engine {
     }
 
     /// 订阅引擎事件。
+    /// §7 同步组：创建临时组并把组基准广播给成员（发送方）。
+    ///
+    /// 返回组 ID。epoch_local_us 取本机单调时刻，成员各自换算到本机轴后排播 ——
+    /// 这正是「组内 ±10 ms」的机制部分（偏差本身的测量用 tools/sync-measure）。
+    pub async fn create_group(
+        &self,
+        members: &[NodeId],
+        lead_ms: u32,
+    ) -> Result<u32, AudioLinkError> {
+        let unique: BTreeSet<NodeId> = members.iter().copied().collect();
+        if unique.is_empty() {
+            return Err(AudioLinkError::bad_request(
+                "a group needs at least one member",
+            ));
+        }
+        let group_id = (random_u64() as u32).max(1);
+        let epoch_id = random_u64().max(1);
+        let epoch_local_us = now_monotonic_us();
+        let epoch = EpochSchedule::new(epoch_id, epoch_local_us, lead_ms);
+        {
+            let mut table = self
+                .inner
+                .groups
+                .lock()
+                .map_err(|_| AudioLinkError::bad_request("group table poisoned"))?;
+            table.insert(
+                group_id,
+                GroupState {
+                    epoch,
+                    lead_ms,
+                    members: unique.clone(),
+                },
+            );
+        }
+        let payload = GroupCreatePayload {
+            group_id,
+            epoch_id,
+            epoch_local_us,
+            lead_ms,
+            members: unique.iter().copied().collect(),
+        };
+        for member in &unique {
+            self.send_command(
+                *member,
+                SessionCommand::SendGroupFrame(GroupFrame::Create(payload.clone())),
+            )
+            .await?;
+        }
+        let _ = self.inner.events.send(EngineEvent::GroupUpdated {
+            group_id,
+            epoch_id,
+            members: u32::try_from(unique.len()).unwrap_or(u32::MAX),
+        });
+        Ok(group_id)
+    }
+
+    /// §7 同步组：成员动态加入（运行中的其它成员不受影响）。
+    ///
+    /// 新成员除了收到 JOIN，还会补一条 GROUP_EPOCH —— 它需要组基准才能排播。
+    pub async fn join_group(&self, member: NodeId, group_id: u32) -> Result<(), AudioLinkError> {
+        let (epoch_id, lead_ms, count) = {
+            let mut table = self
+                .inner
+                .groups
+                .lock()
+                .map_err(|_| AudioLinkError::bad_request("group table poisoned"))?;
+            let state = table
+                .get_mut(&group_id)
+                .ok_or_else(|| AudioLinkError::bad_request("unknown group"))?;
+            state.members.insert(member);
+            let count = u32::try_from(state.members.len()).unwrap_or(u32::MAX);
+            (state.epoch.epoch_id, state.lead_ms, count)
+        };
+        self.send_group_frame(
+            group_id,
+            GroupFrame::Join(GroupJoinPayload { group_id, member }),
+        )
+        .await?;
+        self.send_command(
+            member,
+            SessionCommand::AnnounceGroupEpoch(GroupEpochPayload {
+                epoch_id,
+                epoch_local_us: now_monotonic_us(),
+                lead_ms,
+            }),
+        )
+        .await?;
+        let _ = self.inner.events.send(EngineEvent::GroupUpdated {
+            group_id,
+            epoch_id,
+            members: count,
+        });
+        Ok(())
+    }
+
+    /// §7 同步组：成员退出（其余成员继续）。组空了就把账本条目删掉。
+    pub async fn leave_group(&self, member: NodeId, group_id: u32) -> Result<(), AudioLinkError> {
+        self.send_group_frame(
+            group_id,
+            GroupFrame::Leave(GroupLeavePayload { group_id, member }),
+        )
+        .await?;
+        let (epoch_id, count) = {
+            let mut table = self
+                .inner
+                .groups
+                .lock()
+                .map_err(|_| AudioLinkError::bad_request("group table poisoned"))?;
+            let state = table
+                .get_mut(&group_id)
+                .ok_or_else(|| AudioLinkError::bad_request("unknown group"))?;
+            state.members.remove(&member);
+            let epoch_id = state.epoch.epoch_id;
+            let count = u32::try_from(state.members.len()).unwrap_or(u32::MAX);
+            if state.members.is_empty() {
+                table.remove(&group_id);
+            }
+            (epoch_id, count)
+        };
+        let _ = self.inner.events.send(EngineEvent::GroupUpdated {
+            group_id,
+            epoch_id,
+            members: count,
+        });
+        Ok(())
+    }
+
+    /// 同步组快照（组 ID 升序）。
+    pub fn groups(&self) -> Vec<GroupSnapshot> {
+        self.inner
+            .groups
+            .lock()
+            .map(|table| {
+                let mut list: Vec<GroupSnapshot> = table
+                    .iter()
+                    .map(|(group_id, state)| GroupSnapshot {
+                        group_id: *group_id,
+                        epoch_id: state.epoch.epoch_id,
+                        lead_ms: state.lead_ms,
+                        members: state.members.iter().copied().collect(),
+                    })
+                    .collect();
+                list.sort_by_key(|snapshot| snapshot.group_id);
+                list
+            })
+            .unwrap_or_default()
+    }
+
+    /// 把一帧组管理消息发给组内全部成员。
+    async fn send_group_frame(
+        &self,
+        group_id: u32,
+        frame: GroupFrame,
+    ) -> Result<(), AudioLinkError> {
+        let members = {
+            let table = self
+                .inner
+                .groups
+                .lock()
+                .map_err(|_| AudioLinkError::bad_request("group table poisoned"))?;
+            table
+                .get(&group_id)
+                .map(|state| state.members.iter().copied().collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        for member in members {
+            self.send_command(member, SessionCommand::SendGroupFrame(frame.clone()))
+                .await?;
+        }
+        Ok(())
+    }
+
     /// §7 同步组：向某个对端广播组基准（发送方 → `GROUP_EPOCH`）。
     ///
     /// `epoch_local_us` 取本机 `now_monotonic_us()`；接收端用各自的时钟偏移换算到本机轴后排播，
@@ -1182,6 +1397,16 @@ async fn run_session(
                                 "§7 已广播 GROUP_EPOCH"
                             ),
                             Err(error) => report_error(&inner, &session, &error),
+                        }
+                    }
+                    SessionCommand::SendGroupFrame(frame) => {
+                        let request = match frame {
+                            GroupFrame::Create(payload) => ControlRequest::GroupCreate(payload),
+                            GroupFrame::Join(payload) => ControlRequest::GroupJoin(payload),
+                            GroupFrame::Leave(payload) => ControlRequest::GroupLeave(payload),
+                        };
+                        if let Err(error) = send_control(&mut control, &request).await {
+                            report_error(&inner, &session, &error);
                         }
                     }
                     SessionCommand::SchedulePlayout { schedule, reply } => {
@@ -2463,6 +2688,37 @@ async fn handle_control(
                 .send(EngineEvent::PeerUpdated(Box::new(session.snapshot())));
         }
 
+        ControlRequest::GroupCreate(payload) => {
+            // §7：建组帧同时携带组基准 —— 接收侧据此排播，并让上层知道「我在哪个组」。
+            if let Some(handle) = playback.as_ref() {
+                let offset_us = clock_estimate_of(session)
+                    .map(|estimate| estimate.offset_us)
+                    .unwrap_or(0);
+                let frame_samples = codec.frame_ms.max(1) * 48;
+                let schedule =
+                    EpochSchedule::new(payload.epoch_id, payload.epoch_local_us, payload.lead_ms);
+                let _ = handle.set_schedule(Some(schedule), offset_us, frame_samples);
+            }
+            let _ = inner.events.send(EngineEvent::GroupUpdated {
+                group_id: payload.group_id,
+                epoch_id: payload.epoch_id,
+                members: u32::try_from(payload.members.len()).unwrap_or(u32::MAX),
+            });
+        }
+        ControlRequest::GroupJoin(payload) => {
+            tracing::info!(
+                group_id = payload.group_id,
+                member = %payload.member.short(),
+                "§7 有成员加入同步组"
+            );
+        }
+        ControlRequest::GroupLeave(payload) => {
+            tracing::info!(
+                group_id = payload.group_id,
+                member = %payload.member.short(),
+                "§7 有成员退出同步组"
+            );
+        }
         ControlRequest::GroupEpoch(payload) => {
             // §7：发送端指定组基准 → 接收侧据此排播（只有配了播放输出才真正生效）。
             if let Some(handle) = playback.as_ref() {
