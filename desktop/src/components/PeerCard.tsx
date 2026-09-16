@@ -2,7 +2,8 @@
  * 对端卡片（UI 规格 §2.2 的 `DeviceCard`，M1 最小版）。
  *
  * 保留：名字 / 短指纹 / 状态 / 是否受信 / 地址 / 开始·停止推流。
- * 不做：音量滑块（需要 `SET_GAIN` command，契约 §6 没有）、`⋯` 菜单、重命名、延迟补偿（M2/M5）。
+ * 音量滑块：§4.1 的 SET_GAIN 已在引擎侧生效（M3），外壳经 set_peer_gain 命令下发（渐变 200 ms）。
+ * 不做：`⋯` 菜单、重命名、延迟补偿（M2/M5）。
  * 断开后卡片**不消失**（UI 规格 §2.2 微交互）：M1 里"已断开"由 `state: failed` 表达。
  */
 
@@ -22,9 +23,20 @@ interface PeerCardProps {
   onStart: (idShort: string) => Promise<void>;
   onStop: () => Promise<void>;
   onBeginPair: (idShort: string) => void;
+  /** §4.1：调这台对端的音量（0.0–2.0），由外壳带 200 ms 渐变下发。 */
+  onGain: (gain: number) => void;
 }
 
-export function PeerCard({ peer, busy, canStart, canInputPin, onStart, onStop, onBeginPair }: PeerCardProps) {
+export function PeerCard({
+  peer,
+  busy,
+  canStart,
+  canInputPin,
+  onStart,
+  onStop,
+  onBeginPair,
+  onGain,
+}: PeerCardProps) {
   const style = PEER_STATE_STYLE[peer.state];
   const streaming = peer.state === "streaming" || peer.state === "degraded";
 
@@ -73,6 +85,24 @@ export function PeerCard({ peer, busy, canStart, canInputPin, onStart, onStop, o
         <p className="mt-3 rounded-lg bg-amber-50 px-2 py-1 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-300">
           网络不稳，已自动降码率
         </p>
+      ) : null}
+
+      {/* §4.1 音量：只在推流中给入口（引擎侧 SET_GAIN 已生效，渐变 200 ms） */}
+      {streaming ? (
+        <label className="mt-3 flex items-center gap-2 pl-1 text-xs text-slate-500 dark:text-slate-400">
+          <span className="shrink-0">音量</span>
+          <input
+            type="range"
+            min={0}
+            max={2}
+            step={0.05}
+            defaultValue={1}
+            aria-label="对端音量"
+            title="对端音量（0–200%），拖动时按 200 ms 渐变生效"
+            onChange={(event) => onGain(Number(event.target.value))}
+            className="flex-1"
+          />
+        </label>
       ) : null}
 
       <div className="mt-3 flex gap-2 pl-1">

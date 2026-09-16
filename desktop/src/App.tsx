@@ -68,6 +68,7 @@ export default function App() {
               onStart={al.startSend}
               onStop={al.stopSend}
               onBeginPair={al.beginPairing}
+              onGain={(gain) => void al.setPeerGain(peer.idShort, gain)}
             />
           ))}
         </div>

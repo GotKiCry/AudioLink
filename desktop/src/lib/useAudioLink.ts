@@ -188,6 +188,11 @@ export function useAudioLink(): AudioLinkController {
   useEffect(() => {
     // 订阅必须在挂载时就绪：配对请求可能在用户还没做任何动作时由对端发起
     const unsubscribe = subscribeEvents({
+      // §7 同步组变化（建组 / 成员加入退出）：顺手拉一次最新组列表。
+      // 为什么不做轮询：这是低频人工动作，事件驱动既省 IPC 也不会漏。
+      onGroupUpdated: () => {
+        void refreshGroups();
+      },
       // 对端列表变化时顺手收敛配对对话框：对端没了、或已经变成"已受信"，
       // 对话框就没有存在意义了（接收端场景下用户全程不点任何按钮，全靠这条规则关闭）。
       onPeers: (next) => {

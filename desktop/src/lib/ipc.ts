@@ -25,6 +25,8 @@ import type {
 export const EVENT_PEER = "audiolink://peer";
 export const EVENT_TELEMETRY = "audiolink://telemetry";
 export const EVENT_PAIR_REQUIRED = "audiolink://pair-required";
+/** §7 同步组变化：收到就去拉一次最新的组列表。 */
+export const EVENT_GROUPS = "audiolink://groups";
 
 /** 契约 §6 的 command 表。参数键名严格照契约（`start_send` 用 `id_short`）。 */
 export const api = {
@@ -76,6 +78,8 @@ export const api = {
 export function subscribeEvents(handlers: {
   onPeers: (peers: PeerView[]) => void;
   onTelemetry: (view: TelemetryView) => void;
+  /** §7 同步组变化（不节流：建组/加入/退出都是低频人工动作）。 */
+  onGroupUpdated: () => void;
   onPairRequired: (payload: PairRequiredPayload) => void;
   onError: (raw: unknown) => void;
 }): () => void {
@@ -85,6 +89,7 @@ export function subscribeEvents(handlers: {
   const pending: Promise<UnlistenFn>[] = [
     listen<PeerView[]>(EVENT_PEER, (event) => handlers.onPeers(event.payload)),
     listen<TelemetryView>(EVENT_TELEMETRY, (event) => handlers.onTelemetry(event.payload)),
+    listen<[number, number, number]>(EVENT_GROUPS, () => handlers.onGroupUpdated()),
     listen<PairRequiredPayload>(EVENT_PAIR_REQUIRED, (event) => handlers.onPairRequired(event.payload)),
   ];
 

@@ -60,6 +60,9 @@ pub const EVENT_TELEMETRY: &str = "audiolink://telemetry";
 /// * `pin` 为空 → **本机是发起端**：请用户输入对方屏幕上显示的码（`EngineEvent::PinNeeded`）。
 pub const EVENT_PAIR_REQUIRED: &str = "audiolink://pair-required";
 
+/// §7 同步组变化（建组 / 成员加入退出）：前端收到就去拉一次最新的组列表。
+pub const EVENT_GROUPS: &str = "audiolink://groups";
+
 // ---------------------------------------------------------------------------
 // 节奏与阈值
 // ---------------------------------------------------------------------------
@@ -636,6 +639,8 @@ async fn run_event_loop(app: AppHandle, engine: Arc<Engine>, cache: Arc<Mutex<Ca
                     members,
                 } => {
                     tracing::info!(group_id, epoch_id, members, "§7 同步组已更新");
+                    // 事件驱动刷新：UI 不必轮询（payload 只带「变了」这件事，明细由 list_groups 拉）。
+                    let _ = app.emit(EVENT_GROUPS, (group_id, epoch_id, members));
                 }
                 // §7 预约播放生效（接收端按 epoch 排播）：这里只记日志 ——
                 // 时间线由内核发出，UI 侧的同步质量展示属于 M3 的同步组面板那一项。
