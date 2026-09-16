@@ -30,10 +30,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use audiolink_engine::{
-    Engine, EngineConfig, EngineEvent, GroupSnapshot, PeerStatus, SessionState,
+    Engine, EngineConfig, EngineEvent, GroupSnapshot, PeerCapabilities, PeerStatus, SessionState,
 };
 use audiolink_types::{
-    AudioLinkError, ClockQuality, DEFAULT_QUIC_PORT, ErrorCode, NodeId, StreamStats,
+    AudioLinkError, Capabilities, ClockQuality, DEFAULT_QUIC_PORT, ErrorCode, NodeId, StreamStats,
 };
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_store::StoreExt as _;
@@ -58,8 +58,9 @@ use crate::error::CommandError;
 use crate::settings::AutoConnectPolicy;
 use crate::view::{
     AlignmentView, CaptureDeviceView, GroupMemberView, GroupView, LocalStatus, NoticesView,
-    PairRequiredPayload, PeerState, PeerView, StartSendResult, SubmitPinResult, TelemetryRow,
-    TelemetryView, alignment_view, notices_view, render_telemetry_csv,
+    PairRequiredPayload, PeerCapabilitiesView, PeerState, PeerView, StartSendResult,
+    SubmitPinResult, TelemetryRow, TelemetryView, alignment_view, notices_view,
+    render_telemetry_csv,
 };
 
 // ---------------------------------------------------------------------------
@@ -986,7 +987,24 @@ fn peer_view(status: &PeerStatus, sending: Option<NodeId>) -> PeerView {
         addr: status.addr.to_string(),
         state: map_state(status.state, sending == Some(status.id)),
         trusted: status.trusted,
+        capabilities: capabilities_view(status.capabilities),
     }
+}
+
+/// §13 能力协商结果 → 契约视图（把位图翻成人话，见 [`PeerCapabilitiesView`] 的说明）。
+fn capabilities_view(caps: Option<PeerCapabilities>) -> Option<PeerCapabilitiesView> {
+    let caps = caps?;
+    let missing_on_peer = Capabilities::ALL_KNOWN
+        .iter()
+        .filter(|bit| caps.missing_on_peer() & **bit != 0)
+        .map(|bit| Capabilities::name(*bit).to_string())
+        .collect();
+    Some(PeerCapabilitiesView {
+        local: Capabilities::describe(caps.local),
+        peer: Capabilities::describe(caps.peer),
+        agreed: Capabilities::describe(caps.agreed),
+        missing_on_peer,
+    })
 }
 
 /// 引擎会话状态 → 契约状态（5 个）。
@@ -1473,6 +1491,7 @@ mod tests {
         let near = NodeId::from_bytes([1u8; 32]);
         let status = |id: NodeId, e2e: u32| PeerStatus {
             id,
+            capabilities: None,
             name: format!("peer-{}", id.short()),
             addr: "127.0.0.1:58290".parse().expect("addr"),
             state: SessionState::Streaming,
@@ -1516,6 +1535,7 @@ mod tests {
                 bitrate_bps: 160_000,
                 ..Default::default()
             },
+            capabilities: None,
         }];
 
         // 没有对端上报 → 本机统计（e2e = 0，UI 会显示 "—"）
@@ -1569,6 +1589,7 @@ mod tests {
             state: SessionState::Streaming,
             trusted: true,
             stats: StreamStats::default(),
+            capabilities: None,
         };
 
         let view = peer_view(&status, Some(id));

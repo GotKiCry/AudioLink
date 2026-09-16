@@ -92,6 +92,25 @@ pub struct PeerView {
     pub state: PeerState,
     /// 是否已在信任库（`docs/02-architecture.md` §8：白名单命中 = 免交互直连）。
     pub trusted: bool,
+    /// §13 能力协商结果；`None` = 还没走完能力交换（握手阶段的对端就是 `None`）。
+    pub capabilities: Option<PeerCapabilitiesView>,
+}
+
+/// §13 能力协商结果（给界面看的形式）。
+///
+/// 为什么在这里把位图**翻成人话**：位图是协议用的，界面要回答的是「这台对端能做什么、缺什么」。
+/// 把 `1 << 3` 丢给前端，等于让每个前端各实现一遍解释，迟早解释不一致。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerCapabilitiesView {
+    /// 本端能力（人话列表）。
+    pub local: String,
+    /// 对端能力（人话列表）。
+    pub peer: String,
+    /// 双方交集 —— 也就这一对到底能一起做什么。
+    pub agreed: String,
+    /// 本端有、对端没有的能力（逐项人话；界面据此置灰并说明原因）。
+    pub missing_on_peer: Vec<String>,
 }
 
 /// 遥测数字面板的数据（契约 §6；单位统一 µs / bps，由前端换算成 ms / kbps 展示）。
@@ -275,10 +294,26 @@ mod tests {
             addr: "192.168.1.23:58290".into(),
             state: PeerState::Handshaking,
             trusted: false,
+            capabilities: None,
         };
         assert_eq!(
             serde_json::to_string(&peer).expect("serialize"),
-            r#"{"idShort":"3f9a1c0b","name":"客厅 R1","addr":"192.168.1.23:58290","state":"handshaking","trusted":false}"#
+            r#"{"idShort":"3f9a1c0b","name":"客厅 R1","addr":"192.168.1.23:58290","state":"handshaking","trusted":false,"capabilities":null}"#
+        );
+
+        // 协商完成后的形状：字段名与嵌套名都要钉住（前端按 `missingOnPeer` 决定置灰）。
+        let negotiated = PeerView {
+            capabilities: Some(PeerCapabilitiesView {
+                local: "Opus 编码、音频采集".into(),
+                peer: "Opus 编码、音频播放".into(),
+                agreed: "Opus 编码".into(),
+                missing_on_peer: vec!["音频采集".into()],
+            }),
+            ..peer
+        };
+        assert_eq!(
+            serde_json::to_string(&negotiated).expect("serialize"),
+            r#"{"idShort":"3f9a1c0b","name":"客厅 R1","addr":"192.168.1.23:58290","state":"handshaking","trusted":false,"capabilities":{"local":"Opus 编码、音频采集","peer":"Opus 编码、音频播放","agreed":"Opus 编码","missingOnPeer":["音频采集"]}}"#
         );
 
         let local = LocalStatus {

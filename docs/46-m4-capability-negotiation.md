@@ -97,7 +97,52 @@
 
 ---
 
-## 7. 未做（下一轮）
+
+---
+
+## 8. 界面侧：把协商结果送到用户眼前（第二轮）
+
+内核侧落地后，协商结果还躺在 `Handshake::agreed_caps()` 里 —— 界面看不到，用户于是仍然不知道
+「为什么同步组对这一台用不了」。这一轮把它接通：
+
+| 层 | 变化 |
+|---|---|
+| 握手事件 | `HandshakeEvent::Established` 带上 `local_caps` / `peer_caps` / `agreed_caps` —— **自包含**：会话层不用再回头去问握手对象 |
+| 会话状态 | `PeerSession` 存 `Option<PeerCapabilities>`，`PeerStatus` 暴露给引擎调用方 |
+| 桥接层 | `PeerView` 增加 `capabilities`；位图在 **Rust 侧**就翻成人话（`PeerCapabilitiesView`：`local` / `peer` / `agreed` / `missingOnPeer[]`） |
+| 界面 | 对端卡片多一行「可用：…」；本端有而对端没有的能力非空时，再补一句「对端不支持：…」（琥珀色） |
+
+**为什么翻译放在 Rust 侧**：位图是协议用的，界面要回答的是「这台对端能做什么、缺什么」。
+把 `1 << 3` 丢给前端，等于让每个前端各实现一遍解释，迟早解释不一致。
+
+**`missingOnPeer` 怎么算**：`local & !peer`，再按 `Capabilities::ALL_KNOWN` 的固定顺序翻成名字 ——
+它就是「置灰」那一半的直接输入（M4 交付物 4 的降级 UI 靠它）。
+
+### 8.1 一个被契约测试抓到的形状变化
+
+`view.rs` 的 `peer_and_local_json_shape_match_contract` 立刻变红：`PeerView` 多了 `capabilities` 字段。
+这正是那条测试存在的理由（字段名一旦漂移，前端会静默拿到 `undefined`，什么都不报）。
+已顺手把它扩成两个形状：**未协商**（`null`）与**已协商**（含嵌套对象与数组）—— 后者钉住了
+`missingOnPeer` 这个名字，前端就是按它决定置灰的。
+
+### 8.2 这一环的验证
+
+| 层 | 证据 |
+|---|---|
+| 引擎 | 170 项单测与集成测试全过（能力协商 +2 项在内） |
+| 桥接 | `cargo test -p audiolink-desktop` 27 项通过，含扩写后的契约形状测试 |
+| 前端 | `pnpm build` 通过（tsc 严格 + i18n 键与占位符一致性 + vite） |
+| 双语文案 | 新增两个键（`peer.caps_agreed` / `peer.caps_missing`）中英齐备，护栏会检查占位符 |
+
+### 8.3 仍未做
+
+- **真正的「置灰」**：现在卡片上**说明**了缺什么，但依赖该能力的入口（比如建组时勾选对端）还没有
+  真的禁用 —— 那一步要等「哪些入口依赖哪些能力」在界面上说清楚（`GROUP_EPOCH` 已是明确的一例）；
+- **平台能力注入**：`Capabilities::CURRENT` 仍是内核能力；接上平台（Windows loopback / Android 内录）
+  之后要能把真实设备能力传进握手 —— 口子（`Handshake::with_capabilities`）已经开好并在测试里用过。
+---
+
+## 7. 未做（第一轮时记下的，部分已在 §8 完成）
 
 - **引擎层可观测**：`Handshake::agreed_caps()` 已经有了，但还没接到 `Engine` 的查询 API 与事件上 ——
   所以桌面端现在看不到「协商出了什么」；

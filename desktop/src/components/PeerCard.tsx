@@ -82,6 +82,18 @@ export function PeerCard({
         </div>
       </dl>
 
+      {/* §13 能力协商：把「这一对能一起做什么」写在卡片上，缺什么也一眼看得出来 */}
+      {peer.capabilities === null ? null : (
+        <p className="mt-3 pl-1 text-xs text-slate-500 dark:text-slate-400">
+          {t("peer.caps_agreed", { list: peer.capabilities.agreed })}
+          {peer.capabilities.missingOnPeer.length === 0 ? null : (
+            <span className="ml-1 text-amber-600 dark:text-amber-400">
+              {t("peer.caps_missing", { list: peer.capabilities.missingOnPeer.join("、") })}
+            </span>
+          )}
+        </p>
+      )}
+
       {peer.state === "degraded" ? (
         <p className="mt-3 rounded-lg bg-amber-50 px-2 py-1 text-xs text-amber-700 dark:bg-amber-950 dark:text-amber-300">
           {t("peer.degraded")}

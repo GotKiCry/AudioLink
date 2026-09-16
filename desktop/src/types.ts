@@ -34,12 +34,26 @@ export interface CaptureDeviceView {
 }
 
 /** `list_peers` 的元素 / `connect` 的返回 / `audiolink://peer` 的元素。 */
+/** §13 能力协商结果（界面用的形式：已经是人话，不是位图）。 */
+export interface PeerCapabilitiesView {
+  /** 本端能做什么。 */
+  local: string;
+  /** 对端能做什么。 */
+  peer: string;
+  /** 双方交集 —— 这一对到底能一起做什么。 */
+  agreed: string;
+  /** 本端有、对端没有的能力（界面据此说明「为什么这个功能用不了」）。 */
+  missingOnPeer: string[];
+}
+
 export interface PeerView {
   idShort: string;
   name: string;
   addr: string;
   state: PeerState;
   trusted: boolean;
+  /** §13 能力协商结果；null = 还没走完能力交换（握手中就是 null）。 */
+  capabilities: PeerCapabilitiesView | null;
 }
 
 /** `telemetry` 的返回 / `audiolink://telemetry` 的载荷。单位：µs / bps / 百分数。 */

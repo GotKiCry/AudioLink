@@ -142,6 +142,12 @@ pub enum HandshakeEvent {
         peer: NodeInfo,
         /// 是否应当把对端写入信任库（PIN 刚配对成功 → `true`；走已配对分支 → `false`）。
         persist: bool,
+        /// §13 能力协商：本端能力位图。
+        local_caps: u32,
+        /// §13 能力协商：对端声明的能力位图。
+        peer_caps: u32,
+        /// §13 能力协商：双方交集。
+        agreed_caps: u32,
     },
     /// 握手失败（终态）。
     Rejected {
@@ -217,6 +223,8 @@ pub struct Handshake {
     local_caps: u32,
     /// 协商结果（双方能力交集）；握手未走到 `HELLO`/`HELLO_ACK` 交换时为 0。
     agreed_caps: u32,
+    /// 对端声明的能力位图（`HELLO` 或 `HELLO_ACK` 里带来）。
+    peer_caps: u32,
 }
 
 impl Handshake {
@@ -243,6 +251,7 @@ impl Handshake {
             ignored_frames: 0,
             local_caps: Capabilities::CURRENT,
             agreed_caps: 0,
+            peer_caps: 0,
         }
     }
 
@@ -380,6 +389,9 @@ impl Handshake {
                     HandshakeStep::nothing().with_event(HandshakeEvent::Established {
                         peer: self.peer_info_or_stub(),
                         persist: false,
+                        local_caps: self.local_caps,
+                        peer_caps: self.peer_caps,
+                        agreed_caps: self.agreed_caps,
                     })
                 } else {
                     self.ignore()
@@ -493,6 +505,7 @@ impl Handshake {
             );
         }
         self.agreed_caps = agreed;
+        self.peer_caps = payload.caps;
 
         let ack = ControlRequest::HelloAck(HelloAckPayload {
             proto_version: PROTO_VERSION,
@@ -575,6 +588,7 @@ impl Handshake {
             ));
         }
         self.agreed_caps = agreed;
+        self.peer_caps = payload.caps;
 
         // 接下来等对端开分支：已配对 → AUTH_CHALLENGE；未配对 → PAIR_REQUIRED。
         // 两者都由对端选择，本端不预设 —— 预设就会在「本地以为已配对、对端其实没记录」
@@ -639,6 +653,9 @@ impl Handshake {
                     HandshakeEvent::Established {
                         peer: self.peer_info_or_stub(),
                         persist: false,
+                        local_caps: self.local_caps,
+                        peer_caps: self.peer_caps,
+                        agreed_caps: self.agreed_caps,
                     },
                 )
             }
@@ -671,6 +688,9 @@ impl Handshake {
                     HandshakeEvent::Established {
                         peer: self.peer_info_or_stub(),
                         persist: true,
+                        local_caps: self.local_caps,
+                        peer_caps: self.peer_caps,
+                        agreed_caps: self.agreed_caps,
                     },
                 )
             }
@@ -712,6 +732,9 @@ impl Handshake {
             HandshakeStep::nothing().with_event(HandshakeEvent::Established {
                 peer: self.peer_info_or_stub(),
                 persist: payload.persist,
+                local_caps: self.local_caps,
+                peer_caps: self.peer_caps,
+                agreed_caps: self.agreed_caps,
             })
         } else {
             // 回到「等用户重新输入」：PIN 错不该把连接踢掉，用户还有剩余次数。
@@ -875,7 +898,7 @@ mod tests {
 
     fn established_of(step: &HandshakeStep) -> Option<(&NodeInfo, bool)> {
         match &step.event {
-            HandshakeEvent::Established { peer, persist } => Some((peer, *persist)),
+            HandshakeEvent::Established { peer, persist, .. } => Some((peer, *persist)),
             _ => None,
         }
     }

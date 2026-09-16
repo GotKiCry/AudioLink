@@ -58,8 +58,8 @@ pub use payload::{
     encode_payload,
 };
 pub use runtime::{
-    CaptureFactory, Engine, EngineConfig, EngineEvent, GroupMember, GroupSnapshot, PeerStatus,
-    PlayoutFactory, StreamAxis,
+    CaptureFactory, Engine, EngineConfig, EngineEvent, GroupMember, GroupSnapshot,
+    PeerCapabilities, PeerStatus, PlayoutFactory, StreamAxis,
 };
 pub use session::{SessionEvent, SessionMachine, SessionState, SessionTransition, next_state};
 pub use telemetry::TelemetryAggregator;

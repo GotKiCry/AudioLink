@@ -190,6 +190,30 @@ pub struct PeerStatus {
     pub trusted: bool,
     /// 遥测快照。
     pub stats: StreamStats,
+    /// §13 能力协商结果；`None` = 还没走完能力交换。
+    pub capabilities: Option<PeerCapabilities>,
+}
+
+/// §13 能力协商结果（一个对端一份）。
+///
+/// 位图本身是 [`audiolink_types::Capabilities`] 的裸 `u32`；这里不解释语义，只保证
+/// 「本端 / 对端 / 交集」三者**一起**到达界面 —— 少一个就说不清「为什么这个功能用不了」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerCapabilities {
+    /// 本端声明。
+    pub local: u32,
+    /// 对端声明。
+    pub peer: u32,
+    /// 双方交集（真正可用的能力）。
+    pub agreed: u32,
+}
+
+impl PeerCapabilities {
+    /// 对端**缺**的、而本端有的能力（界面据此置灰并说明原因）。
+    #[must_use]
+    pub const fn missing_on_peer(&self) -> u32 {
+        self.local & !self.peer
+    }
 }
 
 /// M4 观测：一路流「最近一帧的样本编号 ↔ 到达时刻」。
@@ -359,6 +383,8 @@ struct PeerSession {
     pairing: Mutex<PairingState>,
     /// M4 观测：最近一帧的（到达毫秒 << 32 | 编号）。一次 64 位原子写，读者不会读到撕裂组合。
     rx_axis: Arc<AtomicU64>,
+    /// §13 能力协商结果（`None` = 还没协商完）。
+    capabilities: Mutex<Option<PeerCapabilities>>,
 }
 
 #[derive(Default)]
@@ -378,6 +404,17 @@ impl PeerSession {
             u64::from(at_ms) << 32 | u64::from(sample_index),
             Ordering::Relaxed,
         );
+    }
+
+    /// 记下一次能力协商结果（§13）。
+    fn set_capabilities(&self, local: u32, peer: u32, agreed: u32) {
+        if let Ok(mut slot) = self.capabilities.lock() {
+            *slot = Some(PeerCapabilities {
+                local,
+                peer,
+                agreed,
+            });
+        }
     }
 
     fn update_pairing(&self, handshake: &Handshake, event: &HandshakeEvent) {
@@ -412,6 +449,7 @@ impl PeerSession {
                 .map(|s| *s)
                 .unwrap_or(SessionState::Failed),
             trusted: self.trusted.load(Ordering::Relaxed),
+            capabilities: self.capabilities.lock().map(|caps| *caps).unwrap_or(None),
             stats: self
                 .telemetry
                 .lock()
@@ -1421,7 +1459,15 @@ async fn run_session(
                 }
 
                 match step.event {
-                    HandshakeEvent::Established { peer, persist } => {
+                    HandshakeEvent::Established {
+                        peer,
+                        persist,
+                        local_caps,
+                        peer_caps,
+                        agreed_caps,
+                    } => {
+                        // §13：把能力协商结果落到会话上 —— 界面要能回答「这台对端能做什么」。
+                        session.set_capabilities(local_caps, peer_caps, agreed_caps);
                         if persist {
                             if let Err(error) = remember_peer(&inner, &peer) {
                                 report_error(&inner, &session, &error);
@@ -2102,6 +2148,7 @@ fn create_session(
         state: Mutex::new(SessionState::Handshaking),
         pairing: Mutex::new(PairingState::default()),
         rx_axis: Arc::new(AtomicU64::new(u64::MAX)),
+        capabilities: Mutex::new(None),
     });
 
     let previous = inner

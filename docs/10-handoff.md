@@ -202,6 +202,19 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   （`Handshake::agreed_caps()` 有了，但桌面端还看不到协商结果 —— 已立看板条目）、界面降级置灰、平台能力注入
   （`with_capabilities` 就是留的口子，测试已在用）。详见 `docs/46-m4-capability-negotiation.md`。
 
+- **M4 能力协商接进界面：协商结果不再只躺在引擎里**。上一轮把协商做进握手（`HELLO`/`HELLO_ACK` 位图 +
+  `CAP_UNSUPPORTED` 拒绝），但结果只有 `Handshake::agreed_caps()` 能看见 —— 界面看不到，用户仍然不知道
+  「为什么同步组对这一台用不了」。这一轮接通 `HandshakeEvent::Established`（带 `local_caps`/`peer_caps`/`agreed_caps`，
+  自包含）→ `PeerSession.capabilities` → `PeerStatus.capabilities` → 桥接层 `PeerView.capabilities`
+  （`PeerCapabilitiesView`：`local`/`peer`/`agreed`/`missingOnPeer[]`，**位图在 Rust 侧就翻成人话** ——
+  把 `1 << 3` 丢给前端等于每个前端各实现一遍解释）→ 对端卡片一行「可用：…」，本端有而对端没有的能力非空时补一句
+  「对端不支持：…」。`missingOnPeer = local & !peer`，是「置灰」那一半的直接输入。
+  **契约形状测试立刻抓到了变化**：`PeerView` 多了字段 → `peer_and_local_json_shape_match_contract` 变红
+  （字段名漂移会让前端静默拿到 `undefined`，这正是它的用途）；已扩成「未协商（null）」与「已协商（含嵌套与数组）」两个形状。
+  验证：引擎 170 项、desktop 27 项、`pnpm build`（tsc 严格 + i18n 护栏）全过，fmt/clippy 零警告。
+  **仍未做**：真正禁用依赖该能力的入口（现在只**说明**缺什么）；平台能力注入（`with_capabilities` 口子已开）。
+  详见 `docs/46-m4-capability-negotiation.md` §8。
+
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
 Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本数**，`receive_audio()` 又乘了声道数，
