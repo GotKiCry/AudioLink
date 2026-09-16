@@ -126,5 +126,33 @@ CI 墙钟 = **max(各 job) = core 的 236 s**，所以只有 core 值得动。
 
 ## 8. 稳态（第二次运行，缓存按 job 各自命中后）
 
-<!-- STEADY-STATE-PENDING -->
+第二次运行 `35098695833`（缓存按 job 各自命中后，五个 job 全绿）：
+
+| job | 总时长 | 分步 |
+|---|---|---|
+| `core-light` | **80 s** | cache 34 / fmt 2 / clippy 7 / test 13 |
+| `core-heavy` | **297 s** | cache 32 / clippy 19 / **test 229** |
+| android | 88 s | ndk build 36 / assembleDebug 17 |
+| desktop | 149 s | cache 66 / cargo check 42 |
+| version-consistency | 18 s | |
+
+两次运行放在一起才回答得了「值不值」：
+
+| 指标 | 拆分前 | 拆分后（稳态） | 变化 |
+|---|---|---|---|
+| 协议层（golden vectors）拿到结论 | 236–256 s | **80 s** | **−69%** |
+| CI 墙钟 | 236–256 s | 297 s | +41~61 s（+20%） |
+| job 数 | 4 | 5 | |
+
+拆分的本质是**用墙钟换反馈**：重 job 要多付一份 rust-cache 恢复（32 s）与 checkout，所以墙钟反而长了。
+立这笔交易的根据是「协议是跨端契约」—— 协议改动要三端齐改，错一次等 4 分钟是最贵的等待。
+
+第一次（冷缓存）744 s 与本节的 297 s 相差 447 s，全部是依赖树重建：**拆分 CI job 的真实成本不是脚本行数，
+而是缓存被切碎后的第一次运行**。
+
+### 8.1 还剩什么
+
+`core-heavy` 的 297 s 里 test 占 **229 s**，而真正的测试运行只有约 40 s（各 suite `finished in` 之和），
+其余是 **27 个测试二进制各自的编译与链接** —— `audiolink-engine` 一个 crate 就贡献 13 个。
+下一步的杠杆在这里（合并集成测试二进制，或按依赖再拆 job），已记入看板。
 
