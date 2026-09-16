@@ -312,7 +312,8 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   `docs/48-m2-outage-boundary.md` §5（首选应用层主动探活，其次接上 `session.rs` 里已存在但未接线的 FR-27 重连状态机）。
   另记一个判据陷阱：第一版把「拔网前的通道积压」读成 **1.1 µs 恢复**，修正为带时间戳的判据
   （恢复必须由晚于插回时刻的非静音样本证明 + 拔网期间 400 ms 后必须真的安静 + 恢复后 2 s 持续出声）。
-  质量门：fmt / clippy -D warnings / 全套 engine 27 项测试全绿。提交 `fa2c466`（CI 随下一次推送一并观察）。
+  质量门：fmt / clippy -D warnings / 全套 engine 27 项测试全绿。提交 `fa2c466`（代码）与 `61601ea`（文档 + 看板），
+  CI run `35151080904` 五个 job（core-light / core-heavy / android / desktop / version-consistency）全绿。
 
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
