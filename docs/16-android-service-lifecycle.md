@@ -111,3 +111,18 @@ PCM 双倍供给未再复现，但“接收待播队列增长”缺陷已确认�
 
 证据：`baseline-180.json/log`、`baseline-start-stats.xml/png`、`baseline-end-stats.xml/png`。
 手机计数区间的 UI 时长为 23 → 123 s（秒级取整）；不据此推断精确的采样时钟漂移。
+
+## CI 后续：测量探针并发漏配
+
+服务修复提交 `12cf674` 的 [CI 35056343048](https://github.com/GotKiCry/AudioLink/actions/runs/35056343048)
+中，Android、桌面和版本检查通过，内核失败于既有的 `concurrent_writers_do_not_lose_pairs`：
+预期 2000 对时间戳，实际只配对 1992 对。
+
+`MeasurementTap` 原来为发送记录、播放记录与样本分别加锁。两端并发时，可能都先查到对方队列为空，
+再分别留下同序号记录，使这个序号永远无法配对。修复将查找、配对、留存与样本写入放在同一把状态锁内，
+`reset()` 也原子清空全部记录；容量限制、延迟计算和公开 API 保持原有语义。
+
+既有并发回归增加逐序号同步起跑，修复前复现为 645/2000，修复后完整配对 2000/2000、孤儿数为零，
+全部样本准确为 25 ms；测量模块 8 项测试、Rust fmt、全内核 Clippy 与测试通过。
+证据为 `measurement-before.log`、`measurement-after.log`、`measurement-clippy.log`、`measurement-core-tests.log`。
+该探针仅由测量工具显式启用，Android 默认音频路径未启用；此修复不解释或解决上文的手机待播队列增长。

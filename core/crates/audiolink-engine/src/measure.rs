@@ -49,10 +49,15 @@ const DEFAULT_CAPACITY: usize = 4_096;
 /// 但它也不是免费的，因此生产路径默认不装（`EngineConfig::measurement` 为 `None`）。
 #[derive(Debug)]
 pub struct MeasurementTap {
-    sealed: Mutex<VecDeque<(u32, Instant)>>,
-    played: Mutex<VecDeque<(u32, Instant)>>,
-    latencies: Mutex<SampleStats>,
+    state: Mutex<TapState>,
     capacity: usize,
+}
+
+#[derive(Debug)]
+struct TapState {
+    sealed: VecDeque<(u32, Instant)>,
+    played: VecDeque<(u32, Instant)>,
+    latencies: SampleStats,
 }
 
 impl Default for MeasurementTap {
@@ -65,10 +70,12 @@ impl MeasurementTap {
     /// 指定配对缓冲容量。
     pub fn new(capacity: usize) -> Self {
         Self {
-            sealed: Mutex::new(VecDeque::with_capacity(capacity.min(64))),
-            played: Mutex::new(VecDeque::with_capacity(capacity.min(64))),
-            // 延迟样本窗口：20 ms 帧、60 s 观测 → 3000 样本；取 4096 留余量。
-            latencies: Mutex::new(SampleStats::new(4_096)),
+            state: Mutex::new(TapState {
+                sealed: VecDeque::with_capacity(capacity.min(64)),
+                played: VecDeque::with_capacity(capacity.min(64)),
+                // 延迟样本窗口：20 ms 帧、60 s 观测 → 3000 样本；取 4096 留余量。
+                latencies: SampleStats::new(4_096),
+            }),
             capacity: capacity.max(1),
         }
     }
@@ -89,17 +96,22 @@ impl MeasurementTap {
     /// （接收端缓冲浅时，播放记录可能先到）。只单向查的话，先到的那个会被永远孤立，
     /// 结果是「延迟样本比实际帧数少一截」——数字看着正常，其实是漏统计。
     fn pair_up(&self, seq: u32, at: Instant, side: Side) {
+        // 查找、配对或留存必须是一个操作。分开加锁会让两侧同时查空，
+        // 然后各留一个永远配不上的孤儿；reset 也须共享同一同步边界。
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        let TapState {
+            sealed,
+            played,
+            latencies,
+        } = &mut *state;
         let (mine, theirs) = match side {
-            Side::Sealed => (&self.sealed, &self.played),
-            Side::Played => (&self.played, &self.sealed),
+            Side::Sealed => (sealed, played),
+            Side::Played => (played, sealed),
         };
 
-        let counterpart = theirs
-            .lock()
-            .ok()
-            .and_then(|mut queue| take_seq(&mut queue, seq));
-
-        let Some(other_at) = counterpart else {
+        let Some(other_at) = take_seq(theirs, seq) else {
             push_bounded(mine, seq, at, self.capacity);
             return;
         };
@@ -114,22 +126,23 @@ impl MeasurementTap {
         let latency_us = u32::try_from(played_at.saturating_duration_since(sealed_at).as_micros())
             .unwrap_or(u32::MAX);
 
-        if let Ok(mut latencies) = self.latencies.lock() {
-            latencies.push(latency_us);
-        }
+        latencies.push(latency_us);
     }
 
     /// 已成功配对的样本数。
     pub fn matched(&self) -> usize {
-        self.latencies
+        self.state
             .lock()
-            .map(|stats| stats.len())
+            .map(|state| state.latencies.len())
             .unwrap_or_default()
     }
 
     /// 延迟分位摘要（`None` = 还没配上任何一对）。
     pub fn summary(&self) -> Option<Summary> {
-        self.latencies.lock().ok().and_then(|stats| stats.summary())
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.latencies.summary())
     }
 
     /// 尚未配上对的记录数（发送侧 / 接收侧）。
@@ -137,29 +150,18 @@ impl MeasurementTap {
     /// 这个数长期不归零说明序号配对逻辑有问题（例如两端 `stream_id` 混在一起），
     /// 是「数字看起来正常但其实是错的」这类事故的预警。
     pub fn orphan_counts(&self) -> (usize, usize) {
-        let sealed = self
-            .sealed
+        self.state
             .lock()
-            .map(|queue| queue.len())
-            .unwrap_or_default();
-        let played = self
-            .played
-            .lock()
-            .map(|queue| queue.len())
-            .unwrap_or_default();
-        (sealed, played)
+            .map(|state| (state.sealed.len(), state.played.len()))
+            .unwrap_or_default()
     }
 
     /// 清空全部记录（会话重建时调用）。
     pub fn reset(&self) {
-        if let Ok(mut sealed) = self.sealed.lock() {
-            sealed.clear();
-        }
-        if let Ok(mut played) = self.played.lock() {
-            played.clear();
-        }
-        if let Ok(mut latencies) = self.latencies.lock() {
-            latencies.clear();
+        if let Ok(mut state) = self.state.lock() {
+            state.sealed.clear();
+            state.played.clear();
+            state.latencies.clear();
         }
     }
 }
@@ -174,10 +176,7 @@ enum Side {
 }
 
 /// 有界入队：满了就丢最旧（孤儿记录没有长期保留价值）。
-fn push_bounded(queue: &Mutex<VecDeque<(u32, Instant)>>, seq: u32, at: Instant, capacity: usize) {
-    let Ok(mut queue) = queue.lock() else {
-        return;
-    };
+fn push_bounded(queue: &mut VecDeque<(u32, Instant)>, seq: u32, at: Instant, capacity: usize) {
     while queue.len() >= capacity {
         queue.pop_front();
     }
@@ -297,28 +296,37 @@ mod tests {
     #[test]
     fn concurrent_writers_do_not_lose_pairs() {
         // 发送线程与播放线程会并发写入，配对不能因为竞态丢样本。
-        use std::sync::Arc;
+        use std::sync::{Arc, Barrier};
 
         let tap = Arc::new(MeasurementTap::default());
+        // 每个序号同时起跑：覆盖两侧均先查空、随后各自入队的竞态。
+        let step = Arc::new(Barrier::new(2));
         let base = Instant::now();
 
         let writer = {
             let tap = Arc::clone(&tap);
+            let step = Arc::clone(&step);
             std::thread::spawn(move || {
                 for seq in 0..2_000u32 {
+                    step.wait();
                     tap.record_sealed(seq, base);
+                    step.wait();
                 }
             })
         };
 
         for seq in 0..2_000u32 {
+            step.wait();
             tap.record_played(seq, base + Duration::from_millis(25));
+            step.wait();
         }
         writer.join().unwrap();
 
         // 双向配对：无论哪一侧先写，最终都该配上对（这正是 `pair_up` 双向查的意义）。
         assert_eq!(tap.matched(), 2_000, "并发写入不得丢配对");
         assert_eq!(tap.orphan_counts(), (0, 0));
+        let summary = tap.summary().unwrap();
+        assert_eq!((summary.min, summary.max), (25_000, 25_000));
     }
 
     #[test]
