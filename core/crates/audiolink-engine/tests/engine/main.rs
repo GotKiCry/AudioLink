@@ -15,6 +15,7 @@
 mod adaptive_bitrate;
 mod capability_negotiation;
 mod clock_sync;
+mod dynamic_join;
 mod engine_shutdown;
 mod gain_control;
 mod group_epoch;
