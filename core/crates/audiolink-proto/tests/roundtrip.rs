@@ -306,7 +306,9 @@ fn enum_tables_are_consistent() {
 
     // 命令码：同上
     let op_known: Vec<u8> = OpCode::ALL.iter().map(|op| op.as_u8()).collect();
-    assert_eq!(op_known.len(), 24);
+    // M4 新增 RECEIVER_EPOCH（0x44）后是 25 项。改这个数字必须是有意的 ——
+    // 它存在的意义就是让「协议表变了」这件事无法悄悄溜过去。
+    assert_eq!(op_known.len(), 25);
     for raw in 0..=u8::MAX {
         match OpCode::from_u8(raw) {
             Some(op) => assert!(op_known.contains(&raw) && op.as_u8() == raw),

@@ -334,10 +334,11 @@ async fn 读数据报缓冲不足返回err() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn 控制帧24个opcode全扫往返一致() {
+async fn 控制帧25个opcode全扫往返一致() {
     let pair = pair().await;
 
-    // 每条命令一个可区分的 (request_id, 载荷)：长度覆盖 0 / 1 / 中间值，内容含 0x00 与 0xFF 边界
+    // 每条命令一个可区分的 (request_id, 载荷)：长度覆盖 0 / 1 / 中间值，内容含 0x00 与 0xFF 边界。
+    // 数量跟着 `OpCode::ALL` 走 —— 新增协议帧会被这条测试自动扫到。
     let expected: Vec<(OpCode, u32, Vec<u8>)> = OpCode::ALL
         .iter()
         .enumerate()
@@ -348,7 +349,8 @@ async fn 控制帧24个opcode全扫往返一致() {
             (*op, request_id, payload)
         })
         .collect();
-    assert_eq!(expected.len(), 24, "§4.1 命令表共 24 条");
+    // M4 新增 RECEIVER_EPOCH（0x44）后是 25 条；这条断言是「协议表扩容」的显式确认点。
+    assert_eq!(expected.len(), 25, "§4.1 命令表共 25 条");
 
     let mut client = pair
         .client
@@ -356,7 +358,7 @@ async fn 控制帧24个opcode全扫往返一致() {
         .await
         .expect("客户端打开控制流 #0");
 
-    // 先把 24 帧全部写出去：QUIC 的 `open_bi()` 是惰性的，服务端的 `accept_bi()` 要等
+    // 先把全部帧写出去：QUIC 的 `open_bi()` 是惰性的，服务端的 `accept_bi()` 要等
     // **第一个字节**到达才返回 —— 所以「先写后接管」是这条测试能顺序执行的前提，
     // 也正是真实会话的顺序（发起方先发 HELLO）。
     for (op, request_id, payload) in &expected {

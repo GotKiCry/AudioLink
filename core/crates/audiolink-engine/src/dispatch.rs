@@ -435,6 +435,12 @@ mod tests {
                 epoch_local_us: 1_234_567,
                 lead_ms: 30,
             }),
+            // M4：同一个载荷的反方向用法（接收端 → 发送端广播共同基准）。
+            ControlRequest::ReceiverEpoch(GroupEpochPayload {
+                epoch_id: 0x9988_7766_5544_3322,
+                epoch_local_us: 7_654_321,
+                lead_ms: 200,
+            }),
             ControlRequest::Ping(PingPayload { t1: 1, t2: 2 }),
             ControlRequest::Pong(PingPayload { t1: 1, t2: 2 }),
             ControlRequest::Error(ErrorPayload {

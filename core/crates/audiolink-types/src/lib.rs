@@ -351,7 +351,7 @@ pub enum OpCode {
 
 impl OpCode {
     /// 全部已知取值（供遍历测试与解码工具使用）。
-    pub const ALL: [OpCode; 24] = [
+    pub const ALL: [OpCode; 25] = [
         OpCode::Hello,
         OpCode::HelloAck,
         OpCode::AuthChallenge,
@@ -371,6 +371,7 @@ impl OpCode {
         OpCode::GroupJoin,
         OpCode::GroupLeave,
         OpCode::GroupEpoch,
+        OpCode::ReceiverEpoch,
         OpCode::TelemetryPush,
         OpCode::Ping,
         OpCode::Pong,
@@ -400,6 +401,7 @@ impl OpCode {
             0x41 => Some(Self::GroupJoin),
             0x42 => Some(Self::GroupLeave),
             0x43 => Some(Self::GroupEpoch),
+            0x44 => Some(Self::ReceiverEpoch),
             0x50 => Some(Self::TelemetryPush),
             0x60 => Some(Self::Ping),
             0x61 => Some(Self::Pong),

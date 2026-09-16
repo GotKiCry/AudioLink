@@ -36,7 +36,7 @@
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -192,6 +192,32 @@ pub struct PeerStatus {
     pub stats: StreamStats,
 }
 
+/// M4 观测：一路流「最近一帧的样本编号 ↔ 到达时刻」。
+///
+/// 为什么需要它：共同时间基准（`RECEIVER_EPOCH`）落地之后，「两路到底有没有对齐」需要一个**直接读数**。
+/// 有了这一对值，就能用**同一个**「现在」推算两路各自的编号：编号已对齐时两个值应当相等（差 < 1 帧）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamAxis {
+    /// 对端身份。
+    pub peer: NodeId,
+    /// 最近一帧的 `sample_index`；`None` = 本会话还没收到过音频数据报。
+    pub sample_index: Option<u32>,
+    /// 那一帧到达本端的时刻（本端单调时钟，毫秒）。
+    pub at_ms: u32,
+}
+
+impl StreamAxis {
+    /// 用**同一个**「现在」推算这一路当前的样本编号。
+    ///
+    /// 两路编号已经对齐到共同基准时，这个值应当相等（差 < 1 帧）；否则差值就是两路的时间轴错位。
+    /// 采样率按 48 kHz（1 ms = 48 样本）—— 它要回答的是「差了几十毫秒，还是差不多零」。
+    pub fn index_at(&self, now_ms: u32) -> Option<u32> {
+        let index = self.sample_index?;
+        let elapsed_ms = now_ms.saturating_sub(self.at_ms);
+        Some(index.wrapping_add(elapsed_ms.saturating_mul(48)))
+    }
+}
+
 /// 引擎事件（UI 订阅；遥测类由外壳按 500 ms 节流转发，见架构 §4）。
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
@@ -331,6 +357,8 @@ struct PeerSession {
     state: Mutex<SessionState>,
     /// 会话任务在控制帧写出之前更新；UI 查询不依赖可丢失的广播事件。
     pairing: Mutex<PairingState>,
+    /// M4 观测：最近一帧的（到达毫秒 << 32 | 编号）。一次 64 位原子写，读者不会读到撕裂组合。
+    rx_axis: Arc<AtomicU64>,
 }
 
 #[derive(Default)]
@@ -340,6 +368,18 @@ struct PairingState {
 }
 
 impl PeerSession {
+    /// M4 观测：记下「最近一帧的编号 ↔ 到达时刻」。
+    ///
+    /// 打包成**一次** 64 位原子写（高 32 位 = 毫秒时刻，低 32 位 = 编号），于是读者不会读到
+    /// 「新编号 + 旧时刻」这种撕裂组合；单次 relaxed 存储，实时路径不加锁、不分配。
+    fn note_rx_axis(&self, sample_index: u32) {
+        let at_ms = u32::try_from(now_monotonic_us() / 1000).unwrap_or(u32::MAX);
+        self.rx_axis.store(
+            u64::from(at_ms) << 32 | u64::from(sample_index),
+            Ordering::Relaxed,
+        );
+    }
+
     fn update_pairing(&self, handshake: &Handshake, event: &HandshakeEvent) {
         if let Ok(mut pairing) = self.pairing.lock() {
             pairing.displayed = handshake
@@ -882,6 +922,37 @@ impl Engine {
     }
 
     /// 已连接对端快照。
+    /// M4 观测：每路流「最近一帧的编号 ↔ 到达时刻」。
+    ///
+    /// 与 [`Engine::broadcast_epoch`] 配套：一个负责让两路对齐，一个负责**证明**它对齐了。
+    pub fn stream_axes(&self) -> Vec<StreamAxis> {
+        let Ok(table) = self.inner.peers.lock() else {
+            return Vec::new();
+        };
+        let mut axes: Vec<StreamAxis> = table
+            .values()
+            .map(|session| {
+                let packed = session.rx_axis.load(Ordering::Relaxed);
+                StreamAxis {
+                    peer: session.id,
+                    sample_index: if packed == u64::MAX {
+                        None
+                    } else {
+                        Some(packed as u32)
+                    },
+                    at_ms: (packed >> 32) as u32,
+                }
+            })
+            .collect();
+        axes.sort_by_key(|axis| axis.peer);
+        axes
+    }
+
+    /// 本端单调时钟（毫秒）。给「用同一个 now 比较两路编号」用（见 [`StreamAxis::index_at`]）。
+    pub fn monotonic_ms(&self) -> u32 {
+        u32::try_from(now_monotonic_us() / 1000).unwrap_or(u32::MAX)
+    }
+
     pub fn peers(&self) -> Vec<PeerStatus> {
         self.inner
             .peers
@@ -1651,7 +1722,11 @@ async fn run_session(
                         // §6 的两种时钟数据报与音频共用**同一个读循环**（一条连接只有一个读者；
                         // 另起任务会把音频数据报抢走，表现为「偶发丢帧」这种最难查的症状）。
                         match datagram.header.ptype {
-                            Ptype::Audio => {}
+                            Ptype::Audio => {
+                                // M4 观测：记下「最近一帧的编号 ↔ 到达时刻」。放在分派最前面，
+                                // 因为这里才是「包真的到了」的时刻 —— 后面的重排窗口会等、也会丢。
+                                session.note_rx_axis(datagram.header.sample_index);
+                            }
                             Ptype::ClockProbe => {
                                 match respond_clock_probe(&connection, &session, &datagram).await {
                                     Ok(_) => {}
@@ -2026,6 +2101,7 @@ fn create_session(
         trusted: AtomicBool::new(trusted),
         state: Mutex::new(SessionState::Handshaking),
         pairing: Mutex::new(PairingState::default()),
+        rx_axis: Arc::new(AtomicU64::new(u64::MAX)),
     });
 
     let previous = inner

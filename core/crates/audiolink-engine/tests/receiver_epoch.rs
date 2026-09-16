@@ -18,7 +18,7 @@ use std::time::Duration;
 use audiolink_audio::{
     AudioError, DeviceFormat, NullPlayout, PlayoutSink, PlayoutStats, SyntheticCapture,
 };
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
+use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState, StreamAxis};
 use audiolink_types::ErrorCode;
 use tokio::sync::mpsc;
 
@@ -61,6 +61,19 @@ impl PlayoutSink for RecordingSink {
     fn backend_name(&self) -> &'static str {
         "recording"
     }
+}
+
+/// 用**同一个**「现在」推算两路编号，返回它们之间的跨度（样本）。
+///
+/// 这是「对齐」的直接读数：跨度接近 0 = 两路的同一编号落在同一时刻；跨度几十毫秒 = 时间轴错位。
+fn spread(axes: &[StreamAxis], now_ms: u32) -> Option<u32> {
+    let indices: Vec<u32> = axes
+        .iter()
+        .filter_map(|axis| axis.index_at(now_ms))
+        .collect();
+    let min = indices.iter().min()?;
+    let max = indices.iter().max()?;
+    Some(max.wrapping_sub(*min))
 }
 
 /// 接收端广播共同基准之后：两条发送端都必须收到，且混音不能被对齐打断。
@@ -116,17 +129,21 @@ async fn receiver_broadcasts_the_common_start() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }
-        for sender in &senders {
-            sender.start_send(receiver_id).await.expect("开流");
-        }
+        // 故意制造一个**明显**的错位：先让 A 单独跑起来，1.5 s 后再让 B 加入 ——
+        // 两路的编号原点（各自启流瞬间）因此相差约 1.5 s，也就是 72 000 个样本。
+        senders[0].start_send(receiver_id).await.expect("开流 A");
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        senders[1].start_send(receiver_id).await.expect("开流 B");
         tokio::time::sleep(Duration::from_secs(3)).await;
         let before = receiver.mixer_stats().expect("混音器已建好");
+        let axis_before = spread(&receiver.stream_axes(), receiver.monotonic_ms());
 
         // 本机作为接收端：把所有发送端共用的原点广播出去（提前量 200 ms）。
         let sent = receiver.broadcast_epoch(200).await.expect("广播共同基准");
         tokio::time::sleep(Duration::from_secs(3)).await;
         let after = receiver.mixer_stats().expect("混音器仍在");
-        (sent, before, after)
+        let axis_after = spread(&receiver.stream_axes(), receiver.monotonic_ms());
+        (sent, before, after, axis_before, axis_after)
     })
     .await;
 
@@ -136,10 +153,15 @@ async fn receiver_broadcasts_the_common_start() {
     accept.abort();
     receiver.shutdown().await;
 
-    let (sent, before, after) = outcome.expect("90 s 内必须完成配对、开流与广播");
+    let (sent, before, after, axis_before, axis_after) =
+        outcome.expect("90 s 内必须完成配对、开流与广播");
     println!(
         "M4 共同基准：广播 {} 条会话 · 对齐前 {} 帧（掉队 {}）· 对齐后 {} 帧（掉队 {}）",
         sent, before.total_frames, before.partial_frames, after.total_frames, after.partial_frames
+    );
+    println!(
+        "M4 编号跨度：对齐前 {:?} 样本 · 对齐后 {:?} 样本（1 帧 = 960 样本）",
+        axis_before, axis_after
     );
 
     assert_eq!(sent, 2, "两条已连接的会话都应当收到共同基准");
@@ -150,6 +172,18 @@ async fn receiver_broadcasts_the_common_start() {
         before.total_frames,
         after.total_frames
     );
+    // 对齐的直接判据：用**同一个 now** 推算两路编号，跨度应当从「几十毫秒」塌到「1 帧以内」。
+    let axis_before = axis_before.expect("对齐前两路都应当已经收到音频");
+    let axis_after = axis_after.expect("对齐后两路都应当仍在收到音频");
+    assert!(
+        axis_before > 20_000,
+        "对齐前两路本该明显错位（启流相差 1.5 s），实测跨度只有 {axis_before} 样本"
+    );
+    assert!(
+        axis_after < 1_920,
+        "对齐后两路的编号跨度应当落在 2 帧以内，实测 {axis_after} 样本"
+    );
+
     let partial_ratio = after.partial_frames as f64 / after.total_frames as f64;
     assert!(
         partial_ratio < 0.05,
