@@ -122,3 +122,42 @@ cargo run -q -p audiolink-tools --bin soak-runner -- run --seconds 60
   可复用 `tests/nack_retransmit.rs` 里那个有损 UDP 中继的做法，属 M2 后续；
 - 遥测面板（M2 的另一项交付物）仍待做，本工具只产出报告文件。
 
+---
+
+## 8. 判定复算：`tools/soak-report.ps1`
+
+报告是**机器产物**，但长跑结束时人是隔着几小时回来看的 —— 只信 soak-runner 自己打印的那一行 summary 不够，
+还需要一条**可复算、可入 CI、可回填看板**的通路：
+
+```text
+pwsh tools/soak-report.ps1 [-Path target/evidence/soak/soak-8h-netem.json] [-Json]
+```
+
+输出四块：判决与规模（计划时长 / 帧长 / 目标码率 / 粗采样桶数 / 违规数 / 丢弃溢出数）、
+**违规按 kind 聚合**（次数 + 首次与末次出现秒数 + 一条样例）、终值遥测（码率 / 缓冲 / 时钟偏差 / 漂移 /
+抖动 p95 / RTT / 丢包 / 迟到 / 欠载 / NACK / PLC）、以及一句人话判定。
+
+退出码与 soak-runner 同口径：**0 = 通过；1 = 有违规或 verdict 为 failed；2 = 报告缺失 / 非 JSON / 缺 summary**。
+`-Json` 输出同一份摘要的结构化版本，供 CI 或看板脚本回填。
+
+复算口径与 §2 一致：**只有 verdict 为 ok 且 violations 为空才算通过**；
+soak-runner 侧的对应条件是 violations 为空且 dropped_violations 为 0，本脚本把两者都打印出来，
+避免「快照被丢满 200 条、看起来却只有 200 条违规」这类误读。
+
+### 8.1 用已有报告自测（无需重跑 8 h）
+
+| 输入 | 期望 | 实测 |
+|---|---|---|
+| `target/evidence/soak/smoke.json` | 通过 | ok / exit **0**（18 次采样、0 违规） |
+| `target/evidence/soak/negative.json` | 不通过 | `bitrate_out_of_range x6  3s..8s` / exit **1** |
+| 不存在的路径 | 报告缺失 | exit **2**，stderr 给出绝对路径 |
+| 非 JSON 文件 | 不可解析 | exit **2**，stderr 给出解析错误 |
+
+### 8.2 与 `target/evidence/verification/soak-verify.ps1` 的分工
+
+- `soak-verify.ps1`：解析**真机 30 min 文本日志**（逐行正则），复算水位 / 欠载 / 迟到的 P50/P95/P99 分位数；
+- `soak-report.ps1`：读 **soak-runner 的 JSON 报告**，做违规聚合与终值摘要，不假定日志格式。
+
+两者都不重跑链路 —— 长跑产物是唯一输入，判定可离线复算。
+
+
