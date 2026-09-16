@@ -36,7 +36,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -57,6 +57,7 @@ use crossbeam_channel::{Receiver, Sender};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::task::TaskTracker;
 
+use crate::adaptive::AdaptiveBitrate;
 use crate::clock::{
     ClockProbeState, ClockProbeStats, STEADY_INTERVAL_MS, now_monotonic_us, publish_clock,
 };
@@ -228,6 +229,15 @@ pub enum EngineEvent {
     },
     /// 遥测（约 1 Hz 产出）。
     Telemetry(Box<StreamStats>),
+    /// §8 自适应码率生效（降级 / 恢复）—— 验收「自适应生效」就看这条时间线。
+    CodecAdapted {
+        /// 变更前的目标码率（bps）。
+        from_bps: i32,
+        /// 变更后的目标码率（bps）。
+        to_bps: i32,
+        /// 触发原因（人类可读）。
+        reason: String,
+    },
     /// 会话级错误（不致命；致命路径走 `PeerDisconnected`）。
     Error {
         /// §11 错误码。
@@ -1033,6 +1043,10 @@ async fn run_session(
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // §8 自适应码率的决策器（1 Hz）。时钟基准取会话循环的起始时刻：策略只需要"单调推进的秒数"。
+    let session_started = Instant::now();
+    let mut adaptive_bitrate = AdaptiveBitrate::new(codec.bitrate_bps);
+
     // §6：会话可通信后立刻开始探测（首次到期即发），此后按 probe_interval() 推进：
     // 前 50 次 100 ms（首连快速同步 ≈ 5 s 收敛），之后 1 Hz 持续采样。
     let mut probe_deadline = tokio::time::Instant::now();
@@ -1408,6 +1422,28 @@ async fn run_session(
                     batch,
                 );
 
+                // §8 自适应码率：判据必须用**对端**的遥测 —— 丢包与欠载只有接收侧看得见，
+                // 它 1 Hz 用 `STREAM_STATS` 把数字送过来，这里是发送侧唯一能看到真实链路的地方。
+                let peer_view = session.peer_stats.lock().ok().and_then(|slot| *slot);
+                if let Some(peer_stats) = peer_view
+                    && let Some(change) = adaptive_bitrate.observe(
+                        session_started.elapsed(),
+                        peer_stats.loss_pct_x100,
+                        peer_stats.rtt_us,
+                    )
+                {
+                    if let Some(handle) = capture.as_ref() {
+                        handle
+                            .target_bitrate_bps
+                            .store(change.to_bps, Ordering::Relaxed);
+                    }
+                    let _ = inner.events.send(EngineEvent::CodecAdapted {
+                        from_bps: change.from_bps,
+                        to_bps: change.to_bps,
+                        reason: change.reason.describe(),
+                    });
+                }
+
                 // §10：`STREAM_STATS` 是**双方互发**的 1 Hz 上报，不是「只发本地事件」。
                 // 漏掉这一条发送的后果很具体：推流端的面板永远看不到 e2e 延迟、播放环水位、
                 // 欠载次数 —— 而那三个量**只有接收侧才量得到**。
@@ -1582,6 +1618,7 @@ fn start_send_pipeline(
         Arc::clone(&session.telemetry),
         inner.config.measurement.clone(),
         new_stop_flag(),
+        Arc::new(AtomicI32::new(codec.bitrate_bps)),
     )?;
 
     Ok((handle, random_u64()))
@@ -1592,6 +1629,11 @@ struct CaptureHandle {
     frames: mpsc::Receiver<EncodedFrame>,
     stop: Arc<AtomicBool>,
     join: Option<std::thread::JoinHandle<()>>,
+    /// §8 自适应码率的目标值：会话循环（1 Hz）写，采集线程在**下一次编码前**读到就生效。
+    ///
+    /// 用 `AtomicI32` 而不是 channel：采集线程是实时线程，读一个原子量不会阻塞也不会分配；
+    /// 丢一拍读到的旧值最多让新码率晚 20 ms 生效，没有别的代价。
+    target_bitrate_bps: Arc<AtomicI32>,
 }
 
 /// 采集线程产出的一个已编码帧。
@@ -1674,10 +1716,12 @@ fn spawn_capture_thread(
     telemetry: Arc<Mutex<TelemetryAggregator>>,
     tap: Option<Arc<MeasurementTap>>,
     stop: Arc<AtomicBool>,
+    target_bitrate_bps: Arc<AtomicI32>,
 ) -> Result<CaptureHandle, AudioLinkError> {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), AudioLinkError>>();
     let (frame_tx, frame_rx) = mpsc::channel::<EncodedFrame>(ENCODE_QUEUE_FRAMES);
     let thread_stop = Arc::clone(&stop);
+    let thread_bitrate = Arc::clone(&target_bitrate_bps);
     // 先把工厂的 `Arc` 克隆出来再进线程：闭包里借用 `&Arc` 会让引用逃逸出函数体，
     // 而线程闭包要求 `'static`。
     let factory = Arc::clone(factory);
@@ -1691,6 +1735,7 @@ fn spawn_capture_thread(
                 telemetry,
                 tap,
                 thread_stop,
+                Arc::clone(&thread_bitrate),
                 frame_tx,
                 ready_tx,
             );
@@ -1704,6 +1749,7 @@ fn spawn_capture_thread(
             frames: frame_rx,
             stop,
             join: Some(join),
+            target_bitrate_bps,
         }),
         Ok(Err(error)) => Err(error),
         Err(_) => Err(AudioLinkError::bad_request(
@@ -1719,6 +1765,7 @@ fn capture_main(
     telemetry: Arc<Mutex<TelemetryAggregator>>,
     tap: Option<Arc<MeasurementTap>>,
     stop: Arc<AtomicBool>,
+    target_bitrate_bps: Arc<AtomicI32>,
     frame_tx: mpsc::Sender<EncodedFrame>,
     ready_tx: std::sync::mpsc::Sender<Result<(), AudioLinkError>>,
 ) {
@@ -1762,6 +1809,8 @@ fn capture_main(
     let mut opus_buf = vec![0u8; audiolink_types::DATAGRAM_MAX_PAYLOAD];
     let mut seq = 0u32;
     let mut sample_index = 0u32;
+    // §8 自适应码率：只在这里读，读到变化就应用到编码器（下一帧生效，不重建编码器）。
+    let mut applied_bitrate_bps = codec.bitrate_bps;
 
     while !stop.load(Ordering::Relaxed) {
         match capture.read(&mut samples, Duration::from_millis(200)) {
@@ -1785,6 +1834,14 @@ fn capture_main(
         }
 
         while let Some(frame) = chunker.next_frame() {
+            let requested_bps = target_bitrate_bps.load(Ordering::Relaxed);
+            if requested_bps != applied_bitrate_bps {
+                match encoder.set_bitrate(requested_bps) {
+                    Ok(()) => applied_bitrate_bps = requested_bps,
+                    // 非法取值只可能来自实现缺陷：拒绝这次变更并保持原码率，绝不中断采集。
+                    Err(_) => applied_bitrate_bps = encoder.config().bitrate_bps,
+                }
+            }
             let sealed_at = Instant::now();
             let Ok(written) = encoder.encode_into(frame, &mut opus_buf) else {
                 break;

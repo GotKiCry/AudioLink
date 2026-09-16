@@ -205,6 +205,22 @@ impl OpusEncoder {
         self.config
     }
 
+    /// 运行期改目标码率（§8 自适应码率）。
+    ///
+    /// `opus-rs` 的 `bitrate_bps` 是编码器**每帧读取**的字段，因此下一次 [`OpusEncoder::encode_into`]
+    /// 就生效、不需要重建编码器（重建会丢状态、并产生一段静音）。
+    /// 这里同时更新 `config`，让 [`OpusEncoder::measured_bitrate_bps`] 与遥测口径保持一致。
+    pub fn set_bitrate(&mut self, bitrate_bps: i32) -> Result<(), AudioError> {
+        if !(500..=3_000_000).contains(&bitrate_bps) {
+            return Err(AudioError::invalid_config_owned(format!(
+                "码率 {bitrate_bps} bps 超出允许范围 500..=3000000"
+            )));
+        }
+        self.inner.bitrate_bps = bitrate_bps;
+        self.config.bitrate_bps = bitrate_bps;
+        Ok(())
+    }
+
     /// 编码一帧（`frame` 为交错 f32，长度必须 ≥ [`CodecConfig::interleaved_frame`]）。
     ///
     /// 返回写入 `out` 的字节数。建议 `out` 长度 ≥ `frame_ms × 码率`（20 ms/160 kbps ≈ 400 B），

@@ -543,6 +543,14 @@ async fn run_event_loop(app: AppHandle, engine: Arc<Engine>, cache: Arc<Mutex<Ca
                     let (peers, _) = refresh(&engine, &cache);
                     emit_peer(&app, &cache, &peers);
                 }
+                // §8 自适应码率生效：目前只记日志 —— 面板上的可视化属于 M2 的「遥测面板」那一项。
+                EngineEvent::CodecAdapted {
+                    from_bps,
+                    to_bps,
+                    reason,
+                } => {
+                    tracing::info!(from_bps, to_bps, reason = %reason, "自适应码率变更");
+                }
                 // 契约 §6 只冻结了三个前端事件，没有"错误"事件；
                 // 命令路径的错误已由返回值承载，这里记录即可（架构 §11：要么处理要么上报）。
                 EngineEvent::Error { code, context } => {
