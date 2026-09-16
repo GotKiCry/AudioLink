@@ -326,8 +326,9 @@ pub fn render_report(rust: &[Entry], frontend: &[Entry]) -> String {
     }
 
     out.push_str("## 覆盖面（诚实清单）\n\n");
-    out.push_str("- **已覆盖**：Rust workspace 的全部依赖（`cargo metadata`）、桌面前端依赖（`pnpm licenses`）。\n");
-    out.push_str("- **未覆盖**：Android（Gradle）依赖、随包分发的二进制（.exe / .apk 内的第三方库）、字体与图标资源。\n");
+    out.push_str("- **已覆盖**：Rust workspace 的全部依赖（`cargo metadata`）、桌面前端依赖（`pnpm licenses`）；\n");
+    out.push_str("  Android（Gradle/Maven）依赖见**文末专节**（该节存在与否取决于是否采集过）。\n");
+    out.push_str("- **未覆盖**：随包分发的二进制（.exe / .apk 内的第三方库）、字体与图标资源、以及 Android 侧的**投放位置**（声明入口）。\n");
     out.push_str(
         "- 本报告回答的是「许可是否允许这样分发」；署名/免责文本的**实际投放位置**是另一件事。\n",
     );
@@ -806,4 +807,204 @@ mod notice_tests {
         assert!(alpha_at < zeta_at, "组内按名排序，输出才稳定");
         assert!(first.contains("被 2 个包引用"));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Android（Gradle/Maven）依赖：把 POM 里的许可名纳入同一套判定
+// ---------------------------------------------------------------------------
+
+/// 把 Maven POM 里的许可**名字**规范化成 SPDX 标识（认不出的原样保留）。
+///
+/// 为什么需要：Gradle 缓存的 POM 写的是 `Apache License, Version 2.0` 这类**自然语言名**，
+/// 而不是 SPDX 标识。直接丢给 [`classify`] 会整片掉进 `notice` —— 把「真未知」和「只是写法不同」
+/// 混成一类，报告就失去分辨力了。
+#[must_use]
+pub fn normalize_license_name(name: &str) -> String {
+    let trimmed = name.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.is_empty() {
+        return "(未声明)".to_string();
+    }
+    if lower == "mit" {
+        return "MIT".to_string();
+    }
+    // 顺序有意义：`lesser general public license` 必须排在 `general public license` 之前，
+    // 否则 LGPL 会被误判成 GPL（一个可分发、一个不可分发，差得很远）。
+    const RULES: &[(&str, &str)] = &[
+        ("apache software license, version 2.0", "Apache-2.0"),
+        ("apache license, version 2.0", "Apache-2.0"),
+        ("apache license 2.0", "Apache-2.0"),
+        ("apache 2.0", "Apache-2.0"),
+        ("apache-2.0", "Apache-2.0"),
+        ("mit license", "MIT"),
+        ("the mit license", "MIT"),
+        ("3-clause bsd", "BSD-3-Clause"),
+        ("bsd 3-clause", "BSD-3-Clause"),
+        ("2-clause bsd", "BSD-2-Clause"),
+        ("bsd 2-clause", "BSD-2-Clause"),
+        ("eclipse public license - v 2.0", "EPL-2.0"),
+        ("eclipse public license v. 2.0", "EPL-2.0"),
+        ("eclipse public license - v 1.0", "EPL-1.0"),
+        ("mozilla public license version 2.0", "MPL-2.0"),
+        ("lesser general public license", "LGPL-2.1-or-later"),
+        ("general public license", "GPL-2.0"),
+        ("json license", "JSON"),
+        ("isc license", "ISC"),
+        ("the unlicense", "Unlicense"),
+        ("cc0 1.0", "CC0-1.0"),
+    ];
+    for (pattern, spdx) in RULES {
+        if lower.contains(pattern) {
+            return (*spdx).to_string();
+        }
+    }
+    // 认不出就原样返回：它会进 `notice`，而「未知不等于安全」这条规则照旧生效。
+    trimmed.to_string()
+}
+
+/// 从 Android 依赖清单（JSON 数组：`[{name, version, license}]`）收集条目。
+///
+/// 采集在 Gradle 侧完成（解析依赖树 + 读缓存里的 POM），这里只做「规范化 + 判定」——
+/// 于是它可以离线单测，也不需要在构建里引入第三方 Gradle 插件。
+pub fn audit_android(json: &str) -> Result<Vec<Entry>, String> {
+    let value: Value = serde_json::from_str(json).map_err(|error| error.to_string())?;
+    let list = value
+        .as_array()
+        .ok_or_else(|| "Android 依赖清单不是数组".to_string())?;
+    let mut entries = Vec::with_capacity(list.len());
+    for item in list {
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_string();
+        let version = item
+            .get("version")
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_string();
+        let raw = item
+            .get("license")
+            .and_then(Value::as_str)
+            .unwrap_or("(未声明)");
+        let license = normalize_license_name(raw);
+        let verdict = classify(&license);
+        entries.push(Entry {
+            name,
+            version,
+            license,
+            verdict,
+            own: false,
+        });
+    }
+    Ok(entries)
+}
+
+#[cfg(test)]
+mod android_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    #[test]
+    fn pom_names_are_normalised_to_spdx() {
+        assert_eq!(
+            normalize_license_name("Apache License, Version 2.0"),
+            "Apache-2.0"
+        );
+        assert_eq!(
+            normalize_license_name("The Apache Software License, Version 2.0"),
+            "Apache-2.0"
+        );
+        assert_eq!(normalize_license_name("MIT"), "MIT");
+        assert_eq!(normalize_license_name("MIT License"), "MIT");
+        assert_eq!(
+            normalize_license_name("3-Clause BSD License"),
+            "BSD-3-Clause"
+        );
+        assert_eq!(normalize_license_name("The Unlicense"), "Unlicense");
+    }
+
+    #[test]
+    fn lgpl_is_not_mistaken_for_gpl() {
+        let lgpl = normalize_license_name("GNU Lesser General Public License");
+        assert_eq!(lgpl, "LGPL-2.1-or-later");
+        assert_eq!(
+            classify(&lgpl),
+            Verdict::Notice,
+            "弱 copyleft：要人看，不是禁止"
+        );
+        let gpl = normalize_license_name("GNU General Public License, version 2");
+        assert_eq!(gpl, "GPL-2.0");
+        assert_eq!(classify(&gpl), Verdict::Denied);
+    }
+
+    #[test]
+    fn unknown_pom_names_stay_unknown() {
+        assert_eq!(
+            normalize_license_name("Frobnicate License"),
+            "Frobnicate License"
+        );
+        assert_eq!(normalize_license_name("   "), "(未声明)");
+        assert_eq!(
+            classify(&normalize_license_name("Frobnicate License")),
+            Verdict::Notice
+        );
+    }
+
+    #[test]
+    fn android_manifest_becomes_entries() {
+        let json = r#"[
+            {"name": "androidx.compose.ui:ui", "version": "1.12.1", "license": "Apache License, Version 2.0"},
+            {"name": "net.java.dev.jna:jna", "version": "5.19.1", "license": "LGPL-2.1-or-later"}
+        ]"#;
+        let entries = audit_android(json).expect("解析");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].license, "Apache-2.0");
+        assert_eq!(entries[0].verdict, Verdict::Allowed);
+        assert_eq!(entries[1].verdict, Verdict::Notice);
+    }
+}
+
+/// 渲染 Android 依赖一节（追加到报告 / 声明尾部）。
+///
+/// 单独成函数而不是塞进 `render_report` 的签名：那份报告已经有两个来源参数，再加一个会把
+/// 「谁是谁」挤没；Android 这一节作为**追加段**更清楚，也避免改签名带动一堆调用点。
+#[must_use]
+pub fn render_android_section(entries: &[Entry]) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push_str("## Android（Gradle/Maven）依赖\n\n");
+    out.push_str("> 采集：解析 `gradlew :app:dependencies` 的依赖树 + 读 Gradle 缓存里 POM 的 `<licenses>`；\n");
+    out.push_str(
+        "> POM 写的是自然语言许可名，规范化成 SPDX 与判定都在本 crate 里完成（可离线单测）。\n\n",
+    );
+    out.push_str(&format!(
+        "| 指标 | 值 |\n|---|---|\n| 组件 | {} |\n| allowed | {} |\n| notice | {} |\n| denied | {} |\n\n",
+        entries.len(),
+        count(entries, Verdict::Allowed),
+        count(entries, Verdict::Notice),
+        count(entries, Verdict::Denied)
+    ));
+    let mut notable: Vec<&Entry> = entries
+        .iter()
+        .filter(|entry| entry.verdict != Verdict::Allowed)
+        .collect();
+    if !notable.is_empty() {
+        notable.sort_by(|a, b| a.name.cmp(&b.name));
+        out.push_str("| 包 | 版本 | 许可 | 判定 |\n|---|---|---|---|\n");
+        for entry in notable {
+            out.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                entry.name,
+                entry.version,
+                entry.license,
+                entry.verdict.name()
+            ));
+        }
+        out.push('\n');
+    }
+    out
 }

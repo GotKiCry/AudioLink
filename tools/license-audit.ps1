@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# M5 合规：依赖许可审计（Rust + 桌面前端）。
+# M5 合规：依赖许可审计（Rust + 桌面前端 + Android）。
 #
 # 为什么分成两半：「采集」要会调 cargo 与 pnpm（环境知识，放本脚本）；
 # 「判定与渲染」要有单测（代码，放 audiolink-tools::license）。
@@ -14,7 +14,9 @@ param(
     # 同时生成第三方组件声明（清单 + 去重后的许可全文）。发布前才需要，平时不生成。
     [switch]$Notices,
     # 声明落盘位置（相对仓库根）。
-    [string]$NoticesPath = "docs/compliance/THIRD-PARTY-NOTICES.md"
+    [string]$NoticesPath = "docs/compliance/THIRD-PARTY-NOTICES.md",
+    # 跳过 Android（Gradle/Maven）依赖。默认会读 tools/android-licenses.ps1 产出的清单。
+    [switch]$SkipAndroid
 )
 
 $ErrorActionPreference = "Stop"
@@ -52,6 +54,18 @@ $cargoArgs = @(
     "--cargo", $cargoJson,
     "--write", (Join-Path $root $Report)
 )
+$androidJson = Join-Path $root "target/evidence/compliance/android-licenses.json"
+if (-not $SkipAndroid) {
+    if (Test-Path $androidJson) {
+        $cargoArgs += @("--android", $androidJson)
+    }
+    else {
+        # 采集在 Gradle 侧（tools/android-licenses.ps1）：它要先有依赖树报告。没跑过就明确说跳过，
+        # 而不是让报告里「Android 一栏」静悄悄消失。
+        Write-Host "license-audit: 未找到 Android 依赖清单，本次跳过 Android（先跑 tools/android-licenses.ps1）"
+    }
+}
+
 if ($npmJson) { $cargoArgs += @("--npm", $npmJson) }
 if ($Notices) { $cargoArgs += @("--notices", (Join-Path $root $NoticesPath)) }
 

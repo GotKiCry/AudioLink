@@ -21297,3 +21297,19 @@ freely, subject to the following restrictions:
 ```
 
 （共 324 份去重后的许可全文）
+## Android（Gradle/Maven）依赖
+
+> 采集：解析 `gradlew :app:dependencies` 的依赖树 + 读 Gradle 缓存里 POM 的 `<licenses>`；
+> POM 写的是自然语言许可名，规范化成 SPDX 与判定都在本 crate 里完成（可离线单测）。
+
+| 指标 | 值 |
+|---|---|
+| 组件 | 114 |
+| allowed | 113 |
+| notice | 1 |
+| denied | 0 |
+
+| 包 | 版本 | 许可 | 判定 |
+|---|---|---|---|
+| com.google.guava:listenablefuture | 1.0 | (未声明) | notice |
+

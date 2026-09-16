@@ -121,4 +121,42 @@ CLI：`cargo run -q -p audiolink-tools --bin license-audit -- --cargo <json> [--
   `tauri build` 出包后在干净机器上打开「关于」还没验过；
 - **Android 侧没有对应投放**：Android 的分发物里同样需要声明，且 Gradle 依赖还没进清单（§5）。
 
+---
+
+## 8. Android（Gradle/Maven）依赖纳入审计（2026-09-16 第四轮）
+
+§5 与 §7.1 里反复出现的「Android Gradle 依赖未覆盖」，这一轮补上了。
+
+| 环节 | 做法 | 为什么这样做 |
+|---|---|---|
+| 采集依赖坐标 | `gradlew :app:dependencies --configuration releaseRuntimeClasspath` 的依赖树 | 不引入第三方 Gradle 许可插件（那要往构建里再塞一个供应链依赖，还要联网） |
+| 读许可 | Gradle 缓存里每个 POM 的 `<licenses>` 节点 | 完全离线；缓存本来就为构建下过 |
+| 规范化 + 判定 | `audiolink-tools::license`（Rust，可单测） | POM 写的是**自然语言名**（`Apache License, Version 2.0`），要先变成 SPDX 才谈得上判定 |
+
+### 8.1 实测（首次）
+
+```text
+license-audit: Rust 635 包 / 前端 88 包 / Android 114 包 · denied 0 · notice 17
+```
+
+Android 一节：**114 个组件，allowed 113 / notice 1 / denied 0**。那一条 `notice` 是
+`com.google.guava:listenablefuture 1.0` —— 它的 POM **没有声明任何许可**（著名的空壳 POM，
+真正的许可由 `guava` 本体覆盖）。它进 `notice` 而不是被当成 allowed，正是「未知不等于安全」这条规则在起作用。
+
+许可名分布：110 个 `The Apache Software License, Version 2.0` + 10 个 `Apache-2.0` +
+1 个 `BSD-3-Clause` + 1 个 `LGPL-2.1-or-later OR Apache-2.0`（JNA 双许可 → `OR` 取最宽 → allowed）+ 1 条未声明。
+
+### 8.2 两个刻意的细节
+
+**规范化顺序有语义**：`lesser general public license` 必须排在 `general public license` 之前，
+否则 LGPL 会被误判成 GPL —— 一个可分发、一个不可分发。这条有单测钉住（`lgpl_is_not_mistaken_for_gpl`）。
+
+**`(c)` 是版本约束不是依赖**：Gradle 树里带 `(c)` 的行只表示"约束版本"，把它当依赖会把组件数虚高。
+
+### 8.3 还差什么
+
+- **Android 侧没有投放位置**：桌面端有「关于」面板读声明（§7），Android 应用内还没有对应入口；
+- **CI 未接**：Android 许可审计目前是「发布前手动跑」的一步，还没进 workflow（桌面侧的审计在 `desktop` job 里）。
+
+
 

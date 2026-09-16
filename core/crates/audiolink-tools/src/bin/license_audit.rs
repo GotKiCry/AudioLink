@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use audiolink_tools::license::{
-    Verdict, audit_cargo_metadata, audit_npm_licenses, collect_notices, render_notices,
-    render_report,
+    Verdict, audit_android, audit_cargo_metadata, audit_npm_licenses, collect_notices,
+    render_android_section, render_notices, render_report,
 };
 
 fn main() {
@@ -25,6 +25,7 @@ fn run() -> anyhow::Result<()> {
     let mut npm_path: Option<PathBuf> = None;
     let mut write_path: Option<PathBuf> = None;
     let mut notices_path: Option<PathBuf> = None;
+    let mut android_path: Option<PathBuf> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -33,6 +34,7 @@ fn run() -> anyhow::Result<()> {
             "--npm" => npm_path = args.next().map(PathBuf::from),
             "--write" => write_path = args.next().map(PathBuf::from),
             "--notices" => notices_path = args.next().map(PathBuf::from),
+            "--android" => android_path = args.next().map(PathBuf::from),
             "--help" | "-h" => {
                 usage();
                 return Ok(());
@@ -55,7 +57,18 @@ fn run() -> anyhow::Result<()> {
         None => Vec::new(),
     };
 
-    let report = render_report(&rust, &frontend);
+    // Android（Gradle/Maven）依赖：采集在 Gradle 侧，这里只做规范化 + 判定。
+    let android = match android_path {
+        Some(path) => {
+            let json = std::fs::read_to_string(&path)
+                .with_context(|| format!("读取 {}", path.display()))?;
+            audit_android(&json).map_err(anyhow::Error::msg)?
+        }
+        None => Vec::new(),
+    };
+
+    let mut report = render_report(&rust, &frontend);
+    report.push_str(&render_android_section(&android));
     if let Some(path) = write_path {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -67,7 +80,8 @@ fn run() -> anyhow::Result<()> {
 
     if let Some(path) = notices_path {
         let (entries, texts) = collect_notices(&rust_json).map_err(anyhow::Error::msg)?;
-        let notices = render_notices(&entries, &texts, &frontend);
+        let mut notices = render_notices(&entries, &texts, &frontend);
+        notices.push_str(&render_android_section(&android));
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("创建 {}", parent.display()))?;
@@ -92,9 +106,10 @@ fn run() -> anyhow::Result<()> {
         .filter(|entry| entry.verdict == Verdict::Notice)
         .count();
     println!(
-        "license-audit: Rust {} 包 / 前端 {} 包 · denied {} · notice {}",
+        "license-audit: Rust {} 包 / 前端 {} 包 / Android {} 包 · denied {} · notice {}",
         rust.len(),
         frontend.len(),
+        android.len(),
         denied.len(),
         notice
     );
