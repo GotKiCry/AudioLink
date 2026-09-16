@@ -35,8 +35,21 @@ jobs:
       - name: Clippy (light kernel crates)
         run: cargo clippy -p audiolink-types -p audiolink-proto -p audiolink-identity --all-targets --all-features -- -D warnings
       # --lib --tests：跳过 doctests（内核各 crate 目前 doctest 全为 0 项，只为它们链 rustdoc 不划算）
+      # nextest 走官方预编译包（get.nexte.st）而不是 `cargo install`：后者每次运行都要从源码编译，
+      # **实测在 CI 上花 375~404 s**（rust-cache 的 bin 缓存没有把它留住）。预编译包 7.5 MB，
+      # 本地实测下载 1.9 s + 解压 0.4 s。版本显式 pin，装完立刻 --version 校验：
+      # 装坏了就在这一步红，而不是留到测试步骤去猜。
       - name: Install cargo-nextest
-        run: cargo install cargo-nextest --locked
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $version = '0.9.144'
+          $tmp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+          $zip = Join-Path $tmp 'nextest.zip'
+          Invoke-WebRequest -Uri "https://get.nexte.st/$version/windows" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath (Join-Path $env:USERPROFILE '.cargo\bin') -Force
+          cargo nextest --version
       # nextest 跨测试二进制并行调度（cargo test 是逐个二进制串行）。本地实测：heavy 集 78.2 s → 18.8 s
       # （3/3 次一致，344 项与 cargo test --lib --tests 完全相同，无漏测）。首次安装由 rust-cache 缓存。
       - name: Test (light kernel crates)
@@ -58,8 +71,21 @@ jobs:
       - name: Clippy (heavy kernel crates)
         run: cargo clippy --workspace --exclude audiolink-desktop --exclude audiolink-types --exclude audiolink-proto --exclude audiolink-identity --all-targets --all-features -- -D warnings
       # 无 #[test] 的 bin 已在各自 Cargo.toml 里标 test = false，不再为它们各链一个测试二进制
+      # nextest 走官方预编译包（get.nexte.st）而不是 `cargo install`：后者每次运行都要从源码编译，
+      # **实测在 CI 上花 375~404 s**（rust-cache 的 bin 缓存没有把它留住）。预编译包 7.5 MB，
+      # 本地实测下载 1.9 s + 解压 0.4 s。版本显式 pin，装完立刻 --version 校验：
+      # 装坏了就在这一步红，而不是留到测试步骤去猜。
       - name: Install cargo-nextest
-        run: cargo install cargo-nextest --locked
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $version = '0.9.144'
+          $tmp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+          $zip = Join-Path $tmp 'nextest.zip'
+          Invoke-WebRequest -Uri "https://get.nexte.st/$version/windows" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath (Join-Path $env:USERPROFILE '.cargo\bin') -Force
+          cargo nextest --version
       - name: Test (heavy kernel crates)
         run: cargo nextest run --workspace --exclude audiolink-desktop --exclude audiolink-types --exclude audiolink-proto --exclude audiolink-identity --lib --tests
 
