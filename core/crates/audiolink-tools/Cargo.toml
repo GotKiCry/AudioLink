@@ -29,10 +29,14 @@ workspace = true
 [[bin]]
 name = "alp2-dump"
 path = "src/bin/alp2_dump.rs"
+# 该 bin 内没有 #[test]：关掉 test harness，CI 不在它身上再链一个测试二进制
+test = false
 
 [[bin]]
 name = "latency-probe"
 path = "src/bin/latency_probe.rs"
+# 该 bin 内没有 #[test]：关掉 test harness，CI 不在它身上再链一个测试二进制
+test = false
 
 # 桌面自环链路 + 四段延迟分解（M1 P0；仅 Windows 可用，非 Windows 为占位 main）
 [[bin]]
@@ -43,6 +47,8 @@ path = "src/bin/self_loop.rs"
 [[bin]]
 name = "link-loop"
 path = "src/bin/link_loop.rs"
+# 该 bin 内没有 #[test]：关掉 test harness，CI 不在它身上再链一个测试二进制
+test = false
 
 # PC → 真机（Android）验收：连接 / PIN 配对 / 推流 / 跨机延迟账本 + JSON（支持 --self-test）
 [[bin]]
@@ -53,8 +59,12 @@ path = "src/bin/device_link.rs"
 [[bin]]
 name = "soak-runner"
 path = "src/bin/soak_runner.rs"
+# 该 bin 内没有 #[test]：关掉 test harness，CI 不在它身上再链一个测试二进制
+test = false
 
 # M2 的弱网测试台：透明 UDP 中继 + 丢包 / 延迟 / 抖动 / 限速注入
 [[bin]]
 name = "netem-sim"
 path = "src/bin/netem_sim.rs"
+# 该 bin 内没有 #[test]：关掉 test harness，CI 不在它身上再链一个测试二进制
+test = false

@@ -32,8 +32,10 @@ jobs:
       # 排除桌面外壳：它的 tauri 依赖编译很重，放到独立的 desktop job 里
       - name: Clippy (kernel crates)
         run: cargo clippy --workspace --exclude audiolink-desktop --all-targets --all-features -- -D warnings
+      # --lib --tests：跳过 doctests（内核各 crate 目前 doctest 全为 0 项，只为它们链 rustdoc 不划算）；
+      # 无 #[test] 的 bin 已在各自 Cargo.toml 里标 test = false，不再为它们各链一个测试二进制
       - name: Test (kernel crates)
-        run: cargo test --workspace --exclude audiolink-desktop
+        run: cargo test --workspace --exclude audiolink-desktop --lib --tests
 
   # ---------- Android：Rust 交叉编译 + 组装 debug APK ----------
   android:
@@ -49,6 +51,15 @@ jobs:
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi
       - uses: Swatinem/rust-cache@v2
+      # Gradle 依赖 + wrapper 分发缓存：assembleDebug 是本 job 的关键路径（实测 130 s）
+      - uses: actions/cache@v4          # TODO: pin to SHA
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle.kts', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+      # cargo-ndk 由 Swatinem/rust-cache 的 cache-bin 覆盖，实测这一步只花 1 s（不再重编）
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
       - name: Build Rust core for Android
