@@ -260,6 +260,24 @@ async fn two_receivers_play_the_same_frame_within_ten_milliseconds() {
     let scheduled_a = drain_scheduled(&mut events_a);
     let scheduled_b = drain_scheduled(&mut events_b);
     println!("[group-sync][diag] 排播事件 A={scheduled_a:?} · B={scheduled_b:?}");
+    // 护栏（第 60 轮补）：**两端都必须真的进入排播**，且锚到同一个目标时刻。
+    //
+    // 为什么必须有这条（第 58–59 轮的教训）：`PlayoutScheduled` 只在首次进入排播时报一次，
+    // 而这条测试此前**只看偏差数字**、不看「排播到底有没有生效」—— 于是「组基准早于开流到达被丢弃」
+    // 这个缺陷潜伏了好几轮：两端各自走本地游标，偏差偶尔差一帧（约 20%），而 aligned 恒为 0.00 ms，
+    // 看上去一切正常。加了这两条断言之后，同类回归会当场变红，而不是伪装成「偶发抖动」。
+    assert!(
+        !scheduled_a.is_empty() && !scheduled_b.is_empty(),
+        "两端都必须进入排播（A={scheduled_a:?} · B={scheduled_b:?}）—— 空就是退回本地游标了"
+    );
+    // 目标时刻之差允许 1 ms（两端时钟估计各自的误差），但绝不允许差一整帧（20 ms）。
+    let target_gap_us = (scheduled_a[0].0 - scheduled_b[0].0).abs();
+    assert!(
+        target_gap_us <= 1_000,
+        "两端必须锚到同一个目标时刻（相差 {target_gap_us} µs；A={:?} · B={:?}）—— 这是「同播一帧」的前提",
+        scheduled_a[0].0,
+        scheduled_b[0].0
+    );
     let a: Vec<Instant> = a_all.iter().map(|stamp| stamp.at).collect();
     let b: Vec<Instant> = b_all.iter().map(|stamp| stamp.at).collect();
     let (samples, absolute_p50, absolute_p95) = deviation_ms(&a, &b);
