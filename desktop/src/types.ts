@@ -163,6 +163,35 @@ export interface GroupView {
   members: GroupMemberView[];
 }
 
+/** 对齐结论（M4）：unknown = 读数不足两路；aligned = 跨度在一帧内；drifting = 超过一帧。 */
+export type AlignmentVerdict = "unknown" | "aligned" | "drifting";
+
+/** 一路流的「最近一帧编号 ↔ 到达时刻」（M4 多源对齐观测）。 */
+export interface StreamAxisView {
+  peerShort: string;
+  /** 最近一帧的样本编号；null = 本会话还没收到音频。 */
+  sampleIndex: number | null;
+  /** 那一帧到达本端的时刻（本端单调时钟，毫秒）。 */
+  atMs: number;
+  /** 用快照的「现在」推算出的当前编号。 */
+  indexNow: number | null;
+}
+
+/**
+ * 多源对齐快照（`alignment` 的返回）。
+ *
+ * 判据只有一条：用**同一个「现在」**推算各路编号，跨度就是时间轴错位量。
+ * 一帧（960 样本 / 20 ms）以内算对齐 —— 这正是 M4 多源混音要保证的东西。
+ */
+export interface AlignmentView {
+  axes: StreamAxisView[];
+  /** 各路当前编号的跨度（样本）；null = 有效读数不足两路。 */
+  spreadSamples: number | null;
+  /** 跨度换算成毫秒。 */
+  spreadMs: number | null;
+  verdict: AlignmentVerdict;
+}
+
 export interface TelemetryRow {
   /** 采样时刻（Unix 毫秒）。 */
   atUnixMs: number;

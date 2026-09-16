@@ -29,8 +29,8 @@ use tauri::{Manager, State};
 use engine_bridge::EngineBridge;
 use error::CommandError;
 use view::{
-    CaptureDeviceView, GroupView, LocalStatus, PeerView, StartSendResult, SubmitPinResult,
-    TelemetryRow, TelemetryView,
+    AlignmentView, CaptureDeviceView, GroupView, LocalStatus, PeerView, StartSendResult,
+    SubmitPinResult, TelemetryRow, TelemetryView,
 };
 
 #[tauri::command]
@@ -171,6 +171,12 @@ async fn set_peer_gain(
     bridge.set_peer_gain(&id_short, gain, ramp_ms).await
 }
 
+/// M4：多源对齐快照（各路样本编号 + 当前跨度）。
+#[tauri::command]
+async fn alignment(bridge: State<'_, EngineBridge>) -> Result<AlignmentView, CommandError> {
+    bridge.alignment().await
+}
+
 pub fn run() {
     tauri::Builder::default()
         // 单实例：第二次启动时唤出已有窗口（旧版靠 Mutex + 命名管道手写）
@@ -202,7 +208,8 @@ pub fn run() {
             create_group,
             join_group,
             leave_group,
-            set_peer_gain
+            set_peer_gain,
+            alignment
         ])
         .setup(|app| {
             // 桥接层必须在窗口加载**之前**就位：前端一挂载就会 invoke，拿不到 State 会直接报错。

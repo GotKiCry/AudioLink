@@ -41,8 +41,9 @@ use tokio::sync::{broadcast, watch};
 use crate::capture::{self, SharedCapture};
 use crate::error::CommandError;
 use crate::view::{
-    CaptureDeviceView, GroupMemberView, GroupView, LocalStatus, PairRequiredPayload, PeerState,
-    PeerView, StartSendResult, SubmitPinResult, TelemetryRow, TelemetryView, render_telemetry_csv,
+    AlignmentView, CaptureDeviceView, GroupMemberView, GroupView, LocalStatus, PairRequiredPayload,
+    PeerState, PeerView, StartSendResult, SubmitPinResult, TelemetryRow, TelemetryView,
+    alignment_view, render_telemetry_csv,
 };
 
 // ---------------------------------------------------------------------------
@@ -408,6 +409,14 @@ impl EngineBridge {
             .set_peer_gain(peer, gain, ramp_ms)
             .await
             .map_err(|error| engine_error("set_peer_gain", &error))
+    }
+
+    /// M4：多源对齐快照 —— 各路「最近一帧编号 ↔ 到达时刻」与当前跨度。
+    ///
+    /// 与 `broadcast_epoch` 是本机接收端侧的一对：一个负责让两路对齐，一个负责**显示**它对齐了没有。
+    pub async fn alignment(&self) -> Result<AlignmentView, CommandError> {
+        let engine = self.engine().await?;
+        Ok(alignment_view(&engine.stream_axes(), engine.monotonic_ms()))
     }
 
     /// 同步组列表（§7 / M3 交付物 4）。

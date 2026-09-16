@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, subscribeEvents } from "./ipc";
 import {
   toCommandError,
+  type AlignmentView,
   type CommandError,
   type CaptureDeviceView,
   type GroupView,
@@ -44,6 +45,8 @@ export interface AudioLinkController {
   /** §4.1：调某台对端的音量（0.0–2.0）。 */
   setPeerGain: (idShort: string, gain: number) => Promise<void>;
   refreshGroups: () => Promise<void>;
+  /** M4 多源对齐快照（1 Hz 轮询；没有对端时为 null）。 */
+  alignment: AlignmentView | null;
   joinGroup: (idShort: string, groupId: number) => Promise<void>;
   leaveGroup: (idShort: string, groupId: number) => Promise<void>;
   createGroup: (idShorts: string[], leadMs: number) => Promise<void>;
@@ -132,6 +135,7 @@ export function useAudioLink(): AudioLinkController {
   const [telemetry, setTelemetry] = useState<TelemetryView | null>(null);
   const [telemetryHistory, setTelemetryHistory] = useState<TelemetryRow[]>([]);
   const [groups, setGroups] = useState<GroupView[]>([]);
+  const [alignment, setAlignment] = useState<AlignmentView | null>(null);
   const [groupBusy, setGroupBusy] = useState(false);
   const [exportingTelemetry, setExportingTelemetry] = useState(false);
   const [pairRequest, setPairRequest] = useState<PairRequiredPayload | null>(null);
@@ -184,6 +188,25 @@ export function useAudioLink(): AudioLinkController {
   useEffect(() => {
     void refreshActiveCapture();
   }, [captureLocked, refreshActiveCapture]);
+
+  const refreshAlignment = useCallback(async (): Promise<void> => {
+    const next = await api.alignment().catch(() => null);
+    if (next !== null) {
+      setAlignment(next);
+    }
+  }, []);
+
+  useEffect(() => {
+    // M4 对齐快照：读数本身在引擎里**每包**更新，但界面只需要看趋势 —— 按 1 Hz 拉，
+    // 事件驱动反而会变成「每包一次 IPC」。没有对端时不空转。
+    if (peers.length === 0) {
+      setAlignment(null);
+      return;
+    }
+    void refreshAlignment();
+    const timer = window.setInterval(() => void refreshAlignment(), 1000);
+    return () => window.clearInterval(timer);
+  }, [peers.length, refreshAlignment]);
 
   useEffect(() => {
     // 订阅必须在挂载时就绪：配对请求可能在用户还没做任何动作时由对端发起
@@ -437,6 +460,7 @@ export function useAudioLink(): AudioLinkController {
     telemetryHistory,
     groups,
     groupBusy,
+    alignment,
     setPeerGain,
     refreshGroups,
     createGroup,

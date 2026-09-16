@@ -366,3 +366,150 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// M4：多源对齐观测（docs/39）
+// ---------------------------------------------------------------------------
+
+use audiolink_engine::StreamAxis;
+
+/// 一帧的样本数（20 ms @ 48 kHz）。对齐判据的分母。
+pub const ALIGNMENT_FRAME_SAMPLES: u32 = 960;
+
+/// 一路流的「最近一帧编号 ↔ 到达时刻」。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamAxisView {
+    /// 对端短码。
+    pub peer_short: String,
+    /// 最近一帧的样本编号；`None` = 本会话还没收到音频。
+    pub sample_index: Option<u32>,
+    /// 那一帧到达本端的时刻（本端单调时钟，毫秒）。
+    pub at_ms: u32,
+    /// 用快照的「现在」推算出的当前编号。
+    pub index_now: Option<u32>,
+}
+
+/// 对齐结论（与前端联合类型一一对应）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AlignmentVerdict {
+    /// 有效读数不足两路。
+    Unknown,
+    /// 两路跨度在一帧以内 —— 采样级对齐达标。
+    Aligned,
+    /// 跨度超过一帧：要么没广播过共同基准，要么基准没生效。
+    Drifting,
+}
+
+/// 多源对齐快照。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlignmentView {
+    /// 各路读数。
+    pub axes: Vec<StreamAxisView>,
+    /// 各路当前编号的跨度（样本）；`None` = 有效读数不足两路。
+    pub spread_samples: Option<u32>,
+    /// 跨度换算成毫秒。
+    pub spread_ms: Option<u32>,
+    /// 结论。
+    pub verdict: AlignmentVerdict,
+}
+
+/// 纯函数：把引擎给的各路读数折成界面要的形状。
+///
+/// 判据只有一条 —— **用同一个「现在」推算各路编号，跨度就是时间轴错位量**。
+/// 一帧以内算对齐（采样级对齐的目标就是一帧内），超过就是错位（多半是没广播过共同基准）。
+pub fn alignment_view(axes: &[StreamAxis], now_ms: u32) -> AlignmentView {
+    let views: Vec<StreamAxisView> = axes
+        .iter()
+        .map(|axis| StreamAxisView {
+            peer_short: axis.peer.short(),
+            sample_index: axis.sample_index,
+            at_ms: axis.at_ms,
+            index_now: axis.index_at(now_ms),
+        })
+        .collect();
+
+    let mut indices: Vec<u32> = views.iter().filter_map(|view| view.index_now).collect();
+    indices.sort_unstable();
+    let spread_samples = if indices.len() < 2 {
+        None
+    } else {
+        let min = indices.first().copied().unwrap_or(0);
+        let max = indices.last().copied().unwrap_or(0);
+        Some(max.wrapping_sub(min))
+    };
+    let verdict = match spread_samples {
+        None => AlignmentVerdict::Unknown,
+        Some(samples) if samples <= ALIGNMENT_FRAME_SAMPLES => AlignmentVerdict::Aligned,
+        Some(_) => AlignmentVerdict::Drifting,
+    };
+    AlignmentView {
+        axes: views,
+        spread_samples,
+        spread_ms: spread_samples.map(|samples| samples / 48),
+        verdict,
+    }
+}
+
+#[cfg(test)]
+mod alignment_tests {
+    use super::*;
+    use audiolink_types::NodeId;
+
+    fn axis(seed: u8, sample_index: Option<u32>, at_ms: u32) -> StreamAxis {
+        StreamAxis {
+            peer: NodeId::from_bytes([seed; 32]),
+            sample_index,
+            at_ms,
+        }
+    }
+
+    #[test]
+    fn one_stream_cannot_be_judged() {
+        let view = alignment_view(&[axis(1, Some(48_000), 1_000)], 1_050);
+        assert_eq!(view.axes.len(), 1);
+        assert_eq!(view.axes[0].index_now, Some(50_400), "50 ms = 2400 样本");
+        assert_eq!(view.spread_samples, None);
+        assert_eq!(view.verdict, AlignmentVerdict::Unknown);
+    }
+
+    #[test]
+    fn aligned_streams_land_inside_one_frame() {
+        // 两路最近一帧相差 144 样本（3 ms）—— 正是 M4 实测对齐后的样子。
+        let view = alignment_view(
+            &[axis(1, Some(48_000), 1_000), axis(2, Some(48_144), 1_000)],
+            1_000,
+        );
+        assert_eq!(view.spread_samples, Some(144));
+        assert_eq!(view.spread_ms, Some(3));
+        assert_eq!(view.verdict, AlignmentVerdict::Aligned);
+    }
+
+    #[test]
+    fn streams_far_apart_are_reported_as_drifting() {
+        // 两路各自从启流瞬间编号、相差 1.5 s → 72048 样本。
+        let view = alignment_view(
+            &[axis(1, Some(0), 1_000), axis(2, Some(72_048), 1_000)],
+            1_000,
+        );
+        assert_eq!(view.spread_samples, Some(72_048));
+        assert_eq!(view.spread_ms, Some(1_501));
+        assert_eq!(view.verdict, AlignmentVerdict::Drifting);
+    }
+
+    #[test]
+    fn streams_without_audio_are_unknown() {
+        let view = alignment_view(&[axis(1, None, 0), axis(2, None, 0)], 1_000);
+        assert_eq!(view.spread_samples, None);
+        assert_eq!(view.verdict, AlignmentVerdict::Unknown);
+    }
+
+    #[test]
+    fn one_silent_stream_still_cannot_be_judged() {
+        let view = alignment_view(&[axis(1, Some(48_000), 1_000), axis(2, None, 0)], 1_000);
+        assert_eq!(view.spread_samples, None);
+        assert_eq!(view.verdict, AlignmentVerdict::Unknown);
+    }
+}

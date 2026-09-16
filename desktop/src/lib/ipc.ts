@@ -10,6 +10,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AlignmentView,
   CaptureDeviceView,
   GroupView,
   LocalStatus,
@@ -61,6 +62,12 @@ export const api = {
   setPeerGain: (idShort: string, gain: number, rampMs: number): Promise<null> =>
     invoke<null>("set_peer_gain", { id_short: idShort, gain, ramp_ms: rampMs }),
   listGroups: (): Promise<GroupView[]> => invoke<GroupView[]>("list_groups"),
+  /**
+   * `alignment` —— M4 多源对齐快照（各路样本编号 + 当前跨度）。
+   *
+   * 它是**观测量**：引擎里每个音频数据报到达时都会更新读数，界面按 1 Hz 拉一次即可。
+   */
+  alignment: (): Promise<AlignmentView> => invoke<AlignmentView>("alignment"),
   createGroup: (idShorts: string[], leadMs: number): Promise<number> =>
     invoke<number>("create_group", { id_shorts: idShorts, lead_ms: leadMs }),
   joinGroup: (idShort: string, groupId: number): Promise<null> =>
