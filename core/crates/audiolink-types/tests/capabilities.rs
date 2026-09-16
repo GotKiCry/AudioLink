@@ -101,3 +101,24 @@ fn current_declares_only_what_the_core_can_actually_do() {
         "本端必须满足自己声明的必需能力"
     );
 }
+
+#[test]
+fn capability_keys_are_stable_machine_readable_ids() {
+    // 界面按这些键决定置灰（不去解析中文文案）—— 改文案不该断判断，所以键必须独立存在。
+    assert_eq!(Capabilities::key(Capabilities::GROUP_EPOCH), "group_epoch");
+    assert_eq!(Capabilities::key(Capabilities::OPUS), "opus");
+    assert_eq!(Capabilities::key(1 << 31), "unknown");
+
+    let mut keys: Vec<&str> = Capabilities::ALL_KNOWN
+        .iter()
+        .map(|bit| Capabilities::key(*bit))
+        .collect();
+    assert!(
+        keys.iter().all(|key| *key != "unknown"),
+        "每个已知位都要有自己的键"
+    );
+    keys.sort_unstable();
+    let before = keys.len();
+    keys.dedup();
+    assert_eq!(keys.len(), before, "键不能重复：重复会让置灰逻辑张冠李戴");
+}

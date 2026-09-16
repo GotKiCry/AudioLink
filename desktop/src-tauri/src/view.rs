@@ -109,8 +109,12 @@ pub struct PeerCapabilitiesView {
     pub peer: String,
     /// 双方交集 —— 也就这一对到底能一起做什么。
     pub agreed: String,
-    /// 本端有、对端没有的能力（逐项人话；界面据此置灰并说明原因）。
+    /// 本端有、对端没有的能力（逐项人话；界面据此说明原因）。
     pub missing_on_peer: Vec<String>,
+    /// 交集里实际可用的能力键（**机器可读**，界面用它判断该不该置灰）。
+    pub agreed_keys: Vec<String>,
+    /// 本端有、对端没有的能力键（同样是机器可读）。
+    pub missing_keys: Vec<String>,
 }
 
 /// 遥测数字面板的数据（契约 §6；单位统一 µs / bps，由前端换算成 ms / kbps 展示）。
@@ -301,19 +305,22 @@ mod tests {
             r#"{"idShort":"3f9a1c0b","name":"客厅 R1","addr":"192.168.1.23:58290","state":"handshaking","trusted":false,"capabilities":null}"#
         );
 
-        // 协商完成后的形状：字段名与嵌套名都要钉住（前端按 `missingOnPeer` 决定置灰）。
+        // 协商完成后的形状：字段名与嵌套名都要钉住 —— 前端按 `agreedKeys` / `missingKeys`
+        // 决定置灰，按 `missingOnPeer` 写说明；这几个名字漂一个，界面就静默失效。
         let negotiated = PeerView {
             capabilities: Some(PeerCapabilitiesView {
                 local: "Opus 编码、音频采集".into(),
                 peer: "Opus 编码、音频播放".into(),
                 agreed: "Opus 编码".into(),
                 missing_on_peer: vec!["音频采集".into()],
+                agreed_keys: vec!["opus".into()],
+                missing_keys: vec!["capture".into()],
             }),
             ..peer
         };
         assert_eq!(
             serde_json::to_string(&negotiated).expect("serialize"),
-            r#"{"idShort":"3f9a1c0b","name":"客厅 R1","addr":"192.168.1.23:58290","state":"handshaking","trusted":false,"capabilities":{"local":"Opus 编码、音频采集","peer":"Opus 编码、音频播放","agreed":"Opus 编码","missingOnPeer":["音频采集"]}}"#
+            r#"{"idShort":"3f9a1c0b","name":"客厅 R1","addr":"192.168.1.23:58290","state":"handshaking","trusted":false,"capabilities":{"local":"Opus 编码、音频采集","peer":"Opus 编码、音频播放","agreed":"Opus 编码","missingOnPeer":["音频采集"],"agreedKeys":["opus"],"missingKeys":["capture"]}}"#
         );
 
         let local = LocalStatus {

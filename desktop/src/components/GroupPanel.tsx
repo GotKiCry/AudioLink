@@ -33,6 +33,17 @@ export function GroupPanel({
 
   const selectable = peers.filter((peer) => peer.state !== "idle");
 
+  /**
+   * §13：建组依赖「组内排播」（`GROUP_EPOCH`）—— 对端不支持就该**选不了**，而不是选完再失败。
+   *
+   * 返回 `null` 表示还没协商完（握手中）：这时也禁用，但说的是「等一下」而不是「不支持」——
+   * 两句话的处置方式完全不同（一个等，一个别等）。
+   */
+  const epochReady = (peer: (typeof peers)[number]): boolean | null =>
+    peer.capabilities === null
+      ? null
+      : peer.capabilities.agreedKeys.includes("group_epoch");
+
   const toggle = (idShort: string) => {
     setSelected((current) =>
       current.includes(idShort)
@@ -81,18 +92,29 @@ export function GroupPanel({
         <p className="text-xs text-neutral-500">{t("group.no_peers")}</p>
       ) : (
         <ul className="mb-3 space-y-1 text-xs">
-          {selectable.map((peer) => (
-            <li key={peer.idShort} className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={selected.includes(peer.idShort)}
-                onChange={() => toggle(peer.idShort)}
-              />
-              <span className="text-neutral-200">{peer.name}</span>
-              <span className="text-neutral-500">fp:{peer.idShort}</span>
-              <span className="text-neutral-500">{peer.state}</span>
-            </li>
-          ))}
+          {selectable.map((peer) => {
+            const ready = epochReady(peer);
+            return (
+              <li key={peer.idShort} className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={selected.includes(peer.idShort)}
+                  disabled={ready !== true}
+                  onChange={() => toggle(peer.idShort)}
+                />
+                <span className={ready === true ? "text-neutral-200" : "text-neutral-500"}>
+                  {peer.name}
+                </span>
+                <span className="text-neutral-500">fp:{peer.idShort}</span>
+                <span className="text-neutral-500">{peer.state}</span>
+                {ready === true ? null : (
+                  <span className="text-amber-500">
+                    {ready === null ? t("group.peer_negotiating") : t("group.peer_no_epoch")}
+                  </span>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
 

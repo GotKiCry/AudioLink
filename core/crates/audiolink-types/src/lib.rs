@@ -554,6 +554,39 @@ impl Capabilities {
         "未知能力"
     }
 
+    /// 单个位 → **机器可读**的键（界面按它判断「这个功能能不能用」）。
+    ///
+    /// 为什么不复用 `name()`：那是给人看的文案，会随措辞调整。置灰逻辑跟着文案走，
+    /// 等于「改一次文案、断一次判断」—— 这是最容易漏的坏耦合。
+    #[must_use]
+    pub const fn key(bit: u32) -> &'static str {
+        if bit == Self::OPUS {
+            return "opus";
+        }
+        if bit == Self::PCM16 {
+            return "pcm16";
+        }
+        if bit == Self::CAPTURE {
+            return "capture";
+        }
+        if bit == Self::PLAYOUT {
+            return "playout";
+        }
+        if bit == Self::SYSTEM_LOOPBACK {
+            return "system_loopback";
+        }
+        if bit == Self::MICROPHONE {
+            return "microphone";
+        }
+        if bit == Self::MIXER {
+            return "mixer";
+        }
+        if bit == Self::GROUP_EPOCH {
+            return "group_epoch";
+        }
+        "unknown"
+    }
+
     /// 位图 → 人类可读列表（固定顺序；空位图得到「无」）。
     #[must_use]
     pub fn describe(bits: u32) -> String {

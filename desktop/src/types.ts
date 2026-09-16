@@ -44,6 +44,10 @@ export interface PeerCapabilitiesView {
   agreed: string;
   /** 本端有、对端没有的能力（界面据此说明「为什么这个功能用不了」）。 */
   missingOnPeer: string[];
+  /** 交集里实际可用的能力键（机器可读，界面用它判断该不该置灰）。 */
+  agreedKeys: string[];
+  /** 本端有、对端没有的能力键。 */
+  missingKeys: string[];
 }
 
 export interface PeerView {

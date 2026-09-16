@@ -994,16 +994,29 @@ fn peer_view(status: &PeerStatus, sending: Option<NodeId>) -> PeerView {
 /// §13 能力协商结果 → 契约视图（把位图翻成人话，见 [`PeerCapabilitiesView`] 的说明）。
 fn capabilities_view(caps: Option<PeerCapabilities>) -> Option<PeerCapabilitiesView> {
     let caps = caps?;
-    let missing_on_peer = Capabilities::ALL_KNOWN
-        .iter()
-        .filter(|bit| caps.missing_on_peer() & **bit != 0)
-        .map(|bit| Capabilities::name(*bit).to_string())
-        .collect();
+    // 位图 → 人话（给人看）与位图 → 键（给判断用）两条都出，界面因此不必解析中文。
+    let names = |bits: u32| -> Vec<String> {
+        Capabilities::ALL_KNOWN
+            .iter()
+            .filter(|bit| bits & **bit != 0)
+            .map(|bit| Capabilities::name(*bit).to_string())
+            .collect()
+    };
+    let keys = |bits: u32| -> Vec<String> {
+        Capabilities::ALL_KNOWN
+            .iter()
+            .filter(|bit| bits & **bit != 0)
+            .map(|bit| Capabilities::key(*bit).to_string())
+            .collect()
+    };
+    let missing = caps.missing_on_peer();
     Some(PeerCapabilitiesView {
         local: Capabilities::describe(caps.local),
         peer: Capabilities::describe(caps.peer),
         agreed: Capabilities::describe(caps.agreed),
-        missing_on_peer,
+        missing_on_peer: names(missing),
+        agreed_keys: keys(caps.agreed),
+        missing_keys: keys(missing),
     })
 }
 
