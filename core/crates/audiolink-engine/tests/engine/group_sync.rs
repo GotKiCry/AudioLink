@@ -222,6 +222,34 @@ async fn two_receivers_play_the_same_frame_within_ten_milliseconds() {
     let b = stamps_b.lock().unwrap().clone();
     let (samples, absolute_p50, absolute_p95) = deviation_ms(&a, &b);
     let (shift, aligned_samples, aligned_p50, aligned_p95) = best_alignment(&a, &b);
+    // 诊断（2026-09-17，第 57 轮）：区分「起拍就差一帧」与「中途某拍开始差一帧」。
+    //
+    // 这条测试比的是**第 k 次写出的下标** —— 只要一端多写/少写一拍（补静音），索引就整体错位，
+    // 看起来就像「整段差一帧」。下面的打印把首次偏离的位置与两端写入次数钉出来：
+    // k 很小 = 起拍差异；k 靠中间 = 运行中某一拍多写了一次。
+    let first_jump = {
+        let n = a.len().min(b.len());
+        let mut jump: Option<(usize, f64)> = None;
+        for k in 0..n {
+            let delta = if a[k] >= b[k] {
+                a[k] - b[k]
+            } else {
+                b[k] - a[k]
+            };
+            let ms = delta.as_secs_f64() * 1000.0;
+            if ms > 10.0 {
+                jump = Some((k, ms));
+                break;
+            }
+        }
+        jump
+    };
+    println!(
+        "[group-sync][diag] A 写入 {} 次 · B 写入 {} 次 · 首次偏离>10ms：{:?}",
+        a.len(),
+        b.len(),
+        first_jump
+    );
     println!(
         "[group-sync] 绝对偏差（含起播差）：样本 {samples} · P50 {absolute_p50:.2} ms · P95 {absolute_p95:.2} ms"
     );
