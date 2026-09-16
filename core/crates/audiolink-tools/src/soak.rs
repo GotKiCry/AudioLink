@@ -36,8 +36,13 @@ pub struct SoakThresholds {
     pub bitrate_tolerance_pct_x100: u16,
     /// 连续多少次采样码率为 0 判为挂住。
     pub stall_samples: u32,
-    /// 留存的快照上限（超出只计数，不再存现场 —— 8 h 跑不该产出无限大的报告）。
-    pub max_violations: usize,
+    /// **每类**异常留存上限（超出只计数，不再留现场 —— 8 h 跑不该产出无限大的报告）。
+    ///
+    /// 按类设限而不是对总量设限，是 8 h 弱网实测逼出来的：那份报告里单类
+    /// （`bitrate_out_of_range`）就刷了 7055 条，总量配额被它独占，结果留存的 200 条现场
+    /// 全落在 t=2692..8293 s，**后面 5.7 h 一条证据都不剩**。分类配额保证每一类都留得下现场，
+    /// 长跑之后仍能回答「哪一类、什么时候、还在不在发生」。
+    pub max_violations_per_kind: usize,
 }
 
 impl Default for SoakThresholds {
@@ -50,7 +55,29 @@ impl Default for SoakThresholds {
             max_loss_pct_x100: 0,
             bitrate_tolerance_pct_x100: 3_000,
             stall_samples: 5,
-            max_violations: 200,
+            max_violations_per_kind: 25,
+        }
+    }
+}
+
+impl SoakThresholds {
+    /// 弱网档（`--tolerant`）：只钉「会话不断 + 掩盖比例 ≤ 1%」。
+    ///
+    /// 这份清单是 8 h / 5 Mbps / 2% 丢包 / 15 ms 抖动 的实测钉出来的：
+    /// 那一次跑出 7055 条异常，**全部**是 `bitrate_out_of_range` —— 瞬时码率在自适应与重传下
+    /// 本就随弱网摆动，把硬阈值留在弱网档里只会制造假警报，与欠载 / 迟到 / NACK / 瞬时丢包同理。
+    /// 码率判据用 `bitrate_tolerance_pct_x100 = 0`（= 不判）关掉，而不是塞一个巨大的数字进去：
+    /// 语义要能一眼读懂，且与字段文档一致。
+    pub fn weak_network(planned_secs: u64, frame_ms: u32) -> Self {
+        let total_frames = planned_secs.saturating_mul(1_000) / u64::from(frame_ms.max(1));
+        Self {
+            max_plc: u32::try_from(total_frames / 100).unwrap_or(u32::MAX),
+            max_underruns: u32::MAX,
+            max_late_drops: u32::MAX,
+            max_nack: u32::MAX,
+            max_loss_pct_x100: u16::MAX,
+            bitrate_tolerance_pct_x100: 0,
+            ..Self::default()
         }
     }
 }
@@ -87,7 +114,36 @@ pub enum ViolationKind {
     Stalled,
 }
 
+/// 异常种类个数（每一类独立计数、独立配额，见 `SoakMonitor`）。
+pub const VIOLATION_KINDS: usize = 8;
+
 impl ViolationKind {
+    /// 数组下标（每类计数用）。
+    pub const fn index(self) -> usize {
+        match self {
+            Self::NotStreaming => 0,
+            Self::Underrun => 1,
+            Self::PlayoutConcealment => 2,
+            Self::PacketLoss => 3,
+            Self::LateDrop => 4,
+            Self::NackRetransmit => 5,
+            Self::BitrateOutOfRange => 6,
+            Self::Stalled => 7,
+        }
+    }
+
+    /// 全部种类（报告按这个稳定顺序输出）。
+    pub const ALL: [Self; VIOLATION_KINDS] = [
+        Self::NotStreaming,
+        Self::Underrun,
+        Self::PlayoutConcealment,
+        Self::PacketLoss,
+        Self::LateDrop,
+        Self::NackRetransmit,
+        Self::BitrateOutOfRange,
+        Self::Stalled,
+    ];
+
     /// 稳定名字（报告与 CI 断言用）。
     pub const fn name(self) -> &'static str {
         match self {
@@ -132,10 +188,14 @@ pub struct CoarseSample {
 pub struct SoakSummary {
     /// 采样次数。
     pub samples: u64,
-    /// 留存下来的异常条数。
+    /// 留存下来的异常条数（每类各自配额；总数 = 留存 + 未留存）。
     pub violations: usize,
-    /// 因为超过快照上限而未留存的异常条数。
+    /// 按种类计数 —— **完整事实**，不受快照配额影响。
+    pub kind_counts: [u64; VIOLATION_KINDS],
+    /// 因为**该类配额已满**而未留存的异常条数。
     pub dropped_violations: u64,
+    /// 最后一次异常的时刻与种类（配额挡掉快照也不影响它）。
+    pub last_violation: Option<(u64, &'static str)>,
     /// 最后一次采样的遥测。
     pub final_stats: Option<StreamStats>,
     /// 判定。
@@ -164,7 +224,9 @@ pub struct SoakMonitor {
     stall_run: u32,
     samples: u64,
     violations: Vec<Violation>,
+    kind_counts: [u64; VIOLATION_KINDS],
     dropped_violations: u64,
+    last_violation: Option<(u64, &'static str)>,
     coarse: Vec<CoarseSample>,
 }
 
@@ -179,7 +241,9 @@ impl SoakMonitor {
             stall_run: 0,
             samples: 0,
             violations: Vec::new(),
+            kind_counts: [0; VIOLATION_KINDS],
             dropped_violations: 0,
+            last_violation: None,
             coarse: Vec::new(),
         }
     }
@@ -252,7 +316,13 @@ impl SoakMonitor {
             );
         }
 
-        if self.expected_bitrate_bps > 0 && stats.bitrate_bps > 0 {
+        // `bitrate_tolerance_pct_x100 == 0` 就是「不判码率」（弱网档用）。
+        // 这条必须显式写出来：下面的 `deviation > tolerance` 在 tolerance 为 0 时
+        // 会退化成「任何偏离都算异常」，把「不判」悄悄变成「全判」。
+        if self.expected_bitrate_bps > 0
+            && stats.bitrate_bps > 0
+            && self.thresholds.bitrate_tolerance_pct_x100 > 0
+        {
             let expected = u64::from(self.expected_bitrate_bps);
             let actual = u64::from(stats.bitrate_bps);
             let deviation = actual.abs_diff(expected).saturating_mul(10_000) / expected;
@@ -323,9 +393,13 @@ impl SoakMonitor {
         SoakSummary {
             samples: self.samples,
             violations: self.violations.len(),
+            kind_counts: self.kind_counts,
             dropped_violations: self.dropped_violations,
+            last_violation: self.last_violation,
             final_stats: self.previous,
-            verdict: if self.violations.is_empty() && self.dropped_violations == 0 {
+            // 判定看**按类计数**而不是留存条数：配额为 0 时现场一条不留，
+            // 但异常确实发生过，判定不能因此变绿。
+            verdict: if self.kind_counts.iter().all(|count| *count == 0) {
                 "ok"
             } else {
                 "failed"
@@ -360,6 +434,19 @@ impl SoakMonitor {
             })
             .collect();
 
+        // 按类计数与「最后一次」进报告，是真实 8 h 跑换来的教训：
+        // 快照会被配额截断，于是「哪一类刷了多少条、最后一次发生在什么时候」
+        // 成了判断事件**是否仍在发生**的唯一线索（旧报告只有「留存的 200 条」，
+        // 看不出后面 5.7 h 到底还有没有异常）。
+        let mut by_kind = serde_json::Map::new();
+        for kind in ViolationKind::ALL {
+            by_kind.insert(
+                kind.name().to_owned(),
+                Value::from(summary.kind_counts[kind.index()]),
+            );
+        }
+        let total_violations: u64 = summary.kind_counts.iter().sum();
+
         let report = json!({
             "tool": "soak-runner",
             "started_at_unix": meta.started_at_unix,
@@ -369,7 +456,12 @@ impl SoakMonitor {
             "summary": {
                 "samples": summary.samples,
                 "violations": summary.violations,
+                "violations_total": total_violations,
                 "dropped_violations": summary.dropped_violations,
+                "violations_by_kind": Value::Object(by_kind),
+                "last_violation_at_secs": summary.last_violation.map(|(at_secs, _)| at_secs),
+                "last_violation_kind": summary.last_violation.map(|(_, kind)| kind),
+                "violation_limit_per_kind": self.thresholds.max_violations_per_kind,
                 "verdict": summary.verdict,
                 "final_stats": summary.final_stats.map(stats_json),
             },
@@ -402,11 +494,24 @@ impl SoakMonitor {
                 stats.rtt_us,
             );
         }
+        let total: u64 = summary.kind_counts.iter().sum();
         let _ = writeln!(
             out,
-            "异常：{} 条（未留存 {} 条）→ 判定 {}",
+            "异常：共 {total} 条（留存 {} 条，未留存 {} 条）→ 判定 {}",
             summary.violations, summary.dropped_violations, summary.verdict
         );
+        let by_kind = ViolationKind::ALL
+            .iter()
+            .filter(|kind| summary.kind_counts[kind.index()] > 0)
+            .map(|kind| format!("{}×{}", kind.name(), summary.kind_counts[kind.index()]))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !by_kind.is_empty() {
+            let _ = writeln!(out, "按类：{by_kind}");
+        }
+        if let Some((at_secs, kind)) = summary.last_violation {
+            let _ = writeln!(out, "最后一次异常：t={at_secs}s [{kind}]");
+        }
         for violation in self.violations.iter().take(10) {
             let _ = writeln!(
                 out,
@@ -466,7 +571,18 @@ impl SoakMonitor {
         detail: String,
         stats: StreamStats,
     ) {
-        if self.violations.len() >= self.thresholds.max_violations {
+        // 先记账，再决定要不要留现场：快照可能被配额挡掉，
+        // 但「这一类总共几条、最后一次在何时」必须是完整事实。
+        let slot = kind.index();
+        self.kind_counts[slot] = self.kind_counts[slot].saturating_add(1);
+        self.last_violation = Some((at_secs, kind.name()));
+
+        let kept_of_kind = self
+            .violations
+            .iter()
+            .filter(|kept| kept.kind == kind)
+            .count();
+        if kept_of_kind >= self.thresholds.max_violations_per_kind {
             self.dropped_violations = self.dropped_violations.saturating_add(1);
             return;
         }
@@ -619,7 +735,7 @@ mod tests {
     #[test]
     fn violation_snapshots_are_bounded_but_counted() {
         let thresholds = SoakThresholds {
-            max_violations: 2,
+            max_violations_per_kind: 2,
             ..SoakThresholds::default()
         };
         let mut monitor = SoakMonitor::new(thresholds, 160_000);
@@ -704,5 +820,149 @@ mod tests {
         monitor.observe(sample(2, over));
         assert_eq!(monitor.violations().len(), 1, "只有超过上限的欠载算异常");
         assert_eq!(monitor.violations()[0].detail, "欠载 +2（累计 12）");
+    }
+
+    #[test]
+    fn bitrate_tolerance_zero_means_dont_judge() {
+        // 字段文档写着「0 = 不判」，而判定式 `deviation > tolerance` 在 tolerance 为 0 时
+        // 会退化成「任何偏离都算异常」—— 这条测试钉死语义：容忍度 0 就是不判码率。
+        let thresholds = SoakThresholds {
+            bitrate_tolerance_pct_x100: 0,
+            ..SoakThresholds::default()
+        };
+        let mut monitor = SoakMonitor::new(thresholds, 320_000);
+        monitor.observe(sample(0, stats(1)));
+        monitor.observe(sample(1, stats(4_000_000)));
+        assert!(
+            monitor.violations().is_empty(),
+            "容忍度 0 = 不判码率，不该留下快照：{:?}",
+            monitor.violations()
+        );
+        assert_eq!(monitor.summary().verdict, "ok");
+    }
+
+    #[test]
+    fn weak_network_profile_pins_only_session_and_concealment() {
+        let thresholds = SoakThresholds::weak_network(28_800, 20);
+        assert_eq!(
+            thresholds.max_plc,
+            28_800 * 1_000 / 20 / 100,
+            "掩盖上限 = 总帧数的 1%"
+        );
+        assert_eq!(thresholds.max_underruns, u32::MAX);
+        assert_eq!(thresholds.max_late_drops, u32::MAX);
+        assert_eq!(thresholds.max_nack, u32::MAX);
+        assert_eq!(thresholds.max_loss_pct_x100, u16::MAX);
+        assert_eq!(thresholds.bitrate_tolerance_pct_x100, 0, "弱网档不判码率");
+
+        let mut monitor = SoakMonitor::new(thresholds, 320_000);
+        // 码率跑偏 + 欠载 + 迟到 + NACK + 瞬时丢包：弱网档一律不判。
+        let mut wild = stats(4_000_000);
+        wild.underruns = 9_999;
+        wild.late_drops = 9_999;
+        wild.nack_count = 9_999;
+        wild.loss_pct_x100 = 400;
+        monitor.observe(sample(0, wild));
+        monitor.observe(sample(1, wild));
+        assert!(
+            monitor.violations().is_empty(),
+            "弱网档只钉会话与掩盖：{:?}",
+            monitor.violations()
+        );
+
+        // 掩盖越线才判。
+        let mut concealed = stats(320_000);
+        concealed.plc_count = thresholds.max_plc + 1;
+        monitor.observe(sample(2, concealed));
+        assert!(
+            monitor
+                .violations()
+                .iter()
+                .any(|violation| violation.kind == ViolationKind::PlayoutConcealment),
+            "掩盖比例超过 1% 必须判"
+        );
+
+        // 会话离开 streaming 仍然判 —— 弱网档也钉这一条。
+        let mut down = sample(3, stats(320_000));
+        down.state = "reconnecting";
+        monitor.observe(down);
+        assert!(
+            monitor
+                .violations()
+                .iter()
+                .any(|violation| violation.kind == ViolationKind::NotStreaming),
+            "会话断了必须判"
+        );
+    }
+
+    #[test]
+    fn violation_quota_is_per_kind_so_every_kind_keeps_evidence() {
+        // 实测教训：总量配额会被刷得最凶的那一类独占，其它种类一条现场都留不下。
+        let thresholds = SoakThresholds {
+            max_violations_per_kind: 2,
+            ..SoakThresholds::default()
+        };
+        let mut monitor = SoakMonitor::new(thresholds, 160_000);
+        monitor.observe(sample(0, stats(160_000)));
+        for secs in 1..=5u64 {
+            let mut bumped = stats(160_000);
+            bumped.underruns = secs as u32;
+            monitor.observe(sample(secs, bumped));
+        }
+        let kept_underruns = monitor
+            .violations()
+            .iter()
+            .filter(|violation| violation.kind == ViolationKind::Underrun)
+            .count();
+        assert_eq!(kept_underruns, 2, "欠载刷满自己的配额就停手");
+        assert_eq!(
+            monitor.summary().kind_counts[ViolationKind::Underrun.index()],
+            5,
+            "计数是完整事实，不受配额影响"
+        );
+
+        let mut concealed = stats(160_000);
+        concealed.plc_count = 3;
+        monitor.observe(sample(6, concealed));
+        assert!(
+            monitor
+                .violations()
+                .iter()
+                .any(|violation| violation.kind == ViolationKind::PlayoutConcealment),
+            "另一类不该被欠载挤掉现场"
+        );
+    }
+
+    #[test]
+    fn report_records_kind_counts_and_last_violation() {
+        let thresholds = SoakThresholds {
+            max_violations_per_kind: 1,
+            ..SoakThresholds::default()
+        };
+        let mut monitor = SoakMonitor::new(thresholds, 160_000);
+        monitor.observe(sample(0, stats(160_000)));
+        for secs in 1..=4u64 {
+            let mut bumped = stats(160_000);
+            bumped.underruns = secs as u32;
+            monitor.observe(sample(secs, bumped));
+        }
+        let summary = monitor.summary();
+        assert_eq!(summary.kind_counts[ViolationKind::Underrun.index()], 4);
+        assert_eq!(summary.violations, 1, "每类配额 1");
+        assert_eq!(summary.dropped_violations, 3);
+        assert_eq!(summary.last_violation, Some((4, "underrun")));
+
+        let parsed: Value = serde_json::from_str(&monitor.report_json(&meta())).unwrap();
+        assert_eq!(parsed["summary"]["violations_total"], 4);
+        assert_eq!(parsed["summary"]["violations_by_kind"]["underrun"], 4);
+        assert_eq!(parsed["summary"]["violations_by_kind"]["stalled"], 0);
+        assert_eq!(parsed["summary"]["last_violation_at_secs"], 4);
+        assert_eq!(parsed["summary"]["last_violation_kind"], "underrun");
+        assert_eq!(parsed["summary"]["violation_limit_per_kind"], 1);
+        assert_eq!(parsed["summary"]["verdict"], "failed");
+
+        let text = monitor.summary_text(&meta());
+        assert!(text.contains("按类：underrun×4"), "摘要要按类点名：{text}");
+        assert!(text.contains("最后一次异常：t=4s [underrun]"), "{text}");
     }
 }

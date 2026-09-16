@@ -59,10 +59,17 @@ cargo run -q -p audiolink-tools --bin soak-runner -- run --seconds 60 --tolerant
 | 掩盖比例 | `plc_count ≤ 总帧数 × 1%` | 这是「**可听**」的量化版本：偶发掩盖可以，成片掩盖不行 |
 | 欠载 / 迟到 / NACK | 不判 | 弱网给定条件的一部分 |
 | 瞬时 `loss_pct_x100` | 不判 | 它是 1 Hz 窗口值，实测在 2% 注入下会瞬间跳到 2%～4%，而当窗口的平均掩盖只有 0.13% —— 拿瞬时值当门槛只会制造假警报 |
+| 瞬时码率 | 不判 | **8 h 长跑补上的判据**：弱网下瞬时码率随自适应与重传从 205 kbps 摆到 427 kbps（目标 320 kbps），硬阈值在弱网档只会制造假警报 |
 
 （实现上这也补了一个真实缺陷：`SoakThresholds` 里的 `max_underruns` / `max_plc` / `max_late_drops` /
 `max_nack` 四个字段此前**定义了却没被判定逻辑使用**；现在 `check_delta` 真的按「累计值超过阈值的增量」判，
 默认值 0 时行为与之前完全一致。）
+
+> **8 h 实测的教训（2026-09-17）**：这份清单最初漏了码率判据，于是 8 h / 5 Mbps / 2% 丢包 / 15±15 ms 的一次真实长跑
+> 判出 7055 条异常，**全部**是 `bitrate_out_of_range`（集中在 2692..8293 s）。现在档位集中在
+> `SoakThresholds::weak_network(planned_secs, frame_ms)`，码率以 `bitrate_tolerance_pct_x100 = 0`（= 不判）关掉，
+> 并有单测钉住「0 就是不判」。同参数 90 s 对照：`--tolerant` → 0 异常 / exit 0；去掉 `--tolerant` → 18 条异常 / exit 1。
+> 同批修掉的另两条（快照配额按类、`violations_by_kind` 等报告字段）见 `docs/22-m2-soak-runner.md` §9。
 
 ---
 
@@ -127,6 +134,6 @@ cargo run -q -p audiolink-tools --bin soak-runner -- run --seconds 60 --tolerant
 |---|---|
 | 更高丢包档（10% / 100 ms RTT） | 用来触发**自适应降级**的端到端验证（见 §4.3） |
 | 真机弱网 | 本轮注入在回环上；PC → Android 的弱网验收需要真机（M1/M2 真机项） |
-| 8 h 弱网长跑 | 工具已经就绪（`--seconds 28800 --tolerant --netem-*`），差的是执行时间 |
+| 8 h 弱网长跑 | **已执行**（28800 s，2% 丢包 / 15±15 ms / 5 Mbps）：暴露并修掉三个判定缺陷（见 §3）；掩盖率 0.066%、注入自账 2.01%、末次码率 349 kbps / RTT 41.8 ms / 漂移 −4 ppm。修完判据后**需要重跑一次**才谈得上「8 h 通过」 |
 | 乱序注入（显式） | 目前靠延迟抖动的自然乱序；显式的「固定乱序率」如果需要再加 |
 

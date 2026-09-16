@@ -111,6 +111,25 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 - **M4 混音对齐：把能观测的做完，把做不到的立项**。mixer 的 MixStats 增加 missing_sources，PcmMixer 累计 partial_frames/total_frames 并给出 MixSnapshot；引擎新增 Engine::mixer_stats()。**掉队帧是对齐程度最直接的读数**：两路都持续供帧时应长期为 0。实测 tests/mixer_alignment.rs（两个发送端 → 一个接收端，真 QUIC + 真 PIN）：**源 2 路 · 帧 298 · 掉队帧 1（0.3%）· 限幅样本 0** —— 证明稳态下两路都在稳定供帧、混音不靠补静音撑场面。**同时把缺口讲清楚（并立项）**：协议 §7 的 epoch 是「发送端指定、接收端排播」，所以同一发送端 → 多台接收端能对齐；但「2 部手机 → 1 台 PC」这种多源拓扑里，**两个发送端之间没有共同时间基准**，采样级对齐做不到。要补需要：① 接收端作为基准来源广播 epoch（协议方向要扩展）；② 发送端「预约发送」（把 epoch 用在自己的发送时间轴上）。这两件已作为独立待办立项，没有塞进文档角落。详见 `docs/38-m4-mixer-alignment.md`。
 - 接收待播队列增长、PCM 丢包掩盖、自适应抖动/有界重排和默认冗余双发均已落地。副本延迟一帧并标记 `FEC_REDUNDANT`，接收侧按序号去重且 jitter 只取首个有效副本；60 ms 最高档欠载现在也能按现档重新补水。PC 双 Engine 20 s 稳态码率 320.8 kbps、零欠载/迟到；PHK110 90 s 码率末值/均值 320.8 kbps，队列 P50/P95/max 均 60 ms，链路丢包/PLC 0，欠载/迟到 24/22 且第 75--90 s 无新增，AudioTrack underrun 0、FastMixer writeErrors 0。下一步推进 NACK、码率自适应、真实弱网与 8 h soak；详见 `docs/18-m2-adaptive-jitter.md`、`docs/19-m2-redundant-send.md`。
 
+- **M2 的 8 h 弱网长跑真的跑完了：28800 s，判定器自己被抓出三个缺陷**。
+  `soak-runner run --seconds 28800 --netem-loss-pct 2 --netem-delay-ms 15 --netem-jitter-ms 15 --netem-bandwidth-kbps 5000 --tolerant`
+  实跑 480 min：采样 28798 次、粗采样 481 桶、异常 7055 条 —— 但**全部是同一类** `bitrate_out_of_range`，
+  且集中在 2692..8293 s，后面 5.7 h 再没有一条现场。不是链路上在抖，是**判定器有三个缺陷**：
+  ① `--tolerant` 弱网档放宽了欠载/迟到/NACK/瞬时丢包/掩盖，**漏关码率判据**（弱网下瞬时码率随自适应与重传在
+  205~427 kbps 摆动，目标 320 kbps，于是弱网验收永远红）；② 字段文档写着「0 = 不判」，判定式 `deviation > tolerance`
+  在 0 时却退化成「全判」；③ 快照总量配额（200 条）被刷得最凶的那一类独占，**后半程一条证据都不剩**。
+  修法：档位集中到 `SoakThresholds::weak_network(planned_secs, frame_ms)`；码率以 `bitrate_tolerance_pct_x100 = 0`
+  显式关掉并补回归测试；快照配额**按类**给（默认每类 25 条），并把 `violations_by_kind` / `last_violation_at_secs` /
+  `last_violation_kind` 写进报告。判据与报告单测 13 项（+5），clippy 零警告。同参数 90 s 对照：
+  `--tolerant` → 0 异常 / exit 0；去掉 `--tolerant` → 18 条异常 / exit 1 —— 放宽只发生在宽容档。
+  **8 h 结论如实记账**：掩盖 950 帧 ≈ 0.066%（弱网档上限 1%）、注入自账 51527 丢包 = 2.01%、
+  末次码率 349 kbps / 水位 120 ms / RTT 41.8 ms / 漂移 −4 ppm。这次**没有**给出「通过」：修完判据需要重跑一次，
+  且长跑期间这台机器同时在编译与测试（CPU 争用使欠载/迟到计数偏保守）。详见 `docs/22-m2-soak-runner.md` §9 与 `docs/24-m2-netem-sim.md` §3。
+- **长跑产物有了离线判定通路**：新增 `tools/soak-report.ps1` —— 读 soak-runner 的 JSON 报告，输出违规按类聚合
+  （次数 + 首次/末次秒数 + 样例）、终值遥测与人话判定；退出码 0/1/2 与 soak-runner 同口径，`-Json` 供 CI / 看板回填。
+  用四个夹具自测：`smoke.json` → exit 0、`negative.json` → 6 条 `bitrate_out_of_range` / exit 1、缺失路径与非 JSON → exit 2；
+  8 h 与 90 s 报告均已复算（旧 schema 报告仍可解析）。提交 `fc05568`。详见 `docs/22-m2-soak-runner.md` §8。
+
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
 Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本数**，`receive_audio()` 又乘了声道数，

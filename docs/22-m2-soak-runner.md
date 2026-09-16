@@ -160,4 +160,65 @@ soak-runner 侧的对应条件是 violations 为空且 dropped_violations 为 0�
 
 两者都不重跑链路 —— 长跑产物是唯一输入，判定可离线复算。
 
+---
+
+## 9. 8 h 弱网长跑的收获：三个判定缺陷（2026-09-16/17 实测）
+
+一次真实的 8 h 弱网长跑（28800 s，5 Mbps / 2% 丢包 / 15±15 ms 抖动，`--tolerant`）：
+采样 28798 次、粗采样 481 桶、**7055 条异常，全部是同一类** `bitrate_out_of_range`（集中在 2692..8293 s）。
+判定 `failed`，但根因不在链路，而在**判定器自己**：
+
+1. **弱网档漏关码率判据**：`--tolerant` 放宽了欠载 / 迟到 / NACK / 瞬时丢包 / 掩盖，却把码率留在原样。
+   弱网下瞬时码率本就随自适应与重传摆动（实测 205 kbps ~ 427 kbps，目标 320 kbps），
+   于是弱网验收永远红。修法：档位集中到 `SoakThresholds::weak_network(planned_secs, frame_ms)`。
+2. **`0 = 不判` 与实现相反**：字段文档写着「0 = 不判」，而判定式 `deviation > tolerance` 在 0 时
+   退化成「任何偏离都算异常」= **全判**。已加显式 guard，并补回归测试 `bitrate_tolerance_zero_means_dont_judge`。
+3. **快照「先到先得」吃掉了后半程证据**：总量配额被刷得最凶的那一类独占 ——
+   留存的 200 条现场全落在 t=2692..8293 s，**后面 5.7 h 一条证据都不剩**，
+   而长跑最该回答的问题恰好是「现在还在不在发生」。修法：**配额按类给**（默认每类 25 条），
+   并把 `violations_by_kind` / `last_violation_at_secs` / `last_violation_kind` 写进报告 ——
+   计数与「最后一次」是完整事实，不受配额截断影响。
+
+### 9.1 同参数 90 s 对照（可复现）
+
+```text
+cargo run -q -p audiolink-tools --bin soak-runner -- run --seconds 90 \
+  --netem-loss-pct 2 --netem-delay-ms 15 --netem-jitter-ms 15 --netem-bandwidth-kbps 5000 \
+  --tolerant --quiet --report target/evidence/soak/tolerant-90s.json
+```
+
+| 档位 | 实测 |
+|---|---|
+| `--tolerant` | 掩盖 8 帧（上限 45）→ **0 异常 / `ok` / exit 0** |
+| 同参数去掉 `--tolerant` | 18 条异常（late_drop 7 / underrun 5 / packet_loss 3 / playout_concealment 3）→ **`failed` / exit 1** |
+
+对照的意义：放宽**只发生在宽容档**，零容忍档的判据一点没被削弱。
+
+### 9.2 8 h 报告的关键数字
+
+| 项 | 值 |
+|---|---|
+| 采样 | 28798 次（计划 28800 s） |
+| 异常 | 7055 条，全部 `bitrate_out_of_range`；留存 200、未留存 6855 |
+| 掩盖 | 950 帧 / 约 1.44 M 帧 = **0.066%**（弱网档上限 1%） |
+| 欠载 / 迟到 / NACK | 4307 / 4414 / 77（弱网档不判，记录在案） |
+| 末次遥测 | 码率 349056 bps、水位 120 ms、RTT 41.8 ms、抖动 p95 26.1 ms、漂移 −4 ppm |
+| 注入自账 | 观察 2551069 / 转发 2499542 / 按丢包率丢 51527（**2.01%**），与 `--netem-loss-pct 2` 相符 |
+
+两处必须说清楚的保留：① **这次 8 h 跑没有给出「通过」** —— 修完上面两个判据缺陷后需要重跑一次，
+才谈得上「8 h 弱网通过」；② 长跑期间这台机器同时在跑编译与测试（CPU 争用），因此欠载 / 迟到的绝对值偏保守。
+
+### 9.3 报告字段（新增）
+
+```json
+"summary": {
+  "violations": 200, "violations_total": 7055, "dropped_violations": 6855,
+  "violations_by_kind": { "underrun": 4307, "bitrate_out_of_range": 7055 },
+  "last_violation_at_secs": 8293, "last_violation_kind": "bitrate_out_of_range",
+  "violation_limit_per_kind": 25
+}
+```
+
+旧报告（无这些字段）仍可被 `tools/soak-report.ps1` 解析 —— 脚本只在字段存在时多打印一段「按类 + 最后一次」。
+
 

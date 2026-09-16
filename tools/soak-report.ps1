@@ -80,7 +80,11 @@ $result = [pscustomobject]@{
   coarse_buckets       = $coarse.Count
   coarse_samples       = [int]$summary.samples
   violation_count      = [int]$summary.violations
+  violations_total     = if ($null -ne $summary.violations_total) { [int]$summary.violations_total } else { [int]$summary.violations + [int]$summary.dropped_violations }
   dropped_violations   = [int]$summary.dropped_violations
+  by_kind              = $summary.violations_by_kind
+  last_violation_at_secs = $summary.last_violation_at_secs
+  last_violation_kind  = $summary.last_violation_kind
   violation_span       = $span
   kinds                = $groups
   final                = $final
@@ -102,6 +106,15 @@ else {
     foreach ($g in $groups) {
       Write-Host ("  {0} x{1}  {2}s..{3}s" -f $g.kind, $g.count, $g.first_secs, $g.last_secs)
       Write-Host ("    样例：{0}" -f $g.sample)
+    }
+  }
+
+  if ($null -ne $summary.violations_by_kind) {
+    $rows = @($summary.violations_by_kind.PSObject.Properties | Where-Object { $_.Value -gt 0 } | ForEach-Object { $_.Name + "x" + $_.Value })
+    Write-Host ("异常总数 {0} 条（留存 {1}，未留存 {2}；每类留存上限 {3}）" -f $result.violations_total, $result.violation_count, $result.dropped_violations, $summary.violation_limit_per_kind)
+    if ($rows.Count -gt 0) { Write-Host ("  按类：" + ($rows -join ", ")) }
+    if ($null -ne $summary.last_violation_at_secs) {
+      Write-Host ("  最后一次异常：t={0}s [{1}]" -f $summary.last_violation_at_secs, $summary.last_violation_kind)
     }
   }
 

@@ -43,7 +43,7 @@ soak-runner —— 回环长跑 + 指标采集 + 异常快照
   --expected-bps    目标码率（bps），默认 320000（冗余双发后的期望值）；0 = 不判码率
   --warmup-seconds  预热秒数（不参与判定），默认 3
   --quiet           不打印每秒进度
-  --tolerant        弱网档：只钉「会话不断 + 掩盖比例 ≤ 1%」，不判欠载/迟到/NACK/瞬时丢包
+  --tolerant        弱网档：只钉「会话不断 + 掩盖比例 ≤ 1%」，不判欠载/迟到/NACK/瞬时丢包/码率
 
 弱网注入（可选，M2 验收口径见 docs/05-roadmap.md）：
   --netem-loss-pct        丢包率（百分比，可小数），默认 0
@@ -342,22 +342,15 @@ async fn run(
     // 判据档位：默认是**回环稳态**（任何非零欠载/掩盖/丢包都是缺陷信号）；
     // 弱网档只钉三件事 —— 会话不断、修复后仍丢包 ≤ 1%、（可选）码率不跑偏。
     // 理由：弱网下欠载/迟到本来就是给定条件的一部分，把它们算成「故障」等于永远红。
-    let mut thresholds = SoakThresholds::default();
-    if tolerant {
-        // 弱网档的判据是「**可听**」，不是「零异常」：
-        //   · 会话必须一直在 streaming（`not_streaming` 仍然判）；
-        //   · 掩盖比例 ≤ 1%（偶发掩盖可以，成片掩盖不行）—— 这是「可听」的量化版本；
-        //   · 欠载 / 迟到 / NACK 不判：它们是弱网给定条件的一部分，判它们等于永远红。
-        // 瞬时 `loss_pct_x100` 也不判：它是 1 Hz 窗口值，实测在 2% 注入下会瞬间跳到 2%～4%，
-        //   而当窗口的平均掩盖比例只有 0.2% —— 用瞬时值当验收门槛只会制造假警报。
-        let planned_secs = if seconds == 0 { 28_800 } else { seconds };
-        let total_frames = planned_secs.saturating_mul(1_000) / u64::from(frame_ms.max(1));
-        thresholds.max_plc = u32::try_from(total_frames / 100).unwrap_or(u32::MAX);
-        thresholds.max_underruns = u32::MAX;
-        thresholds.max_late_drops = u32::MAX;
-        thresholds.max_nack = u32::MAX;
-        thresholds.max_loss_pct_x100 = u16::MAX;
-    }
+    // 弱网档的判据是「**可听**」，不是「零异常」：会话必须一直在 streaming，
+    // 掩盖比例 ≤ 1%（偶发掩盖可以，成片掩盖不行）—— 这是「可听」的量化版本。
+    // 其余口径集中在 `SoakThresholds::weak_network`，那里同时记着为什么放宽。
+    let planned_secs = if seconds == 0 { 28_800 } else { seconds };
+    let thresholds = if tolerant {
+        SoakThresholds::weak_network(planned_secs, frame_ms)
+    } else {
+        SoakThresholds::default()
+    };
     println!(
         "判据档位：{}\n",
         if tolerant {
