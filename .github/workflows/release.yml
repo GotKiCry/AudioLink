@@ -25,6 +25,10 @@ on:
         description: "构建后创建草稿 Release（默认否）"
         type: boolean
         default: false
+      version:
+        description: "publish=true 时必填：版本号（不带 v 前缀，如 0.1.1）"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -157,11 +161,29 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          # tag 触发时用 tag 名；手动 dispatch 时必须**显式给版本号** ——
+          # 默认拿分支名（main）当 tag 会创建一个叫 main 的 Release，那是错的。
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            VERSION="${{ inputs.version }}"
+            if [ -z "$VERSION" ]; then
+              echo "::error::publish=true 时必须填 version（分支名不能当 tag 用）"
+              exit 1
+            fi
+            echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          fi
       - name: List artifacts
         run: find dist -type f | sort
       # draft: true 是刻意的：发布对外，留一道人工确认（也避免半成品被当成正式版）。
       - uses: softprops/action-gh-release@v2      # TODO: pin to SHA
         with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
           files: dist/**/*
           generate_release_notes: true
           draft: true
