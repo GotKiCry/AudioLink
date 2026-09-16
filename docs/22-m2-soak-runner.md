@@ -10,6 +10,7 @@
 
 ```text
 soak-runner run [--seconds 28800] [--frame-ms 20] [--report PATH] [--expected-bps 320000] [--warmup-seconds 3] [--quiet]
+                [--tolerant] [--netem-loss-pct N] [--netem-delay-ms N] [--netem-jitter-ms N] [--netem-bandwidth-kbps N] [--netem-seed N]
 ```
 
 | 参数 | 含义 |
@@ -20,6 +21,8 @@ soak-runner run [--seconds 28800] [--frame-ms 20] [--report PATH] [--expected-bp
 | `--expected-bps` | 目标码率，默认 320000（冗余双发后的期望）；`0` = 不判码率 |
 | `--warmup-seconds` | 预热秒数，默认 3（预热期的越界不判） |
 | `--quiet` | 不打印每秒进度 |
+| `--tolerant` | 弱网档判据：只钉「会话不断 + 掩盖比例 ≤ 1%」，不判欠载/迟到/NACK/瞬时丢包（详见 `docs/24`） |
+| `--netem-*` | 在两个 Engine 之间插入弱网中继（丢包 / 延迟 / 抖动 / 限速），M2 弱网验收见 `docs/24-m2-netem-sim.md` |
 
 退出码：**0 = 无异常；1 = 有异常；2 = 用法 / 初始化失败**。
 
