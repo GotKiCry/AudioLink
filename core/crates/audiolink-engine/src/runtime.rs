@@ -786,7 +786,14 @@ impl Engine {
     ///
     /// 新成员除了收到 JOIN，还会补一条 GROUP_EPOCH —— 它需要组基准才能排播。
     pub async fn join_group(&self, member: NodeId, group_id: u32) -> Result<(), AudioLinkError> {
-        let (epoch_id, lead_ms, count) = {
+        // **整份组基准都要复用**，包括 `epoch_local_us`：它是「样本序号 0 在发送端时钟上的时刻」，
+        // 新成员拿它 + 自己的样本序号才换算得出正确的目标时刻。
+        //
+        // 第 61 轮修的真缺陷：这里原本只复用 `epoch_id`，`epoch_local_us` 却取了**当前时刻** ——
+        // 于是新成员的目标时刻 = now + sample_index/48000 + lead，而 `sample_index` 是流开始以来累计的
+        // （加入时已经是个大数），目标被推到未来好几秒。实测第 3 台在 4 s 里只写出 0.32 s 的音频，
+        // 而 A、B 各 4 s —— 「加入了、也排播了，但几乎不出声」。
+        let (epoch_id, epoch_local_us, lead_ms, count) = {
             let mut table = self
                 .inner
                 .groups
@@ -797,7 +804,12 @@ impl Engine {
                 .ok_or_else(|| AudioLinkError::bad_request("unknown group"))?;
             state.members.insert(member);
             let count = u32::try_from(state.members.len()).unwrap_or(u32::MAX);
-            (state.epoch.epoch_id, state.lead_ms, count)
+            (
+                state.epoch.epoch_id,
+                state.epoch.epoch_local_us,
+                state.lead_ms,
+                count,
+            )
         };
         self.send_group_frame(
             group_id,
@@ -808,7 +820,7 @@ impl Engine {
             member,
             SessionCommand::AnnounceGroupEpoch(GroupEpochPayload {
                 epoch_id,
-                epoch_local_us: now_monotonic_us(),
+                epoch_local_us,
                 lead_ms,
             }),
         )
