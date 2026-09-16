@@ -158,5 +158,44 @@ Android 一节：**114 个组件，allowed 113 / notice 1 / denied 0**。那一�
 - **Android 侧没有投放位置**：桌面端有「关于」面板读声明（§7），Android 应用内还没有对应入口；
 - **CI 未接**：Android 许可审计目前是「发布前手动跑」的一步，还没进 workflow（桌面侧的审计在 `desktop` job 里）。
 
+---
+
+## 9. Android 侧的声明投放（2026-09-16 第五轮）
+
+§8.3 记的「Android 应用内没有声明入口」，这一轮补上。
+
+| 环节 | 做法 |
+|---|---|
+| 打进包 | `license-audit.ps1 -Notices` 生成后**同步一份**到 `android/app/src/main/assets/`（只有一个生成源，手工复制迟早会漂移） |
+| 读取 | `NoticesLoader.fromText(...)` —— 纯函数，把「读到的内容」折成界面要的形状 |
+| 界面 | `LicensesScreen`（Compose）：从 assets 读、可滚动；入口是主界面顶栏的「开源许可」 |
+| 找不到时 | 与桌面端同一条规则：**说清怎么生成**，不显示空白页 |
+
+### 9.1 实测
+
+```text
+> Task :app:testDebugUnitTest :app:assembleDebug
+BUILD SUCCESSFUL in 55s
+```
+
+| 核对项 | 结果 |
+|---|---|
+| 单测 | `NoticesLoaderTest` **3 项通过**（另有 9 个既有测试类全绿：共 76 项） |
+| APK 内容 | `7z l app-debug.apk` → **`assets\THIRD-PARTY-NOTICES.md`**（1 056 775 B，压缩后 179 045 B） |
+| APK 体积 | 19.17 MB（声明约占 180 KB 压缩后） |
+
+### 9.2 一个刻意的设计：加载逻辑做成纯函数
+
+读 assets 需要 `Context`（真机或仪器测试才能覆盖），而真正需要钉住的是**「找不到怎么办」这条规则** ——
+它只在"打包漏了资源"时才走到，恰恰是最不容易在开发机上遇到的情况。所以 `fromText` 是纯函数，
+三条单测全在纯 JVM 上跑，并且覆盖了「空文件与没有文件是同一件事」。
+
+### 9.3 还差什么
+
+- **真机验证**：本次验的是「资源进了 APK + 逻辑单测通过」，**没有**在真机上点开「开源许可」看它实际渲染；
+- **CI 未接**：Android 许可审计仍是「发布前手动跑」；
+- 桌面端的「关于」面板与 Android 这个页面还没有共享同一份文案常量（两边各自维护提示语）。
+
+
 
 

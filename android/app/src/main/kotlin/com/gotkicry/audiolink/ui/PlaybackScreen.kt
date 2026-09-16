@@ -16,6 +16,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -59,11 +60,25 @@ fun PlaybackScreen(
     // 所以服务没启动、没连接、甚至没开网都能点 —— 这正是真机排障第一步需要的性质。
     var selfTestResult by remember { mutableStateOf<SelfTestResult?>(null) }
     var selfTestRunning by remember { mutableStateOf(false) }
+    // 开源许可页（M5 合规）：独立一层，不挤进这块观测面板。
+    var showLicenses by remember { mutableStateOf(false) }
     val uiScope = rememberCoroutineScope()
+
+    if (showLicenses) {
+        LicensesScreen(onBack = { showLicenses = false })
+        return
+    }
 
     Scaffold(
         modifier = modifier,
-        topBar = { TopAppBar(title = { Text("AudioLink") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("AudioLink") },
+                actions = {
+                    TextButton(onClick = { showLicenses = true }) { Text("开源许可") }
+                },
+            )
+        },
     ) { padding ->
         Column(
             modifier = Modifier

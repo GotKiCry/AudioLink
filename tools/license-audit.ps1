@@ -67,7 +67,16 @@ if (-not $SkipAndroid) {
 }
 
 if ($npmJson) { $cargoArgs += @("--npm", $npmJson) }
-if ($Notices) { $cargoArgs += @("--notices", (Join-Path $root $NoticesPath)) }
+if ($Notices) {
+    $noticesFull = Join-Path $root $NoticesPath
+    $cargoArgs += @("--notices", $noticesFull)
+    # 顺带同步一份到 Android assets：那边的「开源许可」页从 assets 读（随 APK 分发，离线可看）。
+    # 放在这一步是为了**只有一个生成源** —— 手工复制迟早会漂移。
+    $assetsDir = Join-Path $root "android/app/src/main/assets"
+    New-Item -ItemType Directory -Force -Path $assetsDir | Out-Null
+    Copy-Item -Path $noticesFull -Destination (Join-Path $assetsDir "THIRD-PARTY-NOTICES.md") -Force
+    Write-Host "license-audit: 已同步声明到 android/app/src/main/assets/"
+}
 
 Push-Location $root
 & cargo @cargoArgs
