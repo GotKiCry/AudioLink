@@ -21,10 +21,18 @@ use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
 use audiolink_types::{ErrorCode, NodeId};
 use tokio::task::JoinHandle;
 
+/// 一次写出：时刻 + 是否静音补帧。
+#[derive(Clone, Copy)]
+struct Stamp {
+    at: Instant,
+    /// 全是零样本 = 排播补的静音（不是真实音频）。
+    silence: bool,
+}
+
 /// 每次写出都**盖一个时间戳**的播放端（同一进程、同一单调时钟，所以两端可比）。
 struct StampingSink {
     inner: NullPlayout,
-    stamps: Arc<Mutex<Vec<Instant>>>,
+    stamps: Arc<Mutex<Vec<Stamp>>>,
 }
 
 impl PlayoutSink for StampingSink {
@@ -47,7 +55,10 @@ impl PlayoutSink for StampingSink {
     fn write(&mut self, samples: &[f32]) -> Result<(), AudioError> {
         self.inner.write(samples)?;
         if let Ok(mut list) = self.stamps.lock() {
-            list.push(Instant::now());
+            list.push(Stamp {
+                at: Instant::now(),
+                silence: samples.iter().all(|sample| sample.abs() < 0.01),
+            });
         }
         Ok(())
     }
@@ -68,7 +79,7 @@ impl PlayoutSink for StampingSink {
 async fn start_receiver(
     dir: &Path,
     index: usize,
-    stamps: Arc<Mutex<Vec<Instant>>>,
+    stamps: Arc<Mutex<Vec<Stamp>>>,
     frame_ms: u32,
 ) -> (Arc<Engine>, JoinHandle<()>) {
     let mut config = EngineConfig::new(
@@ -157,6 +168,25 @@ fn best_alignment(a: &[Instant], b: &[Instant]) -> (i32, usize, f64, f64) {
     best.expect("至少应当有一组对齐方式可用")
 }
 
+/// 把广播缓冲里累积的「首次排播」事件扫出来：`(target_local_us, wait_us)`。
+///
+/// 为什么需要：`PlayoutScheduled` 只在**首次进入排播**时报一次，它就是「这一端到底有没有走排播」的证据。
+/// 若失败样本里两端一个有、一个没有，那就说明有一端是在排播生效**之前**就开始播了 —— 它走的是本地游标，
+/// 起拍时刻由「队列攒够帧」决定，与对端的 epoch 网格无关（见 docs/49 §5.5）。
+fn drain_scheduled(events: &mut tokio::sync::broadcast::Receiver<EngineEvent>) -> Vec<(i64, u64)> {
+    let mut out = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let EngineEvent::PlayoutScheduled {
+            target_local_us,
+            wait_us,
+            ..
+        } = event
+        {
+            out.push((target_local_us, wait_us));
+        }
+    }
+    out
+}
 /// 同一「第 k 次写出」在两端的时刻差（毫秒），返回 (样本数, P50, P95)。
 fn deviation_ms(a: &[Instant], b: &[Instant]) -> (usize, f64, f64) {
     // 丢掉前 1 s：攒帧与首帧那一秒本来就不该进稳态统计。
@@ -216,10 +246,22 @@ async fn two_receivers_play_the_same_frame_within_ten_milliseconds() {
         .await
         .expect("两台一起开流");
 
+    let mut events_a = receiver_a.subscribe();
+    let mut events_b = receiver_b.subscribe();
+
     tokio::time::sleep(Duration::from_secs(6)).await;
 
-    let a = stamps_a.lock().unwrap().clone();
-    let b = stamps_b.lock().unwrap().clone();
+    let a_all = stamps_a.lock().unwrap().clone();
+    let b_all = stamps_b.lock().unwrap().clone();
+    // 诊断（第 58 轮）：两端**首次写出真实音频**的位置。若两侧不同（例如 1 vs 0），说明有一端
+    // 起拍时先补了一拍静音 —— 那会让它的整条时间轴后移一帧，正是「k = 0 就差 20 ms」的形状。
+    let first_audio_a = a_all.iter().position(|stamp| !stamp.silence);
+    let first_audio_b = b_all.iter().position(|stamp| !stamp.silence);
+    let scheduled_a = drain_scheduled(&mut events_a);
+    let scheduled_b = drain_scheduled(&mut events_b);
+    println!("[group-sync][diag] 排播事件 A={scheduled_a:?} · B={scheduled_b:?}");
+    let a: Vec<Instant> = a_all.iter().map(|stamp| stamp.at).collect();
+    let b: Vec<Instant> = b_all.iter().map(|stamp| stamp.at).collect();
     let (samples, absolute_p50, absolute_p95) = deviation_ms(&a, &b);
     let (shift, aligned_samples, aligned_p50, aligned_p95) = best_alignment(&a, &b);
     // 诊断（2026-09-17，第 57 轮）：区分「起拍就差一帧」与「中途某拍开始差一帧」。
@@ -245,9 +287,11 @@ async fn two_receivers_play_the_same_frame_within_ten_milliseconds() {
         jump
     };
     println!(
-        "[group-sync][diag] A 写入 {} 次 · B 写入 {} 次 · 首次偏离>10ms：{:?}",
+        "[group-sync][diag] A 写入 {} 次（首个音频 #{:?}）· B 写入 {} 次（首个音频 #{:?}）· 首次偏离>10ms：{:?}",
         a.len(),
+        first_audio_a,
         b.len(),
+        first_audio_b,
         first_jump
     );
     println!(

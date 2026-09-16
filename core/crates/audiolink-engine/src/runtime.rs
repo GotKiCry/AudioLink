@@ -3750,8 +3750,7 @@ fn playout_main(
                 // 锚到 target 之后，两端的首拍只差各自的 ε（回环约 2 ms），此后每拍 +frame 与 target 序列同步。
                 // 详见 docs/49-m3-group-start-phase.md。
                 let now_us = i64::try_from(now_monotonic_us()).unwrap_or(i64::MAX);
-                let (anchor_us, sched_frame_us) =
-                    playout_start_anchor(&sync, &frames, &mut pending);
+                let (anchor_us, sched_frame_us) = playout_start_anchor(&sync);
                 if sched_frame_us > 0 {
                     let wait_us = anchor_us.saturating_sub(now_us).max(0);
                     next_write = Instant::now() + Duration::from_micros(wait_us as u64);
@@ -3975,33 +3974,31 @@ fn peek_frame<'a>(
     pending.as_ref()
 }
 
-/// 起拍锚点：返回（**待播帧的 target 时刻** µs，排播网格长度 µs）。没有排播 / 取不到待播帧时返回 (0, 0) ——
-/// 调用方据此退回全局帧网格（相位 0）。
+/// 起拍锚点：返回（**本流首帧的 target 时刻** µs，排播网格长度 µs）。
+/// 没有排播 / 还没收到首包时返回 (0, 0)，调用方据此退回全局帧网格（相位 0）。
 ///
-/// 相位必须取自**待播帧自己的 target**：样本序号由首包给出（`PlayoutSync::sample_index_of`），
-/// 不能假设它对齐到某个全局网格 —— 用错参考系正是「组内起播差一整帧」的根因。
-fn playout_start_anchor(
-    sync: &PlayoutSyncHandle,
-    frames: &Receiver<PlaybackFrame>,
-    pending: &mut Option<PlaybackFrame>,
-) -> (i64, i64) {
+/// # 为什么锚「首帧」而不是「队列里当前最旧的那一帧」（2026-09-17 第 58 轮）
+///
+/// 队列里最旧的一帧**不一定是本流的第一帧** —— 数据报到达顺序不保证，首帧可能还在网络上。
+/// 一旦两端各自用「自己队列里的最旧帧」锚定，而这两个首帧序号相差 1，两端的拍点序列就整体差一帧：
+/// 失败样本正是「**首次写出**就偏离 19.95 ms、两端写入次数只差 1」（见 docs/49 §5.4）—— 偏移发生在起拍那一拍，
+/// 不是中途漂移。首帧样本序号由 `PlayoutSync.base` 给出（本流第一个数据报的 `(seq, sample_index)`），
+/// 它与到达顺序无关，两端的取值必然一致。
+fn playout_start_anchor(sync: &PlayoutSyncHandle) -> (i64, i64) {
     let Ok(state) = sync.lock().map(|guard| *guard) else {
         return (0, 0);
     };
     let Some(schedule) = state.schedule else {
         return (0, 0);
     };
-    let Some(frame) = peek_frame(frames, pending) else {
-        return (0, 0);
-    };
-    let Some(sample_index) = state.sample_index_of(frame.seq) else {
+    let Some((_base_seq, base_sample)) = state.base else {
         return (0, 0);
     };
     let frame_us = crate::epoch::frame_us(state.frame_samples);
     if frame_us <= 0 {
         return (0, 0);
     }
-    (schedule.target_us(sample_index, state.offset_us), frame_us)
+    (schedule.target_us(base_sample, state.offset_us), frame_us)
 }
 
 /// §7：有排播、且这一帧能换算成样本序号时给出判定；否则 `None`（走正常排播）。
