@@ -4,6 +4,7 @@
 //!
 //! - [`parse_hex_bytes`]：hex 文本 → 字节串（`alp2-dump` 用，容忍文档里的 `|` / `0x` / `<占位>` 写法）
 //! - [`pcap`]：pcap / pcapng 抓包 → 逐包 UDP 载荷（`alp2-dump --pcap` 的输入层）
+//! - [`soak`]：长跑采样的异常判定与 JSON 报告（`soak-runner`）
 //! - [`ClockSamples`]：§6 的采样统计（最小 RTT 过滤 + 中位数 + 质量分级），`latency-probe` 用
 //!
 //! 注：§6 的稳态算法（200 样本滑动窗口 + 线性回归漂移估计）属 M3，本 crate 只做 M0/M1 需要的部分。
@@ -13,6 +14,7 @@
 #![deny(clippy::panic)]
 
 pub mod pcap;
+pub mod soak;
 
 use std::fmt;
 

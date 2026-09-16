@@ -48,3 +48,8 @@ path = "src/bin/link_loop.rs"
 [[bin]]
 name = "device-link"
 path = "src/bin/device_link.rs"
+
+# M2 的 8 h 回环长跑：指标采集 + 异常快照 + JSON 报告（退出码即判定）
+[[bin]]
+name = "soak-runner"
+path = "src/bin/soak_runner.rs"
