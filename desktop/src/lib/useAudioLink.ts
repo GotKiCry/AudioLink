@@ -17,6 +17,7 @@ import {
   toCommandError,
   type CommandError,
   type CaptureDeviceView,
+  type GroupView,
   type LocalStatus,
   type PairRequiredPayload,
   type PeerView,
@@ -36,6 +37,14 @@ export interface AudioLinkController {
   telemetry: TelemetryView | null;
   /** 遥测历史（500 ms 一个采样点，最多保留 `TELEMETRY_HISTORY_LIMIT` 条）—— 曲线与导出都用它。 */
   telemetryHistory: TelemetryRow[];
+  /** 同步组列表（M3 / FR-22）：引擎侧账本是权威，UI 只做展示。 */
+  groups: GroupView[];
+  /** 组操作进行中（建组 / 加入 / 退出）。 */
+  groupBusy: boolean;
+  refreshGroups: () => Promise<void>;
+  joinGroup: (idShort: string, groupId: number) => Promise<void>;
+  leaveGroup: (idShort: string, groupId: number) => Promise<void>;
+  createGroup: (idShorts: string[], leadMs: number) => Promise<void>;
   /** 把当前遥测历史导出成 CSV；成功时用 `notice` 报出落盘路径。 */
   exportTelemetryLog: () => Promise<void>;
   /** 导出进行中（按钮禁用用）。 */
@@ -120,6 +129,8 @@ export function useAudioLink(): AudioLinkController {
   const [peers, setPeers] = useState<PeerView[]>([]);
   const [telemetry, setTelemetry] = useState<TelemetryView | null>(null);
   const [telemetryHistory, setTelemetryHistory] = useState<TelemetryRow[]>([]);
+  const [groups, setGroups] = useState<GroupView[]>([]);
+  const [groupBusy, setGroupBusy] = useState(false);
   const [exportingTelemetry, setExportingTelemetry] = useState(false);
   const [pairRequest, setPairRequest] = useState<PairRequiredPayload | null>(null);
   const [pairReason, setPairReason] = useState("");
@@ -337,12 +348,82 @@ export function useAudioLink(): AudioLinkController {
     }
   }, [telemetryHistory]);
 
+  /** 刷新同步组列表（M3）：操作后由调用方刷新，UI 不自己缓存真相。 */
+  const refreshGroups = useCallback(async (): Promise<void> => {
+    try {
+      setGroups(await api.listGroups());
+    } catch (raw) {
+      setError(toCommandError(raw));
+    }
+  }, []);
+
+  /** 建组：把点名的对端组成临时同步组（提前量给排播留余量）。 */
+  const createGroup = useCallback(
+    async (idShorts: string[], leadMs: number): Promise<void> => {
+      if (idShorts.length === 0) {
+        setNotice("先勾选至少一台已连接设备再建组。");
+        return;
+      }
+      setGroupBusy(true);
+      try {
+        const groupId = await api.createGroup(idShorts, leadMs);
+        setNotice(`已建组 #${groupId}，成员 ${idShorts.length} 台`);
+      } catch (raw) {
+        setError(toCommandError(raw));
+      } finally {
+        await refreshGroups();
+        setGroupBusy(false);
+      }
+    },
+    [refreshGroups],
+  );
+
+  /** 成员动态加入：运行中的其它成员不受影响（§7 / FR-22）。 */
+  const joinGroup = useCallback(
+    async (idShort: string, groupId: number): Promise<void> => {
+      setGroupBusy(true);
+      try {
+        await api.joinGroup(idShort, groupId);
+        setNotice(`已把 ${idShort} 加入组 #${groupId}`);
+      } catch (raw) {
+        setError(toCommandError(raw));
+      } finally {
+        await refreshGroups();
+        setGroupBusy(false);
+      }
+    },
+    [refreshGroups],
+  );
+
+  /** 成员退出：组空了引擎会自己清掉条目。 */
+  const leaveGroup = useCallback(
+    async (idShort: string, groupId: number): Promise<void> => {
+      setGroupBusy(true);
+      try {
+        await api.leaveGroup(idShort, groupId);
+        setNotice(`已让 ${idShort} 退出组 #${groupId}`);
+      } catch (raw) {
+        setError(toCommandError(raw));
+      } finally {
+        await refreshGroups();
+        setGroupBusy(false);
+      }
+    },
+    [refreshGroups],
+  );
+
   return {
     version,
     local,
     peers,
     telemetry,
     telemetryHistory,
+    groups,
+    groupBusy,
+    refreshGroups,
+    createGroup,
+    joinGroup,
+    leaveGroup,
     exportTelemetryLog,
     exportingTelemetry,
     pairRequest,

@@ -141,6 +141,24 @@ export function bpsToKbps(bps: number): string {
  * 列名一旦写进用户的文件就不该再跟着界面字段漂 —— 所以这里多一个 `atUnixMs`，
  * 并且 `telemetryRowOf` 的字段与 `TelemetryView` 严格同形（漏一个 TS 就报错）。
  */
+/** 同步组的一个成员（M3）：短码与 PeerView.idShort 同一口径。 */
+export interface GroupMemberView {
+  idShort: string;
+}
+
+/**
+ * 临时同步组（list_groups 的元素）。
+ *
+ * epochId 是**字符串**：内核侧是 u64，而 JS 的安全整数只有 53 位 ——
+ * 直接传数字会在前端悄悄丢精度，组基准对不上是最难查的那类 bug。
+ */
+export interface GroupView {
+  groupId: number;
+  epochId: string;
+  leadMs: number;
+  members: GroupMemberView[];
+}
+
 export interface TelemetryRow {
   /** 采样时刻（Unix 毫秒）。 */
   atUnixMs: number;

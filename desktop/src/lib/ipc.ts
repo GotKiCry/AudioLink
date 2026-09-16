@@ -11,6 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   CaptureDeviceView,
+  GroupView,
   LocalStatus,
   PairRequiredPayload,
   PeerView,
@@ -55,6 +56,13 @@ export const api = {
   /** `export_telemetry` —— 把前端累积的采样点写成 CSV，返回落盘路径（M2 的日志导出）。 */
   exportTelemetry: (rows: TelemetryRow[]): Promise<string> =>
     invoke<string>("export_telemetry", { rows }),
+  listGroups: (): Promise<GroupView[]> => invoke<GroupView[]>("list_groups"),
+  createGroup: (idShorts: string[], leadMs: number): Promise<number> =>
+    invoke<number>("create_group", { id_shorts: idShorts, lead_ms: leadMs }),
+  joinGroup: (idShort: string, groupId: number): Promise<null> =>
+    invoke<null>("join_group", { id_short: idShort, group_id: groupId }),
+  leaveGroup: (idShort: string, groupId: number): Promise<null> =>
+    invoke<null>("leave_group", { id_short: idShort, group_id: groupId }),
 };
 
 /**

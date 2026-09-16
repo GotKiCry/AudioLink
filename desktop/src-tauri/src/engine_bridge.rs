@@ -29,7 +29,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, PeerStatus, SessionState};
+use audiolink_engine::{
+    Engine, EngineConfig, EngineEvent, GroupSnapshot, PeerStatus, SessionState,
+};
 use audiolink_types::{AudioLinkError, DEFAULT_QUIC_PORT, ErrorCode, NodeId, StreamStats};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{broadcast, watch};
@@ -37,8 +39,8 @@ use tokio::sync::{broadcast, watch};
 use crate::capture::{self, SharedCapture};
 use crate::error::CommandError;
 use crate::view::{
-    CaptureDeviceView, LocalStatus, PairRequiredPayload, PeerState, PeerView, StartSendResult,
-    SubmitPinResult, TelemetryRow, TelemetryView, render_telemetry_csv,
+    CaptureDeviceView, GroupMemberView, GroupView, LocalStatus, PairRequiredPayload, PeerState,
+    PeerView, StartSendResult, SubmitPinResult, TelemetryRow, TelemetryView, render_telemetry_csv,
 };
 
 // ---------------------------------------------------------------------------
@@ -388,6 +390,49 @@ impl EngineBridge {
     ///
     /// **不弹文件对话框**（那要引入 dialog 插件，且无头/CI 下没法用）：目录固定在用户目录下，
     /// 路径由本命令返回、UI 原样显示。导出本身不依赖引擎状态 —— 会话已经结束也允许导历史。
+    /// 同步组列表（§7 / M3 交付物 4）。
+    pub async fn list_groups(&self) -> Result<Vec<GroupView>, CommandError> {
+        let engine = self.engine().await?;
+        Ok(engine.groups().iter().map(group_view_of).collect())
+    }
+
+    /// 建组：把点名的对端组成一个临时同步组，返回组 ID。
+    pub async fn create_group(
+        &self,
+        id_shorts: &[String],
+        lead_ms: u32,
+    ) -> Result<u32, CommandError> {
+        let engine = self.engine().await?;
+        let mut members = Vec::with_capacity(id_shorts.len());
+        for id_short in id_shorts {
+            members.push(resolve_peer(&engine, id_short)?);
+        }
+        engine
+            .create_group(&members, lead_ms)
+            .await
+            .map_err(|error| engine_error("create_group", &error))
+    }
+
+    /// 成员动态加入（运行中的其它成员不受影响）。
+    pub async fn join_group(&self, id_short: &str, group_id: u32) -> Result<(), CommandError> {
+        let engine = self.engine().await?;
+        let peer = resolve_peer(&engine, id_short)?;
+        engine
+            .join_group(peer, group_id)
+            .await
+            .map_err(|error| engine_error("join_group", &error))
+    }
+
+    /// 成员退出（组空了引擎会自己把条目清掉）。
+    pub async fn leave_group(&self, id_short: &str, group_id: u32) -> Result<(), CommandError> {
+        let engine = self.engine().await?;
+        let peer = resolve_peer(&engine, id_short)?;
+        engine
+            .leave_group(peer, group_id)
+            .await
+            .map_err(|error| engine_error("leave_group", &error))
+    }
+
     pub fn export_telemetry(&self, rows: &[TelemetryRow]) -> Result<String, CommandError> {
         let dir = telemetry_export_dir();
         let path = write_telemetry_csv(&dir, rows).map_err(|error| {
@@ -903,6 +948,23 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// 短码 → 完整 `NodeId`。按引擎的会话表现查，**不自己维护映射表**：
 /// 会话表才是权威，自己再存一份就有两张真相，必然会分叉。
+/// 引擎的组快照 → 前端视图形状（epoch_id 字符串化，理由见 GroupView 的注释）。
+fn group_view_of(snapshot: &GroupSnapshot) -> GroupView {
+    GroupView {
+        group_id: snapshot.group_id,
+        // 十六进制：既避免 JS 的 53 位精度问题，又与内核日志/文档里的 epoch 写法一致
+        epoch_id: format!("{:#x}", snapshot.epoch_id),
+        lead_ms: snapshot.lead_ms,
+        members: snapshot
+            .members
+            .iter()
+            .map(|id| GroupMemberView {
+                id_short: id.short(),
+            })
+            .collect(),
+    }
+}
+
 fn resolve_peer(engine: &Engine, id_short: &str) -> Result<NodeId, CommandError> {
     let trimmed = id_short.trim();
     if trimmed.is_empty() {
@@ -1040,6 +1102,29 @@ fn unix_millis() -> u128 {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_view_keeps_the_epoch_as_a_string_and_shortens_members() {
+        let member = NodeId::from_bytes([0xAB; 32]);
+        let snapshot = GroupSnapshot {
+            group_id: 7,
+            epoch_id: 0x1122_3344_5566_7788,
+            lead_ms: 120,
+            members: vec![member],
+        };
+        let view = group_view_of(&snapshot);
+        assert_eq!(view.group_id, 7);
+        assert_eq!(
+            view.epoch_id, "0x1122334455667788",
+            "u64 必须以字符串出网，否则前端会丢精度"
+        );
+        assert_eq!(view.lead_ms, 120);
+        assert_eq!(view.members.len(), 1);
+        assert_eq!(
+            view.members.first().map(|m| m.id_short.as_str()),
+            Some(member.short().as_str())
+        );
+    }
     use crate::view::TELEMETRY_CSV_HEADER;
     use audiolink_types::StreamStats;
 

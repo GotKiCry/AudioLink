@@ -29,8 +29,8 @@ use tauri::{Manager, State};
 use engine_bridge::EngineBridge;
 use error::CommandError;
 use view::{
-    CaptureDeviceView, LocalStatus, PeerView, StartSendResult, SubmitPinResult, TelemetryRow,
-    TelemetryView,
+    CaptureDeviceView, GroupView, LocalStatus, PeerView, StartSendResult, SubmitPinResult,
+    TelemetryRow, TelemetryView,
 };
 
 #[tauri::command]
@@ -124,6 +124,42 @@ fn export_telemetry(
     bridge.export_telemetry(&rows)
 }
 
+/// 同步组列表（M3 交付物 4）。
+#[tauri::command]
+async fn list_groups(bridge: State<'_, EngineBridge>) -> Result<Vec<GroupView>, CommandError> {
+    bridge.list_groups().await
+}
+
+/// 建组：把点名的对端（指纹短码）组成临时同步组，返回组 ID。
+#[tauri::command(rename_all = "snake_case")]
+async fn create_group(
+    bridge: State<'_, EngineBridge>,
+    id_shorts: Vec<String>,
+    lead_ms: u32,
+) -> Result<u32, CommandError> {
+    bridge.create_group(&id_shorts, lead_ms).await
+}
+
+/// 成员动态加入。
+#[tauri::command(rename_all = "snake_case")]
+async fn join_group(
+    bridge: State<'_, EngineBridge>,
+    id_short: String,
+    group_id: u32,
+) -> Result<(), CommandError> {
+    bridge.join_group(&id_short, group_id).await
+}
+
+/// 成员退出。
+#[tauri::command(rename_all = "snake_case")]
+async fn leave_group(
+    bridge: State<'_, EngineBridge>,
+    id_short: String,
+    group_id: u32,
+) -> Result<(), CommandError> {
+    bridge.leave_group(&id_short, group_id).await
+}
+
 pub fn run() {
     tauri::Builder::default()
         // 单实例：第二次启动时唤出已有窗口（旧版靠 Mutex + 命名管道手写）
@@ -150,7 +186,11 @@ pub fn run() {
             stop_send,
             submit_pin,
             telemetry,
-            export_telemetry
+            export_telemetry,
+            list_groups,
+            create_group,
+            join_group,
+            leave_group
         ])
         .setup(|app| {
             // 桥接层必须在窗口加载**之前**就位：前端一挂载就会 invoke，拿不到 State 会直接报错。

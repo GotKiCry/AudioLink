@@ -15,6 +15,7 @@ import { useState } from "react";
 import { AddManualCard } from "./components/AddManualCard";
 import { CaptureSourcePanel } from "./components/CaptureSourcePanel";
 import { ErrorBanner } from "./components/ErrorBanner";
+import { GroupPanel } from "./components/GroupPanel";
 import { NoticeBanner } from "./components/NoticeBanner";
 import { PairDialog } from "./components/PairDialog";
 import { PeerCard } from "./components/PeerCard";
@@ -70,6 +71,16 @@ export default function App() {
             />
           ))}
         </div>
+
+        <GroupPanel
+          peers={al.peers}
+          groups={al.groups}
+          busy={al.groupBusy}
+          onRefresh={() => void al.refreshGroups()}
+          onCreate={(idShorts, leadMs) => void al.createGroup(idShorts, leadMs)}
+          onJoin={(idShort, groupId) => void al.joinGroup(idShort, groupId)}
+          onLeave={(idShort, groupId) => void al.leaveGroup(idShort, groupId)}
+        />
 
         <TelemetryPanel
           telemetry={al.telemetry}

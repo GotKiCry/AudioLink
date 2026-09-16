@@ -55,7 +55,27 @@ pub enum PeerState {
     Failed,
 }
 
-/// 对端卡片 + `list_peers` 的元素。
+/// 同步组的一个成员（M3 交付物 4）：短码与 PeerView 同一口径（指纹前 8 字节 hex）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMemberView {
+    pub id_short: String,
+}
+
+/// 临时同步组（list_groups 的元素）。
+///
+/// epoch_id 用**十六进制字符串**传给前端：它是 u64，而 JS 的安全整数只有 53 位 ——
+/// 直接传数字会在前端悄悄丢精度，组基准恰好对不上时是最难查的那类 bug。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupView {
+    pub group_id: u32,
+    pub epoch_id: String,
+    pub lead_ms: u32,
+    pub members: Vec<GroupMemberView>,
+}
+
+/// 对端卡片 + list_peers 的元素。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PeerView {
