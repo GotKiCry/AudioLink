@@ -270,9 +270,20 @@ impl Handshake {
         self.ignored_frames
     }
 
-    /// 响应方当前展示中的 PIN（`None` = 未进入配对分支）。
+    /// 响应方当前有效的 PIN；配对结束或到期后不再展示。
     pub fn displayed_pin(&self) -> Option<&str> {
-        self.pin_gate.as_ref().map(PinGate::pin)
+        self.display_pin_state()
+            .filter(|(_, expires_at)| Instant::now() < *expires_at)
+            .map(|(pin, _)| pin)
+    }
+
+    /// 供运行时同步发布快照；失效时刻直接取自门禁，错误重试不能续期。
+    pub(crate) fn display_pin_state(&self) -> Option<(&str, Instant)> {
+        if self.phase != HandshakePhase::AwaitPairSubmit {
+            return None;
+        }
+        let gate = self.pin_gate.as_ref()?;
+        Some((gate.pin(), gate.expires_at()))
     }
 
     /// 开局第一步：发起方发 `HELLO`；响应方静候对端。

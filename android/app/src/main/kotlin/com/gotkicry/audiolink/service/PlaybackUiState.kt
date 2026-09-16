@@ -92,7 +92,7 @@ data class PlaybackUiState(
      * 当前要展示给用户的 6 位配对 PIN（内核 `displayedPin()` 原值，未加工）。
      *
      * `null` = 当前没有配对在进行 —— UI 据此**不占位**，而不是显示一个空框。
-     * 「有 PIN」这个状态只可能来自内核的 `EngineEvent::DisplayPin`，Kotlin 侧不自己造 PIN。
+     * PIN 来自内核当前连接的同步快照，Kotlin 侧不自己造 PIN。
      */
     val pairingPin: String? = null,
     /** 已连接对端（内核 `peers()`，映射成纯 Kotlin 模型；见 [PeerUi]）。 */
@@ -102,7 +102,7 @@ data class PlaybackUiState(
 ) {
     /**
      * [pairingPin] 是否已经没有对应的活跃配对会话 —— 口径与理由见
-     * [PairingUiState.pinIsStale]（真机实测：对端断开后 FFI 仍会返回旧 PIN）。
+     * [PairingUiState.pinIsStale]（兼容旧版残留及两次查询间的连接状态变化）。
      */
     val pinIsStale: Boolean get() = PairingStateMapper.pinIsStale(pairingPin, peers)
 }

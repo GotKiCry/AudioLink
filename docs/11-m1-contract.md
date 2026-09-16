@@ -301,6 +301,10 @@ impl Engine {
     /// 提交对端显示的 PIN。**必须带 `peer`** —— PIN 本身没有归属信息，引擎无法从 6 位数字
     /// 反推是哪条会话（这决定了桌面端 command 是 `{ id_short, pin }` 而不是 `{ pin }`）。
     pub async fn submit_pin(&self, peer: NodeId, pin: &str) -> Result<(), AudioLinkError>;
+    /// 当前有效的接收端 PIN，同步快照，不依赖广播；多请求时优先最新的一条。
+    pub fn displayed_pin(&self) -> Option<String>;
+    /// 本机作为发起端正在等待输入 PIN 的对端。
+    pub fn pending_pin_peer(&self) -> Option<NodeId>;
     /// 已连接对端列表 + 每个对端的遥测。
     pub fn peers(&self) -> Vec<PeerStatus>;
     pub fn telemetry(&self, peer: NodeId) -> Option<StreamStats>;
@@ -456,6 +460,9 @@ data class PlaybackReport(val lowLatency: Boolean, val actualBufferFrames: Int,
   `submitPin(pin)` / `localStatus()` / `peers()` / `telemetry()` / `displayedPin()`，
   加一个 `protocolSelfTest()` → `String`，内部跑 `audiolink-proto` 的 golden vectors 并返回摘要
   （这就是看板 `[护栏] 跨端一致性夹具`：**同一组向量在 Rust 与 FFI 两侧双跑，结果必须一致**）。
+- `displayedPin()` 返回当前连接的有效 PIN；未启动/成功/断开/锁定/到期时为 `null`。
+  2026-09-16 起直接读取 Engine 同步快照，不再依赖广播缓存；错误重试不延长门禁的原始 60 s 有效期。
+  `submitPin(pin)` 同样从当前连接定位待配对对端；FFI 函数签名与 Kotlin 绑定保持兼容。
 - **验收**：`cargo test -p audiolink-ffi` 通过（`protocolSelfTest` 的 Rust 侧断言）；
   `cargo check -p audiolink-ffi --target aarch64-linux-android` 通过（证明 FFI 表面能交叉编译）；
   若 UniFFI 代码生成可用，把生成的 Kotlin 放到 android 侧并让 `assembleDebug` 通过。

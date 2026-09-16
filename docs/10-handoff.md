@@ -1,7 +1,7 @@
 # AudioLink 交接文档（Handoff）
 
 > **性质**：过程性文档。新会话接手本项目时先读本文，再按 `docs/05-roadmap.md` 推进。
-> **最后更新**：2026-09-16（用户确认 PCM 修复有效，桌面采集端点选择已完成）· 远端 https://github.com/GotKiCry/AudioLink（PUBLIC）
+> **最后更新**：2026-09-16（PCM/端点选择已提交，Android PIN 状态修复待真机复测）· 远端 https://github.com/GotKiCry/AudioLink（PUBLIC）
 
 ---
 
@@ -16,7 +16,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 | 项 | 状态 |
 |---|---|
 | 远端仓库 | **PUBLIC** · main 分支 · 看板 https://github.com/users/GotKiCry/projects/2 |
-| 本地三条链 | ✅ 内核 workspace（engine 73 + audio 46 + …）· ✅ Android `assembleDebug` + **69** JVM 用例 · ✅ 桌面 `pnpm build` + Tauri `cargo test` |
+| 本地三条链 | ✅ 内核 workspace（engine 76 + audio 46 + …）· ✅ Android `assembleDebug` + **69** JVM 用例 · ✅ 桌面 `pnpm build` + Tauri `cargo test` |
 | 质量门 | ✅ `cargo fmt --all --check` 干净 · ✅ workspace clippy `-D warnings` 干净（独立复核者自跑 exit 0） |
 | M1 真机验收 | ✅ **已跑通**（2026-09-15，真机 MI 8 Lite）：自检 PASS(5/5) / 低延迟模式 ✅ / 零重采样 ✅ / PIN 配对 ✅ / 四轮零断流 ✅ |
 | M1 延迟指标 | ❌ **未达标**：e2e 下限 ≥115 ms + 设备输出 80–101 ms ≈ 195 ms；根因 = 内核→Kotlin PCM 推送 ≈2× 实时 + 设备 AudioTrack 默认容量 80 ms |
@@ -27,8 +27,8 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 |---|---|---|
 | QUIC 通道（控制流 #0 + 数据报 + **§6 时钟同步接线**） | `core/crates/audiolink-net` + `audiolink-engine/src/clock.rs` | 19 单测 + 5 真 QUIC 集成；真机 60/60 探针样本、收敛 1.01 s |
 | 自签证书 / 指纹 / 信任库 / PIN 配对 | `core/crates/audiolink-identity` | 22 单测 + 8 黑盒验收 + 真机配对（人工节奏延迟 ≥25 s 提交） |
-| 引擎编排（状态机 / 收发管线 / 遥测 / 对端遥测 / 配对死线） | `core/crates/audiolink-engine` | 73 单测 + 6 集成测试 |
-| FFI 桥（UniFFI + 跨端 golden vectors 夹具） | `core/crates/audiolink-ffi` | 18 测试 + aarch64 交叉检查 |
+| 引擎编排（状态机 / 收发管线 / 遥测 / 对端遥测 / 配对死线） | `core/crates/audiolink-engine` | 76 单测 + 8 集成测试 |
+| FFI 桥（UniFFI + 跨端 golden vectors 夹具） | `core/crates/audiolink-ffi` | 23 单测 + 1 真 QUIC/FFI 配对回归 + 双 ABI 构建 |
 | Android 低延迟播放 + **配对 PIN UI** + **队列水位档位** | `android/app/src/main/kotlin/.../` | APK 构建 + **69** JVM 用例 + 真机验证 |
 | 桌面最小 UI（真实引擎，无 mock） | `desktop/` | `pnpm build` + 12 Rust 测试（含接缝）+ 4 端点手工 WASAPI 测试 |
 | **PC→真机验收工具**（连接/PIN/推流/跨机账本） | `core/crates/audiolink-tools/src/bin/device_link.rs` | 真机四轮实测 + 本机自检 e1–e8 证据 |
@@ -85,7 +85,9 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 
 - Issue #1 已按用户要求关闭，PCM 修复任务 Done；用户确认新 APK 音频正常传输和播放。
 - 桌面采集端点选择器已完成：真实枚举/刷新、指定完整 ID、失效与格式提示、实际端点展示；修正开流失败回传。4 个真实 WASAPI 端点验证及 Tauri 窗口检查通过，详见 `docs/13-desktop-capture-selection.md`。
-- 后续可推进看板 P1「Android PIN 卡有时不显示」，检查事件订阅时序、状态缓存与断开清理；定量延迟及队列长跑仍按 §4.1 独立验收。
+- 上述两项已提交并推送至 `main`：`8262bf5`。
+- Android PIN 缺失/残留已改为 Engine 同步快照，清除丢广播缓存；同时修复旧连接退出误删重连会话。3 项内核回归 + 1 项真 QUIC/FFI 配对回归通过，旧 FFI 对照在断开清 PIN 处失败。详见 `docs/14-pairing-state.md`；本轮 ADB 无设备，看板保留 In Progress 待真机复测。
+- 新发现 M1/P1 待办：有连接时停止后立即复用同一 QUIC 端口，可能报 10048 端口占用（复现入口见 `docs/14`）。下一项可修此启停竞态；定量延迟及队列长跑仍按 §4.1 独立验收。
 
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
@@ -128,7 +130,8 @@ Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本�
 |---|---|---|
 | PCM 长度修复后的真机复测 | 代码修复与 10/20 ms 回归已完成；待测溢出增量、队列斜率、听感和延迟 | **P0**（M1 延迟达标依赖） |
 | ~~30 min soak~~ | ✅ 已完成（§4.2）：无断连，但水位/迟到/欠载暴露接收管线问题 | ✅ |
-| FFI 不清 PIN | `engine_bridge.rs::apply_event()` 只在 `PairCompleted{ok:true}` 清缓存；`PeerDisconnected`/失败落进 `_ => {}` → 屏幕挂失效 PIN（UI 侧已标注，根治在 ffi） | P1 |
+| Android PIN 真机复测 | 代码已修、自动回归通过；确认新 APK 的显示/重试/断开/到期行为（`docs/14`） | P1 |
+| 同端口立即重启 | 有连接时停止后端口可能尚未释放，报 10048；单独追踪（`docs/14`） | P1 |
 | 设备侧 `queuedFrames` 进遥测 | 现在账本看不到「对端 AudioTrack」那一段，设备侧省下的 50 ms 在报告里不可见 | P1 |
 | `EngineEvent::Telemetry` 加 `peer: NodeId` | 对端遥测与本机采样共用同一事件，**多对端会串**（M3 必须修） | P1（M3） |
 | PCM 回调装箱开销 | UniFFI 0.29 无 `FloatArray` 映射 → `List<Float>` 每帧约 30 KB 装箱；逃生通道写在 `audiolink-ffi/src/audio_bridge.rs` 顶部。真机 GC 抖动仍未专门测 | P1（M2） |
@@ -234,9 +237,10 @@ Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本�
 
 | 项 | 说明 | 优先级 |
 |---|---|---|
-| **PCM 长度修复后的真机复测** | 修复已落地、真实收发回归通过；新 APK 仍待连接手机验证（见 §4.1 / `docs/12` §9） | **P0** |
+| **PCM 长度修复后的真机复测** | 修复已落地、真实收发回归通过；用户已确认播放正常；定量复测待补（见 §4.1 / `docs/12` §9） | **P0** |
 | ~~30 min soak~~ | ✅ 已完成（§4.2 / `docs/12` §5.1） | ✅ |
-| FFI 不清 PIN | `apply_event()` 补 `PeerDisconnected` / `PairCompleted{ok:false}` 的清空分支 | P1 |
+| Android PIN 真机复测 | 已移除事件缓存并修复重连清理，自动回归通过；待新 APK 验证（`docs/14`） | P1 |
+| 同端口立即重启 | QUIC 关闭后资源释放竞态，Windows 实测 10048（`docs/14`） | P1 |
 | 设备侧 queuedFrames 进遥测 | 否则账本看不见「对端 AudioTrack」那一段 | P1 |
 | 跨端一致性夹具 | §12 golden vectors 在 Rust 与 FFI 双跑 —— **已落地**（`audiolink-ffi::protocolSelfTest()`） | ✅ 完成 |
 | `alp2-dump` 支持 pcap | 当前只吃 hex 文本；等真有抓包需求再加 | P3 |

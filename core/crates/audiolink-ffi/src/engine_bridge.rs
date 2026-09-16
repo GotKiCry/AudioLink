@@ -5,7 +5,7 @@
 //! engineStart(config, …) ──►  runtime.spawn(Engine::start)   ──►  Engine::start(cfg)
 //! connect(addr)          ──►  runtime.spawn(Engine::connect) ──►  Engine::connect(addr)
 //! peers() / telemetry()  ──►  直接读 Engine 的同步快照          ──►  Engine::peers()/telemetry()
-//! displayedPin()         ──►  事件泵缓存的 PIN                  ◄──  EngineEvent::DisplayPin
+//! displayedPin()         ──►  直接读当前会话的 PIN 快照        ──►  Engine::displayed_pin()
 //! ```
 //!
 //! # 线程模型（Android 上最容易踩的一脚）
@@ -23,9 +23,8 @@
 //!
 //! # 全局态
 //!
-//! 一个进程一个引擎（`Engine` 自身的文档就是这么写的）。本模块用两把 `Mutex` 持有它：
-//! [`ENGINE`] 是引擎句柄，[`UI`] 是「引擎不通过同步 API 暴露、只从事件里出来」的那一点点状态
-//! （正在展示的配对 PIN）。
+//! 一个进程一个引擎。`ENGINE` 持有当前句柄；PIN 与对端列表都读取引擎的同步快照，
+//! 不再另建广播事件缓存，避免丢事件后永久缺失 PIN 或旧引擎的事件污染重启状态。
 //!
 //! 运行时**永不释放**（进程级）：`tokio::runtime::Runtime` 若在 async 上下文里被 drop 会 panic
 //! （"Cannot drop a runtime in a context where blocking is not allowed"），而 FFI 的 async 函数
@@ -37,10 +36,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, PeerStatus};
+use audiolink_engine::{Engine, EngineConfig, PeerStatus};
 use audiolink_types::{Caps, DEFAULT_QUIC_PORT, ErrorCode, NodeId, StreamStats};
 use tokio::runtime::Runtime;
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::audio_bridge::{
@@ -56,9 +55,6 @@ static RUNTIME: Mutex<Option<Arc<Runtime>>> = Mutex::new(None);
 
 /// 当前引擎（`None` = 未启动）。
 static ENGINE: Mutex<Option<EngineHandle>> = Mutex::new(None);
-
-/// 只能从事件里拿到的 UI 状态。
-static UI: Mutex<UiState> = Mutex::new(UiState::new());
 
 // ---------------------------------------------------------------------------
 // 对外类型（Kotlin 侧的名字由 UniFFI 转成 camelCase）
@@ -186,28 +182,6 @@ struct EngineHandle {
     runtime: Arc<Runtime>,
     /// 入站接受循环（停引擎时等它退出，避免立刻重启时撞端口占用）。
     accept: JoinHandle<()>,
-}
-
-/// 只从事件里能得到的状态。
-struct UiState {
-    /// 本机作为接收端正在展示给用户的 PIN。
-    displayed: Option<String>,
-    /// 本机作为发起端时，正在等用户输 PIN 的那个对端。
-    pin_peer: Option<NodeId>,
-}
-
-impl UiState {
-    const fn new() -> Self {
-        Self {
-            displayed: None,
-            pin_peer: None,
-        }
-    }
-
-    fn clear(&mut self) {
-        self.displayed = None;
-        self.pin_peer = None;
-    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, FfiError> {
@@ -346,45 +320,6 @@ fn peer_view_for(engine: &Engine, id: NodeId) -> Result<PeerView, FfiError> {
 }
 
 // ---------------------------------------------------------------------------
-// 事件泵
-// ---------------------------------------------------------------------------
-
-/// 把引擎事件里的 UI 状态缓存起来。
-///
-/// 为什么必须有这一条后台任务：`Engine` 的同步 API **没有** `displayed_pin()`（契约 §5 写了，
-/// 但 engine 的 `runtime.rs` 没有实现它，PIN 只从 `EngineEvent::DisplayPin` 出来）。
-/// 任务只持有广播接收端、**不持有 `Arc<Engine>`** —— 这样引擎被丢掉后频道关闭，任务自然退出，
-/// 不会把整个引擎（含 QUIC 端点）钉在内存里。
-fn spawn_event_pump(mut events: broadcast::Receiver<EngineEvent>) {
-    let Ok(runtime) = runtime() else {
-        return;
-    };
-    runtime.spawn(async move {
-        loop {
-            match events.recv().await {
-                Ok(event) => apply_event(event),
-                // 背压丢事件是广播语义；遥测有 1 Hz 的冗余，PIN 事件由 UI 侧的轮询兜住。
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
-}
-
-fn apply_event(event: EngineEvent) {
-    // 锁中毒时**只丢这一条事件**：宁可少一个 PIN，也不要在这里 panic（FFI 边界 panic 是灾难）。
-    let Ok(mut state) = UI.lock() else {
-        return;
-    };
-    match event {
-        EngineEvent::DisplayPin { pin, .. } => state.displayed = Some(pin),
-        EngineEvent::PinNeeded { id, .. } => state.pin_peer = Some(id),
-        EngineEvent::PairCompleted { ok: true, .. } => state.clear(),
-        _ => {}
-    }
-}
-
-// ---------------------------------------------------------------------------
 // 导出面（契约 §8）
 // ---------------------------------------------------------------------------
 
@@ -433,16 +368,15 @@ pub async fn engine_start(
         // `spawn_accept_loop` 内部直接 `tokio::spawn` —— 在运行时上下文外用会 panic。
         let outcome = match Engine::start(engine_config).await {
             Ok(engine) => {
-                let events = engine.subscribe();
                 let accept = engine.spawn_accept_loop();
-                Ok((engine, events, accept))
+                Ok((engine, accept))
             }
             Err(error) => Err(error),
         };
         let _ = sender.send(outcome);
     });
 
-    let (engine, events, accept) = match receiver.await {
+    let (engine, accept) = match receiver.await {
         Ok(Ok(started)) => started,
         Ok(Err(error)) => return Err(FfiError::from_audio_link(&error)),
         Err(_) => {
@@ -472,7 +406,6 @@ pub async fn engine_start(
         });
     }
 
-    spawn_event_pump(events);
     Ok(local_status_of(&engine))
 }
 
@@ -483,15 +416,11 @@ pub async fn engine_stop() -> Result<(), FfiError> {
         let mut guard = lock(&ENGINE)?;
         guard.take()
     };
-    if let Ok(mut state) = UI.lock() {
-        state.clear();
-    }
 
     let Some(handle) = taken else {
         return Ok(());
     };
-    // 句柄在块内解构：块一结束，句柄持有的 `Arc<Engine>` 就释放 —— 引擎再也没有强引用时，
-    // 事件泵那边的广播频道关闭，泵任务自行退出（它只持有接收端，不持有引擎）。
+    // 取出句柄后，同步查询立即看到未启动状态，不会继续返回旧连接的 PIN。
     let (engine, runtime, accept) = {
         let engine = Arc::clone(&handle.engine);
         let runtime = Arc::clone(&handle.runtime);
@@ -543,11 +472,7 @@ pub async fn stop_send() -> Result<(), FfiError> {
 #[uniffi::export(async_runtime = "tokio")]
 pub async fn submit_pin(pin: String) -> Result<(), FfiError> {
     let engine = require_engine("submitPin")?;
-    let peer = {
-        let state = lock(&UI)?;
-        state.pin_peer
-    };
-    let peer = match peer {
+    let peer = match engine.pending_pin_peer() {
         Some(peer) => peer,
         None => current_peer(&engine)?,
     };
@@ -588,8 +513,11 @@ pub fn telemetry() -> Result<TelemetryView, FfiError> {
 /// 本机（接收端）当前展示给用户的配对 PIN；没有在配对时返回 `None`。
 #[uniffi::export]
 pub fn displayed_pin() -> Result<Option<String>, FfiError> {
-    let state = lock(&UI)?;
-    Ok(state.displayed.clone())
+    // 保持未启动时返回 None 的既有 FFI 语义。锁住句柄直到查询结束，避免读到旧引擎。
+    let guard = lock(&ENGINE)?;
+    Ok(guard
+        .as_ref()
+        .and_then(|handle| handle.engine.displayed_pin()))
 }
 
 #[cfg(test)]

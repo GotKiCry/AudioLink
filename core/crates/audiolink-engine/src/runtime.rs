@@ -262,9 +262,34 @@ struct PeerSession {
     commands: mpsc::Sender<SessionCommand>,
     trusted: AtomicBool,
     state: Mutex<SessionState>,
+    /// 会话任务在控制帧写出之前更新；UI 查询不依赖可丢失的广播事件。
+    pairing: Mutex<PairingState>,
+}
+
+#[derive(Default)]
+struct PairingState {
+    displayed: Option<(String, Instant)>,
+    needs_pin: bool,
 }
 
 impl PeerSession {
+    fn update_pairing(&self, handshake: &Handshake, event: &HandshakeEvent) {
+        if let Ok(mut pairing) = self.pairing.lock() {
+            pairing.displayed = handshake
+                .display_pin_state()
+                .map(|(pin, expires_at)| (pin.to_string(), expires_at));
+            match event {
+                HandshakeEvent::NeedPin { .. } | HandshakeEvent::PinRejected { .. } => {
+                    pairing.needs_pin = true;
+                }
+                HandshakeEvent::Established { .. } | HandshakeEvent::Rejected { .. } => {
+                    pairing.needs_pin = false;
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn snapshot(&self) -> PeerStatus {
         PeerStatus {
             id: self.id,
@@ -403,6 +428,36 @@ impl Engine {
             .lock()
             .map(|peers| peers.values().map(|p| p.snapshot()).collect())
             .unwrap_or_default()
+    }
+
+    /// 当前有效的接收端 PIN；无需订阅事件。多条配对请求时优先显示最新的一条。
+    /// 成功、锁定、断开或引擎停止后清除；到期判断使用 PinGate 原始失效时刻。
+    pub fn displayed_pin(&self) -> Option<String> {
+        self.displayed_pin_at(Instant::now())
+    }
+
+    fn displayed_pin_at(&self, now: Instant) -> Option<String> {
+        if self.inner.shutdown.load(Ordering::Relaxed) {
+            return None;
+        }
+        let peers = self.inner.peers.lock().ok()?;
+        peers
+            .values()
+            .filter_map(|session| session.pairing.lock().ok()?.displayed.clone())
+            .filter(|(_, expires_at)| now < *expires_at)
+            .max_by_key(|(_, expires_at)| *expires_at)
+            .map(|(pin, _)| pin)
+    }
+
+    /// 本机作为发起端正在等待输入 PIN 的对端；与连接同生命周期，无事件缓存。
+    pub fn pending_pin_peer(&self) -> Option<NodeId> {
+        if self.inner.shutdown.load(Ordering::Relaxed) {
+            return None;
+        }
+        let peers = self.inner.peers.lock().ok()?;
+        peers
+            .values()
+            .find_map(|session| session.pairing.lock().ok()?.needs_pin.then_some(session.id))
     }
 
     /// 指定对端的遥测（**本机视角**：本机聚合的 1 Hz 快照，含本机算出的时钟估计）。
@@ -796,6 +851,10 @@ async fn run_session(
                 };
 
                 let step = handshake.on_control(&request, &inner.identity, &peer_cert, Instant::now());
+                session.update_pairing(&handshake, &step.event);
+                if let Some(peer) = handshake.peer() {
+                    session.set_name(&peer.name);
+                }
                 enqueue(&mut queue, step.clone());
                 if let Err(error) = flush_control(&mut control, &mut queue).await {
                     finish_ready(&mut ready, Err(error));
@@ -1173,6 +1232,13 @@ fn finish_ready(
 /// 从会话表里摘掉，并广播断开。
 fn drop_session(inner: &Arc<Inner>, session: &Arc<PeerSession>, reason: &str) {
     if let Ok(mut peers) = inner.peers.lock() {
+        // 重连可能已换成同一身份的新会话；旧任务退出不能摘掉新 PIN 或广播假断开。
+        if !peers
+            .get(&session.id)
+            .is_some_and(|current| Arc::ptr_eq(current, session))
+        {
+            return;
+        }
         peers.remove(&session.id);
     }
     let _ = inner.events.send(EngineEvent::PeerDisconnected {
@@ -1215,10 +1281,18 @@ fn create_session(
         commands,
         trusted: AtomicBool::new(trusted),
         state: Mutex::new(SessionState::Handshaking),
+        pairing: Mutex::new(PairingState::default()),
     });
 
-    if let Ok(mut peers) = inner.peers.lock() {
-        peers.insert(peer_id, Arc::clone(&session));
+    let previous = inner
+        .peers
+        .lock()
+        .ok()
+        .and_then(|mut peers| peers.insert(peer_id, Arc::clone(&session)));
+    if let Some(previous) = previous {
+        tokio::spawn(async move {
+            let _ = previous.commands.send(SessionCommand::Shutdown).await;
+        });
     }
     (session, command_rx)
 }
@@ -2081,3 +2155,6 @@ fn random_u64() -> u64 {
 fn new_stop_flag() -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
+
+#[cfg(test)]
+mod pairing_tests;
