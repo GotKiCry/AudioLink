@@ -172,6 +172,19 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   且 AudioLink 是「关窗不退出」（托盘常驻），无法在不做 GUI 交互的前提下优雅退出；「配置写用户目录」因此按**代码事实**
   陈述（`app_config_dir()`，与安装形态无关）。绿色版也没做代码签名（与安装包同一条待办）。详见 `docs/42-m5-release-pipeline.md` §10。
 
+- **M5 用户文档落地：用户手册（中/英）+ 故障排查（中/英）+ `CONTRIBUTING.md`**。路线图 M5 交付物 4 此前**完全没做**
+  （仓库里连 `CONTRIBUTING.md` 都没有）。新增 `docs/manual/user-guide.{zh-CN,en-US}.md`（两份同构，13 节：装哪个形态、
+  三步配对、推流与接收、Windows 采集、设置、同步组与多源对齐、遥测读数、配置与数据位置、卸载、许可与第三方声明、
+  以及**「还没做的」**）与 `docs/manual/troubleshooting.{zh-CN,en-US}.md`（每条都来自真实踩坑：跨网段互 ping 不通、
+  AP 客户端隔离、播放器独占模式采不到、MIUI `adb install -99`、装错 ABI、关窗不退出是设计、SmartScreen 未签名、
+  绿色版缺 WebView2、自动更新的前置条件），以及仓库根 `CONTRIBUTING.md`（先读顺序、跨端契约纪律、
+  **门禁清单含 `cargo fmt --all --check`**、提交信息约定、注释写「为什么」、界面文案走 i18n、纯逻辑优先、诚实记账、
+  护栏要自证、看板同步、许可审计）。**顺手修掉一个对外缺陷**：`README.md` 第一屏还写着「状态：规划完成，等待开发
+  （`v0.1.0` 尚未实现）」—— 而安装包 / 绿色版 / APK 都已产出、CI 全绿；已改为真实状态并加「用户文档」索引表。
+  手册只写**已实现**的能力：Android 内录与麦克风、Android 自启与省电引导、代码签名都明确列在「还没做的」里，不粉饰。
+  **未验**：手册里的操作步骤没有逐条在真机上走一遍（需要真机，与 M1/M2 真机验收同一条阻塞）。
+  详见 `docs/manual/`、`CONTRIBUTING.md`。
+
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
 Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本数**，`receive_audio()` 又乘了声道数，

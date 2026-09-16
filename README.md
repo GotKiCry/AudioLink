@@ -7,7 +7,8 @@
 > **局域网实时音频分发系统** —— 把任意节点的声音，低延迟、可同步、可混合地推给局域网内任意数量的其他节点。
 > Windows ⇄ Android 双向，多设备并发，组内同步 ±10 ms，Opus 编码，全链路加密。
 
-**状态：规划完成，等待开发**（本文档库即交付物；`v0.1.0` 尚未实现）。
+**状态：`v0.1.0` 已可用** —— Windows 安装包与绿色版、Android APK（arm64-v8a / armeabi-v7a）均已产出，
+内核测试 437 项、CI 五个 job 全绿。**用户怎么用请看 [`docs/manual/`](docs/manual/)。**
 
 ---
 
@@ -26,6 +27,16 @@ AudioLink 参考了 **[HeHang0/AudioShare](https://github.com/HeHang0/AudioShare
 | 维护 | 2024-05 起停更，issue 无人处理 | 全新代码库，CI/测试/遥测齐备 |
 
 上游代码为 Apache-2.0，本项目的许可与归属声明见 [`LICENSE`](LICENSE) 与 [`NOTICE`](NOTICE)。**不采用**上游协议、不包含云音乐接口调用、不包含斐讯 R1 私有集成与 adb 静默安装流程。
+
+---
+
+## 用户文档
+
+| 文档 | 内容 |
+|---|---|
+| [用户手册 · 中文](docs/manual/user-guide.zh-CN.md) / [English](docs/manual/user-guide.en-US.md) | 装哪个版本、第一次怎么配对、推流与接收、同步组、遥测、配置位置、卸载 |
+| [故障排查 · 中文](docs/manual/troubleshooting.zh-CN.md) / [English](docs/manual/troubleshooting.en-US.md) | 连不上、没声音、卡顿、MIUI 安装 -99、更新失败…… 每条都来自真实踩坑 |
+| [贡献指南](CONTRIBUTING.md) | 环境、门禁、提交与文档约定 |
 
 ---
 
