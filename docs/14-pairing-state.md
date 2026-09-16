@@ -53,7 +53,8 @@ pwsh tools/gradlew.ps1 -JavaHome 'C:\Users\liuzh\scoop\apps\corretto17-jdk\curre
 
 ## 真机复测与独立遗留
 
-本轮 `adb devices -l` 无设备，尚未验证这版 APK 在手机屏幕上的表现。使用新生成的
+代码修复当时 `adb devices -l` 无设备。以下为该阶段的构建记录；后续 PHK110 真机已通过验收，见下文。
+当时使用新生成的
 `android/app/build/outputs/apk/debug/app-debug.apk`（21.70 MiB）或
 `android/app/build/pin-validation/outputs/apk/release/app-release.apk`（7.63 MiB）复测。
 原目录的 Release APK 被占用，故本轮仅通过临时 Gradle init 脚本将 Release 输出到 `build/pin-validation`，
@@ -70,3 +71,13 @@ pwsh tools/gradlew.ps1 -JavaHome 'C:\Users\liuzh\scoop\apps\corretto17-jdk\curre
 后续已修复本轮发现的 **QUIC 端口释放竞态**（`engineStop()` 后立即同端口 `engineStart()` 报 10048）。
 现在等待真实套接字和会话/音频线程释放；PIN 生命周期回归已移除换端口的绕行。
 实现、取消/并发语义及回归证据见 `docs/15-engine-restart.md`。
+
+### PHK110 真机验收完成（2026-09-16）
+
+用户接入 PHK110（Android 16 / API 36）后，已验证屏幕 PIN 显示、输错后保留、输对后清除、
+未配对断开清除、同身份重连、60 s 到期、五次输错关闭连接，以及配对中服务停止/重启。
+UI XML、屏幕截图与真实 QUIC 客户端日志共同验证，PIN 看板条目可以关闭。
+同时修复 Android 服务销毁后旧协程回写运行状态的问题，详见 `docs/16-android-service-lifecycle.md`。
+
+当前 Release：`android/app/build/phk110-validation/outputs/apk/release/app-release.apk`，
+安装后已从手机回拉并核对 SHA-256；不要再用旧默认输出路径作为最新版依据。

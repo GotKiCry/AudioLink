@@ -71,6 +71,9 @@ Release APK 的 V2 签名校验通过。核对记录：`target/evidence/engine-r
 本轮 ADB 无设备，Android 手机界面的快速启停及 PIN 显示仍由真机验收项追踪；本条关闭依据是 Windows
 故障已复现、真实网络和音频生命周期回归通过。同一次停止之后继续保留已关闭对象也已覆盖。
 
+后续 PHK110 真机已验证普通/快速启停、配对中和推流中同端口重启；另发现并修复了 Android 服务状态
+回写竞态。最新 APK 与安装后核对结果见 `docs/16-android-service-lifecycle.md`；本文件上表保留原始构建记录。
+
 为了保留正在使用的旧 APK，本轮通过临时 Gradle init 脚本将输出目录设为
 `android/app/build/restart-validation`；仓库构建配置保持默认。
 

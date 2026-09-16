@@ -470,6 +470,8 @@ data class PlaybackReport(val lowLatency: Boolean, val actualBufferFrames: Int,
   停止返回意味着会话、音频线程和原 UDP 套接字已释放，允许立即同端口启动。
   等待生命周期锁时取消则请求不执行；派发后取消等待，操作仍由引擎运行时完成并释放锁。
   平台音频回调须正常返回，停止会等待在途回调退出；详细语义与回归见 `15-engine-restart.md`。
+- Android Service 之间也按请求顺序排队启停，销毁不取消已登记的引擎清理。
+  UI 状态只在主线程发布，停止/销毁使旧启动与 PIN 查询结果失效；见 `16-android-service-lifecycle.md`。
 - **验收**：`cargo test -p audiolink-ffi` 通过（`protocolSelfTest` 的 Rust 侧断言）；
   `cargo check -p audiolink-ffi --target aarch64-linux-android` 通过（证明 FFI 表面能交叉编译）；
   若 UniFFI 代码生成可用，把生成的 Kotlin 放到 android 侧并让 `assembleDebug` 通过。

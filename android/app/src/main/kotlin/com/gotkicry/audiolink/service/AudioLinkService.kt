@@ -25,14 +25,17 @@ import com.gotkicry.audiolink.core.displayedPin
 import com.gotkicry.audiolink.core.engineStart
 import com.gotkicry.audiolink.core.engineStop
 import com.gotkicry.audiolink.core.peers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * AudioLink 核心前台服务：接收播放 + 发送采集。
@@ -78,6 +81,11 @@ class AudioLinkService : Service() {
 
         /** UI 刷新节奏，对齐架构 §4 的 500 ms 批量推送。 */
         private const val UI_REFRESH_MS = 500L
+
+        // 进程级队列不随 Service 销毁而取消；旧 stop 完成后才允许新实例 start。
+        private val engineOperations = EngineOperationQueue(
+            CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+        )
 
         /**
          * 服务与 UI 之间的状态通道。
@@ -144,19 +152,33 @@ class AudioLinkService : Service() {
     /** FFI 接缝：内核 `PcmFeed.feedPcm` 的 Kotlin 实现（把 PCM 写进 [playoutRing]）。 */
     private val pcmFeed = FfiPcmFeed(playoutRing)
 
-    /**
-     * 引擎协程域：`engineStart` / `engineStop` 都是 suspend，**绝不能**挂在主线程上跑。
-     * 引擎真正的活儿在 Rust 侧自建的 tokio 运行时上，这里只负责发起与收尾。
-     */
-    private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    private var engineJob: Job? = null
-
-    @Volatile
+    /** 本实例的配对查询域；状态只在主线程发布，JNI 查询在 IO 上执行。 */
+    private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var destroyed = false
     private var engineStatus: LocalStatus? = null
-
-    @Volatile
     private var engineError: String? = null
+    private val engineLifecycle = EngineLifecycle(
+        queue = engineOperations,
+        startEngine = {
+            withContext(Dispatchers.IO) {
+                engineStart(
+                    EngineStartConfig(
+                        nodeName = Build.MODEL.orEmpty().ifBlank { "Android" },
+                        dataDir = filesDir.absolutePath,
+                        listenPort = 0u,
+                    ),
+                    playout = pcmFeed,
+                    capture = null,
+                )
+            }
+        },
+        stopEngine = { withContext(Dispatchers.IO) { engineStop() } },
+        publish = { status, error ->
+            engineStatus = status
+            engineError = error
+            refreshState()
+        },
+    )
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -165,11 +187,9 @@ class AudioLinkService : Service() {
     /**
      * 配对状态（PIN + 对端列表）的快照。
      *
-     * 由 [refreshPairingAsync] 在 IO 线程写、主线程 [refreshState] 读，所以是 `@Volatile`。
-     * 为什么不让主线程直接调 FFI：`displayedPin()` / `peers()` 是跨 JNA 的同步调用，
-     * 主线程上每 500 ms 走一次 JNA 是拿 UI 的流畅度换便利 —— 不值得。
+     * FFI 查询在 IO 线程运行；回到主线程后核对引擎代次，再与 UI 串行发布。
+     * 停止、重启或销毁后，不接受旧查询返回的 PIN。
      */
-    @Volatile
     private var pairingState: PairingUiState = PairingUiState()
 
     /** 正在跑的那次配对轮询；用它做"同一时刻只有一次在飞"的闸门（见 [refreshPairingAsync]）。 */
@@ -244,9 +264,11 @@ class AudioLinkService : Service() {
     }
 
     override fun onDestroy() {
+        // 必须先失效发布权限：音频/引擎收尾可能晚于新的 Service 实例。
+        destroyed = true
+        engineLifecycle.close()
+        engineScope.cancel()
         stopPlayback()
-        // 引擎停止是 suspend：交给 IO 协程收尾，**不阻塞主线程**（onDestroy 跑在 UI 线程上）。
-        stopEngine()
         pairingJob?.cancel()
         pairingJob = null
         pairingState = PairingUiState()
@@ -282,49 +304,15 @@ class AudioLinkService : Service() {
      *   UI 据此把"发送"置灰，而不是假装能发（能力位由内核如实给出，Kotlin 侧不美化）。
      */
     private fun startEngine() {
-        if (engineJob != null) return
-        engineJob = engineScope.launch {
-            try {
-                val status = engineStart(
-                    EngineStartConfig(
-                        nodeName = Build.MODEL.orEmpty().ifBlank { "Android" },
-                        dataDir = filesDir.absolutePath,
-                        listenPort = 0u,
-                    ),
-                    playout = pcmFeed,
-                    capture = null,
-                )
-                engineStatus = status
-                engineError = null
-            } catch (e: Throwable) {
-                // 必须接住 Throwable：`.so` 缺失或 ABI/版本不匹配时 JNA 抛的是
-                // UnsatisfiedLinkError（Error，不是 Exception）。漏掉它会让整个服务进程崩掉，
-                // 而正确行为是"服务活着 + 把原因如实显示出来"。
-                engineError = "引擎启动失败：${e.javaClass.simpleName}: ${e.message}"
-                engineStatus = null
-                engineJob = null
-            }
-            refreshState()
-        }
+        engineLifecycle.start()
     }
 
-    /** 停止引擎（幂等）。`engineStop()` 是 suspend，且内核侧"未启动时返回 Ok"，所以这里无需判空。 */
+    /** 立即清除旧快照；底层停止进入进程级队列，不随服务销毁而取消。 */
     private fun stopEngine() {
-        if (engineJob == null && engineStatus == null) return
-        engineJob = null
-        engineStatus = null
-        // 引擎没了就没有"当前 PIN"可言：配对面板必须立刻清空，不能留一个旧的 6 位数字骗人。
         pairingJob?.cancel()
         pairingJob = null
         pairingState = PairingUiState()
-        engineScope.launch {
-            try {
-                engineStop()
-            } catch (e: Throwable) {
-                engineError = "引擎停止失败：${e.javaClass.simpleName}: ${e.message}"
-            }
-            refreshState()
-        }
+        engineLifecycle.stop()
     }
 
     /**
@@ -390,6 +378,7 @@ class AudioLinkService : Service() {
 
     /** 采一份快照推给 UI。设备读数都来自播放器内部的播放线程快照，主线程不碰 `AudioTrack`。 */
     private fun refreshState() {
+        if (destroyed) return
         val snapshot = player?.stats()
         val engine = engineStatus
         val pairing = pairingState
@@ -480,42 +469,46 @@ class AudioLinkService : Service() {
      * 把"引擎没启动"渲染成"配对出错"是纯噪声。
      */
     private fun refreshPairingAsync() {
-        if (pairingJob?.isActive == true) return
+        if (destroyed || pairingJob?.isActive == true) return
         if (engineStatus == null) {
             pairingState = PairingUiState()
             return
         }
+        val generation = engineLifecycle.generation
         pairingJob = engineScope.launch {
-            var pin: String? = null
-            var note: String? = null
-
-            try {
-                pin = displayedPin()
-            } catch (t: Throwable) {
-                note = "读取配对 PIN 失败：${t.javaClass.simpleName}: ${t.message}"
-            }
-
-            var snapshots: List<PeerSnapshot> = emptyList()
-            try {
-                snapshots = peers().map { peer ->
-                    PeerSnapshot(
-                        idShort = peer.idShort,
-                        name = peer.name,
-                        addr = peer.addr,
-                        state = peer.state,
-                        trusted = peer.trusted,
-                    )
+            val result = withContext(Dispatchers.IO) {
+                var pin: String? = null
+                var note: String? = null
+                try {
+                    pin = displayedPin()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    note = "读取配对 PIN 失败：${t.javaClass.simpleName}: ${t.message}"
                 }
-            } catch (t: Throwable) {
-                val reason = "读取对端列表失败：${t.javaClass.simpleName}: ${t.message}"
-                note = if (note == null) reason else "$note；$reason"
+
+                var snapshots: List<PeerSnapshot> = emptyList()
+                try {
+                    snapshots = peers().map { peer ->
+                        PeerSnapshot(
+                            idShort = peer.idShort,
+                            name = peer.name,
+                            addr = peer.addr,
+                            state = peer.state,
+                            trusted = peer.trusted,
+                        )
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    val reason = "读取对端列表失败：${t.javaClass.simpleName}: ${t.message}"
+                    note = if (note == null) reason else "$note；$reason"
+                }
+                PairingStateMapper.map(pin = pin, snapshots = snapshots, error = note)
             }
-
-            // 收尾竞态：这一跳开始时引擎还在，跑完时可能已经被停了 —— 别把旧 PIN 又写回去。
-            if (engineStatus == null) return@launch
-
-            pairingState = PairingStateMapper.map(pin = pin, snapshots = snapshots, error = note)
-            // 立刻回灌一次：PIN 的出现/消失不该等下一个 500 ms 节拍。
+            // 此检查与发布都在主线程，停止不能插入两者之间。
+            if (engineStatus == null || !engineLifecycle.isCurrent(generation)) return@launch
+            pairingState = result
             refreshState()
         }
     }
