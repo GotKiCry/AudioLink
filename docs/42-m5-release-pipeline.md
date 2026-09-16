@@ -148,4 +148,62 @@ _up_/_up_/docs/compliance/THIRD-PARTY-NOTICES.md
 - **本地私钥是开发用的**：密码 `dev-only-change-me`，正式发布前应重新生成并妥善保管；
 - 安装包仍未签名（§2.2 的代码签名证书是另一回事）。
 
+---
+
+## 6. 发布工作流：先审计，再相信（2026-09-16 第三轮）
+
+`.github/workflows/release.yml` **从仓库骨架提交起就在那里，却从未真正跑过** —— 因为从没打过 tag。
+「读一遍再信它」这件事本身就有价值：一读就发现四个问题。
+
+| # | 问题 | 后果 |
+|---|---|---|
+| 1 | 产物路径写的是 `desktop/src-tauri/target/...` | 本仓库 `.cargo/config.toml` 把 target 固定成 `x86_64-pc-windows-msvc`，产物在**仓库根** `target/` —— 收集步骤必然空手而归，而 `-ErrorAction SilentlyContinue` 会把这件事**吞掉** |
+| 2 | 没有生成第三方声明 | 桌面安装包要带 `THIRD-PARTY-NOTICES.md`（`bundle.resources` 收了它）→ 构建直接失败 |
+| 3 | 没有生成 `latest.json` | 自动更新永远停在「配置在、功能不可用」（与 §5 同一个病） |
+| 4 | 缺签名密钥时不给退路 | `createUpdaterArtifacts` 会因「有公钥没私钥」直接失败，而不是降级并说清楚 |
+
+### 6.1 修正后的行为
+
+| 场景 | 行为 |
+|---|---|
+| `workflow_dispatch`（默认 `publish=false`） | **只构建 + 上传 artifact，不发布** —— 用来验证发布链路本身 |
+| `push v*.*.*` tag | 构建 → 创建 **草稿** Release（`draft: true`） |
+| 有 `TAURI_SIGNING_PRIVATE_KEY` | 完整路径：签名 + 生成 `latest.json` |
+| 没有签名密钥 | 降级构建（`--config` 临时关掉更新产物）+ `::warning::` 明确说「这份产物不能用于自动更新」 |
+| 有 Android keystore secrets | `assembleRelease`（双 ABI） |
+| 没有 | 降级 `assembleDebug` + `::warning::`「不是发布物」 |
+| 产物收集为空 | **抛错**（不再是一张空表） |
+
+**`draft: true` 是有意的**：发布是对外动作，留一道人工确认；而且草稿不进 `releases/latest`，
+所以「草稿 → 手动发布」这一步同时承担了「对外可见」与「更新可见」两件事。
+
+### 6.2 实测：首次真实运行（2026-09-16）
+
+| 项 | 结果 |
+|---|---|
+| 触发 | `workflow_dispatch`（`publish=false`），run `35119443752` |
+| `desktop installer` | **success**，580 s |
+| `android apk` | success，94 s |
+| `publish release` | **skipped**（`publish=false`，行为正确） |
+
+第一次 dispatch 其实是**失败**的，两次修复都记在 §6 的表中（内联 JSON 被吞引号；以及我自己后来
+把 `run: |` 行删掉，导致 YAML 结构破坏）。后者的表现值得记住：**GitHub 把 workflow 名字退化成文件路径、
+每次 push 都触发它、`workflow_dispatch` 直接消失** —— 而本地 YAML 解析器**照样解析成功**。
+所以「本地能解析」不等于「GitHub 能接受」，发布工作流必须真的跑一次才算数。
+
+产物核对（`gh run download` 之后 `7z l` 直读安装包）：
+
+| 条目 | 大小 |
+|---|---|
+| `AudioLink_0.1.0_x64-setup.exe` | 3 776.5 KB |
+| ↳ `audiolink-desktop.exe` | 15 080 448 B |
+| ↳ `THIRD-PARTY-NOTICES.md` | **根级**（与运行时 `resource_dir()` 查找一致） |
+
+日志里那句 `::warning::未配置 TAURI_SIGNING_PRIVATE_KEY：本次产物不带更新签名（不能用于自动更新）`
+正是设计要的效果：**没密钥也照跑，但绝不假装产物可用于自动更新**。
+
+**仍未验**：`tag → 创建 Release` 这一段（要真的打 tag，那是对外动作）。
+
+
+
 
