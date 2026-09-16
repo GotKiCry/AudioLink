@@ -20,6 +20,7 @@ mod gain_control;
 mod group_epoch;
 mod group_management;
 mod handshake_deadline;
+mod latency_budget;
 mod mixer_alignment;
 mod mixer_convergence;
 mod multi_session;

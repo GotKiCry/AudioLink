@@ -237,6 +237,18 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   （新增 1 项端到端）、desktop 27 项、fmt / clippy 零警告。**仍未做**：Android 内录本身（`AudioPlaybackCapture`）、
   无损档 PCM16 与混音路数在界面上还没有控件。详见 `docs/46-m4-capability-negotiation.md` §8.3.5。
 
+- **M1 端到端延迟进 CI：从「人工跑一次看数字」变成「每次都被测」**。M1 的验收线（P50 ≤ 110 ms / P95 ≤ 150 ms）
+  此前只有人工测量 —— `tools/link-loop` 跑一次、人眼看数字；问题不在测量本身，而在于**人工测量不会在回归时报警**：
+  某次改动让延迟翻倍，要等下次有人想起来跑一遍才会发现。新增 `core/crates/audiolink-engine/tests/engine/latency_budget.rs`：
+  两个真实 Engine（真 QUIC + PIN 配对）+ 合成源 + `NullPlayout`，两端装同一个 `MeasurementTap`（发送侧记「帧封口」、
+  接收侧记「sink 写出」，按 seq 配对）—— 量法与 `link-loop` 完全同一套，不另写一份。**实测基线（本机，且 8 h 长跑同时在跑）**：
+  P50 = 40 615 µs、P95 = 41 007 µs、P99 = 41 132 µs，约等于「两帧」（20 ms 编码 + 20 ms 抖动缓冲），
+  与项目历史记录（40.28/40.73 ms）一致。阈值取实测的 2–3.7 倍（P50 ≤ 80 ms、P95 ≤ 150 ms）——
+  **按「实测 × 倍数」定而不是按验收线定**：宁可漏报一次轻微退化，也不要让 CI 因共享 runner 抖动随机变红，
+  因为一条会随机变红的护栏很快会被学会忽略。**边界写清了**：回环没有 Wi-Fi 抖动与扬声器缓冲，
+  这个数字**不能**用来宣称 M1 验收通过，它只回答「延迟有没有突然变坏」。验证：engine 167 项全过（含本项）、fmt / clippy 零警告。
+  详见 `docs/47-m1-latency-guard.md`。
+
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
 Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本数**，`receive_audio()` 又乘了声道数，
