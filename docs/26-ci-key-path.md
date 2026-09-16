@@ -213,6 +213,41 @@ CI 的 199 s 里约 **153 s 是编译**（受 4 核与 Windows 链接限制，�
 是同一个教训：**新工具 / 新 job 的第一笔账，是它的安装与缓存重建**。稳态靠 rust-cache 的 `cache-bin`（缓存
 `~/.cargo/bin`）把二进制留住 —— 同一机制已让 `cargo-ndk` 的安装实测为 0~1 s。
 
-<!-- NEXTEST-STEADY-PENDING -->
+### 9.4 稳态：`cargo install` 的产物没被 bin 缓存留住，改用官方预编译包
+
+第三次运行（`8ec344e`）实测：
+
+| 方案 | 安装步骤耗时 |
+|---|---|
+| `cargo install cargo-nextest --locked` | 404 / 391 / **375 / 393 s**（四次运行一次都没降） |
+| 官方预编译包 `get.nexte.st/<pin>/windows`（7.5 MB） | **2.0 s** |
+
+**上一节我写的「稳态靠 rust-cache 的 `cache-bin` 把二进制留住」是错的**。同一机制让 `cargo-ndk` 的安装只要 1 s，
+但对 `cargo-nextest` 四次运行都是 375~404 s —— 它没有命中。**按实测写，不按机制推测写**：与其去猜 key 为什么不同，
+不如换成不需要这条缓存的安装方式。
+
+预编译包由 nextest 官方分发，版本显式 pin，装完立刻 `cargo nextest --version` 校验（装坏了在这一步红，
+不留给测试步骤去猜）。本地实测下载 1.9 s + 解压 0.4 s；CI 上该步骤 **2.0 s**。
+
+**最终稳态（run `35103776301`，五个 job 全绿）**：
+
+| job | 总时长 | 关键步骤 |
+|---|---|---|
+| `core-light` | **83 s** | cache 34 / fmt 2 / clippy 12 / install 2 / test 28 |
+| `core-heavy` | **267 s** | cache 32 / clippy 21 / install 2 / **test 187** |
+| android / desktop / version-consistency | 102 / 116 / 9 s | （既有） |
+
+三项串起来看才诚实：
+
+| 指标 | 最初（单个 core job） | 现在 | 变化 |
+|---|---|---|---|
+| 协议层拿到结论 | 236–256 s | **83 s** | **−66%** |
+| CI 墙钟 | 236–256 s | 267 s | +11~31 s |
+| heavy 的 test 步骤 | 139–167 s | **187 s**（拆分后 cargo test 时是 229 s） | nextest −42 s |
+
+协议层快了一倍多，墙钟只多一点点（多付一份 rust-cache 恢复与 checkout）—— 这笔交易成立。
+
+**本轮最值钱的不是这几个数字，是两次被实测否掉的前提**：一次是「链接是主体」（否），一次是
+「bin 缓存能留住 cargo install 的产物」（否，而且是我自己刚写下的推测）。
 
 
