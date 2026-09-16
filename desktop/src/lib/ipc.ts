@@ -68,6 +68,14 @@ export const api = {
    * 它是**观测量**：引擎里每个音频数据报到达时都会更新读数，界面按 1 Hz 拉一次即可。
    */
   alignment: (): Promise<AlignmentView> => invoke<AlignmentView>("alignment"),
+  /**
+   * `broadcast_epoch` —— M4：本机作为**接收端**广播共同时间基准，返回发出的会话数。
+   *
+   * 方向与 `announce_group_epoch`（发送端指定）相反：多台发送端 → 一台接收端混音时，
+   * 只有混音方知道共同原点该在哪。
+   */
+  broadcastEpoch: (leadMs: number): Promise<number> =>
+    invoke<number>("broadcast_epoch", { lead_ms: leadMs }),
   createGroup: (idShorts: string[], leadMs: number): Promise<number> =>
     invoke<number>("create_group", { id_shorts: idShorts, lead_ms: leadMs }),
   joinGroup: (idShort: string, groupId: number): Promise<null> =>

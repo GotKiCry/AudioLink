@@ -47,6 +47,10 @@ export interface AudioLinkController {
   refreshGroups: () => Promise<void>;
   /** M4 多源对齐快照（1 Hz 轮询；没有对端时为 null）。 */
   alignment: AlignmentView | null;
+  /** M4 广播共同基准进行中。 */
+  alignmentBusy: boolean;
+  /** M4：本机作为接收端广播共同时间基准（leadMs 是给发送端的准备时间）。 */
+  broadcastEpoch: (leadMs: number) => Promise<void>;
   joinGroup: (idShort: string, groupId: number) => Promise<void>;
   leaveGroup: (idShort: string, groupId: number) => Promise<void>;
   createGroup: (idShorts: string[], leadMs: number) => Promise<void>;
@@ -136,6 +140,7 @@ export function useAudioLink(): AudioLinkController {
   const [telemetryHistory, setTelemetryHistory] = useState<TelemetryRow[]>([]);
   const [groups, setGroups] = useState<GroupView[]>([]);
   const [alignment, setAlignment] = useState<AlignmentView | null>(null);
+  const [alignmentBusy, setAlignmentBusy] = useState(false);
   const [groupBusy, setGroupBusy] = useState(false);
   const [exportingTelemetry, setExportingTelemetry] = useState(false);
   const [pairRequest, setPairRequest] = useState<PairRequiredPayload | null>(null);
@@ -435,6 +440,27 @@ export function useAudioLink(): AudioLinkController {
     [refreshGroups],
   );
 
+  /**
+   * M4：广播共同基准。接收端才是基准来源 —— 所以这个动作只在混音方按（docs/39）。
+   *
+   * 成功后 1 s 内的轮询就会把新读数带回来，这里不再手动拉一次（避免两处真相）。
+   */
+  const broadcastEpoch = useCallback(
+    async (leadMs: number): Promise<void> => {
+      setAlignmentBusy(true);
+      try {
+        const sent = await api.broadcastEpoch(leadMs);
+        setNotice(`已向 ${sent} 条会话广播共同基准（提前量 ${leadMs} ms）`);
+      } catch (raw) {
+        setError(toCommandError(raw));
+      } finally {
+        await refreshAlignment();
+        setAlignmentBusy(false);
+      }
+    },
+    [refreshAlignment],
+  );
+
   /** 成员退出：组空了引擎会自己清掉条目。 */
   const leaveGroup = useCallback(
     async (idShort: string, groupId: number): Promise<void> => {
@@ -461,6 +487,8 @@ export function useAudioLink(): AudioLinkController {
     groups,
     groupBusy,
     alignment,
+    alignmentBusy,
+    broadcastEpoch,
     setPeerGain,
     refreshGroups,
     createGroup,

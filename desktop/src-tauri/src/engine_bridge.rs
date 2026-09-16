@@ -419,6 +419,18 @@ impl EngineBridge {
         Ok(alignment_view(&engine.stream_axes(), engine.monotonic_ms()))
     }
 
+    /// M4：本机作为接收端，把所有发送端共用的时间原点广播出去。
+    ///
+    /// 返回成功发出的会话数 —— 调用方（UI）据此告诉用户「广播了几路」或「还没有对端」。
+    /// 没有已连接对端时引擎会返回错误，UI 直接显示人话原因。
+    pub async fn broadcast_epoch(&self, lead_ms: u32) -> Result<u32, CommandError> {
+        let engine = self.engine().await?;
+        engine
+            .broadcast_epoch(lead_ms)
+            .await
+            .map_err(|error| engine_error("broadcast_epoch", &error))
+    }
+
     /// 同步组列表（§7 / M3 交付物 4）。
     pub async fn list_groups(&self) -> Result<Vec<GroupView>, CommandError> {
         let engine = self.engine().await?;

@@ -177,6 +177,14 @@ async fn alignment(bridge: State<'_, EngineBridge>) -> Result<AlignmentView, Com
     bridge.alignment().await
 }
 
+/// M4：广播共同时间基准（接收端 → 各发送端），返回发出的会话数。
+#[tauri::command(rename_all = "snake_case")]
+async fn broadcast_epoch(
+    bridge: State<'_, EngineBridge>,
+    lead_ms: u32,
+) -> Result<u32, CommandError> {
+    bridge.broadcast_epoch(lead_ms).await
+}
 pub fn run() {
     tauri::Builder::default()
         // 单实例：第二次启动时唤出已有窗口（旧版靠 Mutex + 命名管道手写）
@@ -209,7 +217,8 @@ pub fn run() {
             join_group,
             leave_group,
             set_peer_gain,
-            alignment
+            alignment,
+            broadcast_epoch
         ])
         .setup(|app| {
             // 桥接层必须在窗口加载**之前**就位：前端一挂载就会 invoke，拿不到 State 会直接报错。

@@ -84,7 +84,11 @@ export default function App() {
           onLeave={(idShort, groupId) => void al.leaveGroup(idShort, groupId)}
         />
 
-        <AlignmentPanel alignment={al.alignment} />
+        <AlignmentPanel
+          alignment={al.alignment}
+          busy={al.alignmentBusy}
+          onBroadcast={(leadMs) => void al.broadcastEpoch(leadMs)}
+        />
 
         <TelemetryPanel
           telemetry={al.telemetry}
