@@ -26,7 +26,8 @@
 //!   与「**算** offset」是两件事。§6 的时钟同步**已经接线**（见 [`crate::clock`]）：
 //!   `CLOCK_PROBE` / `CLOCK_REPLY` 的收发节奏都在会话任务里，估计结果写进
 //!   `StreamStats.clock_offset_us` / `drift_ppm`。`buffer_level_us` 是「队列里的帧数 × 帧长」的换算值。
-//! - **冗余双发已落地，尚不做 NACK / 自适应码率**：双副本都丢时由 PCM 掩盖兜底。
+//! - **冗余双发与 NACK 已落地，尚不做自适应码率**：副本都丢时按 §8.1 请求重传
+//!   （重试 ≤ 5 次 / 间隔 10 ms / 窗口 1 s，且只在 RTT < 30 ms 时启用）；窗口内补不回来由 PCM 掩盖兜底。
 //!
 //! # 实时纪律
 //!
@@ -47,9 +48,9 @@ use audiolink_identity::{IdentityError, NodeIdentity, PIN_TTL, TrustEntry, Trust
 use audiolink_net::{
     AudioLinkEndpoint, ClockEstimate, Connection, ControlChannel, EndpointConfig, NetError,
 };
-use audiolink_proto::{AudioDatagram, AudioDatagramHeader};
+use audiolink_proto::{AudioDatagram, AudioDatagramHeader, NackList};
 use audiolink_types::{
-    AudioLinkError, Caps, DATAGRAM_MAX_LEN, DEFAULT_QUIC_PORT, ErrorCode, NodeId, NodeInfo,
+    AudioLinkError, Caps, DATAGRAM_MAX_LEN, DEFAULT_QUIC_PORT, ErrorCode, Flags, NodeId, NodeInfo,
     Platform, Ptype, StreamStats,
 };
 use crossbeam_channel::{Receiver, Sender};
@@ -70,6 +71,9 @@ use crate::runtime::jitter::{
     AdaptiveJitterDepth, DEFAULT_TARGET_FRAMES, EncodedAudioPacket, MAX_TARGET_FRAMES,
     MIN_TARGET_FRAMES, PacketReorderBuffer, PlayoutDepthAction, PlayoutDepthState, ReorderBatch,
     publish_target,
+};
+use crate::runtime::nack::{
+    MissingTracker, NACK_MAX_RTT_US, NACK_RETRANSMIT_GRACE, RetransmitBuffer,
 };
 use crate::session::{SessionEvent, SessionMachine, SessionState};
 use crate::telemetry::TelemetryAggregator;
@@ -1022,6 +1026,10 @@ async fn run_session(
     let mut stream_id: Option<u32> = None;
     let mut epoch_id: u64 = 0;
 
+    // §8.1 辅助抗丢包：接收侧的缺失跟踪 + 发送侧的重传窗口。
+    let mut missing = MissingTracker::new();
+    let mut retransmit = RetransmitBuffer::new();
+
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -1053,6 +1061,9 @@ async fn run_session(
                                 pending_redundant = None;
                                 epoch_id = epoch;
                                 stream_id = Some(1);
+                                // 新流开始：上一轮的洞与重传窗口都作废（§8.1 的 1 s 窗口跨流没有意义）。
+                                missing.clear();
+                                retransmit.clear();
                                 let result = send_control(
                                     &mut control,
                                     &ControlRequest::OpenStream(open_stream_payload(&codec)),
@@ -1082,6 +1093,8 @@ async fn run_session(
                         }
                         stop_capture(&mut capture).await;
                         pending_redundant = None;
+                        missing.clear();
+                        retransmit.clear();
                     }
                     SessionCommand::SubmitPin(pin) => {
                         let _ = send_control(
@@ -1152,11 +1165,63 @@ async fn run_session(
                                 }
                                 continue;
                             }
-                            // FEC / KEEPALIVE / NACK 的处理仍属后续 M2。
+                            Ptype::Nack => {
+                                // §8.1 辅助重传：只用窗口内还留着的副本回应，缺的静默忽略（§1.1）。
+                                let Ok(list) = NackList::decode(datagram.payload) else {
+                                    continue; // 载荷非法：忽略并计数，不断流（§1.1）
+                                };
+                                let Some(id) = stream_id else { continue };
+                                let now = Instant::now();
+                                retransmit.expire(now);
+                                for seq in list.seqs() {
+                                    // 拷贝一次再 await：重传是低频路径，换来的是借用关系的清爽。
+                                    let Some((sample_index, payload)) = retransmit
+                                        .find(*seq)
+                                        .map(|(index, bytes)| (index, bytes.to_vec()))
+                                    else {
+                                        continue; // 窗口外 / 从未发过这个序号
+                                    };
+
+                                    if let Err(error) = send_audio_frame(
+                                        &connection,
+                                        id,
+                                        epoch_id,
+                                        *seq,
+                                        sample_index,
+                                        &payload,
+                                        Flags::NONE,
+                                    )
+                                    .await
+                                    {
+                                        report_error(&inner, &session, &error);
+                                        break;
+                                    }
+                                }
+                                continue;
+                            }
+                            // FEC / KEEPALIVE 的处理仍属后续 M2。
                             _ => continue,
                         }
 
                         let now = Instant::now();
+                        // 到达（主包与冗余副本都算）即视为该序号已补上；新出现的洞据此建立（§8.1）。
+                        missing.observe(datagram.header.seq, now);
+                        // 有洞才开「等重传」窗口，而且必须先问两个问题：
+                        //   1. 播放队列还有余量吗？等待期间队列只出不进，空着等就是硬静音；
+                        //   2. 这点预算够重传回来吗？取「两个 RTT + 5 ms」，上限 30 ms（§8.1 的 RTT 门槛）。
+                        // 两个问题任一为否 → 窗口为 0，按原策略交付，由 PCM 掩盖兜底。
+                        let grace = if missing.pending() > 0
+                            && playback
+                                .as_ref()
+                                .is_some_and(|handle| handle.depth_frames() >= 2)
+                        {
+                            let budget_us = connection.rtt_us().saturating_mul(2).saturating_add(5_000);
+                            let cap_us = u64::try_from(NACK_RETRANSMIT_GRACE.as_micros()).unwrap_or(u64::MAX);
+                            Duration::from_micros(budget_us.min(cap_us))
+                        } else {
+                            Duration::ZERO
+                        };
+                        packet_reorder.set_retransmit_grace(grace);
                         if let Ok(mut telemetry) = session.telemetry.lock() {
                             telemetry.record_received(datagram.payload.len());
                         }
@@ -1168,6 +1233,7 @@ async fn run_session(
                             datagram.payload.to_vec(),
                             now,
                         );
+
                         // 到达间隔抖动只按每个序号的首个有效副本计算。冗余副本通常与下一主包
                         // 背靠背到达，把它纳入会人为制造约 20 ms 的“抖动”。
                         if batch.accepted_new_seq
@@ -1189,6 +1255,28 @@ async fn run_session(
                             &playback,
                             batch,
                         );
+
+                        // §8.1：把洞变成 `NACK`。门控是**硬条件** —— RTT ≥ 30 ms 时重传只会
+                        // 把延迟尖峰拉得更长，那时「双发 + PCM 掩盖」才是正确的兜底。
+                        if connection.rtt_us() < NACK_MAX_RTT_US {
+                            missing.expire(now);
+                            let requests = missing.due_batch(now);
+
+                            if !requests.is_empty()
+                                && let Ok(list) = NackList::from_slice(&requests)
+                            {
+                                match list.to_datagram_bytes() {
+                                    Ok(bytes) => {
+                                        if let Err(error) = connection.send_datagram(&bytes).await {
+                                            report_error(&inner, &session, &net_error(&error));
+                                        } else if let Ok(mut telemetry) = session.telemetry.lock() {
+                                            telemetry.record_nack();
+                                        }
+                                    }
+                                    Err(error) => report_error(&inner, &session, &error),
+                                }
+                            }
+                        }
                     }
                     Err(error) => {
                         report_peer_gone(&inner, &session, &net_error(&error));
@@ -1215,6 +1303,7 @@ async fn run_session(
                     tap.record_sealed(frame.seq, frame.sealed_at);
                 }
 
+                let sealed_at = Instant::now();
                 let primary = transmit_audio(
                     &connection,
                     id,
@@ -1223,8 +1312,12 @@ async fn run_session(
                     &session,
                     AudioCopy::Primary,
                 ).await;
-                if let Err(error) = primary {
-                    report_error(&inner, &session, &error);
+                match primary {
+                    Ok(()) => {
+                        // §8.1：只有真发出去的帧才进重传窗口（对端 NACK 时按序号取回）。
+                        retransmit.record(frame.seq, frame.sample_index, &frame.payload, sealed_at);
+                    }
+                    Err(error) => report_error(&inner, &session, &error),
                 }
                 if let Some(redundant) = pending_redundant.replace(frame)
                     && let Err(error) = transmit_audio(
@@ -1732,27 +1825,31 @@ enum AudioCopy {
     Redundant,
 }
 
-/// 发送一个主音频数据报或延迟一帧的冗余副本。
-async fn transmit_audio(
+/// 把一帧编码音频封成 `AUDIO` 数据报并发出（**不含遥测**）。
+///
+/// 抽出来是为了 NACK 重传能复用同一条编码路径：重传不是「新的一帧」，绝不能进 `expected` 分母
+/// （否则丢包率会被自己的重传擦干净 —— 那是最糟的一类自欺）。
+async fn send_audio_frame(
     connection: &Connection,
     stream_id: u32,
     epoch_id: u64,
-    frame: &EncodedFrame,
-    session: &Arc<PeerSession>,
-    copy: AudioCopy,
+    seq: u32,
+    sample_index: u32,
+    payload: &[u8],
+    flags: Flags,
 ) -> Result<(), AudioLinkError> {
     let budget = connection.max_audio_payload();
 
     // 单帧超过预算说明码率档与 MTU 不匹配（架构 §12 技术债：应用层分片属 M2+）。
     // 明确拒绝并把这一帧丢掉，而不是发出去让对端解不出来 —— 后者会表现成「对端一直没声音」，
     // 而这里至少会留下一条带具体字节数的错误。
-    if frame.payload.len() > budget {
+    if payload.len() > budget {
         return Err(AudioLinkError::owned(
             ErrorCode::CodecUnsupported,
             format!(
                 "opus frame of {} B exceeds the {} B datagram budget; \
                  lower the bitrate or shorten the frame",
-                frame.payload.len(),
+                payload.len(),
                 budget
             ),
         ));
@@ -1761,25 +1858,43 @@ async fn transmit_audio(
     let header = AudioDatagramHeader {
         version: audiolink_types::PROTO_MAJOR,
         ptype: Ptype::Audio,
-        flags: match copy {
-            AudioCopy::Primary => audiolink_types::Flags::NONE,
-            AudioCopy::Redundant => audiolink_types::Flags::FEC_REDUNDANT,
-        },
+        flags,
         stream_id,
-        seq: frame.seq,
-        sample_index: frame.sample_index,
+        seq,
+        sample_index,
         epoch_id,
     };
-    let bytes = AudioDatagram {
-        header,
-        payload: &frame.payload,
-    }
-    .encode_to_vec()?;
-
+    let bytes = AudioDatagram { header, payload }.encode_to_vec()?;
     connection
         .send_datagram(&bytes)
         .await
         .map_err(|e| net_error(&e))?;
+    Ok(())
+}
+
+/// 发送一个主音频数据报或延迟一帧的冗余副本（含本机**发送侧**遥测）。
+async fn transmit_audio(
+    connection: &Connection,
+    stream_id: u32,
+    epoch_id: u64,
+    frame: &EncodedFrame,
+    session: &Arc<PeerSession>,
+    copy: AudioCopy,
+) -> Result<(), AudioLinkError> {
+    let flags = match copy {
+        AudioCopy::Primary => Flags::NONE,
+        AudioCopy::Redundant => Flags::FEC_REDUNDANT,
+    };
+    send_audio_frame(
+        connection,
+        stream_id,
+        epoch_id,
+        frame.seq,
+        frame.sample_index,
+        &frame.payload,
+        flags,
+    )
+    .await?;
 
     if let Ok(mut telemetry) = session.telemetry.lock() {
         if copy == AudioCopy::Primary {
@@ -1921,6 +2036,7 @@ fn receive_audio(
             .as_ref()
             .is_none_or(|handle| handle.try_push(frame))
     });
+
     if let Ok(mut telemetry) = session.telemetry.lock() {
         telemetry.record_expected_frames(report.expected);
         telemetry.record_lost(report.lost);
@@ -2498,6 +2614,7 @@ fn new_stop_flag() -> Arc<AtomicBool> {
 }
 
 mod jitter;
+mod nack;
 #[cfg(test)]
 mod pairing_tests;
 #[cfg(test)]

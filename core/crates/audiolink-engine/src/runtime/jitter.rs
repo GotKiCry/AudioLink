@@ -195,6 +195,10 @@ pub(super) struct ReorderBatch {
 ///
 /// 40 ms 及以下档位不额外等待；60 ms 档位拥有一帧真实余量，才允许等待最多一个帧周期。
 /// 无论目标深度如何，最多只保留三个未来包，防止异常序号或恶意流量无界占用内存。
+///
+/// **还有第二个等待理由（§8.1 的 NACK）**：当窗口里出现洞、且会话已经把重传请求发出去时，
+/// 由调用方通过 [`PacketReorderBuffer::set_retransmit_grace`] 给出一个有界等待窗口。
+/// 没有这个窗口，重传回来的包会直接撞上「游标已推进」被判迟到 —— 请求发了却救不回音频。
 #[derive(Debug)]
 pub(super) struct PacketReorderBuffer {
     expected_seq: Option<u32>,
@@ -202,6 +206,10 @@ pub(super) struct PacketReorderBuffer {
     recent_delivered: Vec<u32>,
     frame_period: Duration,
     target_frames: usize,
+    /// 发现洞时给重传留的有界窗口（`Duration::ZERO` = 不等）。
+    retransmit_grace: Duration,
+    /// 当前这个洞是什么时候发现的；没有洞时为 `None`。
+    gap_since: Option<Instant>,
 }
 
 impl PacketReorderBuffer {
@@ -212,7 +220,14 @@ impl PacketReorderBuffer {
             recent_delivered: Vec::with_capacity(REORDER_CAPACITY * 2),
             frame_period,
             target_frames: DEFAULT_TARGET_FRAMES,
+            retransmit_grace: Duration::ZERO,
+            gap_since: None,
         }
+    }
+
+    /// 设置「等重传」的有界窗口；调用方在没有待补洞时应传 `Duration::ZERO`。
+    pub(super) fn set_retransmit_grace(&mut self, grace: Duration) {
+        self.retransmit_grace = grace;
     }
 
     pub(super) fn set_target_frames(&mut self, target_frames: usize) {
@@ -255,6 +270,7 @@ impl PacketReorderBuffer {
         if self.reorder_wait().is_zero() || self.pending.len() > REORDER_CAPACITY {
             self.force_earliest(&mut batch.ready);
         }
+        self.refresh_gap(arrived_at);
         batch
     }
 
@@ -263,10 +279,16 @@ impl PacketReorderBuffer {
         if wait.is_zero() {
             return None;
         }
-        self.pending
-            .iter()
-            .map(|packet| packet.arrived_at + wait)
-            .min()
+        // 有洞：从**发现洞**那一刻起算有界等待（等的是重传，不是后续包）。
+        // 无洞：沿用原先的「最旧待排包到达 + 一帧」口径。
+        match self.gap_since {
+            Some(since) => Some(since + wait),
+            None => self
+                .pending
+                .iter()
+                .map(|packet| packet.arrived_at + wait)
+                .min(),
+        }
     }
 
     pub(super) fn flush_expired(&mut self, now: Instant) -> ReorderBatch {
@@ -275,15 +297,45 @@ impl PacketReorderBuffer {
             || self.next_deadline().is_some_and(|deadline| deadline <= now)
         {
             self.force_earliest(&mut batch.ready);
+            self.refresh_gap(now);
         }
         batch
     }
 
     fn reorder_wait(&self) -> Duration {
         if self.target_frames >= MAX_TARGET_FRAMES {
-            self.frame_period
+            return self.frame_period.max(self.gap_wait());
+        }
+        self.gap_wait()
+    }
+
+    /// 当前该给洞的等待时长：没有洞、或调用方没开窗口时为 0。
+    fn gap_wait(&self) -> Duration {
+        if self.has_gap() {
+            self.retransmit_grace
         } else {
             Duration::ZERO
+        }
+    }
+
+    /// 待排窗里第一个包不是「下一个该交付的序号」→ 存在洞。
+    fn has_gap(&self) -> bool {
+        let Some(expected) = self.expected_seq else {
+            return false;
+        };
+        self.pending
+            .first()
+            .is_some_and(|packet| packet.seq != expected)
+    }
+
+    /// 洞出现时记下发现时刻；洞补上就清空（下一段等待重新计时）。
+    fn refresh_gap(&mut self, now: Instant) {
+        if self.has_gap() {
+            if self.gap_since.is_none() {
+                self.gap_since = Some(now);
+            }
+        } else {
+            self.gap_since = None;
         }
     }
 
@@ -513,5 +565,67 @@ mod tests {
         let shared = AtomicUsize::new(3);
         assert_eq!(publish_target(&shared, 2, 1), 3);
         assert_eq!(shared.load(Ordering::Relaxed), 3);
+    }
+    #[test]
+    fn retransmit_grace_holds_a_gap_until_the_deadline() {
+        let mut buffer = PacketReorderBuffer::new(Duration::from_millis(20));
+        buffer.set_retransmit_grace(Duration::from_millis(30));
+        let start = Instant::now();
+        let batch = push(&mut buffer, 0, start);
+        assert_eq!(seqs(&batch), vec![0]);
+
+        // 序号 1 丢了、2 到了：开了等重传窗口就不能把 2 提前交付（那会让 1 永远补不上）
+        let batch = push(&mut buffer, 2, start + Duration::from_millis(20));
+        assert!(batch.ready.is_empty(), "有洞时必须等重传窗口，不许提前交付");
+        assert!(buffer.next_deadline().is_some(), "有洞就必须有等待死线");
+
+        // 重传在窗口内回来 → 连续交付 1、2
+        let batch = push(&mut buffer, 1, start + Duration::from_millis(40));
+        assert_eq!(seqs(&batch), vec![1, 2]);
+        assert!(buffer.next_deadline().is_none(), "洞补上后不再等待");
+    }
+
+    #[test]
+    fn retransmit_grace_expires_and_original_behaviour_resumes() {
+        let mut buffer = PacketReorderBuffer::new(Duration::from_millis(20));
+        buffer.set_retransmit_grace(Duration::from_millis(30));
+        let start = Instant::now();
+        push(&mut buffer, 0, start);
+        push(&mut buffer, 2, start + Duration::from_millis(20));
+
+        let deadline = buffer.next_deadline().expect("有洞就有死线");
+        let batch = buffer.flush_expired(deadline + Duration::from_millis(1));
+        assert_eq!(
+            seqs(&batch),
+            vec![2],
+            "窗口到点后按原策略跳过洞，绝不无限等"
+        );
+    }
+
+    #[test]
+    fn retransmit_grace_does_not_delay_a_contiguous_stream() {
+        let mut buffer = PacketReorderBuffer::new(Duration::from_millis(20));
+        buffer.set_retransmit_grace(Duration::from_millis(30));
+        let start = Instant::now();
+        let batch = push(&mut buffer, 0, start);
+        assert_eq!(seqs(&batch), vec![0]);
+        let batch = push(&mut buffer, 1, start + Duration::from_millis(20));
+        assert_eq!(seqs(&batch), vec![1]);
+        assert!(
+            buffer.next_deadline().is_none(),
+            "无丢包的正常链路一个字节的额外延迟都不该有"
+        );
+    }
+
+    #[test]
+    fn closing_the_grace_window_falls_back_to_immediate_delivery() {
+        // 会话循环在播放队列没余量时会把窗口设回 0：此时必须立刻回到「不等」的行为
+        let mut buffer = PacketReorderBuffer::new(Duration::from_millis(20));
+        buffer.set_retransmit_grace(Duration::from_millis(30));
+        let start = Instant::now();
+        push(&mut buffer, 0, start);
+        buffer.set_retransmit_grace(Duration::ZERO);
+        let batch = push(&mut buffer, 2, start + Duration::from_millis(20));
+        assert_eq!(seqs(&batch), vec![2], "窗口关闭后立刻交付，由掩盖兜底");
     }
 }
