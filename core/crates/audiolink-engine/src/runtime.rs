@@ -34,6 +34,7 @@
 //! 错误一律上报并触发状态机迁移，绝不静默停止（架构 §4）。
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -52,6 +53,7 @@ use audiolink_types::{
 };
 use crossbeam_channel::{Receiver, Sender};
 use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio_util::task::TaskTracker;
 
 use crate::clock::{
     ClockProbeState, ClockProbeStats, STEADY_INTERVAL_MS, now_monotonic_us, publish_clock,
@@ -343,7 +345,22 @@ struct Inner {
     peers: Mutex<HashMap<NodeId, Arc<PeerSession>>>,
     events: broadcast::Sender<EngineEvent>,
     shutdown: AtomicBool,
+    /// 注册任务与关闭入口共用此锁，停止后不能再生成漏出清理范围的任务。
+    tasks: Mutex<TaskTracker>,
     listen_addr: std::net::SocketAddr,
+}
+
+impl Inner {
+    fn spawn<T: Send + 'static>(
+        &self,
+        future: impl Future<Output = T> + Send + 'static,
+    ) -> Result<tokio::task::JoinHandle<T>, AudioLinkError> {
+        let tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
+        if self.shutdown.load(Ordering::Relaxed) {
+            return Err(AudioLinkError::bad_request("engine is stopping or stopped"));
+        }
+        Ok(tasks.spawn(future))
+    }
 }
 
 /// AudioLink 引擎：一个进程一个实例，管理全部对端会话。
@@ -401,6 +418,7 @@ impl Engine {
                 peers: Mutex::new(HashMap::new()),
                 events,
                 shutdown: AtomicBool::new(false),
+                tasks: Mutex::new(TaskTracker::new()),
                 listen_addr,
             }),
         }))
@@ -501,42 +519,42 @@ impl Engine {
     /// 启动入站接受循环。
     pub fn spawn_accept_loop(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let inner = Arc::clone(&self.inner);
-        tokio::spawn(async move {
-            while !inner.shutdown.load(Ordering::Relaxed) {
-                match inner.endpoint.accept().await {
-                    Ok(connection) => {
-                        let inner = Arc::clone(&inner);
-                        let addr = connection.remote_addr();
-                        let peer_id = match connection.peer_id() {
-                            Ok(peer_id) => peer_id,
-                            Err(error) => {
-                                tracing::warn!("inbound without cert: {}", error.context());
-                                continue;
-                            }
-                        };
-                        let trusted = is_trusted(&inner, peer_id);
-                        let (session, commands) = create_session(&inner, peer_id, addr, trusted);
-                        tokio::spawn(async move {
-                            run_session(
-                                inner,
+        self.inner
+            .spawn(async move {
+                while !inner.shutdown.load(Ordering::Relaxed) {
+                    match inner.endpoint.accept().await {
+                        Ok(connection) => {
+                            let inner = Arc::clone(&inner);
+                            let addr = connection.remote_addr();
+                            let peer_id = match connection.peer_id() {
+                                Ok(peer_id) => peer_id,
+                                Err(error) => {
+                                    tracing::warn!("inbound without cert: {}", error.context());
+                                    continue;
+                                }
+                            };
+                            let trusted = is_trusted(&inner, peer_id);
+                            let (session, commands) =
+                                create_session(&inner, peer_id, addr, trusted);
+                            let _ = inner.spawn(run_session(
+                                Arc::clone(&inner),
                                 connection,
                                 session,
                                 commands,
                                 Role::Responder,
                                 None,
-                            )
-                            .await;
-                        });
-                    }
-                    Err(error) => {
-                        if inner.shutdown.load(Ordering::Relaxed) {
-                            return;
+                            ));
                         }
-                        tracing::warn!("accept failed: {}", error.context());
+                        Err(error) => {
+                            if inner.shutdown.load(Ordering::Relaxed) {
+                                return;
+                            }
+                            tracing::warn!("accept failed: {}", error.context());
+                        }
                     }
                 }
-            }
-        })
+            })
+            .unwrap_or_else(|_| tokio::spawn(async {}))
     }
 
     /// 主动连接（`docs/03-protocol.md` §5）：QUIC + 握手 + （必要时）PIN 配对。
@@ -548,6 +566,17 @@ impl Engine {
     /// 这是刻意的 —— 把「需要 PIN」当成连接失败会让 UI 只能整条重连，白白丢掉已完成的
     /// QUIC 握手与 HELLO 交换。
     pub async fn connect(
+        self: &Arc<Self>,
+        addr: std::net::SocketAddr,
+    ) -> Result<NodeId, AudioLinkError> {
+        let engine = Arc::clone(self);
+        self.inner
+            .spawn(async move { engine.connect_inner(addr).await })?
+            .await
+            .map_err(|_| AudioLinkError::bad_request("connect task ended unexpectedly"))?
+    }
+
+    async fn connect_inner(
         self: &Arc<Self>,
         addr: std::net::SocketAddr,
     ) -> Result<NodeId, AudioLinkError> {
@@ -579,14 +608,14 @@ impl Engine {
         let (session, commands) = create_session(&self.inner, peer_id, addr, trusted);
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(run_session(
+        self.inner.spawn(run_session(
             Arc::clone(&self.inner),
             connection,
             session,
             commands,
             Role::Initiator,
             Some(ready_tx),
-        ));
+        ))?;
 
         // 外层再设一道超时：会话任务自己也有握手死线，但任务若在建立控制流时卡住，
         // 这道兜底能保证 `connect()` 一定会返回，而不是让 UI 永久转圈。
@@ -628,9 +657,15 @@ impl Engine {
             .await
     }
 
-    /// 关闭引擎（幂等）。
+    /// 关闭引擎（幂等），等待接受/连接/会话任务、音频线程和 UDP 套接字释放。
+    /// 返回后同端口可立即重启，保留旧 Engine 句柄不会继续占用端口。
     pub async fn shutdown(&self) {
-        self.inner.shutdown.store(true, Ordering::Relaxed);
+        let tasks = {
+            let tasks = self.inner.tasks.lock().unwrap_or_else(|e| e.into_inner());
+            self.inner.shutdown.store(true, Ordering::Relaxed);
+            tasks.close();
+            tasks.clone()
+        };
 
         let sessions: Vec<Arc<PeerSession>> = self
             .inner
@@ -643,6 +678,11 @@ impl Engine {
         }
 
         self.inner.endpoint.close(0, "engine shutdown");
+        tasks.wait().await;
+        if let Ok(mut peers) = self.inner.peers.lock() {
+            peers.clear();
+        }
+        self.inner.endpoint.shutdown().await;
     }
 
     async fn send_command(
@@ -650,6 +690,9 @@ impl Engine {
         peer: NodeId,
         command: SessionCommand,
     ) -> Result<(), AudioLinkError> {
+        if self.inner.shutdown.load(Ordering::Relaxed) {
+            return Err(AudioLinkError::bad_request("engine is stopping or stopped"));
+        }
         let sender = {
             let peers = self
                 .inner
@@ -1006,7 +1049,7 @@ async fn run_session(
                                     &ControlRequest::OpenStream(open_stream_payload(&codec)),
                                 ).await;
                                 if let Err(error) = &result {
-                                    stop_capture(&mut capture);
+                                    stop_capture(&mut capture).await;
                                     stream_id = None;
                                     report_error(&inner, &session, error);
                                 }
@@ -1028,7 +1071,7 @@ async fn run_session(
                                 }),
                             ).await;
                         }
-                        stop_capture(&mut capture);
+                        stop_capture(&mut capture).await;
                     }
                     SessionCommand::SubmitPin(pin) => {
                         let _ = send_control(
@@ -1214,8 +1257,8 @@ async fn run_session(
     }
 
     let _ = frame_ms; // 帧长已在 codec 里体现，这里只用于文档可读性
-    stop_capture(&mut capture);
-    stop_playout(&mut playback);
+    stop_capture(&mut capture).await;
+    stop_playout(&mut playback).await;
     drop_session(&inner, &session, "session closed");
 }
 
@@ -1290,7 +1333,7 @@ fn create_session(
         .ok()
         .and_then(|mut peers| peers.insert(peer_id, Arc::clone(&session)));
     if let Some(previous) = previous {
-        tokio::spawn(async move {
+        let _ = inner.spawn(async move {
             let _ = previous.commands.send(SessionCommand::Shutdown).await;
         });
     }
@@ -1430,28 +1473,26 @@ impl PlayoutHandle {
     }
 }
 
-fn stop_capture(handle: &mut Option<CaptureHandle>) {
+async fn stop_capture(handle: &mut Option<CaptureHandle>) {
     if let Some(handle) = handle.take() {
         handle.stop.store(true, Ordering::Relaxed);
-        if let Some(join) = handle.join {
-            let _ = join.join();
-        }
+        join_audio_thread(handle.join).await;
     }
 }
 
-/// 停掉播放线程：先置停止标志，再**丢弃发送端**。
-///
-/// 丢弃发送端是必须的：`recv_timeout` 只在通道断开时返回 `Disconnected`，
-/// 否则最坏要等一个帧长才轮到下一轮循环 —— 置标志位本身不会唤醒它。
-///
-/// 刻意**不 join**：会话任务是 async 的，在这里阻塞等线程退出会把整个 tokio worker 卡住，
-/// 而同 worker 上还跑着别的会话。线程自己会在一个帧长内退出，句柄丢弃即分离。
-fn stop_playout(handle: &mut Option<PlayoutHandle>) {
-    if let Some(mut handle) = handle.take() {
+/// 停止并等待播放线程退出；先断开帧通道唤醒接收，再在阻塞池 join。
+/// 会话退出即代表其平台回调已停止，不再把旧回调带入下一次引擎启动。
+async fn stop_playout(handle: &mut Option<PlayoutHandle>) {
+    if let Some(handle) = handle.take() {
         handle.stop.store(true, Ordering::Relaxed);
-        // 用 `drop` 显式表达「这里断开通道，是为了唤醒 recv_timeout」，而不是顺手丢掉。
         drop(handle.frames);
-        let _ = handle.join.take();
+        join_audio_thread(handle.join).await;
+    }
+}
+
+async fn join_audio_thread(join: Option<std::thread::JoinHandle<()>>) {
+    if let Some(join) = join {
+        let _ = tokio::task::spawn_blocking(move || join.join()).await;
     }
 }
 
@@ -1927,8 +1968,8 @@ async fn handle_control(
         }
 
         ControlRequest::CloseStream(_) => {
-            stop_capture(capture);
-            stop_playout(playback);
+            stop_capture(capture).await;
+            stop_playout(playback).await;
             *stream_id = None;
         }
 

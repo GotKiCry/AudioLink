@@ -15,6 +15,36 @@ use audiolink_types::{
 use rustls::pki_types::CertificateDer;
 use sha2::{Digest, Sha256};
 
+#[tokio::test]
+async fn shutdown_waits_for_live_handles_and_can_resume_after_cancellation() {
+    let Pair {
+        _server_endpoint: server_endpoint,
+        _client_endpoint: client_endpoint,
+        server,
+        client,
+        ..
+    } = pair().await;
+    let addr = server_endpoint.local_addr().unwrap();
+    // 故意保留一个 Connection，使 socket 仍有使用者，验证不能提前返回成功。
+    let mut stop = Box::pin(server_endpoint.shutdown());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut stop)
+            .await
+            .is_err()
+    );
+    drop(stop);
+    drop(server);
+    tokio::time::timeout(Duration::from_secs(5), server_endpoint.shutdown())
+        .await
+        .unwrap();
+    let rebound = std::net::UdpSocket::bind(addr).expect("旧 Endpoint 句柄仍在也应能复用端口");
+    server_endpoint.shutdown().await;
+    assert!(server_endpoint.accept().await.is_err());
+    drop(rebound);
+    drop(client);
+    client_endpoint.shutdown().await;
+}
+
 // ---------------------------------------------------------------------------
 // 脚手架（与 crate 内 `testing` 模块同构，此处刻意只用公开面）
 // ---------------------------------------------------------------------------

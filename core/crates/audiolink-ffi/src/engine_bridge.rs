@@ -34,13 +34,11 @@ use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
 
 use audiolink_engine::{Engine, EngineConfig, PeerStatus};
 use audiolink_types::{Caps, DEFAULT_QUIC_PORT, ErrorCode, NodeId, StreamStats};
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
 
 use crate::audio_bridge::{
     PcmFeed, PcmPull, capture_factory, playout_factory, share_feed, share_pull,
@@ -55,6 +53,9 @@ static RUNTIME: Mutex<Option<Arc<Runtime>>> = Mutex::new(None);
 
 /// 当前引擎（`None` = 未启动）。
 static ENGINE: Mutex<Option<EngineHandle>> = Mutex::new(None);
+
+/// 启停串行：等待锁时取消 = 未执行；派发后由运行时持锁到操作真正结束。
+static LIFECYCLE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 // ---------------------------------------------------------------------------
 // 对外类型（Kotlin 侧的名字由 UniFFI 转成 camelCase）
@@ -179,9 +180,6 @@ impl TelemetryView {
 struct EngineHandle {
     config: EngineStartConfig,
     engine: Arc<Engine>,
-    runtime: Arc<Runtime>,
-    /// 入站接受循环（停引擎时等它退出，避免立刻重启时撞端口占用）。
-    accept: JoinHandle<()>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, FfiError> {
@@ -235,6 +233,22 @@ where
             "engine task ended before replying (runtime shut down?)",
         )),
     }
+}
+
+/// 生命周期操作不随 Kotlin 等待协程取消而遗留半启动/半停止的引擎。
+async fn on_lifecycle<T: Send + 'static>(
+    operation: impl Future<Output = Result<T, FfiError>> + Send + 'static,
+) -> Result<T, FfiError> {
+    let runtime = runtime()?;
+    let guard = LIFECYCLE.lock().await;
+    let (sender, receiver) = oneshot::channel();
+    runtime.spawn(async move {
+        let _guard = guard;
+        let _ = sender.send(operation.await);
+    });
+    receiver
+        .await
+        .map_err(|_| FfiError::invalid_argument("engine lifecycle task ended before replying"))?
 }
 
 fn require_engine(operation: &str) -> Result<Arc<Engine>, FfiError> {
@@ -337,106 +351,53 @@ pub async fn engine_start(
     playout: Option<Box<dyn PcmFeed>>,
     capture: Option<Box<dyn PcmPull>>,
 ) -> Result<LocalStatus, FfiError> {
-    let runtime = runtime()?;
-
-    {
-        let guard = lock(&ENGINE)?;
-        if let Some(handle) = guard.as_ref() {
-            if handle.config == config {
-                return Ok(local_status_of(&handle.engine));
+    on_lifecycle(async move {
+        {
+            let guard = lock(&ENGINE)?;
+            if let Some(handle) = guard.as_ref() {
+                if handle.config == config {
+                    return Ok(local_status_of(&handle.engine));
+                }
+                return Err(FfiError::from_code(
+                    ErrorCode::Busy,
+                    "engine is already running with a different config; call engineStop() first",
+                ));
             }
-            return Err(FfiError::from_code(
-                ErrorCode::Busy,
-                "engine is already running with a different config; call engineStop() first",
-            ));
         }
-    }
 
-    let mut engine_config = EngineConfig::new(
-        config.node_name.clone(),
-        PathBuf::from(config.data_dir.clone()),
-    );
-    if config.listen_port != 0 {
-        engine_config.listen.set_port(config.listen_port);
-    }
-    engine_config.playout = playout.map(|feed| playout_factory(share_feed(feed)));
-    engine_config.capture = capture.map(|pull| capture_factory(share_pull(pull)));
-
-    let (sender, receiver) = oneshot::channel();
-    runtime.spawn(async move {
-        // 整个启动过程都在自建运行时里跑：`AudioLinkEndpoint::bind` 要 tokio 反应堆，
-        // `spawn_accept_loop` 内部直接 `tokio::spawn` —— 在运行时上下文外用会 panic。
-        let outcome = match Engine::start(engine_config).await {
-            Ok(engine) => {
-                let accept = engine.spawn_accept_loop();
-                Ok((engine, accept))
-            }
-            Err(error) => Err(error),
-        };
-        let _ = sender.send(outcome);
-    });
-
-    let (engine, accept) = match receiver.await {
-        Ok(Ok(started)) => started,
-        Ok(Err(error)) => return Err(FfiError::from_audio_link(&error)),
-        Err(_) => {
-            return Err(FfiError::invalid_argument(
-                "engine start task ended before replying",
-            ));
+        let mut engine_config = EngineConfig::new(
+            config.node_name.clone(),
+            PathBuf::from(config.data_dir.clone()),
+        );
+        if config.listen_port != 0 {
+            engine_config.listen.set_port(config.listen_port);
         }
-    };
-
-    {
-        let mut guard = lock(&ENGINE)?;
-        if guard.is_some() {
-            // 竞态：另一个调用方刚好先装好了。把刚起来的这个停掉再报 BUSY ——
-            // 「两个引擎同时在同进程里跑」是必须避免的状态。
-            let engine = Arc::clone(&engine);
-            runtime.spawn(async move { engine.shutdown().await });
-            return Err(FfiError::from_code(
-                ErrorCode::Busy,
-                "engine was started concurrently by another caller",
-            ));
-        }
-        *guard = Some(EngineHandle {
-            config,
-            engine: Arc::clone(&engine),
-            runtime: Arc::clone(&runtime),
-            accept,
-        });
-    }
-
-    Ok(local_status_of(&engine))
+        engine_config.playout = playout.map(|feed| playout_factory(share_feed(feed)));
+        engine_config.capture = capture.map(|pull| capture_factory(share_pull(pull)));
+        let engine = Engine::start(engine_config)
+            .await
+            .map_err(|error| FfiError::from_audio_link(&error))?;
+        let status = local_status_of(&engine);
+        // 接受循环和会话都由 Engine 跟踪；shutdown 会等它们全部退出。
+        let _accept = engine.spawn_accept_loop();
+        *lock(&ENGINE)? = Some(EngineHandle { config, engine });
+        Ok(status)
+    })
+    .await
 }
 
 /// 停止引擎（幂等）。未启动时返回 `Ok`：调用方的意图是「确保停下来」。
 #[uniffi::export(async_runtime = "tokio")]
 pub async fn engine_stop() -> Result<(), FfiError> {
-    let taken = {
-        let mut guard = lock(&ENGINE)?;
-        guard.take()
-    };
-
-    let Some(handle) = taken else {
-        return Ok(());
-    };
-    // 取出句柄后，同步查询立即看到未启动状态，不会继续返回旧连接的 PIN。
-    let (engine, runtime, accept) = {
-        let engine = Arc::clone(&handle.engine);
-        let runtime = Arc::clone(&handle.runtime);
-        let accept = handle.accept;
-        (engine, runtime, accept)
-    };
-
-    let (sender, receiver) = oneshot::channel();
-    runtime.spawn(async move {
-        engine.shutdown().await;
-        // 等接受循环退出：它持有 QUIC 端点，立刻重启（同一端口）会撞上地址占用。
-        let _ = tokio::time::timeout(Duration::from_secs(2), accept).await;
-        let _ = sender.send(());
-    });
-    let _ = receiver.await;
-    Ok(())
+    on_lifecycle(async {
+        let taken = lock(&ENGINE)?.take();
+        // 同步查询立即看到未启动；生命周期锁继续拦住新启动，直到旧资源全部释放。
+        if let Some(handle) = taken {
+            handle.engine.shutdown().await;
+        }
+        Ok(())
+    })
+    .await
 }
 
 /// 主动连接对端（FR-17 手工 IP）。成功返回对端快照。
@@ -527,6 +488,41 @@ mod tests {
     use super::*;
     use crate::audio_bridge::PcmFeed;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn lifecycle_cancellation_preserves_dispatched_work_and_skips_queued_work() {
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let finished = Arc::new(AtomicUsize::new(0));
+        let done = Arc::clone(&finished);
+        let first = tokio::spawn(on_lifecycle(async move {
+            entered_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+            done.store(1, Ordering::SeqCst);
+            Ok(())
+        }));
+        entered_rx.await.unwrap();
+        first.abort(); // 派发后的操作继续持有生命周期锁。
+        let _ = first.await;
+
+        let should_not_run = Arc::new(AtomicUsize::new(0));
+        let marker = Arc::clone(&should_not_run);
+        let mut queued = Box::pin(on_lifecycle(async move {
+            marker.store(1, Ordering::SeqCst);
+            Ok(())
+        }));
+        // 真实 poll 一次以确认已经排队；取消尚未获锁的请求，不应执行其操作。
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(queued.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        drop(queued);
+        release_tx.send(()).unwrap();
+        on_lifecycle(async { Ok(()) }).await.unwrap();
+        assert_eq!(finished.load(Ordering::SeqCst), 1);
+        assert_eq!(should_not_run.load(Ordering::SeqCst), 0);
+    }
 
     #[derive(Default)]
     struct CountingFeed {

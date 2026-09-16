@@ -67,9 +67,6 @@ pwsh tools/gradlew.ps1 -JavaHome 'C:\Users\liuzh\scoop\apps\corretto17-jdk\curre
 3. 未完成配对就退出 PC 客户端，卡片消失；重连时显示当前连接 PIN。
 4. 等待 60 s 不提交，卡片消失。不同连接随机生成的 PIN 有小概率相同，不能仅凭数字不同判定重连成功。
 
-本轮还复现了独立的 **QUIC 端口释放竞态**：有连接时 `engineStop()` 返回后立即以相同端口 `engineStart()`，
-Windows 会报 `1008 / UDP 绑定失败 / os error 10048`。`Engine::shutdown()` 只发出关闭信号，
-FFI 等接受循环结束，并没有等待所有 QUIC 后台资源释放；确切释放时序仍需单独修复和验证。
-复现入口是上述 FFI 回归，在第二次启动前去掉 `config.listen_port = free_port()` 即可恢复触发路径。
-该问题已作为单独的 M1/P1 待办记录；当前 PIN 生命周期回归换用空闲端口，专门检查新旧引擎状态隔离，
-不把它作为“同端口立即重启可用”的证据。
+后续已修复本轮发现的 **QUIC 端口释放竞态**（`engineStop()` 后立即同端口 `engineStart()` 报 10048）。
+现在等待真实套接字和会话/音频线程释放；PIN 生命周期回归已移除换端口的绕行。
+实现、取消/并发语义及回归证据见 `docs/15-engine-restart.md`。

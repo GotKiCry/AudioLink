@@ -89,6 +89,8 @@ impl AudioLinkEndpoint {
     /// 主动连接。`server_name` 用固定值 `"audiolink"`（自签证书，SNI 不参与信任判定）。
     pub async fn connect(&self, addr: SocketAddr, server_name: &str) -> Result<Connection, NetError>;
     pub fn close(&self, code: u32, reason: &str);
+    /// 调用方结束使用者任务并释放连接后，等待真实 UDP 套接字释放（幂等、可恢复取消）。
+    pub async fn shutdown(&self);
 }
 
 // ---- 连接 ----
@@ -310,6 +312,7 @@ impl Engine {
     pub fn telemetry(&self, peer: NodeId) -> Option<StreamStats>;
     /// 事件订阅（UI 用；按 500 ms 批量，见架构 §4）。
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<EngineEvent>;
+    /// 禁止新任务，等待现有任务、音频线程和 UDP 套接字退出；返回后可立即复用原端口。
     pub async fn shutdown(&self);
 }
 
@@ -463,6 +466,10 @@ data class PlaybackReport(val lowLatency: Boolean, val actualBufferFrames: Int,
 - `displayedPin()` 返回当前连接的有效 PIN；未启动/成功/断开/锁定/到期时为 `null`。
   2026-09-16 起直接读取 Engine 同步快照，不再依赖广播缓存；错误重试不延长门禁的原始 60 s 有效期。
   `submitPin(pin)` 同样从当前连接定位待配对对端；FFI 函数签名与 Kotlin 绑定保持兼容。
+- `engineStart/engineStop` 串行执行：同配置重复启动成功、不同配置返回 `1009 BUSY`。
+  停止返回意味着会话、音频线程和原 UDP 套接字已释放，允许立即同端口启动。
+  等待生命周期锁时取消则请求不执行；派发后取消等待，操作仍由引擎运行时完成并释放锁。
+  平台音频回调须正常返回，停止会等待在途回调退出；详细语义与回归见 `15-engine-restart.md`。
 - **验收**：`cargo test -p audiolink-ffi` 通过（`protocolSelfTest` 的 Rust 侧断言）；
   `cargo check -p audiolink-ffi --target aarch64-linux-android` 通过（证明 FFI 表面能交叉编译）；
   若 UniFFI 代码生成可用，把生成的 Kotlin 放到 android 侧并让 `assembleDebug` 通过。

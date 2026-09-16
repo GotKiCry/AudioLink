@@ -9,7 +9,7 @@
 //! 再用 `&mut` 挂默认客户端配置。
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use audiolink_types::DEFAULT_QUIC_PORT;
@@ -17,6 +17,8 @@ use audiolink_types::DEFAULT_QUIC_PORT;
 use crate::connection::Connection;
 use crate::error::NetError;
 use crate::tls;
+
+mod socket;
 
 /// 数据报收发缓冲默认值（1 MiB）。
 ///
@@ -64,7 +66,9 @@ impl Default for EndpointConfig {
 #[derive(Debug)]
 pub struct AudioLinkEndpoint {
     /// quinn 端点（`send_datagram` / `accept` / 连接集合都挂在它上面）。
-    inner: quinn::Endpoint,
+    inner: Mutex<Option<quinn::Endpoint>>,
+    listen_addr: SocketAddr,
+    released: tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
 }
 
 impl AudioLinkEndpoint {
@@ -92,7 +96,11 @@ impl AudioLinkEndpoint {
             )
         })?;
 
-        let mut endpoint = quinn::Endpoint::new(
+        let socket = runtime
+            .wrap_udp_socket(socket)
+            .map_err(|error| NetError::bind_owned(format!("创建异步 UDP 套接字失败：{error}")))?;
+        let (socket, released) = socket::track(socket);
+        let mut endpoint = quinn::Endpoint::new_with_abstract_socket(
             quinn::EndpointConfig::default(),
             Some(server),
             socket,
@@ -102,20 +110,25 @@ impl AudioLinkEndpoint {
         // 必须在 `&mut` 阶段挂上：共享之后 quinn 不再提供设置入口
         endpoint.set_default_client_config(client);
 
-        Ok(Self { inner: endpoint })
+        let listen_addr = endpoint
+            .local_addr()
+            .map_err(|error| NetError::bind_owned(format!("读取本地地址失败：{error}")))?;
+        Ok(Self {
+            inner: Mutex::new(Some(endpoint)),
+            listen_addr,
+            released: tokio::sync::Mutex::new(Some(released)),
+        })
     }
 
     /// 实际监听的地址（`bind` 传 `:0` 时用它取系统分配的真实端口）。
     pub fn local_addr(&self) -> Result<SocketAddr, NetError> {
-        self.inner
-            .local_addr()
-            .map_err(|error| NetError::bind_owned(format!("读取本地地址失败：{error}")))
+        Ok(self.listen_addr)
     }
 
     /// 接受下一个入站连接（循环调用）。
     pub async fn accept(&self) -> Result<Connection, NetError> {
-        let incoming = self
-            .inner
+        let endpoint = self.handle()?;
+        let incoming = endpoint
             .accept()
             .await
             .ok_or_else(|| NetError::transport("端点已关闭，不会再接受新连接"))?;
@@ -132,8 +145,8 @@ impl AudioLinkEndpoint {
         addr: SocketAddr,
         server_name: &str,
     ) -> Result<Connection, NetError> {
-        let connecting = self
-            .inner
+        let endpoint = self.handle()?;
+        let connecting = endpoint
             .connect(addr, server_name)
             .map_err(|error| NetError::handshake_owned(format!("发起连接 {addr} 失败：{error}")))?;
         let connection = connecting
@@ -145,8 +158,40 @@ impl AudioLinkEndpoint {
     /// 关闭端点：现有连接与后续入站全部终止。
     pub fn close(&self, code: u32, reason: &str) {
         // quinn 0.11 的 `VarInt::from_u32` 是不可失败的（u32 恒 < 2^62）
+        if let Some(endpoint) = self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            endpoint.close(quinn::VarInt::from_u32(code), reason.as_bytes());
+        }
+    }
+
+    fn handle(&self) -> Result<quinn::Endpoint, NetError> {
         self.inner
-            .close(quinn::VarInt::from_u32(code), reason.as_bytes());
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .ok_or_else(|| NetError::transport("端点已停止"))
+    }
+
+    /// 关闭并等待真实 UDP 套接字释放；返回后可立即重新绑定同一端口。
+    /// 调用前须结束使用本端点的 accept/connect 任务，并释放所有 Connection/ControlChannel。
+    /// 幂等；取消等待后可再次调用，释放通知不会丢失。
+    pub async fn shutdown(&self) {
+        let endpoint = self.inner.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(endpoint) = endpoint {
+            endpoint.close(quinn::VarInt::from_u32(0), b"endpoint shutdown");
+            endpoint.wait_idle().await;
+            drop(endpoint);
+        }
+        // wait_idle 只等 QUIC 连接排空，驱动和 IO poller 仍可能持有 UDP socket。
+        let mut released = self.released.lock().await;
+        if let Some(receiver) = released.as_mut() {
+            let _ = receiver.await;
+            *released = None;
+        }
     }
 }
 

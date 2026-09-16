@@ -32,6 +32,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-pemfile = "2"
 rcgen = "0.14"                                        # 自签证书生成（默认 crypto+pem+ring，同样不依赖 CMake）
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }    # 引擎停止时等待全部任务退出
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 postcard = { version = "1", features = ["alloc"] }     # 控制面紧凑编码

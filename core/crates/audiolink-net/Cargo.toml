@@ -21,10 +21,10 @@ bytes = { workspace = true }        # quinn 的 send_datagram 收 Bytes
 sha2 = { workspace = true }         # peer_id() = SHA-256(对端证书 DER)
 thiserror = { workspace = true }    # NetError
 tracing = { workspace = true }
+tokio = { workspace = true }       # 套接字释放通知与异步关闭
 
 [dev-dependencies]
 rcgen = { workspace = true }        # 测试用自签证书（生产路径的证书来自 identity）
-tokio = { workspace = true }        # #[tokio::test] 与真 QUIC 回环
 
 [lints]
 workspace = true

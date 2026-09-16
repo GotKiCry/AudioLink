@@ -39,7 +39,7 @@ fn free_port() -> u16 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ffi_pin_tracks_the_current_connection_and_engine() {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = EngineStartConfig {
+    let config = EngineStartConfig {
         node_name: "phone".into(),
         data_dir: dir.path().join("phone").to_string_lossy().into(),
         listen_port: free_port(),
@@ -106,8 +106,6 @@ async fn ffi_pin_tracks_the_current_connection_and_engine() {
     engine_stop().await.unwrap();
     assert!(displayed_pin().unwrap().is_none());
     second.shutdown().await;
-    // PIN 生命周期独立于 QUIC 端口释放：同端口立即重启的既存 10048 竞态由单独看板项追踪。
-    config.listen_port = free_port();
     engine_start(config, None, None).await.unwrap();
     assert!(displayed_pin().unwrap().is_none());
     assert!(peers().unwrap().is_empty());
