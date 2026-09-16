@@ -214,7 +214,7 @@ Opus 20 ms/160 kbps → 手机 AudioTrack 低延迟输出，60 s 连续推流零
 ```powershell
 # 1) 真机 bring-up：装包 → 启动 → 点「启动并开始接收」→ 自检 PASS → 监听 58290
 pwsh android/scripts/build-rust.ps1
-pwsh tools/gradlew.ps1 -JavaHome 'C:\Users\liuzh\scoop\apps\corretto17-jdk\current' assembleDebug testDebugUnitTest
+pwsh tools/gradlew.ps1 -JavaHome '<JDK 17 根目录>' assembleDebug testDebugUnitTest
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n com.gotkicry.audiolink.debug/com.gotkicry.audiolink.MainActivity
 

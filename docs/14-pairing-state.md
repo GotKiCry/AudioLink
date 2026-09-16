@@ -48,7 +48,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --exclude audiolink-desktop
 cargo test -p audiolink-desktop
 pwsh android/scripts/build-rust.ps1
-pwsh tools/gradlew.ps1 -JavaHome 'C:\Users\liuzh\scoop\apps\corretto17-jdk\current' assembleDebug assembleRelease testDebugUnitTest --console=plain
+pwsh tools/gradlew.ps1 -JavaHome '<JDK 17 根目录>' assembleDebug assembleRelease testDebugUnitTest --console=plain
 ```
 
 ## 真机复测与独立遗留

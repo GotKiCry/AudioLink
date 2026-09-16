@@ -84,7 +84,7 @@ SHA-256：`818b9ac353a3fd657cb7eb2e30a16c8f1e67ffbd83a997f592ad2a7b893831fe`。
 
 ```powershell
 $env:GRADLE_USER_HOME = "$PWD/.gradle-home"
-pwsh tools/gradlew.ps1 -JavaHome 'C:\Users\liuzh\scoop\apps\corretto17-jdk\current' testDebugUnitTest assembleDebug assembleRelease --init-script "$PWD/target/evidence/phk110-validation/apk-output.init.gradle" --no-configuration-cache --console=plain
+pwsh tools/gradlew.ps1 -JavaHome '<JDK 17 根目录>' testDebugUnitTest assembleDebug assembleRelease --init-script "$PWD/target/evidence/phk110-validation/apk-output.init.gradle" --no-configuration-cache --console=plain
 ```
 
 ## 音频定量验收

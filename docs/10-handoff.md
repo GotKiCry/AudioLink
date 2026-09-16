@@ -90,6 +90,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 - Android PIN 缺失/残留已改为 Engine 同步快照，清除丢广播缓存；同时修复旧连接退出误删重连会话。3 项内核回归 + 1 项真 QUIC/FFI 配对回归通过，旧 FFI 对照在断开清 PIN 处失败。详见 `docs/14-pairing-state.md`；PHK110 真机已验证显示/错误/成功/断开/到期/锁定，PIN 看板转 Done（`docs/16`）。
 - 同端口重启任务已完成：Engine 等全部任务与音频线程退出，net 等真实套接字释放，FFI 启停串行且取消后不遗留半成品。新增 5 项回归，覆盖 15 次五状态重启、并发、取消、IO poller 和未完成 QUIC 握手；既有 PIN 回归恢复同端口。详见 `docs/15-engine-restart.md`。
 - PHK110（Android 16 / API 36）真机复现并修复 Android 服务销毁后旧协程回写“运行中”：进程级启停队列 + 实例代次 + 主线程状态发布，4 项新增 JVM 回归及手机普通/快速/推流中/配对中重启通过。新 APK 已安装后回拉核对，详见 `docs/16-android-service-lifecycle.md`。
+- 护栏与工具补齐（三项）：① **定长载荷自洽护栏** —— 长度常量改成「字段偏移 + 字段宽度」算式，编解码偏移同源，新增 §3 载荷表独立副本测试 9 项（三组人为破坏均被当场抓红）；② `docs/` 本机绝对路径全部换成占位符（`docs/06` §1 有对照表）；③ `alp2-dump` 支持 pcap / pcapng（按 magic 自动分派、默认按 58290 端口过滤、9 项合成夹具回归 + 端到端实测）。内核 fmt / clippy / 全量测试通过；详见 `docs/20-guards-and-tooling.md`。
 - 接收待播队列增长、PCM 丢包掩盖、自适应抖动/有界重排和默认冗余双发均已落地。副本延迟一帧并标记 `FEC_REDUNDANT`，接收侧按序号去重且 jitter 只取首个有效副本；60 ms 最高档欠载现在也能按现档重新补水。PC 双 Engine 20 s 稳态码率 320.8 kbps、零欠载/迟到；PHK110 90 s 码率末值/均值 320.8 kbps，队列 P50/P95/max 均 60 ms，链路丢包/PLC 0，欠载/迟到 24/22 且第 75--90 s 无新增，AudioTrack underrun 0、FastMixer writeErrors 0。下一步推进 NACK、码率自适应、真实弱网与 8 h soak；详见 `docs/18-m2-adaptive-jitter.md`、`docs/19-m2-redundant-send.md`。
 
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
@@ -140,7 +141,7 @@ Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本�
 | PCM 回调装箱开销 | UniFFI 0.29 无 `FloatArray` 映射 → `List<Float>` 每帧约 30 KB 装箱；逃生通道写在 `audiolink-ffi/src/audio_bridge.rs` 顶部。真机 GC 抖动仍未专门测 | P1（M2） |
 | ~~抖动缓冲第一阶段~~ | ✅ M2 已完成 20 / 40 / 60 ms 自适应深度、30 s 降档迟滞、一帧有界重排和有界重缓冲；完整仿真缓冲/IIR/漂移微调及弱网验收继续留在 M2（`docs/18`） | ✅ / M2 继续 |
 | 跨机时钟的工程边界 | `now_monotonic_us()` 在 Android 是**进程相对**基准（`CLOCK_MONOTONIC`，深睡停走）⇒ offset **只在同一次连接内有效**；M3 若要挂起后续播，需改用 `CLOCK_BOOTTIME` 或显式检测阶跃后重收敛 | M3 |
-| `docs/06-dev-environment.md` 脱敏 | 含 `C:\Users\liuzh\...` 等本机路径，仓库已公开 | 低（用户未决） |
+| ~~文档本机路径脱敏~~ | ✅ **已完成**：`docs/` 下全部本机绝对路径换成占位符（`%LOCALAPPDATA%\Android\Sdk`、`<JDK 17 根目录>`、`<你的 keystore 路径>`、`<本机用户目录>`），占位符约定见 `docs/06` §1 | ✅ |
 
 **纪律（持续执行）**
 
@@ -159,7 +160,7 @@ Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本�
 |---|---|
 | 工作目录 | `C:\_Project\AudioLink` |
 | Rust | 1.96.1（`rust-toolchain.toml` 锁定），MSVC host；Android targets 已装 |
-| Android 构建 | **`pwsh tools/gradlew.ps1 -JavaHome 'C:\Users\liuzh\scoop\apps\corretto17-jdk\current' assembleDebug`**。⚠️ `-JavaHome` 是**第一个位置参数**：`pwsh tools/gradlew.ps1 assembleDebug` 会把 `assembleDebug` 当成 JDK 路径。本机 `JAVA_HOME` 指向 **JDK 11**，而 Gradle 9 要 17+ |
+| Android 构建 | **`pwsh tools/gradlew.ps1 -JavaHome '<JDK 17 根目录>' assembleDebug`**。⚠️ `-JavaHome` 是**第一个位置参数**：`pwsh tools/gradlew.ps1 assembleDebug` 会把 `assembleDebug` 当成 JDK 路径。本机 `JAVA_HOME` 指向 **JDK 11**，而 Gradle 9 要 17+ |
 | Android 单测 | 同上加 `testDebugUnitTest`（31 个 JVM 用例）；另有 `lintDebug` |
 | 交叉编译内核（Android） | `pwsh android/scripts/build-rust.ps1`（**默认 release**，双 ABI，产出 3.7 / 2.5 MB）。要带 debuginfo 的内核才加 `-Debug`（94 / 75 MB，**别拿去发布**）。快速验证用 `cargo check -p audiolink-ffi --target aarch64-linux-android`（裸命令会挂在 ring 的 C 编译上，见 §6 坑 15） |
 | 桌面端 | `cd desktop; pnpm build` / `pnpm tauri dev`；Rust 侧 `cargo test -p audiolink-desktop` |
@@ -254,8 +255,8 @@ Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本�
 | ~~CELT-only 自建丢包掩盖~~ | ✅ 重复上一帧 + 120 ms 淡出 + 2.5 ms 恢复交叉淡化，接收序号与遥测已接线（`docs/17`） | ✅ |
 | 设备侧 queuedFrames 进遥测 | 否则账本看不见「对端 AudioTrack」那一段 | P1 |
 | 跨端一致性夹具 | §12 golden vectors 在 Rust 与 FFI 双跑 —— **已落地**（`audiolink-ffi::protocolSelfTest()`） | ✅ 完成 |
-| `alp2-dump` 支持 pcap | 当前只吃 hex 文本；等真有抓包需求再加 | P3 |
-| `docs/06-dev-environment.md` 脱敏 | 含 `C:\Users\liuzh\...` 等本机路径，仓库已公开 | 低（用户未决） |
+| ~~`alp2-dump` 支持 pcap/pcapng~~ | ✅ **已完成**：按 magic 自动分派 + `--port` / `--all-ports`，认 Ethernet(含 VLAN)/IPv4/IPv6/Linux SLL；9 项合成夹具回归 + 端到端实测（`docs/20` §3） | ✅ |
+| ~~文档本机路径脱敏~~ | ✅ **已完成**：`docs/` 下全部本机绝对路径换成占位符（`%LOCALAPPDATA%\Android\Sdk`、`<JDK 17 根目录>`、`<你的 keystore 路径>`、`<本机用户目录>`），占位符约定见 `docs/06` §1 | ✅ |
 | `release.yml` 未跑过 | 首次 tag 触发时才验证；`createUpdaterArtifacts:false`（M5 打开） | 中（M5） |
 | CI 可再优化 | `android` job 每次 `cargo install cargo-ndk` 约 2 分钟；`core` job 因 tools 引入 quinn/rustls 涨到 ~4 分钟 | 低 |
 | QUIC 弱网实测 | ADR-004 的回退路径（裸 UDP）是否触发，取决于 M2 实测 | 中（M2） |

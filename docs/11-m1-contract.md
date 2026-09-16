@@ -449,7 +449,7 @@ data class PlaybackReport(val lowLatency: Boolean, val actualBufferFrames: Int,
 
 **验收（本机无真机，只能做到这些，必须如实报告）**：
 
-1. `pwsh tools/gradlew.ps1 -JavaHome 'C:\Users\liuzh\scoop\apps\corretto17-jdk\current' assembleDebug` 成功（**注意 `-JavaHome` 是位置参数**，直接传 `assembleDebug` 会被当成 JDK 路径而报错）；
+1. `pwsh tools/gradlew.ps1 -JavaHome '<JDK 17 根目录>' assembleDebug` 成功（**注意 `-JavaHome` 是位置参数**，直接传 `assembleDebug` 会被当成 JDK 路径而报错）；
 2. **JVM 单元测试**（`app/src/test/**`，`./gradlew testDebugUnitTest`）覆盖**不依赖 Android 框架**的纯逻辑：环缓冲的读写/溢出/欠载计数、PCM 交错与 `FloatArray` 索引换算、`PlaybackStats` 累计口径；
 3. 所有 `TODO(M1)` 要么落地要么保留并写清阻塞原因；服务里 `startForeground` 的前台类型分级逻辑**保持现状**（已按 API 等级精确分级）。
 4. **明确报告**：真机指标（`getPerformanceMode()` 实测值、出声延迟、30 min 无断流）**本轮无法验证**，需真机接入后再跑。
@@ -494,7 +494,7 @@ cargo check -p audiolink-desktop
 cd desktop; pnpm build
 
 # 4) Android APK（-JavaHome 必须显式给，否则位置参数会被吃掉）
-pwsh tools/gradlew.ps1 -JavaHome 'C:\Users\liuzh\scoop\apps\corretto17-jdk\current' assembleDebug
+pwsh tools/gradlew.ps1 -JavaHome '<JDK 17 根目录>' assembleDebug
 ```
 
 **报告纪律**：每条结论必须附**原始命令 + 关键输出行**。没有跑过的，写「未验证」，**不许推断**。

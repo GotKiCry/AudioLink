@@ -1,6 +1,17 @@
 # 开发环境与构建
 
 > 本机（开发机）实测于 **2026-09-11**。凡标 ✅ 为已具备，标 ⚠️ 为**必须处理**，标 ❌ 为需安装。
+>
+> **路径占位符（仓库已 PUBLIC，本机绝对路径一律不写实）**：
+>
+> | 占位符 | 含义 | 怎么查到本机实际值 |
+> |---|---|---|
+> | `%LOCALAPPDATA%\Android\Sdk` | Android SDK 根目录（Windows 通用环境变量，可直接用） | `$env:LOCALAPPDATA\Android\Sdk` |
+> | `<JDK 17 根目录>` | JDK 17（Gradle 9 要求 17+）的安装根 | `scoop prefix corretto17-jdk`（本机即 Scoop 装的 Corretto 17） |
+> | `<本机用户目录>` | 用户 profile 目录 | `$env:USERPROFILE` |
+> | `<你的 keystore 路径>` | release 签名 keystore（**不入库**，见 §5） | 自定义 |
+>
+> 命令示例里的占位符连同单引号一起替换即可：`-JavaHome '<JDK 17 根目录>'` 是**占位符**，不是可执行路径。
 
 ---
 
@@ -14,10 +25,10 @@
 | Node / pnpm | ✅ | Node **24.13.0** / pnpm **11.22.0** |
 | NSIS | ✅ | Windows 安装包打包用 |
 | 长路径支持 | ✅ | 已开启（Rust/Android 构建路径较深，必需） |
-| Android SDK | ✅ | `C:\Users\liuzh\AppData\Local\Android\Sdk`；platforms 到 **android-37.0**；build-tools 到 **37.0.0**；NDK **28.2.13676358**、27.0.12077973；licenses 已接受 |
+| Android SDK | ✅ | `%LOCALAPPDATA%\Android\Sdk`；platforms 到 **android-37.0**；build-tools 到 **37.0.0**；NDK **28.2.13676358**、27.0.12077973；licenses 已接受 |
 | adb | ✅ | platform-tools 36.0.2（当前无设备连接） |
 | Tauri CLI | ❌ | 需装（项目内 devDependency 即可，**不要全局装**） |
-| JDK 17 | ⚠️ | 本机有 **Corretto 17.0.20.1**（`C:\Users\liuzh\scoop\apps\corretto17-jdk\current`），但 `JAVA_HOME` 指向 **JDK 11** → Gradle 9 会**直接拒绝启动** |
+| JDK 17 | ⚠️ | 本机有 **Corretto 17.0.20.1**（`<JDK 17 根目录>`），但 `JAVA_HOME` 指向 **JDK 11** → Gradle 9 会**直接拒绝启动** |
 | `ANDROID_HOME` / `NDK_HOME` | ⚠️ | 未设置（`cargo-ndk` 与 Gradle 需要） |
 | cmake / NASM / perl / vcpkg | ✅（不需要） | 纯 Rust Opus 方案已绕开，**不要为此安装** |
 
@@ -91,12 +102,12 @@ pwsh ..\tools\gradlew.ps1 assembleRelease   # 需本地 keystore 属性（见下
 
 `android/local.properties`（**不入库**）：
 ```properties
-sdk.dir=C\:\\Users\\liuzh\\AppData\\Local\\Android\\Sdk
+sdk.dir=<Android SDK 根目录>
 ```
 
 发布签名（**不入库**）：`android/keystore.properties`
 ```properties
-storeFile=C\:\\Users\\liuzh\\.audiolink\\release.jks
+storeFile=<你的 keystore 路径>
 storePassword=<从 CI Secret 注入，本地手动填>
 keyAlias=audiolink
 keyPassword=<同上>

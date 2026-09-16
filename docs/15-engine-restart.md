@@ -55,7 +55,7 @@ cargo test --workspace --exclude audiolink-desktop
 cargo test -p audiolink-desktop
 pwsh android/scripts/build-rust.ps1
 $env:GRADLE_USER_HOME = "$PWD/.gradle-home"
-pwsh tools/gradlew.ps1 -JavaHome 'C:\Users\liuzh\scoop\apps\corretto17-jdk\current' assembleDebug assembleRelease testDebugUnitTest --init-script "$PWD/target/evidence/engine-restart/apk-output.init.gradle" --no-configuration-cache --console=plain
+pwsh tools/gradlew.ps1 -JavaHome '<JDK 17 根目录>' assembleDebug assembleRelease testDebugUnitTest --init-script "$PWD/target/evidence/engine-restart/apk-output.init.gradle" --no-configuration-cache --console=plain
 ```
 
 上述 Rust 检查全部通过；Android 双 ABI Rust Release 库、Debug/Release APK 构建成功。
