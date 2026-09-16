@@ -283,6 +283,9 @@ rtt    = (t4 - t1) - (t3 - t2)
 
 ## 8. 编解码协商
 
+> **别和能力协商混起来**：能力协商（`HELLO`/`HELLO_ACK` 的 `caps` 位图）在**握手期**回答「双方能不能互相说话」；
+> 本节回答「这一条流用哪一档」。前者是门，后者是选。实现见 `docs/46-m4-capability-negotiation.md`。
+
 `OPEN_STREAM.codec_prefs`（按优先级）：
 
 | 编解码 | 参数 | 说明 |

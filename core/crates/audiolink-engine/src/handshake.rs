@@ -30,7 +30,7 @@
 use std::time::Instant;
 
 use audiolink_identity::{IdentityError, NodeIdentity, PairRejection, PinGate};
-use audiolink_types::{AudioLinkError, ErrorCode, NodeId, NodeInfo, PROTO_VERSION};
+use audiolink_types::{AudioLinkError, Capabilities, ErrorCode, NodeId, NodeInfo, PROTO_VERSION};
 
 use crate::dispatch::ControlRequest;
 use crate::payload::{
@@ -213,6 +213,10 @@ pub struct Handshake {
     pending_request_id: u32,
     /// 被忽略的帧数（§1.1 的可观测面）。
     ignored_frames: u64,
+    /// 本端能力位图（§13）；默认 [`Capabilities::CURRENT`]，可用 `with_capabilities` 覆盖。
+    local_caps: u32,
+    /// 协商结果（双方能力交集）；握手未走到 `HELLO`/`HELLO_ACK` 交换时为 0。
+    agreed_caps: u32,
 }
 
 impl Handshake {
@@ -237,9 +241,28 @@ impl Handshake {
             next_request_id: 0,
             pending_request_id: 0,
             ignored_frames: 0,
+            local_caps: Capabilities::CURRENT,
+            agreed_caps: 0,
         }
     }
 
+    /// 注入本端能力位图（默认 [`Capabilities::CURRENT`]）。
+    ///
+    /// 存在的理由主要是**测试与将来的平台接线**：内录能力取决于平台（Windows 有 WASAPI loopback、
+    /// Android 要看 API 等级），接上之后要能声明不同能力集，而不是被一个写死的常量锁住。
+    #[must_use]
+    pub const fn with_capabilities(mut self, caps: u32) -> Self {
+        self.local_caps = caps;
+        self
+    }
+
+    /// 协商结果（双方能力交集）；尚未交换 `HELLO` 时为 0。
+    pub const fn agreed_caps(&self) -> u32 {
+        self.agreed_caps
+    }
+}
+
+impl Handshake {
     /// 当前阶段。
     pub const fn phase(&self) -> HandshakePhase {
         self.phase
@@ -297,6 +320,7 @@ impl Handshake {
             proto_version: PROTO_VERSION,
             node: self.local.clone(),
             nonce: nonce.clone(),
+            caps: self.local_caps,
         });
 
         self.phase = HandshakePhase::AwaitHelloAck;
@@ -429,6 +453,8 @@ impl Handshake {
                 node: self.local.clone(),
                 accepted: false,
                 reason: reason.clone(),
+                caps: Capabilities::CURRENT,
+                agreed_caps: 0,
             });
             // 阶段必须落到 `Failed`：只回一条拒绝帧而不改状态，会让本端停在
             // 「等对端说话」上看不出已经结束 —— 上层会一直等一个不会来的响应。
@@ -440,11 +466,41 @@ impl Handshake {
             );
         }
 
+        // §13 能力协商：交集缺了必需位就当场拒绝。不这么做的话，链路会「连上但没声音」——
+        // 失败被推迟到开流那一刻，用户看到的只是一条编解码错误，排查成本高得多。
+        let agreed = Capabilities::intersect(self.local_caps, payload.caps);
+        let missing = Capabilities::missing_required(agreed);
+        if missing != 0 {
+            let reason = format!(
+                "能力协商失败：缺少 {}（本端 {}；对端 {}）",
+                Capabilities::describe(missing),
+                Capabilities::describe(self.local_caps),
+                Capabilities::describe(payload.caps)
+            );
+            let ack = ControlRequest::HelloAck(HelloAckPayload {
+                proto_version: PROTO_VERSION,
+                node: self.local.clone(),
+                accepted: false,
+                reason: reason.clone(),
+                caps: self.local_caps,
+                agreed_caps: 0,
+            });
+            self.phase = HandshakePhase::Failed;
+            return HandshakeStep::sending(vec![Outgoing::notice(ack)]).with_event(
+                HandshakeEvent::Rejected {
+                    error: AudioLinkError::owned(ErrorCode::CapUnsupported, reason),
+                },
+            );
+        }
+        self.agreed_caps = agreed;
+
         let ack = ControlRequest::HelloAck(HelloAckPayload {
             proto_version: PROTO_VERSION,
             node: self.local.clone(),
             accepted: true,
             reason: String::new(),
+            caps: self.local_caps,
+            agreed_caps: agreed,
         });
 
         if self.peer_trusted {
@@ -498,6 +554,27 @@ impl Handshake {
                 payload.proto_version, PROTO_VERSION
             )));
         }
+
+        // §13 能力协商的**复核**：本端自己算一遍交集，与对端报来的结果比对。
+        // 两侧算法一致时这是恒等检查；一旦将来只改了一侧，这里会立刻失败 ——
+        // 比「双方带着不一样的理解继续跑」便宜得多。
+        let agreed = Capabilities::intersect(self.local_caps, payload.caps);
+        if agreed != payload.agreed_caps {
+            return self.fail(AudioLinkError::bad_request_owned(format!(
+                "capability negotiation mismatch: local 0x{agreed:04X} peer 0x{:04X}",
+                payload.agreed_caps
+            )));
+        }
+        if Capabilities::missing_required(agreed) != 0 {
+            return self.fail(AudioLinkError::owned(
+                ErrorCode::CapUnsupported,
+                format!(
+                    "能力协商失败：缺少 {}",
+                    Capabilities::describe(Capabilities::missing_required(agreed))
+                ),
+            ));
+        }
+        self.agreed_caps = agreed;
 
         // 接下来等对端开分支：已配对 → AUTH_CHALLENGE；未配对 → PAIR_REQUIRED。
         // 两者都由对端选择，本端不预设 —— 预设就会在「本地以为已配对、对端其实没记录」
@@ -970,6 +1047,101 @@ mod tests {
     }
 
     #[test]
+    fn capability_mismatch_is_rejected_with_a_readable_reason() {
+        let a_node = Node::new("node-a");
+        let b_node = Node::new("node-b");
+        let now = Instant::now();
+
+        // 响应方只有 Opus + 播放；发起方只声明「采集」（没有 Opus）→ 交集缺必需位。
+        let mut b = Handshake::new(
+            Role::Responder,
+            b_node.info("B"),
+            a_node.identity.id(),
+            false,
+        )
+        .with_capabilities(Capabilities::OPUS | Capabilities::PLAYOUT);
+
+        let hello = ControlRequest::Hello(HelloPayload {
+            proto_version: PROTO_VERSION,
+            node: a_node.info("A"),
+            nonce: vec![0u8; 16],
+            caps: Capabilities::CAPTURE,
+        });
+        let step = b.on_control(&hello, &b_node.identity, a_node.cert(), now);
+
+        assert_eq!(step.send.len(), 1);
+        match &step.send[0].request {
+            ControlRequest::HelloAck(payload) => {
+                assert!(!payload.accepted, "缺少必需能力必须拒绝，而不是连上再说");
+                assert_eq!(payload.agreed_caps, 0, "拒绝时协商结果为 0");
+                assert!(
+                    payload.reason.contains("Opus 编码"),
+                    "拒绝原因要点名缺哪一项：{}",
+                    payload.reason
+                );
+            }
+            other => panic!("应当是拒绝性 HELLO_ACK，实际 {other:?}"),
+        }
+        match &step.event {
+            HandshakeEvent::Rejected { error } => {
+                assert_eq!(error.code(), ErrorCode::CapUnsupported);
+            }
+            other => panic!("应当拒绝，实际 {other:?}"),
+        }
+        assert_eq!(b.phase(), HandshakePhase::Failed);
+    }
+
+    #[test]
+    fn capabilities_negotiate_to_the_intersection_on_both_sides() {
+        let a_node = Node::new("node-a");
+        let b_node = Node::new("node-b");
+        let now = Instant::now();
+
+        let a_caps = Capabilities::OPUS | Capabilities::CAPTURE | Capabilities::MIXER;
+        let b_caps = Capabilities::OPUS | Capabilities::PLAYOUT | Capabilities::GROUP_EPOCH;
+        let expected = Capabilities::intersect(a_caps, b_caps);
+        assert_eq!(
+            expected,
+            Capabilities::OPUS,
+            "这个例子里唯一的共同项是 Opus"
+        );
+
+        let mut a = Handshake::new(
+            Role::Initiator,
+            a_node.info("A"),
+            b_node.identity.id(),
+            false,
+        )
+        .with_capabilities(a_caps);
+        let mut b = Handshake::new(
+            Role::Responder,
+            b_node.info("B"),
+            a_node.identity.id(),
+            false,
+        )
+        .with_capabilities(b_caps);
+
+        let s1 = a.start();
+        let ControlRequest::Hello(hello) = &s1.send[0].request else {
+            panic!("第一步应当是 HELLO");
+        };
+        assert_eq!(hello.caps, a_caps, "HELLO 必须带上本端能力");
+
+        let s2 = b.on_control(&s1.send[0].request, &b_node.identity, a_node.cert(), now);
+        let ControlRequest::HelloAck(ack) = &s2.send[0].request else {
+            panic!("第二步应当是 HELLO_ACK");
+        };
+        assert!(ack.accepted);
+        assert_eq!(ack.caps, b_caps);
+        assert_eq!(ack.agreed_caps, expected);
+
+        // 发起方复核对端报来的交集，两端对「能一起做什么」的理解必须一致。
+        let _s3 = a.on_control(&s2.send[0].request, &a_node.identity, b_node.cert(), now);
+        assert_eq!(a.agreed_caps(), expected);
+        assert_eq!(b.agreed_caps(), expected);
+    }
+
+    #[test]
     fn version_mismatch_is_rejected_without_hanging() {
         let a_node = Node::new("node-a");
         let b_node = Node::new("node-b");
@@ -986,6 +1158,7 @@ mod tests {
             proto_version: PROTO_VERSION.wrapping_add(1), // 装成未来的版本
             node: a_node.info("A"),
             nonce: vec![0u8; 16],
+            caps: Capabilities::CURRENT,
         });
         let step = b.on_control(&hello, &b_node.identity, a_node.cert(), now);
 
@@ -1041,6 +1214,7 @@ mod tests {
             proto_version: PROTO_VERSION,
             node: forged,
             nonce: vec![0u8; 16],
+            caps: Capabilities::CURRENT,
         });
         let step = b.on_control(&hello, &b_node.identity, attacker.cert(), now);
 
@@ -1229,6 +1403,7 @@ mod tests {
                 proto_version: PROTO_VERSION,
                 node: b_node.info("B"),
                 nonce: vec![0u8; 16],
+                caps: Capabilities::CURRENT,
             }),
             &a_node.identity,
             b_node.cert(),
@@ -1302,6 +1477,7 @@ mod tests {
             proto_version: PROTO_VERSION,
             node: a_node.info("A"),
             nonce: vec![0u8; 16],
+            caps: Capabilities::CURRENT,
         });
         let _ = b.on_control(&hello, &b_node.identity, a_node.cert(), now);
 

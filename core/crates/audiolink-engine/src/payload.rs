@@ -74,7 +74,7 @@ pub enum CodecPref {
 // §5 握手与配对
 // ---------------------------------------------------------------------------
 
-/// `HELLO`（`0x01`，发起方 →）：`proto_version, node_info, nonce`。
+/// `HELLO`（`0x01`，发起方 →）：`proto_version, node_info, nonce, caps`。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloPayload {
     /// 对端应等于 [`audiolink_types::PROTO_VERSION`]，否则回 `1001 VERSION_MISMATCH`。
@@ -83,6 +83,8 @@ pub struct HelloPayload {
     pub node: NodeInfo,
     /// 本连接的随机数（16 B），参与 §5 的认证绑定，防重放。
     pub nonce: Vec<u8>,
+    /// 发起方能力位图（§13 能力协商，见 [`audiolink_types::Capabilities`]）。
+    pub caps: u32,
 }
 
 /// `HELLO_ACK`（`0x02`，响应方 →）。
@@ -92,10 +94,14 @@ pub struct HelloAckPayload {
     pub proto_version: u16,
     /// 响应方节点描述。
     pub node: NodeInfo,
-    /// 是否接受本次连接（版本不兼容 / 忙碌时为 `false`）。
+    /// 是否接受本次连接（版本不兼容 / 能力不兼容 / 忙碌时为 `false`）。
     pub accepted: bool,
     /// 拒绝原因（`accepted == false` 时必须有内容，UI 直接展示）。
     pub reason: String,
+    /// 响应方能力位图（§13）。
+    pub caps: u32,
+    /// 协商结果 = 双方能力交集；拒绝时为 0。
+    pub agreed_caps: u32,
 }
 
 /// `AUTH_CHALLENGE`（`0x03`，双方）：`nonce(32 B)`。

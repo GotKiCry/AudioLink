@@ -322,6 +322,8 @@ fn decode_control(op: OpCode, payload: &[u8]) -> Result<ControlRequest, DecodeFa
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use audiolink_types::Capabilities;
+
     use super::*;
     use crate::payload::{CodecPref, SourceKind};
     use audiolink_types::{
@@ -354,12 +356,15 @@ mod tests {
                 proto_version: PROTO_VERSION,
                 node: node.clone(),
                 nonce: vec![1u8; 16],
+                caps: Capabilities::CURRENT,
             }),
             ControlRequest::HelloAck(HelloAckPayload {
                 proto_version: PROTO_VERSION,
                 node: node.clone(),
                 accepted: true,
                 reason: String::new(),
+                caps: Capabilities::CURRENT,
+                agreed_caps: 0,
             }),
             ControlRequest::AuthChallenge(AuthChallengePayload {
                 nonce: vec![2u8; 32],

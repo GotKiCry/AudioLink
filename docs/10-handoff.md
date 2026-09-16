@@ -185,6 +185,23 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   **未验**：手册里的操作步骤没有逐条在真机上走一遍（需要真机，与 M1/M2 真机验收同一条阻塞）。
   详见 `docs/manual/`、`CONTRIBUTING.md`。
 
+- **M4 能力协商（内核侧）落地：把「连得上但没声音」提前到握手期拒绝**。M4 交付物 4（能力协商与降级）此前完全没做。
+  新增 `audiolink_types::Capabilities` 位图（`OPUS` **必需**，`PCM16`/`CAPTURE`/`PLAYOUT`/`SYSTEM_LOOPBACK`/
+  `MICROPHONE`/`MIXER`/`GROUP_EPOCH` 可选）+ `intersect` / `missing_required` / `describe` / `unknown_bits`；
+  `HELLO` 加 `caps`、`HELLO_ACK` 加 `caps` + `agreed_caps`；握手期算交集，**缺必需位当场拒绝** ——
+  沿用版本不匹配的既有范式（`accepted=false` + 人话 reason + 事件里的错误码），用既有的 `1005 CAP_UNSUPPORTED`，
+  **没有新增错误码**。拒绝原因把双方各自有什么、缺哪一项写在一行里，直接给用户与排障人看。**两条设计判断**：
+  ① 只有不可替代的能力才标必需（现在只有 Opus）—— 标多了会把「能用但功能少」误判成「连不上」，比不做协商更糟；
+  ② 可选位缺失**不拒绝**，交给调用方降级。另加**双向复核**：发起方自己再算一遍交集并与对端报来的 `agreed_caps` 比对，
+  两侧算法一致时是恒等检查，一旦将来只改了一侧就立刻失败。`Capabilities::CURRENT` 只声明内核真做到的：
+  内录与麦克风要平台侧接上才算，**现在不声明** —— 宁可少声明，也不要声明一件做不到的事。实测：位图单测 5 项
+  （新文件 `core/crates/audiolink-types/tests/capabilities.rs`）+ 握手单测 2 项（缺必需位 → 拒绝且点名「Opus 编码」；
+  能力不同但兼容 → 两端协商出同一交集），引擎 146 项单测全过、clippy 零警告、fmt 通过。
+  **测试抓出一个小问题**：`describe` 对「全是未知位」的位图返回「无」，界面会显示成「对端没有能力」——
+  而真相是「对端比本端新，声明了本端看不懂的位」；已改为输出「未知能力」。**未做**：引擎层查询 API 与事件
+  （`Handshake::agreed_caps()` 有了，但桌面端还看不到协商结果 —— 已立看板条目）、界面降级置灰、平台能力注入
+  （`with_capabilities` 就是留的口子，测试已在用）。详见 `docs/46-m4-capability-negotiation.md`。
+
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
 Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本数**，`receive_audio()` 又乘了声道数，

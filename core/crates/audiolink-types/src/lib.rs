@@ -452,6 +452,147 @@ impl OpCode {
 // 错误码与统一错误类型（docs/03-protocol.md §11、docs/02-architecture.md §11）
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// §13 能力协商（docs/46-m4-capability-negotiation.md）
+// ---------------------------------------------------------------------------
+
+/// 节点能力位图。
+///
+/// 为什么需要它：**连得上 ≠ 能互相说话**。假如一端只有 Opus、另一端只有 PCM，握手会成功，
+/// 但一开流必然失败 —— 用户看到的是「连上了却没声音」，而日志里只有一条编解码错误。
+/// 把能力在**握手期**就换清楚，失败就能提前到握手，并给出「对方不支持 X」这种看得懂的原因。
+///
+/// 位图的语义是「本端**能**做什么」，协商结果是双方的交集：
+/// - 交集缺了 [`Capabilities::REQUIRED`] 里的位 → 直接拒绝连接（`1005 CAP_UNSUPPORTED`）；
+/// - 缺了可选位 → 连接继续，由调用方据此降级（例如内录不可用时把对应入口置灰）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Capabilities(u32);
+
+impl Capabilities {
+    /// 能收 Opus（**必需**：这是默认也是唯一的常规音频档）。
+    pub const OPUS: u32 = 1 << 0;
+    /// 能收 PCM16 无损档（可选）。
+    pub const PCM16: u32 = 1 << 1;
+    /// 能作为发送端采集（可选：纯接收端不需要）。
+    pub const CAPTURE: u32 = 1 << 2;
+    /// 能作为接收端播放（可选：纯发送端不需要）。
+    pub const PLAYOUT: u32 = 1 << 3;
+    /// 支持系统内录（Windows WASAPI loopback / Android AudioPlaybackCapture）。
+    pub const SYSTEM_LOOPBACK: u32 = 1 << 4;
+    /// 支持麦克风采集。
+    pub const MICROPHONE: u32 = 1 << 5;
+    /// 支持多路混音。
+    pub const MIXER: u32 = 1 << 6;
+    /// 支持同步组预约播放（§7 `GROUP_EPOCH`）。
+    pub const GROUP_EPOCH: u32 = 1 << 7;
+
+    /// 全部已知位（报告里按这个固定顺序输出，便于断言与展示）。
+    pub const ALL_KNOWN: [u32; 8] = [
+        Self::OPUS,
+        Self::PCM16,
+        Self::CAPTURE,
+        Self::PLAYOUT,
+        Self::SYSTEM_LOOPBACK,
+        Self::MICROPHONE,
+        Self::MIXER,
+        Self::GROUP_EPOCH,
+    ];
+
+    /// 交集里**必须**存在的位；缺一个就拒绝连接。
+    ///
+    /// 只放真正不可替代的能力。放多了会把「能用但功能少」的组合误判成连不上 ——
+    /// 那比不做协商更糟。
+    pub const REQUIRED: u32 = Self::OPUS;
+
+    /// 当前**内核**实际具备的能力。
+    ///
+    /// 注意这是内核的能力，不是某台设备的能力：内录与麦克风要平台侧真的接上之后才算，
+    /// 所以这里暂不声明它们 —— 等 Windows/Android 侧接好再打开对应位。
+    /// 宁可少声明，也不要声明一件做不到的事。
+    pub const CURRENT: u32 =
+        Self::OPUS | Self::PCM16 | Self::CAPTURE | Self::PLAYOUT | Self::MIXER | Self::GROUP_EPOCH;
+
+    /// 协商：交集。
+    #[must_use]
+    pub const fn intersect(local: u32, peer: u32) -> u32 {
+        local & peer
+    }
+
+    /// 交集里缺失的必需位；返回 `0` 表示可以连接。
+    #[must_use]
+    pub const fn missing_required(agreed: u32) -> u32 {
+        Self::REQUIRED & !agreed
+    }
+
+    /// 单个位 → 人类可读名称（拒绝原因与界面都用它）。
+    #[must_use]
+    pub const fn name(bit: u32) -> &'static str {
+        if bit == Self::OPUS {
+            return "Opus 编码";
+        }
+        if bit == Self::PCM16 {
+            return "PCM16 无损档";
+        }
+        if bit == Self::CAPTURE {
+            return "音频采集";
+        }
+        if bit == Self::PLAYOUT {
+            return "音频播放";
+        }
+        if bit == Self::SYSTEM_LOOPBACK {
+            return "系统内录";
+        }
+        if bit == Self::MICROPHONE {
+            return "麦克风";
+        }
+        if bit == Self::MIXER {
+            return "多路混音";
+        }
+        if bit == Self::GROUP_EPOCH {
+            return "同步组预约播放";
+        }
+        "未知能力"
+    }
+
+    /// 位图 → 人类可读列表（固定顺序；空位图得到「无」）。
+    #[must_use]
+    pub fn describe(bits: u32) -> String {
+        let mut out = String::new();
+        for bit in Self::ALL_KNOWN {
+            if bits & bit == 0 {
+                continue;
+            }
+            if !out.is_empty() {
+                out.push('、');
+            }
+            out.push_str(Self::name(bit));
+        }
+        if out.is_empty() {
+            // 全是未知位时不能显示「无」—— 那会让人以为「对端没有能力」，
+            // 而真相通常是「对端比本端新，声明了本端看不懂的位」。
+            out.push_str(if Self::unknown_bits(bits) != 0 {
+                "未知能力"
+            } else {
+                "无"
+            });
+        }
+        out
+    }
+
+    /// 不在 [`Capabilities::ALL_KNOWN`] 里的位（对端比本端新时会非零）。
+    #[must_use]
+    pub const fn unknown_bits(bits: u32) -> u32 {
+        bits & !(Self::OPUS
+            | Self::PCM16
+            | Self::CAPTURE
+            | Self::PLAYOUT
+            | Self::SYSTEM_LOOPBACK
+            | Self::MICROPHONE
+            | Self::MIXER
+            | Self::GROUP_EPOCH)
+    }
+}
+
 /// 协议错误码（§11 错误码表）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u16)]
