@@ -91,8 +91,8 @@ async fn ffi_pin_tracks_the_current_connection_and_engine() {
     assert_eq!(displayed_pin().unwrap().as_deref(), Some(pin.as_str()));
     first.submit_pin(phone_id, &pin).await.unwrap();
     until(|| first.peers().iter().any(|p| p.trusted)).await;
+    until(|| peers().unwrap().iter().any(|p| p.trusted)).await;
     until(|| displayed_pin().unwrap().is_none()).await;
-    assert!(peers().unwrap().iter().any(|p| p.trusted));
     first.shutdown().await;
     until(|| peers().unwrap().is_empty()).await;
 
