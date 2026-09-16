@@ -3,6 +3,7 @@
 //! 规格：`docs/03-protocol.md`（§6 时钟同步、§3 报文格式）、`docs/02-architecture.md`
 //!
 //! - [`parse_hex_bytes`]：hex 文本 → 字节串（`alp2-dump` 用，容忍文档里的 `|` / `0x` / `<占位>` 写法）
+//! - [`pcap`]：pcap / pcapng 抓包 → 逐包 UDP 载荷（`alp2-dump --pcap` 的输入层）
 //! - [`ClockSamples`]：§6 的采样统计（最小 RTT 过滤 + 中位数 + 质量分级），`latency-probe` 用
 //!
 //! 注：§6 的稳态算法（200 样本滑动窗口 + 线性回归漂移估计）属 M3，本 crate 只做 M0/M1 需要的部分。
@@ -10,6 +11,8 @@
 #![deny(unsafe_code)] // 必须使用 unsafe 的 crate（如 FFI 绑定）在文件顶部显式 #[allow] 并注明理由
 #![deny(clippy::unwrap_used, clippy::expect_used)] // 实时路径禁止 panic；确需处用 #[allow] 并注明理由
 #![deny(clippy::panic)]
+
+pub mod pcap;
 
 use std::fmt;
 
