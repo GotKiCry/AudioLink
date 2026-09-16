@@ -302,6 +302,17 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   offset = 73 µs、quality = Good、RTT P50 = 321 µs。**边界**：两引擎同进程共享单调时钟，真实偏移恒为 0，
   所以 3 µs 完全是「估计器 + 收发节奏」的误差 —— 它证明估计器本身稳，真机上的晶振漂移仍属真机验收。
   代价：这条跑 12 s，进 core-heavy 的 test 步骤。详见 `docs/33-m3-multi-session.md` §8。
+- **M2 断网自愈边界实测 + QUIC 链路时间参数可注入**：`EngineConfig` 新增 `idle_timeout` / `keep_alive`
+  （默认由硬编码的 10 s / 3 s 改为 30 s / 1 s）与 `with_link_timeouts()`，`Engine::start` 不再写死这两个值；
+  新增 `tests/engine/network_outage.rs`（双向闸门 UDP 中继模拟拔网，闸门关上=两个方向都丢）。三点实测：
+  拔网 2 s → 恢复 0.57～0.74 s；4 s → 0.90～1.13 s；**10 s → 4.24～4.84 s（连测四次，稳定）**。
+  关键改进：idle_timeout 提到 30 s 之后，10 s 拔网从「会话终结」（两侧 `peers()` 里对端消失、8 s 观测窗毫无恢复）
+  变成「能自愈」。**未达标**：恢复延迟由 QUIC 的 PTO 指数退避决定（静默越久，下一次探测排得越晚 ——
+  2 s→0.6 s、4 s→0.9 s、10 s→4.5 s），仍越过 M2 验收的 3 s 预算；缺口与四个候选方案记在
+  `docs/48-m2-outage-boundary.md` §5（首选应用层主动探活，其次接上 `session.rs` 里已存在但未接线的 FR-27 重连状态机）。
+  另记一个判据陷阱：第一版把「拔网前的通道积压」读成 **1.1 µs 恢复**，修正为带时间戳的判据
+  （恢复必须由晚于插回时刻的非静音样本证明 + 拔网期间 400 ms 后必须真的安静 + 恢复后 2 s 持续出声）。
+  质量门：fmt / clippy -D warnings / 全套 engine 27 项测试全绿。提交 `fa2c466`（CI 随下一次推送一并观察）。
 
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
