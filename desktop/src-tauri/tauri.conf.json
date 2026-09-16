@@ -36,6 +36,7 @@
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
+    "resources": ["../../docs/compliance/THIRD-PARTY-NOTICES.md"],
     "windows": {
       "nsis": {
         "installMode": "currentUser",

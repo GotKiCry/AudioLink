@@ -13,6 +13,7 @@ import type {
   AlignmentView,
   CaptureDeviceView,
   GroupView,
+  NoticesView,
   LocalStatus,
   PairRequiredPayload,
   PeerView,
@@ -76,6 +77,12 @@ export const api = {
    */
   broadcastEpoch: (leadMs: number): Promise<number> =>
     invoke<number>("broadcast_epoch", { lead_ms: leadMs }),
+  /**
+   * `third_party_notices` —— M5：第三方组件声明（清单 + 许可全文）。
+   *
+   * 懒加载：只在用户真的点了「查看」时才拉（它 1 MB，不该在启动时白付）。
+   */
+  thirdPartyNotices: (): Promise<NoticesView> => invoke<NoticesView>("third_party_notices"),
   createGroup: (idShorts: string[], leadMs: number): Promise<number> =>
     invoke<number>("create_group", { id_shorts: idShorts, lead_ms: leadMs }),
   joinGroup: (idShort: string, groupId: number): Promise<null> =>

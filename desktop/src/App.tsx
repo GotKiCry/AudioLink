@@ -12,6 +12,7 @@
 
 import { useState } from "react";
 
+import { AboutPanel } from "./components/AboutPanel";
 import { AddManualCard } from "./components/AddManualCard";
 import { AlignmentPanel } from "./components/AlignmentPanel";
 import { CaptureSourcePanel } from "./components/CaptureSourcePanel";
@@ -83,6 +84,8 @@ export default function App() {
           onJoin={(idShort, groupId) => void al.joinGroup(idShort, groupId)}
           onLeave={(idShort, groupId) => void al.leaveGroup(idShort, groupId)}
         />
+
+        <AboutPanel />
 
         <AlignmentPanel
           alignment={al.alignment}

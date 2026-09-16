@@ -192,6 +192,20 @@ export interface AlignmentView {
   verdict: AlignmentVerdict;
 }
 
+/**
+ * 第三方组件声明（`third_party_notices` 的返回）。
+ *
+ * `available = false` 时 `text` 不是空字符串，而是「怎么生成」的提示 ——
+ * 空面板只会让人以为软件坏了。
+ */
+export interface NoticesView {
+  available: boolean;
+  /** 从哪里读到的（出问题时一眼看出读的是哪份）。 */
+  source: string;
+  bytes: number;
+  text: string;
+}
+
 export interface TelemetryRow {
   /** 采样时刻（Unix 毫秒）。 */
   atUnixMs: number;

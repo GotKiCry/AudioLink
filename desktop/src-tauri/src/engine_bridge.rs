@@ -36,14 +36,19 @@ use audiolink_types::{
     AudioLinkError, ClockQuality, DEFAULT_QUIC_PORT, ErrorCode, NodeId, StreamStats,
 };
 use tauri::{AppHandle, Emitter, Manager};
+
+use std::path::PathBuf;
+
+/// 第三方声明的文件名（打包资源与仓库内生成路径同名）。
+pub const NOTICES_FILE: &str = "THIRD-PARTY-NOTICES.md";
 use tokio::sync::{broadcast, watch};
 
 use crate::capture::{self, SharedCapture};
 use crate::error::CommandError;
 use crate::view::{
-    AlignmentView, CaptureDeviceView, GroupMemberView, GroupView, LocalStatus, PairRequiredPayload,
-    PeerState, PeerView, StartSendResult, SubmitPinResult, TelemetryRow, TelemetryView,
-    alignment_view, render_telemetry_csv,
+    AlignmentView, CaptureDeviceView, GroupMemberView, GroupView, LocalStatus, NoticesView,
+    PairRequiredPayload, PeerState, PeerView, StartSendResult, SubmitPinResult, TelemetryRow,
+    TelemetryView, alignment_view, notices_view, render_telemetry_csv,
 };
 
 // ---------------------------------------------------------------------------
@@ -417,6 +422,38 @@ impl EngineBridge {
     pub async fn alignment(&self) -> Result<AlignmentView, CommandError> {
         let engine = self.engine().await?;
         Ok(alignment_view(&engine.stream_axes(), engine.monotonic_ms()))
+    }
+
+    /// M5：第三方组件声明 —— 让用户**看得见**，而不是只躺在仓库里。
+    ///
+    /// 两处依次找：打包后的**资源目录**（安装版在这里）、再退回仓库内的生成路径（开发版）。
+    /// 两处都没有时**不报错**：返回「怎么生成」的提示，界面照常显示 ——
+    /// 空面板只会让人以为软件坏了。
+    pub async fn third_party_notices(&self) -> Result<NoticesView, CommandError> {
+        let candidates = [
+            (
+                "资源目录".to_string(),
+                self.app
+                    .path()
+                    .resource_dir()
+                    .ok()
+                    .map(|dir| dir.join(NOTICES_FILE)),
+            ),
+            (
+                "仓库（开发）".to_string(),
+                Some(
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../docs/compliance")
+                        .join(NOTICES_FILE),
+                ),
+            ),
+        ];
+        let found = candidates.into_iter().find_map(|(label, path)| {
+            let path = path?;
+            let text = std::fs::read_to_string(&path).ok()?;
+            Some((format!("{label}：{}", path.display()), text))
+        });
+        Ok(notices_view(found))
     }
 
     /// M4：本机作为接收端，把所有发送端共用的时间原点广播出去。

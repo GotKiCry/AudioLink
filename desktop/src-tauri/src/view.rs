@@ -513,3 +513,76 @@ mod alignment_tests {
         assert_eq!(view.verdict, AlignmentVerdict::Unknown);
     }
 }
+
+// ---------------------------------------------------------------------------
+// M5：第三方声明的投放（用户看得见，而不是只躺在仓库里）
+// ---------------------------------------------------------------------------
+
+/// 找不到声明时给用户的提示 —— 必须包含**怎么生成**，而不是一句「文件不存在」。
+pub const NOTICES_MISSING_HINT: &str =
+    "第三方组件声明尚未生成。在仓库根执行：pwsh tools/license-audit.ps1 -Notices";
+
+/// 第三方组件声明的可读状态。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoticesView {
+    /// 是否拿到了声明内容。
+    pub available: bool,
+    /// 从哪里读到的（展示给用户，出问题时能一眼看出读的是哪份）。
+    pub source: String,
+    /// 字节数（用户据此判断要不要展开）。
+    pub bytes: usize,
+    /// 全文；`available = false` 时是给用户的提示语。
+    pub text: String,
+}
+
+/// 纯函数：把「找到的内容」折成界面要的形状。
+///
+/// `found` 是 `(来源标签, 全文)`；`None` 表示两处都没找到 —— 这时**不返回空字符串**，
+/// 而是返回「怎么生成」的提示：空面板只会让人以为软件坏了。
+#[must_use]
+pub fn notices_view(found: Option<(String, String)>) -> NoticesView {
+    match found {
+        Some((source, text)) => NoticesView {
+            available: true,
+            source,
+            bytes: text.len(),
+            text,
+        },
+        None => NoticesView {
+            available: false,
+            source: String::new(),
+            bytes: 0,
+            text: NOTICES_MISSING_HINT.to_string(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod notices_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    #[test]
+    fn found_notices_report_source_and_size() {
+        let view = notices_view(Some((
+            "资源目录".to_string(),
+            "# 声明\n\n组件清单".to_string(),
+        )));
+        assert!(view.available);
+        assert_eq!(view.source, "资源目录");
+        assert_eq!(view.bytes, "# 声明\n\n组件清单".len());
+        assert!(view.text.starts_with("# 声明"));
+    }
+
+    #[test]
+    fn missing_notices_explain_how_to_generate() {
+        // 空面板只会让人以为软件坏了：找不到时必须给出**怎么生成**。
+        let view = notices_view(None);
+        assert!(!view.available);
+        assert_eq!(view.bytes, 0);
+        assert!(view.text.contains("license-audit.ps1 -Notices"));
+        assert_eq!(view.text, NOTICES_MISSING_HINT);
+    }
+}

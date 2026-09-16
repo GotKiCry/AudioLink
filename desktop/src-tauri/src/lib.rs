@@ -29,8 +29,8 @@ use tauri::{Manager, State};
 use engine_bridge::EngineBridge;
 use error::CommandError;
 use view::{
-    AlignmentView, CaptureDeviceView, GroupView, LocalStatus, PeerView, StartSendResult,
-    SubmitPinResult, TelemetryRow, TelemetryView,
+    AlignmentView, CaptureDeviceView, GroupView, LocalStatus, NoticesView, PeerView,
+    StartSendResult, SubmitPinResult, TelemetryRow, TelemetryView,
 };
 
 #[tauri::command]
@@ -177,6 +177,12 @@ async fn alignment(bridge: State<'_, EngineBridge>) -> Result<AlignmentView, Com
     bridge.alignment().await
 }
 
+/// M5：第三方组件声明（用户看得见的投放）。
+#[tauri::command]
+async fn third_party_notices(bridge: State<'_, EngineBridge>) -> Result<NoticesView, CommandError> {
+    bridge.third_party_notices().await
+}
+
 /// M4：广播共同时间基准（接收端 → 各发送端），返回发出的会话数。
 #[tauri::command(rename_all = "snake_case")]
 async fn broadcast_epoch(
@@ -218,7 +224,8 @@ pub fn run() {
             leave_group,
             set_peer_gain,
             alignment,
-            broadcast_epoch
+            broadcast_epoch,
+            third_party_notices
         ])
         .setup(|app| {
             // 桥接层必须在窗口加载**之前**就位：前端一挂载就会 invoke，拿不到 State 会直接报错。
