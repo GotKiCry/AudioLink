@@ -43,6 +43,8 @@
 | 回归 | 引擎 **133 项**单测全绿（新增 11 项，原有 122 项一项不少） |
 | 质量门 | fmt / clippy(-D warnings) / 内核与桌面全量测试 |
 
+提交 **20218cb** 已推送 main；CI run **35085530753**（core / android / desktop / version-consistency）四个 job 全绿。
+
 ---
 
 ## 4. 未做（记账，不假装）
