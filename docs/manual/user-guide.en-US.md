@@ -159,7 +159,7 @@ on Android it is the "Open source licences" page.
 
 ---
 
-## 13. Not built yet (so you do not go looking)
+## 13. Built / not built (so you do not go looking)
 
 - Android **system audio capture** and microphone input: **implemented** (loopback needs Android 10+, via MediaProjection + AudioPlaybackCapture; microphone via AudioRecord); **on-device acceptance is still outstanding**;
 - Android **battery-optimisation guidance**: **implemented** (detection + actionable prompt; only opens the system allowlist, requests no sensitive permission). Android **start-on-boot is deliberately not implemented** — Android 15+ forbids starting a mediaPlayback foreground service from BOOT_COMPLETED (see docs/53-m5-audit.md);

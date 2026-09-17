@@ -147,7 +147,7 @@ AudioLink 以 **Apache-2.0** 发布（见仓库的 `LICENSE` 与 `NOTICE`）。
 
 ---
 
-## 13. 还没做的（免得你找）
+## 13. 已做 / 没做（免得你找）
 
 - Android 端**系统内录**与麦克风采集：**已实现**（内录需 Android 10+，走 MediaProjection + AudioPlaybackCapture；麦克风走 AudioRecord），**真机验收未完成**；
 - Android 端**省电白名单引导**：**已实现**（检测 + 可操作引导，仅跳系统白名单列表，不申请敏感权限）；Android 端**开机自启有意不做** —— Android 15+ 禁止 BOOT_COMPLETED 启动 mediaPlayback 类型的前台服务，见 docs/53-m5-audit.md；

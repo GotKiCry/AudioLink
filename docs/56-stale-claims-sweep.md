@@ -48,6 +48,18 @@
 
 ---
 
+### 2.1 修后统计（task-43 步骤 2 落地后，2026-09-17）
+
+| 类 | 扫描时 | 处置后 |
+|---|---|---|
+| (a) 会误导现状 | 10 条 | **0 条**（**6 条**就地修正：A-1/3/4/5/6/7；**3 条**动手前已被人修掉、撤回：A-2/8/9；**1 条** A-10 经裁决转入 (b)） |
+| (b) 仍成立 | 约 120 行 | 约 121 行（+A-10） |
+| (c) 历史快照 | 约 93 行 | 约 93 行（**新增 2 处标注**，正文未动） |
+
+扫描时的 (a) 清单里有 **3 条在动手前就已被修掉**（A-2、A-8、A-9），属我的扫描数据滞后 —— 已在 §3 就地标注撤回，结论见 §9。
+
+---
+
 ## 3. (a) 类：(会误导现状的过时表述) —— 待 Lead 确认后修
 
 ### A-1 · Android 内录在用户手册里被写成"尚未实现"
@@ -55,12 +67,17 @@
 | 项 | 内容 |
 |---|---|
 | 位置 | `docs/manual/troubleshooting.zh-CN.md:62` |
-| 原文 | `想让手机**采集**系统声音 | 尚未实现（见用户手册 §13），当前 Android 以接收播放为主` |
-| 反证 | `docs/manual/user-guide.en-US.md:164` 同一条写的是 Android **system audio capture … implemented**；实现见 `android/app/src/main/kotlin/com/gotkicry/audiolink/capture/CaptureController.kt:85-89`、`capture/CaptureWiring.kt:70-73`，提交 `1c4ac55` / `4c2d21a` / `a0158a2` |
+| 原文 | `想让手机**采集**系统声音 \| 尚未实现（见用户手册 §13），当前 Android 以接收播放为主` |
+| 反证 | `docs/manual/user-guide.en-US.md:164` 同一条写的是 Android **system audio capture … implemented**；实现见 `android/app/src/main/kotlin/com/gotkicry/audiolink/capture/CaptureController.kt:85-89`、`service/CaptureWiring.kt:72-73`，提交 `1c4ac55` / `4c2d21a` / `a0158a2` |
 | 影响 | 中英两份手册**自相矛盾**，中文用户按此认为"手机不能内录" |
 | 建议改法 | 划掉"尚未实现"，就地指向 `CaptureWiring.kt`（SDK≥29 + `RECORD_AUDIO` 门控）与 en-US 同条目，注明"由 M4 能力位轮次（`a0158a2`）落地" |
 
 ### A-2 · 同一族口径在中文用户手册里也过时
+
+> **⚠️ 已撤回（2026-09-17 按内容复核）**：`user-guide.zh-CN.md:152` 现在是「**已实现**（内录需 Android 10+…），**真机验收未完成**」——
+> `98dec72` 已经改过，是我的扫描数据滞后。教训：**扫描结论本身也要带时间戳**，否则它就是下一份过时口径。
+> 复核发现真正的矛盾对是**两份 troubleshooting**（见 A-1），已修；顺带发现两份 user-guide 的 §13 标题仍叫「还没做的」，
+> 而该节内容已含「已实现」——标题与内容矛盾，已一并改为「已做 / 没做」。
 
 | 项 | 内容 |
 |---|---|
@@ -86,7 +103,7 @@
 |---|---|
 | 位置 | `docs/46-m4-capability-negotiation.md` L27 / L35-36 / L177 / L181 / L189 / L207 |
 | 原文 | 大意："Android 的内录尚未实现""CURRENT 不声明内录" |
-| 反证 | `android/.../service/AudioLinkService.kt:338-339` 与 `capture/CaptureWiring.kt:38-73`：`SYSTEM_LOOPBACK=16u`、`MICROPHONE=32u`，按 SDK≥29 与 `RECORD_AUDIO` 门控取并集；FFI 侧 `core/crates/audiolink-ffi/src/engine_bridge.rs:76-88`、`:381-382` 已有 `EngineStartConfig.capabilities` |
+| 反证 | `android/.../service/AudioLinkService.kt:338-339` 与 `service/CaptureWiring.kt:38-73`：`SYSTEM_LOOPBACK=16u`、`MICROPHONE=32u`，按 SDK≥29 与 `RECORD_AUDIO` 门控取并集；FFI 侧 `core/crates/audiolink-ffi/src/engine_bridge.rs:76-88`、`:381-382` 已有 `EngineStartConfig.capabilities` |
 | 影响 | 高。这是"能力矩阵"类表格，最容易被当现状引用，并直接导致"内录没做"的连锁误判 |
 | 建议改法 | 逐处划掉，就地指向 `CaptureWiring.kt` 与 `a0158a2`，注明"由 M4 能力位轮次落地：Android 向对端声明内录/麦克风并取并集" |
 
@@ -128,7 +145,10 @@
 | 现状 | 已改为"**当时不做**（M1 范围）：托盘、开机自启、双语…"——**已是正确写法**，本轮无需再动 |
 | 归类 | 列在此处只为登记"已修"，避免下一轮重复排查（属 (b)） |
 
-### A-9 · 已发布口径里的能力矩阵（需 Lead 判断是否算过时）
+### A-9 · 已发布口径里的能力矩阵（**已撤回**：动手前发现已修）
+
+> **⚠️ 已撤回（2026-09-17）**：`docs/42` §2.4 早已带「**本条已过时**」+ 指向（见该文档 `:47-49`），§13 也有逐句复核表。无需再动。
+
 
 | 项 | 内容 |
 |---|---|
@@ -143,7 +163,7 @@
 | 项 | 内容 |
 |---|---|
 | 位置 | `docs/50-m2-reconnect.md:320` |
-| 原文 | `重连后 §7 组基准是否重发 | 未实现 | M3/M4` |
+| 原文 | `重连后 §7 组基准是否重发 \| 未实现 \| M3/M4` |
 | 核查 | `reconnect_once`（`runtime.rs:4015`）重建会话走 `connect_inner`，**未找到**重发组基准的代码路径；但也没有"已实现"的证据 |
 | 归类 | 暂按**仍成立**入 (b)；建议下一轮 M3/M4 复核时顺手定论，不要留在"未实现"这种模糊措辞里 |
 
@@ -223,7 +243,7 @@
 
 ---
 
-## 8. 待 Lead 裁决
+## 8. 待 Lead 裁决（**已裁决**：全部按建议执行，落地结果见 §9）
 
 1. **(a) 类范围**：10 条是否全修？我建议优先级为 **A-5 > A-1/A-2 > A-3 > A-4 > A-7 > A-6 > A-9 > A-10**：
    A-5 是我造成的、且指向"最容易被执行的验收手册"；A-1/A-2 是**中英自相矛盾**；A-3 是**把运行中的验收写成未开始**。
@@ -232,3 +252,53 @@
 4. **代码注释**：41 条候选里，`runtime.rs:21/228` 与 `lib.rs:359` 建议与 A-4/A-6 同批；是否排单？
 5. **修后交付**：确认范围后我按"划掉不删 + 就地指向 + 注明哪一轮/何证据"落地，只动 `docs/**`，
    回填本节统计与 commit hash（当前：**尚未修改任何 doc**，工作树 docs 部分与 `c82ed2f` 之后无新增改动）。
+
+---
+
+## 9. 落地结果（task-43 步骤 2，2026-09-17）
+
+纪律：**划掉不删 + 就地指向 + 注明哪一轮/何证据**；只动 `docs/**`；代码注释只报不改。
+
+| 条目 | 处置 | 去处 | 写进文档的依据 |
+|---|---|---|---|
+| A-1 | 就地划掉 + 改判「已实现…真机验收未完成」 | `docs/manual/troubleshooting.zh-CN.md` §5 表、`docs/manual/troubleshooting.en-US.md` §5 表 | M4 能力位轮次 `a0158a2`；`service/CaptureWiring.kt:38-73` |
+| A-2 | **撤回**（`98dec72` 已修）；顺带修掉两处 **§13 标题**（内容已含「已实现」却仍叫「还没做的」） | `docs/manual/user-guide.{zh-CN,en-US}.md` §13 | 标题与本节内容自相矛盾 |
+| A-3 | 改为**进行中** + 起跑时间 + 产物路径 + 读时差异说明 | `docs/22-m2-soak-runner.md` §7 | PID 60896 / 2026-09-17 13:05:48 起 / `t=19905 s`（约 69%）/ `target/evidence/soak/soak-8h-head.log` |
+| A-4 | 顶部加「⚠️ 口径更新」块 + **7 处**就地划掉/改判 | `docs/46-m4-capability-negotiation.md`（顶部、§2、§7、§8.3.4、§8.3.5 含表、§8.4） | `service/CaptureWiring.kt:38,41,45,72-73`；`engine_bridge.rs:88,381,393`；`a0158a2`/`4c2d21a` |
+| A-5 | §5.2 改判「入口已就绪、真机未执行」+ §0 总表 / 阻塞摘要 / §6.4 / §7 同步（**6 处**） | `docs/55-device-acceptance-runbook.md` | `6f04cbf`；`MainActivity.kt:59-63`；`AudioLinkService.kt:118,136,851`；`PlaybackScreen.kt:226-240,262` |
+| A-6 | 就地划掉 + 口径更新（只剩 1 处 TODO，且其功能已实现） | `docs/43-m5-desktop-shell.md` 文首块 | `lib.rs:359`；`useAudioLink.ts:220` 调 `tryAutoConnect` |
+| A-7 | 就地划掉 + 指向 `stream_axes()`，附实测 144 样本 / 3 ms | `docs/39-m4-common-time-base.md` §4 | `runtime.rs:1221`、`runtime.rs:505,550`；本文件 §6 |
+| A-9 | **撤回**（`docs/42` §2.4 早有「本条已过时」+ 指向） | —— | `docs/42:47-49` |
+| A-10 | 留 (b)，下轮 M3/M4 定论 | —— | `reconnect_once`（`runtime.rs:4015`） |
+
+**顺带修掉的 2 处非 (a) 缺陷**（都是"会让下一个人读错或看错"的那一类）：
+1. `docs/55` §1.1 权限行的交叉引用 `见 §5.2 的清单` → `§5.3`（§5.2 从来没有清单，清单在 §5.3）；
+2. `docs/55` §2.11 表格里的 `PRIMARY|FAST` 管道**没转义**，整行被 GFM 切成 4 列（表头 3 列）——**预存在**缺陷（HEAD 版本同样破格），已改为 `PRIMARY\|FAST`。
+
+**1 处工作树卫生**：`docs/manual/user-guide.zh-CN.md` 的工作树 EOL 是 **CRLF**（与 `.gitattributes` 的 `* text=auto eol=lf` 不符，同目录另外三份都是 LF），已归一为 LF。归一化后 git 看到的改动仍只有 1 行（标题那行），说明它不影响内容判定，但留着会让下一轮的 EOL 检查出现假阳性。
+
+**格式自检**：改完后逐文件校验表格列数（`target/evidence/audit/task43/tablecheck.py`，按未转义的 `|` 切分）→ **列数不一致 0 行**；12 个文件全部 UTF-8 无 BOM。
+
+**§5.1（PC → 手机）复核结论：仍准确，未改。** 依据：`device-link` 源码在（`core/crates/audiolink-tools/src/bin/device_link.rs`，Cargo.toml `name = "device-link"`），桌面侧推流入口在（`desktop/src/components/PeerCard` 的「开始推流」）；`6f04cbf` 只新增了**手机作为发送端**的入口，没有动 PC 侧发送路径。
+
+**(c) 类标注 2 处**（正文未动）：
+1. `docs/10-handoff.md` 文首：声明本文是**按轮次追加的过程日志**，早期轮次的「未做/缺口」只代表当时；
+2. `docs/51-fr27-reconnect-audit.md` 顶部快照块补一条：§1 说的「预算测试带 `#[ignore]` / 要 `--run-ignored`」**已不成立**（现全文件无 `#[ignore]`）。
+
+### 9.1 代码注释的优先级排序（本轮**不改**，留给 8 h 长跑结束后的那一轮）
+
+| # | 位置 | 注释 | 为什么是这个位次 |
+|---|---|---|---|
+| 1 | `core/crates/audiolink-engine/src/runtime.rs:228` | 「Android 的内录尚未实现」 | 与 A-4 同一个错误前提，但落在**核心引擎的 doc comment**：读者是改内核的人，且会随 API 文档传播，杀伤面比 docs 更大 |
+| 2 | `core/crates/audiolink-engine/src/runtime.rs:21` | 「…尚未落地的 M2/M3 能力」 | M2/M3 均已验收（`docs/28·29·30·33·49`），却是**模块级总述**，误导面最广 |
+| 3 | `desktop/src-tauri/src/lib.rs:359` | `TODO(M5)：启动后自动连接上次设备（FR-31，可关）` | 功能已实现（A-6），留着会让人以为 FR-31 还差一件 |
+| 4 | `tools/sync-board.ps1:92` | 「仍未做：8h」 | 与 A-3 同源，且出现在**看板生成脚本**里，会被当成进度事实 |
+| 5 | `tools/sync-board.ps1:118` | 一条列出 `docs/31·32·33` 过时项的说明 | 那些项已被 task-16/17 修掉，说明本身过期 |
+| 6 | 其余 36 条候选 | 见 `target/evidence/audit/task43/code-candidates.md` | 需人工过目：`audiolink-types/src/lib.rs:510`、`epoch.rs:19`、`mixer_alignment.rs:9`、`capability_negotiation.rs:42`、`AudioLinkApp.kt:14-15`、`Theme.kt:22` |
+
+第 1/2/3 条与 `docs/46`、`docs/43` 是**同一批事实**，建议与它们的 docs 修正同批做，免得两处再次漂开。
+
+### 9.2 交付
+
+- commit：**见本轮提交**；仅动 `docs/**`，未 push（由 Lead 收口）。
+- 本轮**没有**改任何代码、`tools/` 或 workflow。

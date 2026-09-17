@@ -25,9 +25,9 @@
 | 1 | **[M1] 验收**：声学端到端 P50 ≤ 110 ms / P95 ≤ 150 ms | §2 | **方法齐备、命令齐备，但整条链路未验证**；需要一支麦克风 + 现场标定。零重采样 / 低延迟模式两项另有读数法（§2.11、§3） |
 | 2 | **[M1] 真机验收**：Android 低延迟 / 出声延迟 / 30 min 无断流 | §3 | **可执行**（30 min 有现成脚本）；「出声延迟」复用 §2 的量法 |
 | 3 | **[M3] 真机验收**：双机同期录音 ±10 ms / 漂移抖动 / ≥ 8 台压测 | §4 | ①②**可执行**（量具已就绪且自检过）；③ **需要 ≥ 8 台真机**，本手册给降级路径（2–3 台） |
-| 4 | **[M4] 真机验收**：PC ↔ 手机双向回环 + Android 内录/麦克风清单 | §5 | ⚠️ **双向的一半当前不可执行**：Android 侧**没有连接/推流入口**（见 §6.4，本轮核实）；内录/麦克风清单**可执行**（纯真机操作 + 读数） |
+| 4 | **[M4] 真机验收**：PC ↔ 手机双向回环 + Android 内录/麦克风清单 | §5 | ✅ **两条都可执行了**：~~⚠️ 双向的一半当前不可执行：Android 侧没有连接/推流入口（见 §6.4，本轮核实）~~ → 发送入口已于 `6f04cbf` 接线（2026-09-17 复核，见 §5.2）；内录/麦克风清单**可执行**（纯真机操作 + 读数） |
 
-**当前四条共同的硬阻塞**（详见 §6）：手机与 PC **不同子网**、`adb forward` **仅 TCP**、MIUI `adb install` **-99**、**Android 无发送入口**（本手册新增的第 4 条）。
+**当前三条共同的硬阻塞**（详见 §6）：手机与 PC **不同子网**、`adb forward` **仅 TCP**、MIUI `adb install` **-99**。~~**Android 无发送入口**（本手册新增的第 4 条）~~ → **已解除**：`6f04cbf` 落了连接/推流入口（2026-09-17 复核，见 §5.2）。
 
 ---
 
@@ -41,7 +41,7 @@
 | **同一子网** | 手机与 PC 必须在**同一网段**（前三段相同） | 🔴 现成阻塞：手机 `192.168.31.231/24` vs PC `192.168.3.200/24` → **不可达**（跨网段既发现不到、直连也不通，见 `docs/manual/troubleshooting.zh-CN.md`）。处置：让手机接 PC 所在的 AP/路由器 |
 | adb | USB 调试可用 | `adb devices` 应列出设备；⚠️ **`adb forward` 只支持 TCP**，而本项目的音频与控制走 **UDP 58290** → **不能用 `adb forward` 把 UDP 端到端搬过来**，只能靠同子网 / USB 反向网络共享 |
 | MIUI 安装 release 包 | 开发者选项里打开「USB 安装」 | 🔴 `adb install` release 包报 **`Failure [-99]`**（debug 包可装），见 `docs/12` §8.5 |
-| 权限 | 麦克风（`RECORD_AUDIO` 运行时）、MediaProjection（每次会话重新授权）、通知 | 见 §5.2 的清单 |
+| 权限 | 麦克风（`RECORD_AUDIO` 运行时）、MediaProjection（每次会话重新授权）、通知 | 见 §5.3 的清单 |
 
 ### 1.2 构建与安装（命令照抄；⚠️ 未经实机验证 = 本轮没跑）
 
@@ -229,7 +229,7 @@ target/evidence/m1-acoustic/<日期>/
 
 | 项 | 判据 | 方法（本轮已核实：断言 + 单测 + 真机读数） |
 |---|---|---|
-| **零重采样** | 全链路 48 kHz，不存在 SRC | 引擎侧 `format_guard::require_unified_format` / `require_unified_link` 是**断言**（不达标直接 `Err` 打断启动），7 项单测；真机侧看 flinger：`PCM_FLOAT` / 48000 / 2ch / `PRIMARY|FAST`（`docs/12` §0） |
+| **零重采样** | 全链路 48 kHz，不存在 SRC | 引擎侧 `format_guard::require_unified_format` / `require_unified_link` 是**断言**（不达标直接 `Err` 打断启动），7 项单测；真机侧看 flinger：`PCM_FLOAT` / 48000 / 2ch / `PRIMARY\|FAST`（`docs/12` §0） |
 | **低延迟模式生效** | `getPerformanceMode() = LOW_LATENCY` | `adb shell uiautomator dump` 读 UI 原值 + flinger 片段；历史两代设备都有读数，**"今天是否仍成立"必须真机复测** |
 
 
@@ -338,15 +338,20 @@ cargo run -q -p audiolink-tools --bin sync-measure -- phone-a.wav phone-b.wav --
 
 用 `device-link`（`docs/12` §6）或桌面 App：「连接 → 开始推流 → 手机出声」。
 
-### 5.2 手机 → PC（⚠️ **当前不可执行 —— 本轮核实的新发现**）
+### 5.2 手机 → PC（⚠️ **入口已就绪；真机尚未执行** —— 2026-09-17 更新）
 
-**核实方式**：在 `android/app/src/main/kotlin/` 全目录搜 `connect` / `start_send` / `startSend` → **零命中**；
-Android 侧只有**接收播放**（`PcmFeed` → `PcmRingBuffer` → `LowLatencyPlayer` → `AudioTrack`）与**采集供数**（`CaptureController` → `PcmPull` 交给内核）。
-⇒ **手机作为发起端连接 PC、并触发推流，当前没有入口**（既没有 UI，也没有调用点）。
-另有面板已记的 `[M4] 能力位：EngineStartConfig.capabilities…`（**Todo**）：Android 无法把「支持内录/麦克风」告诉对端。
+> **口径更新（task-43，2026-09-17）**：本节初版的结论是「✅ 不可执行 —— 缺入口」。**那个结论已过时**，
+> 原因是它之后落了实现：提交 `6f04cbf`（本手册 `c82ed2f` 的后代）把发送方向接上了 ——
+> `MainActivity.kt:59-63`（`onConnect` → `AudioLinkService.connect`、`onStartSend` → `AudioLinkService.startSend`）、
+> `service/AudioLinkService.kt:118,136,851`、新增 `service/SenderUiState.kt`、界面 `ui/PlaybackScreen.kt:226-240`（地址输入 + 「连接电脑」）与 `:262`（「开始推流」）。
+> 面板记的 `[M4] 能力位：EngineStartConfig.capabilities…`（Todo）也已落地（`a0158a2`，FFI 侧 `engine_bridge.rs:88,393`）。
+> ~~核实方式（初版）：在 `android/app/src/main/kotlin/` 全目录搜 `connect` / `start_send` / `startSend` → 零命中~~
+> —— 该 grep **在 `6f04cbf` 之前成立、现在会命中**。教训：核实结论必须带**时间戳与提交号**，否则下一次它就是新的过时口径。
 
-**结论**：「PC ↔ 手机双向」这一条**不是"缺证据"，而是"缺入口"** —— 先补实现（连接入口 + `start_send` 触发 + `capabilities` 字段），再谈验收。
-在此之前只能测「PC → 手机」单向，**不要**把单向结果写成双向达标。
+**执行方式**：手机上「连接电脑」（填 PC 地址，如 `192.168.1.5:58290`）→ 等连接成功 → 「开始推流」→ PC 侧应出现读数/出声。
+
+**结论**：「PC ↔ 手机双向」现在**是"缺证据"，不是"缺入口"** —— 与初版结论**相反**。
+真机跑完之前，**不要**把单向结果写成双向达标（这一条不变）。
 
 ### 5.3 Android 内录 / 麦克风真机清单（第 106 轮由实现方列出；**不得当成已验证**）
 
@@ -376,7 +381,7 @@ Android 侧只有**接收播放**（`PcmFeed` → `PcmRingBuffer` → `LowLatenc
 | 1 | **手机与 PC 不同子网** | 手机 `192.168.31.231/24` vs PC `192.168.3.200/24` → 发现不到、直连不通 | 让手机接 PC 所在的路由器/AP；确认前三段一致后先 `ping` | 看板 `[M3] 真机验收` 条目；`docs/manual/troubleshooting.zh-CN.md` §「两台设备不在同一网段」 |
 | 2 | **`adb forward` 仅支持 TCP** | 音频与控制走 **UDP 58290** → 不能靠它搬链路 | 用同子网（首选）；或 USB 反向网络共享（USB tethering）让 PC/手机处于同一网段 | 看板同条目 |
 | 3 | **MIUI `adb install` release 包 `Failure [-99]`** | debug 包可装、release 被拒 | 开发者选项打开「USB 安装」（环境项） | `docs/12` §8.5 |
-| 4 | **Android 无「连接/推流」入口**（本手册新增） | 手机不能作为发送端（§5.2） | 需补实现：连接入口 + `start_send` 触发 + `EngineStartConfig.capabilities` | 本轮核实（Kotlin 全目录 `connect`/`start_send` 零命中）+ 看板 `[M4] 能力位…`（Todo） |
+| ~~4~~ | ~~**Android 无「连接/推流」入口**（本手册新增）~~ → **已解除（2026-09-17）** | ~~手机不能作为发送端（§5.2）~~ → 可以作为发送端（真机未跑） | ~~需补实现：连接入口 + `start_send` 触发 + `EngineStartConfig.capabilities`~~ → **已实现**：`6f04cbf`（连接/推流入口）、`a0158a2`（能力位） | ~~Kotlin 全目录 `connect`/`start_send` 零命中~~ → 现在命中 `MainActivity.kt:61,63`；能力位见 `engine_bridge.rs:88,393` |
 
 ---
 
@@ -393,7 +398,7 @@ Android 侧只有**接收播放**（`PcmFeed` → `PcmRingBuffer` → `LowLatenc
 | §3.3 | `soak-30min.ps1` 的可用性与修复后 30 min 结果 | 脚本是 gitignored 的本地产物；修复后从未跑过 |
 | §4.1/§4.2 | M3 双机录音与漂移抖动的真机读数 | 工具自检过，但**从未在真机上量过** |
 | §4.3 | ≥ 8 台真机 | 没有 8 台设备 |
-| §5.2 | 「手机 → PC」 | **缺实现入口**（不是缺证据） |
+| §5.2 | 「手机 → PC」 | ~~**缺实现入口**（不是缺证据）~~ → **入口已就绪，缺的只是真机执行**（`6f04cbf`，2026-09-17 复核） |
 | §5.3 | 内录/麦克风 6 项 | 第 106 轮由实现方列出，**从未真机跑过** |
 
 ---

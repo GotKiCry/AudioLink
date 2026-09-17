@@ -18,6 +18,11 @@
 > - **§4.2 判据 ⑧ 与 §7 第 189 行要求的回归测试在修复落地时并未补齐** —— tests/engine/ 全目录 grep is_owner|owner_slot|factory 零命中，这条修复长期**没有测试守着**。补位于 task-21 / tests/engine/mixer_owner_handover.rs（判据 ⑧ 那条绿，§189 那条红）。
 > - **本文的行号基准已过期**：runtime.rs 现为 4809 行。本文所有 runtime.rs:NNNN 引用一律按**函数名**定位，**不要按行号**。
 >
+> - **§1 里「预算测试带 `#[ignore]`、要显式 `--run-ignored`」已不成立**（task-43，2026-09-17 复核）：
+>   `tests/engine/network_outage.rs` 全文件现**无** `#[ignore]`（在 `core/crates/audiolink-engine/tests/` 搜
+>   `#[ignore` 零命中），`ten_second_outage_recovers_within_budget` 可直接跑。§1 的「`#[ignore]` 在 `832`」
+>   与示例命令里的 `--run-ignored` 都是**快照期**的事实，照抄会以为要跳过它。
+>
 > **教训（值得记住）**：一份「修复前的诊断文档」若不在顶部标注落地状态，后续轮次会把它当成**现状缺口**照抄 —— 已真实发生过两次：① 有轮次据 §2.2 发出「接收端 8 路压测会假绿」的警告（方向对，但没人去跑它）；② 第 104 轮 Lead 读到修复后代码里的 CAS 接管，判定该警告是「误报」并写进本文档 —— 随后 task-21 的 B 测试把它稳定跑红，证明**只修了「新会话接管」那一半，「已在混音的 guest 接管」那一半没修**。教训：**读代码得出的「已修复」结论，必须有一条会红的测试背书**，否则只是「看起来修好了」。
 ## 0. 结论先行
 

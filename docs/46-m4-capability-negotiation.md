@@ -3,6 +3,21 @@
 > 看板：`[M4] 能力协商（内核侧）`。日期 **2026-09-17**。
 > 一句话：把「连得上但没声音」这类失败**从开流时刻提前到握手时刻**，并给出看得懂的原因。
 
+> ## ⚠️ 口径更新（task-43，2026-09-17 补记，**读本文前必读**）
+>
+> 本文 §2 / §7 / §8.3.4 / §8.3.5 里「Android 内录尚未实现 / `CURRENT` 不声明内录」是**第一轮的事实**，
+> **已被后续实现取代**，不要当现状缺口来读：
+>
+> - **Android 内录与麦克风已实现**：`service/CaptureWiring.kt:38,41`（`SYSTEM_LOOPBACK = 16u` /
+>   `MICROPHONE = 32u`）、`:45`（内录需 SDK ≥ 29）、`:72-73`（按 SDK 与 `RECORD_AUDIO` 门控取并集）；
+>   采集已接进服务生命周期（`service/CaptureController.kt`、`service/AudioLinkService.kt`）。
+> - **平台能力注入已接线**：`core/crates/audiolink-ffi/src/engine_bridge.rs:88`（`EngineStartConfig.capabilities`）、
+>   `:381`、`:393`（`engine_config.capabilities = Capabilities::CURRENT | config.capabilities`）——
+>   §8.3.5 说的那个「口子」已经用上了。
+> - 落地提交：`a0158a2`（Android 向对端声明内录/麦克风能力位，内核侧取并集）、`4c2d21a`（采集接进服务生命周期）。
+> - **仍然成立**（别连带改掉）：§8.3.4 第一条「无损档 `PCM16`、混音路数界面上还没有对应控件」；
+>   §8.4 第一条「真正的置灰」目前只在 §8.3.2 建组勾选这一处落地。
+
 ---
 
 ## 1. 为什么需要它
@@ -33,8 +48,9 @@
    「连不上」—— 那比不做协商更糟：用户本来只是想少个功能，结果整个用不了。
 2. **可选位缺失不拒绝**，交给调用方降级（把入口置灰 + 说明原因）。
 3. **`Capabilities::CURRENT` 只声明内核真做到的**：内录与麦克风要平台侧真的接上才算
-   （Windows WASAPI loopback / Android AudioPlaybackCapture），现在不声明 ——
-   宁可少声明，也不要声明一件做不到的事。
+   （Windows WASAPI loopback / Android AudioPlaybackCapture）。~~现在不声明~~ →
+   **口径更新**：两侧现在都声明了（Android 依据 `service/CaptureWiring.kt:38-73`，提交 `a0158a2`）；
+   原则不变：宁可少声明，也不要声明一件做不到的事。
 
 ---
 
@@ -174,11 +190,14 @@
 #### 8.3.4 仍未做
 
 - 其余依赖能力的入口（无损档 `PCM16`、混音路数）**界面上目前还没有对应控件**，等有了再按同一模式处理；
-- 平台能力注入仍是缺口（Windows loopback 已有、Android 内录未实现）—— `with_capabilities` 的口子已经开好。
+- ~~平台能力注入仍是缺口（Windows loopback 已有、Android 内录未实现）—— `with_capabilities` 的口子已经开好。~~
+  → **已不是缺口**（见顶部口径块）：Android 侧按运行时门控声明 `SYSTEM_LOOPBACK | MICROPHONE`
+  （`service/CaptureWiring.kt:38-73`），FFI 侧 `engine_bridge.rs:88,393` 把它并进 `EngineConfig.capabilities`。
 #### 8.3.5 平台能力注入：把「内核能做什么」与「这台机器能做什么」分开
 
 `Capabilities::CURRENT` 说的是**内核**能做到什么；而真实设备还有平台差异 —— Windows 有 WASAPI loopback
-（系统内录），Android 的 `AudioPlaybackCapture` 尚未实现。在这之前，那个常量被写死在握手构造函数里，
+（系统内录），~~Android 的 `AudioPlaybackCapture` 尚未实现~~（**后已实现**，见本节表末与顶部口径块）。
+在这之前，那个常量被写死在握手构造函数里，
 于是「所有设备都声称自己一样」—— 能力协商也就只剩形式。
 
 现在 `EngineConfig.capabilities`（默认仍是 `CURRENT`）由**平台侧**声明，握手直接用它：
@@ -186,7 +205,7 @@
 | 侧 | 声明 | 依据 |
 |---|---|---|
 | 桌面端（Tauri） | `CURRENT \| SYSTEM_LOOPBACK` | WASAPI loopback 采集已实现（`docs/13`） |
-| Android（FFI） | `CURRENT`（不含内录） | `AudioPlaybackCapture` 尚未实现 —— 保持默认就是此刻的实话 |
+| Android（FFI） | ~~`CURRENT`（不含内录）~~ → 现为 `CURRENT \| SYSTEM_LOOPBACK \| MICROPHONE`（按运行时门控取并集） | ~~`AudioPlaybackCapture` 尚未实现 —— 保持默认就是此刻的实话~~ **已实现**：`service/CaptureWiring.kt:38-73`（`SYSTEM_LOOPBACK=16u` / `MICROPHONE=32u`，SDK ≥ 29 且声明 `RECORD_AUDIO`），提交 `a0158a2` |
 
 **端到端证据**：`core/crates/audiolink-engine/tests/engine/capability_negotiation.rs` 起两个真实 Engine
 （真 QUIC + PIN 配对），一端声明内录、另一端不声明，断言**对端** `peers()` 里读到的那份能力：
@@ -196,8 +215,10 @@
 
 - **真正的「置灰」**：现在卡片上**说明**了缺什么，但依赖该能力的入口（比如建组时勾选对端）还没有
   真的禁用 —— 那一步要等「哪些入口依赖哪些能力」在界面上说清楚（`GROUP_EPOCH` 已是明确的一例）；
-- **平台能力注入**：`Capabilities::CURRENT` 仍是内核能力；接上平台（Windows loopback / Android 内录）
-  之后要能把真实设备能力传进握手 —— 口子（`Handshake::with_capabilities`）已经开好并在测试里用过。
+- ~~**平台能力注入**：`Capabilities::CURRENT` 仍是内核能力；接上平台（Windows loopback / Android 内录）
+  之后要能把真实设备能力传进握手 —— 口子（`Handshake::with_capabilities`）已经开好并在测试里用过。~~
+  → **已完成**（顶部口径块）：`EngineStartConfig.capabilities` + `engine_bridge.rs:393` 的并集；
+  §8.3.5 的端到端测试就是这一条的验收。
 ---
 
 ## 7. 未做（第一轮时记下的，部分已在 §8 完成）
@@ -205,5 +226,7 @@
 - **引擎层可观测**：`Handshake::agreed_caps()` 已经有了，但还没接到 `Engine` 的查询 API 与事件上 ——
   所以桌面端现在看不到「协商出了什么」；
 - **界面降级**：内录/麦克风不可用时把入口置灰并说明（M4 交付物 4 的另一半，等平台能力接上再做）；
-- **平台能力接线**：`Capabilities::CURRENT` 是内核能力；真实设备能力（Windows 有 loopback、Android 看 API 等级）
-  还没注入 —— `Handshake::with_capabilities` 就是为这一步留的口子（测试已在用）。
+  → **口径更新**：平台能力已接上，置灰已在 §8.3.2（建组勾选）落地；其余入口仍未做（见 §8.3.4）。
+- ~~**平台能力接线**：`Capabilities::CURRENT` 是内核能力；真实设备能力（Windows 有 loopback、Android 看 API 等级）
+  还没注入 —— `Handshake::with_capabilities` 就是为这一步留的口子（测试已在用）。~~
+  → **已注入**（顶部口径块）。

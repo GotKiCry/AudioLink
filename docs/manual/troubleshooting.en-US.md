@@ -64,7 +64,7 @@ screenshot or exported CSV. Without these we can only guess.
 | `adb install` fails with **-99** (MIUI/HyperOS) | Enable "**Install via USB**" in Developer options (some builds call it "Install apps via USB"), then reinstall |
 | "App not installed" | Wrong ABI: 32-bit devices need the `armeabi-v7a` package, nearly every modern phone needs `arm64-v8a` |
 | Killed in the background, audio stops | Add AudioLink to the battery-optimisation allow-list; check the foreground service notification |
-| Want the phone to **capture** system audio | Not implemented yet (see user guide section 13); Android currently receives and plays |
+| Want the phone to **capture** system audio | ~~Not implemented yet (see user guide section 13); Android currently receives and plays~~ **Implemented** (landed in the M4 capability-bit round, `a0158a2`: loopback via MediaProjection + AudioPlaybackCapture, needs Android 10+; microphone via AudioRecord - see user guide section 13). **On-device acceptance is still outstanding** |
 
 ---
 
