@@ -122,7 +122,10 @@ else {
   Write-Host '终值指标：'
   Write-Host ("  码率 {0} bps / 缓冲 {1} us / 时钟偏差 {2} us / 漂移 {3} ppm" -f $final.bitrate_bps, $final.buffer_level_us, $final.clock_offset_us, $final.drift_ppm)
   Write-Host ("  抖动 {0} us (p95 {1} us) / RTT {2} us / 端到端 {3} us" -f $final.jitter_us, $final.jitter_p95_us, $final.rtt_us, $final.e2e_latency_us)
-  Write-Host ("  丢包率 x100 {0} / 迟到丢弃 {1} / 欠载 {2} / NACK {3} / PLC {4} / 流 {5}" -f $final.loss_pct_x100, $final.late_drops, $final.underruns, $final.nack_count, $final.plc_count, $final.stream_id)
+  # 主动丢帧（depth_drops）与迟到丢弃分开打印：前者是抖动降档的策略代价，后者才是质量问题。
+# 旧报告没有该字段，用 - 占位而不是打成空（免得读的人以为是 0）。
+$depthDrops = if ($null -eq $final.depth_drops) { "-" } else { $final.depth_drops }
+Write-Host ("  丢包率 x100 {0} / 迟到丢弃 {1} / 主动丢帧 {2} / 欠载 {3} / NACK {4} / PLC {5} / 流 {6}" -f $final.loss_pct_x100, $final.late_drops, $depthDrops, $final.underruns, $final.nack_count, $final.plc_count, $final.stream_id)
 
   Write-Host ''
   if ($verdict -eq 'ok' -and $result.violation_count -eq 0) {
