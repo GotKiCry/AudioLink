@@ -453,6 +453,7 @@ arm64-v8a + armeabi-v7a**。已全部回退 —— 需求文档是契约，支�
 | S4 | 走 HTTP 取清单与安装包：可达 + 字段齐全 + 字节一致 | `sha256=E5A99CA19A7773C9…`（HTTP 取回 == 托管文件） |
 | S5 | 版本比较语义：新 / 同 / 旧 | `0.1.0 vs 0.0.9 → 1`、`vs 0.1.0 → 0`、`vs 0.9.9 → -1` |
 | S6 | 用**配置公钥**验签**从 HTTP 取回**的字节；再改 1 字节必须被拒 | `E2E-HOSTED: positive ok bytes=3884530` / `E2E-HOSTED: negative rejected InvalidSignature` |
+| S7 | **真插件**驱动：本地清单当更新源，`check()` + `download()` 真验签（含篡改/错公钥负例） | `PROBE: plugin end-to-end ok` / `Minisign(InvalidSignature)` / `Minisign(UnexpectedKeyId)` |
 
 退出码就是门禁语义，刻意区分「真的验证了」与「只是没报错」：
 
@@ -491,7 +492,7 @@ arm64-v8a + armeabi-v7a**。已全部回退 —— 需求文档是契约，支�
 | 篡改包被拒（纯算法） | `tests/updater_signature.rs`（8 个用例） | ✓ 每次 `cargo test` |
 | 篡改包被拒（**从 HTTP 取回的真实字节**） | `tests/updater_hosted_e2e.rs` + 本脚手架（S4/S6） | ⚠ 需要带签名的产物：release job 可以，PR CI 只会拿到退出码 2 |
 | 本地托管 + HTTP 可达 + 字段 + 版本语义 | 本脚手架（S3/S4/S5） | ⚠ 同上 |
-| 插件**真的**按 `endpoints` 拉清单与包 | 无 | ✗ 见 §12.5 |
+| 插件**真的**按 `endpoints` 拉清单与包 | `tools/updater-plugin-probe`（S7） | ✓ **debug 语义**下已自动；release 构建**拒绝 http 端点**（§12.6） |
 | 下载后的**真安装**（干净机器） | 无 | ✗ 见 §12.5 |
 
 想接进发布流程（本轮**没有改 CI**，改 `.github/workflows/release.yml` 是另一件事）：
@@ -558,12 +559,93 @@ release job 有签名产物，六段会真的跑完；**PR CI 不要加** ——
 
 ### 12.5 仍未做（诚实清单）
 
-- **插件真的按 `endpoints` 拉取**没有自动化：`endpoints` 是编译期常量；要驱动真插件得拿到 `AppHandle`
-  （`tauri::test` 的 mock 需要给 `tauri` 开 `test` feature，会把测试依赖面扩大），不在本轮范围。
+- ~~插件真的按 `endpoints` 拉取没有自动化~~ → **§12.6 已补上**（独立 crate `tools/updater-plugin-probe`，debug 语义下真拉、真下载、真验签）。
+  仍未做的：正式（release）语义下把本地站点当更新源 —— 插件**拒绝** http 端点（§12.6 实测），生产只能 https。
 - **真安装**没有自动化（改系统状态；且 Windows 上会 `exit(0)` 拉起安装器）。
 - **CI 未接线**：只写了怎么接（§12.3 末段），改 `.github/workflows/release.yml` 不在本轮 write scope。
 - 版本比较用的是与插件一致的判据（`remote > current`）+ 简化的 x.y.z 比较：**pre-release 语义**
   （如 `0.1.1-beta`）没有覆盖；需要时以插件里的 `semver` crate 为准。
+
+### 12.6 真插件驱动（S7）：把「驱动入口」这个卡点补掉（2026-09-17 补）
+
+S1–S6 全是本机的，但它们**没有驱动真插件** —— 验签用的是 tauri-plugin-updater 调用序列的复刻。
+真插件的入口（`UpdaterExt::updater()` / `Update::download()`）需要 `AppHandle`
+（`UpdaterExt` 实现在 `T: Manager<R>` 上），集成测试里构造它要给 tauri 开 `test` feature ——
+而 `desktop/src-tauri/Cargo.toml` 是**产品**依赖清单，不该为测试塞 test-only feature。
+
+于是新增独立 crate **`tools/updater-plugin-probe`**：自带 `[workspace]`、**不是** AudioLink workspace 成员，
+所以它的 test-only 依赖不进产品依赖图：
+
+    tauri = { version = "2.11", default-features = false, features = ["test"] }
+    tauri-plugin-updater = "2.11"
+
+它用 tauri 的 mock runtime 建 AppHandle，往 app config 里**注入**插件配置（endpoints 指本地 127.0.0.1、
+pubkey 用产品 `tauri.conf.json` 里那一把），然后真调 `check()` 与 `download()`。
+改的是**进程内的 mock config**，不碰仓库里的 `tauri.conf.json`。
+
+实测（2026-09-17，`pwsh -File tools/updater-local-e2e.ps1` 的 S7 阶段，整体 exit 0）：
+
+| 场景 | 真插件的输出 |
+|---|---|
+| 正例：本地清单 version=0.1.1（客户端 0.1.0）+ 真包 | `PROBE: check ok remote_version=0.1.1` / `PROBE: download ok bytes=3884530` / `PROBE: plugin end-to-end ok` |
+| 负例：托管包改 1 字节（清单签名一字未动） | `PROBE: download rejected as expected: Minisign(InvalidSignature)` |
+| 负例：pubkey 换成另一把 | `PROBE: download rejected as expected: Minisign(UnexpectedKeyId)` |
+
+失败原因能直接读出来：**InvalidSignature = 签名与内容对不上**；**UnexpectedKeyId = 签名不是这把公钥签的**。
+
+#### 一个必须写下来的事实：http 端点只在 debug 下能用
+
+不打开 `dangerousInsecureTransportProtocol` 时，插件的 endpoint 校验按构建 profile 表现**不同**
+（`tauri-plugin-updater` 的 `config.rs`：那个 `return Err(InsecureTransportProtocol)` 在
+`#[cfg(not(debug_assertions))]` 里）：
+
+| 构建 | http:// 端点的处理 | 实测 |
+|---|---|---|
+| debug（dev） | **只警告，仍然接受** | `[WARNING] The updater endpoint "http://127.0.0.1:8321/latest.json" doesn't use https protocol...` |
+| release（正式包） | **直接拒绝** | `failed to initialize plugin updater: ... The configured updater endpoint must use a secure protocol like https.` |
+
+这条直接决定「本地托管能不能替代 Release 托管」：
+
+* 本机自动化**能在 debug 语义下**把「插件真拉 + 真验签」验到底 ✓；
+* 但**正式构建必须走 https** ⇒ 生产路径只能是 GitHub Release，本地 http 托管**不可能**替代它。
+  `dangerousInsecureTransportProtocol` 因此**绝不能进产品配置**（它是危险开关）。
+
+release 反证怎么复跑（一次性，会编 release，几分钟）：
+
+    $env:CARGO_TARGET_DIR = 'target'
+    cargo run --release --manifest-path tools/updater-plugin-probe/Cargo.toml -- --base http://127.0.0.1:8321 --expect-insecure-rejected --require-reject
+
+### 12.7 三分表：这条 Todo 的 Done 依据（由事实决定）
+
+**① 本机已能自动验（可重复，有 exit code）**
+
+| 环节 | 命令 | 结果 |
+|---|---|---|
+| 清单生成 + 托管 + 字段 + 字节一致 + 版本语义 + 复刻验签 | `pwsh -File tools/updater-local-e2e.ps1` | **exit 0**，S1–S6 全 PASS |
+| **真插件** check() + download() 真验签（正例 / 篡改 / 错公钥） | 同上（S7） | **exit 0**，probe 标记行齐 |
+| 纯算法验签 + 4 类篡改拒绝 + 真产物验签 | `cargo test -p audiolink-desktop` | exit 0（updater_signature 8 项） |
+| 清单 ↔ 本地产物离线自洽 | `node tools/check-update.mjs` | 已在 `release.yml` |
+| 正式构建拒绝 http 端点（反证） | §12.6 末的 release 命令 | `PROBE: insecure endpoint rejected as expected` |
+
+**② 仍属人工（本机做得到，但要人操作/看界面）**
+
+| 环节 | 为什么人工 | 照做步骤 |
+|---|---|---|
+| dev 里点「检查更新」看到 0.1.1、再点安装 | 要起 GUI 并点按钮（用 `--config` 把 endpoints 覆盖到本地托管） | §12.4 的可选段 |
+| 真安装（拉起安装器、`exit(0)`、装完自动重开） | 会改系统状态 | §12.4 第 4 步 |
+
+**③ 必须外部（不可本地化）**
+
+| 环节 | 为什么 |
+|---|---|
+| GitHub Release 正式发布（草稿 → Publish） | 对外不可逆动作 + 需要仓库写权限；`releases/latest` 只认正式 Release |
+| 生产语义下的 Release 托管（https） | 正式构建**拒绝 http 端点**（§12.6 实测）⇒ 只能真 https（GitHub） |
+| 干净机器装 v0.1.0 → 升到 0.1.1 | 改 `Program Files` / 注册表；「干净」是环境属性 |
+
+**结论（依据上面三张表）**：这条 Todo **不能整体收口**。
+「验签」这一件已经从算法到**真插件**全部自动化；「Release 托管」本机只能在 debug 语义下验证，
+生产语义必须真 https；「两版本」只有版本比较语义与清单版本差（0.1.1 vs 0.1.0）可自动，
+**真升级**必须装到干净机器。剩下那三个外部动作，建议单开条目承接。
 
 ---
 

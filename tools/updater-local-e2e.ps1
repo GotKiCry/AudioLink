@@ -13,6 +13,10 @@
 #   S5 版本比较语义              远端比本地新 / 相同 / 更旧 三种判定（与插件同一判据：remote > current）
 #   S6 验签                      用 tauri.conf.json 的配置公钥对**从 HTTP 取回**的字节验签通过；
 #                               再把取回的字节改 1 字节，必须被拒绝
+#   S7 真插件驱动                tools/updater-plugin-probe（独立 crate + tauri 的 test/mock runtime）
+#                               真调 check() + download()：本地清单当更新源 → 正例验签通过、
+#                               改 1 字节被拒（签名不匹配）、错公钥被拒（key id 不匹配），
+#                               并反证「不开危险开关时 http 端点会被插件自己拒绝」
 #
 # 与 tools/check-update.mjs 的分工：那个工具做的是「清单 ↔ 本地文件」的离线自洽验签（已进 release.yml）。
 # 本脚本补的是它没覆盖的两件事：客户端真的走 HTTP 取、以及版本比较语义。
@@ -280,6 +284,85 @@ try {
         # 关键：必须看到两条标记行 —— 否则「没报错」可能只是测试被跳过了。
         if ($output -notmatch 'E2E-HOSTED: positive ok') { throw '没有看到正例标记行 E2E-HOSTED: positive ok —— 测试可能被跳过，不能算通过' }
         if ($output -notmatch 'E2E-HOSTED: negative rejected InvalidSignature') { throw '没有看到负例标记行 E2E-HOSTED: negative rejected InvalidSignature —— 负例没有真的执行' }
+    }
+
+    # ------------------------------------------------------------ S7
+    Invoke-Stage 'S7 真插件驱动：本地托管当更新源，check() + download() 真验签' {
+        # S1–S6 是本机的，但**没有驱动真插件**。真插件要 AppHandle（UpdaterExt 实现在 T: Manager 上），
+        # 集成测试里够不到 —— tools/updater-plugin-probe 用 tauri 的 test/mock runtime 补上这个入口
+        # （它不是 AudioLink workspace 的成员，所以 test-only 依赖不进产品依赖图）。
+        $probeDir = Join-Path $root 'tools/updater-plugin-probe'
+        if (-not (Test-Path -LiteralPath (Join-Path $probeDir 'Cargo.toml'))) { throw "找不到 probe crate：$probeDir" }
+
+        # 造两份清单：一份指向真包、一份指向「被改 1 字节的包」，两者用的是**同一份真签名**。
+        # 版本都写 0.1.1（客户端是 0.1.0）—— 这就是「两版本」在本机的形态。
+        $manifestJson = Read-JsonResponse "$baseUrl/latest.json"
+        $signature = [string]$manifestJson.platforms.'windows-x86_64'.signature
+        if ([string]::IsNullOrWhiteSpace($signature)) { throw '清单里没有 signature，S7 无法构造' }
+
+        $tamperedName = 'AudioLink_tampered_x64-setup.exe'
+        $installerBytes = [System.IO.File]::ReadAllBytes($installer.FullName)
+        $installerBytes[$installerBytes.Length - 1] = $installerBytes[$installerBytes.Length - 1] -bxor 0x01
+        [System.IO.File]::WriteAllBytes((Join-Path $serveDir $tamperedName), $installerBytes)
+
+        $pubDate = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $okManifest = @{
+            version   = '0.1.1'
+            notes     = 'M5 本地端到端脚手架（S7 真插件驱动）'
+            pub_date  = $pubDate
+            platforms = @{ 'windows-x86_64' = @{ url = "$baseUrl/$($installer.Name)"; signature = $signature } }
+        }
+        $badManifest = @{
+            version   = '0.1.1'
+            notes     = 'M5 本地端到端脚手架（S7 真插件驱动，包被改 1 字节）'
+            pub_date  = $pubDate
+            platforms = @{ 'windows-x86_64' = @{ url = "$baseUrl/$tamperedName"; signature = $signature } }
+        }
+        ($okManifest | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath (Join-Path $serveDir 'latest-plugin.json') -Encoding utf8NoBOM
+        ($badManifest | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath (Join-Path $serveDir 'latest-plugin-tampered.json') -Encoding utf8NoBOM
+
+        $env:CARGO_TARGET_DIR = Join-Path $root 'target'
+        Write-Host '   （首次会编译 probe crate，需要几分钟；之后是增量的）'
+
+        function Invoke-Probe {
+            param([string]$Label, [string[]]$ProbeArgs, [string]$Marker)
+            $probeOutput = & cargo run --quiet --manifest-path (Join-Path $probeDir 'Cargo.toml') -- @ProbeArgs 2>&1 | Out-String
+            Write-Host "   ── probe：$Label"
+            Write-Host $probeOutput
+            if ($probeOutput -notmatch [regex]::Escape($Marker)) {
+                throw "probe「$Label」没有打出标记行 $Marker —— 不能当作通过"
+            }
+        }
+
+        # (a) 正例：真插件读本地清单 → 真下载 → 真验签通过。
+        Invoke-Probe -Label '正例：本地托管 + 配置公钥 → 验签通过' -ProbeArgs @('--base', $baseUrl, '--endpoint', '/latest-plugin.json') -Marker 'PROBE: plugin end-to-end ok'
+
+        # (b) 负例：包被改 1 字节（签名一个字符没动）→ 真插件必须拒绝，且原因是**签名不匹配**。
+        $tamperOutput = & cargo run --quiet --manifest-path (Join-Path $probeDir 'Cargo.toml') -- --base $baseUrl --endpoint /latest-plugin-tampered.json --expect-error 2>&1 | Out-String
+        Write-Host '   ── probe：负例：托管包被改 1 字节 → 必须拒绝'
+        Write-Host $tamperOutput
+        if ($tamperOutput -notmatch 'PROBE: download rejected as expected') { throw '负例没有打出「download rejected as expected」' }
+        # 插件的 UpdaterError 把 minisign 的错误原样包着，Debug 里能直接读出**为什么**失败：
+        #   InvalidSignature = 签名与内容对不上（包被动过）；UnexpectedKeyId = 签名不是这把公钥签的。
+        if ($tamperOutput -notmatch 'Minisign\(InvalidSignature\)') { throw '负例的失败原因不是 InvalidSignature（签名与内容不匹配）—— 需要看具体错误' }
+
+        # (c) 负例：公钥不对（另一把测试密钥的公钥，见 tests/updater_signature.rs 的夹具）→ must 拒绝，原因是 key id 不匹配。
+        $otherPubKey = 'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE1NjI3RUQ1NDRDOTMxNkIKUldSck1jbEUxWDVpRlEyQnBieG9UcTlITEF1a1NtK0c2dlN0RUh0RVB4U28rSVJZUmdUamJaNzIK'
+        $wrongKeyOutput = & cargo run --quiet --manifest-path (Join-Path $probeDir 'Cargo.toml') -- --base $baseUrl --endpoint /latest-plugin.json --pubkey $otherPubKey --expect-error 2>&1 | Out-String
+        Write-Host '   ── probe：负例：公钥不对 → 必须拒绝'
+        Write-Host $wrongKeyOutput
+        if ($wrongKeyOutput -notmatch 'PROBE: download rejected as expected') { throw '错误公钥场景没有打出「download rejected as expected」' }
+        if ($wrongKeyOutput -notmatch 'Minisign\(UnexpectedKeyId\)') { throw '错误公钥场景的失败原因不是 UnexpectedKeyId（key id 不匹配）—— 需要看具体错误' }
+
+        # (d) 边界：不开 dangerousInsecureTransportProtocol 时插件怎么处理 http 端点？
+        #     实测（见下）：**debug 构建只警告、仍然接受**；release 构建才返回 InsecureTransportProtocol
+        #     —— 那个 return 在 tauri-plugin-updater config.rs 的 #[cfg(not(debug_assertions))] 里。
+        #     所以这里断言的是「插件确实识别出了非 https 并警告」，而**不是**「被拒」。
+        $insecureOutput = & cargo run --quiet --manifest-path (Join-Path $probeDir 'Cargo.toml') -- --base $baseUrl --expect-insecure-rejected 2>&1 | Out-String
+        Write-Host '   ── probe：边界：不开危险开关时 http 端点怎么处理（debug 构建）'
+        Write-Host $insecureOutput
+        if ($insecureOutput -notmatch 'PROBE: insecure endpoint allowed but warned') { throw 'probe 没有打出「allowed but warned」标记行' }
+        if ($insecureOutput -notmatch "doesn't use") { throw '没有看到插件对非 https 端点的警告文本 —— 它没有识别出这一点' }
     }
 
     if ($failures.Count -gt 0) { $exitCode = 1 } else { $exitCode = 0 }

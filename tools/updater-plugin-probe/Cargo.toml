@@ -1,0 +1,18 @@
+[package]
+name = "updater-plugin-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "M5：用**真插件**（mock runtime）驱动本地托管的更新源，验证 check/download 与验签"
+license = "Apache-2.0"
+
+# 独立 workspace：本 crate **不是** AudioLink workspace 的成员。
+# 这样它需要的 test-only feature（tauri 的 test）与全部依赖都不会进入产品依赖图。
+[workspace]
+
+[dependencies]
+# 不用默认 feature、只要 test：mock runtime 不需要 wry/webview2，编译面更小。
+tauri = { version = "2.11", default-features = false, features = ["test"] }
+tauri-plugin-updater = "2.11"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
