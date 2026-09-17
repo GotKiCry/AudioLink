@@ -994,6 +994,16 @@ impl Engine {
             .await
     }
 
+    /// M4 共同基准的当前值（本端单调 µs）；`None` = 本机没有采集枢纽，`i64::MIN` = 有枢纽但还没收到广播。
+    ///
+    /// 为什么要把它暴露出来：`broadcast_epoch` 那条链路（接收端广播 → 各发送端对齐编号）此前
+    /// **没有任何当场可读的观测点** —— 对齐与否只体现在事后混音音频的编号对不对得上，验收只能靠听。
+    /// 有了它，回环测试可以直接断言「广播前两端都是未对齐、广播后两端是同一个原点」。
+    pub fn capture_epoch_us(&self) -> Option<i64> {
+        let hub = self.inner.capture_hub.lock().ok()?.clone()?;
+        Some(hub.epoch_us_value())
+    }
+
     /// M4 共同基准：本机作为**接收端**（混音方），把所有发送端共用的时间原点广播出去。
     ///
     /// 与 [`Engine::announce_group_epoch`]（发送端指定、接收端排播）是**反方向**的：
@@ -2526,6 +2536,11 @@ impl CaptureHub {
         if let Ok(mut guard) = self.join.lock() {
             let _ = guard.take();
         }
+    }
+
+    /// M4：当前共同基准（本端单调 µs）；`i64::MIN` = 还没收到接收端广播。
+    fn epoch_us_value(&self) -> i64 {
+        self.epoch_us.load(Ordering::Relaxed)
     }
 
     /// M4：接收端广播的共同基准到达 —— 采集线程下一帧前就会读到并据此对齐编号。

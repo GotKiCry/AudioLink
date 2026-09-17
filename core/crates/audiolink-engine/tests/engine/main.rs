@@ -26,6 +26,7 @@ mod handshake_deadline;
 mod latency_budget;
 mod mixer_alignment;
 mod mixer_convergence;
+mod mixer_epoch;
 mod multi_session;
 mod nack_retransmit;
 mod network_outage;
