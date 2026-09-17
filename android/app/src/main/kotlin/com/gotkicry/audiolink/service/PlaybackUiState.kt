@@ -1,6 +1,8 @@
 package com.gotkicry.audiolink.service
 
 import com.gotkicry.audiolink.audio.LowLatencyPlayer
+import com.gotkicry.audiolink.capture.CaptureSourceKind
+import com.gotkicry.audiolink.capture.CaptureState
 
 /**
  * UI 观测用的播放状态快照（不可变值对象）。
@@ -99,6 +101,30 @@ data class PlaybackUiState(
     val peers: List<PeerUi> = emptyList(),
     /** 取 PIN / 对端列表失败时的人话原因；`null` = 正常。 */
     val pairingNote: String? = null,
+
+    // ---- 发送采集（FR-06/07）----
+    /**
+     * 当前发送源；`null` = 关闭。
+     *
+     * 关闭时内核的能力位只有 `CAN_RECEIVE`（它没拿到 capture 工厂），UI 据此把发送入口置灰 ——
+     * 这是**如实展示**，不是缺陷。
+     */
+    val captureSelection: CaptureSourceKind? = null,
+    /** 采集状态机状态（发送源关闭时恒为 [CaptureState.Idle]）。 */
+    val captureState: CaptureState = CaptureState.Idle,
+    /** 采集连续失败次数（退避用；成功后归零）。 */
+    val captureAttempts: Int = 0,
+    /**
+     * 采集侧的一句话（用户可见）。
+     *
+     * 常规状态每拍由 `CaptureWiring.captureNote` 重算；一次性提示（拒绝授权 / 取投影失败）优先 ——
+     * 那种提示是**给用户看的**，不能在下一拍就被常规状态盖掉（那就是静默吞掉）。
+     */
+    val captureNote: String? = null,
+    /** 采集环被 drop-oldest 丢弃的帧数：它涨 = 内核读得比设备产得慢（端到端延迟在长）。 */
+    val captureRingOverflowFrames: Long = 0,
+    /** 采集环当前可读帧数（诊断）。 */
+    val captureRingAvailableFrames: Int = 0,
 ) {
     /**
      * [pairingPin] 是否已经没有对应的活跃配对会话 —— 口径与理由见

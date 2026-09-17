@@ -1,5 +1,6 @@
 package com.gotkicry.audiolink.service
 
+import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -9,6 +10,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioTrack
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -19,6 +22,10 @@ import com.gotkicry.audiolink.R
 import com.gotkicry.audiolink.audio.FfiPcmFeed
 import com.gotkicry.audiolink.audio.LowLatencyPlayer
 import com.gotkicry.audiolink.audio.PcmRingBuffer
+import com.gotkicry.audiolink.capture.CaptureController
+import com.gotkicry.audiolink.capture.CaptureSourceKind
+import com.gotkicry.audiolink.capture.CaptureState
+import com.gotkicry.audiolink.capture.MediaProjectionRequestActivity
 import com.gotkicry.audiolink.core.EngineStartConfig
 import com.gotkicry.audiolink.core.LocalStatus
 import com.gotkicry.audiolink.core.displayedPin
@@ -62,6 +69,41 @@ class AudioLinkService : Service() {
         const val ACTION_STOP = "com.gotkicry.audiolink.action.STOP"
         const val ACTION_START_PLAYBACK = "com.gotkicry.audiolink.action.START_PLAYBACK"
         const val ACTION_STOP_PLAYBACK = "com.gotkicry.audiolink.action.STOP_PLAYBACK"
+
+        /** UI → 服务：切换发送源（带 [EXTRA_CAPTURE_SOURCE]；缺省 = 关闭）。 */
+        const val ACTION_SET_CAPTURE_SOURCE = "com.gotkicry.audiolink.action.SET_CAPTURE_SOURCE"
+
+        /** 发送源的枚举名（`CaptureSourceKind.name`）；不传 = 关闭。 */
+        const val EXTRA_CAPTURE_SOURCE = "capture_source"
+
+        /**
+         * UI → 服务：请求切换发送源（FR-38 的「关闭 / 系统内录 / 麦克风」）；`null` = 关闭。
+         *
+         * 为什么是「请求式」（UI 只登记意图，服务在 500 ms 拍点上消费）而不是 UI 直接调服务方法：
+         * 与 task-8 的 `requestedQueueTargetFrames` 同源 —— Activity 与服务生命周期互相独立，
+         * UI 不该被逼着绑定服务；而真正要动的三件事（引擎启动参数、前台服务类型位、采集设备）
+         * 都必须在服务自己的线程与状态里完成。
+         */
+        fun requestCaptureSource(source: CaptureSourceKind?) {
+            requestedCaptureSource = source
+            captureSourceRequestPending = true
+        }
+
+        /** UI 入口：请求切换发送源（`null` = 关闭）。**走 Intent**，不依赖任何刷新循环。 */
+        fun setCaptureSource(context: Context, source: CaptureSourceKind?) {
+            val intent = Intent(context, AudioLinkService::class.java)
+                .setAction(ACTION_SET_CAPTURE_SOURCE)
+                .putExtra(EXTRA_CAPTURE_SOURCE, source?.name)
+            context.startService(intent)
+        }
+
+        /** UI 请求的发送源；配合 [captureSourceRequestPending] 使用（同一拍内读，避免读到半程状态）。 */
+        @Volatile
+        private var requestedCaptureSource: CaptureSourceKind? = null
+
+        /** 是否有待消费的发送源请求。 */
+        @Volatile
+        private var captureSourceRequestPending: Boolean = false
 
         /** 播放环深度：60 ms @48 kHz = 2880 帧（契约 `docs/11-m1-contract.md` §5 的 `buffer_ms` 默认值）。 */
         const val PLAYOUT_RING_FRAMES = 2_880
@@ -152,6 +194,48 @@ class AudioLinkService : Service() {
     /** FFI 接缝：内核 `PcmFeed.feedPcm` 的 Kotlin 实现（把 PCM 写进 [playoutRing]）。 */
     private val pcmFeed = FfiPcmFeed(playoutRing)
 
+    // ---- 发送采集（FR-06/07）：采集出口与它的状态 ----
+
+    /**
+     * 采集控制器（实例级，与 [pcmFeed] / [playoutRing] 同域）。
+     *
+     * 它持有采集环与 `PcmPull` 出口：**引擎拿到的就是 `captureController.pull`**。
+     * 生命周期与引擎一致 —— 服务起来时建、服务销毁前 [CaptureController.close]（见 [onDestroy]）。
+     */
+    private val captureController = CaptureController()
+
+    /**
+     * 当前发送源；`null` = 关闭。
+     *
+     * 只在主线程读写（[onStartCommand] 与 [refreshState] 都在主线程），所以不加锁。
+     * 「关闭」是**一等状态**：此时引擎的 `capture` 传 `null`（能力位只有 CAN_RECEIVE），
+     * 绝不能为了「把链路接通」而无条件打开采集。
+     */
+    private var captureSelection: CaptureSourceKind? = null
+
+    /**
+     * 已拿到的内录投影（授权回执到达后保存）。
+     *
+     * 为什么要存下来：Android 14+ **每次会话都要重新授权**，所以「授权成功」与「真的开始采集」
+     * 可能不在同一时刻（用户可能先授权、后选源）；投影必须由服务持有并在销毁时 stop 掉
+     * （不 stop 会让系统持续显示投屏并占用投影配额）。
+     */
+    private var pendingProjection: MediaProjection? = null
+
+    /**
+     * 一次性采集提示（拒绝授权 / 取投影失败）：留给用户看，直到下一次源切换。
+     *
+     * 与「常规采集状态」分开的原因：常规状态由 [CaptureWiring.captureNote] 每拍重算（发送源关闭时为 null），
+     * 若把拒绝提示也交给它算，用户会在下一拍就看不到反馈 —— 那正是「静默吞掉」。
+     */
+    private var captureNotice: String? = null
+
+    /** 最近一次播放状态文案（通知正文的前半段）；由 [startPlayback] 写入。 */
+    private var playbackNote: String = ""
+
+    /** 最近一次写进通知的正文：只在变化时 notify（避免每 500 ms 一次无意义刷新）。 */
+    private var lastNotificationText: String = ""
+
     /** 本实例的配对查询域；状态只在主线程发布，JNI 查询在 IO 上执行。 */
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var destroyed = false
@@ -168,7 +252,7 @@ class AudioLinkService : Service() {
                         listenPort = 0u,
                     ),
                     playout = pcmFeed,
-                    capture = null,
+                    capture = captureArgument(),
                 )
             }
         },
@@ -238,6 +322,36 @@ class AudioLinkService : Service() {
                 stopEngine()
                 return START_STICKY
             }
+
+            MediaProjectionRequestActivity.ACTION_CAPTURE_GRANTED -> {
+                // 内录授权成功。**必须先在前台服务里**（Android 14+ 要求取投影时已处于
+                // mediaProjection 类型的前台服务中），所以这里先幂等地刷一次前台类型位 ——
+                // 若服务本就在跑，重复 startForeground 是幂等更新。
+                startForegroundWithTypes()
+                // `when (intent?.action)` 不建立 `intent != null` 的智能转换，这里显式 let。
+                intent?.let { handleCaptureGranted(it) }
+                return START_STICKY
+            }
+
+            MediaProjectionRequestActivity.ACTION_CAPTURE_DENIED -> {
+                startForegroundWithTypes()
+                handleCaptureDenied()
+                return START_STICKY
+            }
+
+            ACTION_SET_CAPTURE_SOURCE -> {
+                // 为什么这条走 Intent 而不是只在 [refreshState] 里消费标量：
+                // 播放刷新循环只在**播放器存在**时续期（见 [refreshTask]），
+                // 于是「没在播放时切换发送源」会卡住 —— 而那恰恰是内录最常见的用法（先把声音推出去）。
+                startForegroundWithTypes()
+                val raw = intent?.getStringExtra(EXTRA_CAPTURE_SOURCE)
+                val requested = raw?.let { name ->
+                    CaptureSourceKind.entries.firstOrNull { it.name == name }
+                }
+                applyCaptureSource(requested)
+                refreshState()
+                return START_STICKY
+            }
         }
         startForegroundWithTypes(getString(R.string.notif_starting))
         startPlayback()
@@ -253,7 +367,7 @@ class AudioLinkService : Service() {
      * `NoSuchMethodError`，服务起来就崩。所以调用点必须与 [foregroundServiceTypes] 一样
      * 按版本精确分级，而不是"反正给了类型位"。
      */
-    private fun startForegroundWithTypes(text: String) {
+    private fun startForegroundWithTypes(text: String = composeNotificationText()) {
         val notification = buildNotification(text)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, foregroundServiceTypes())
@@ -266,6 +380,20 @@ class AudioLinkService : Service() {
     override fun onDestroy() {
         // 必须先失效发布权限：音频/引擎收尾可能晚于新的 Service 实例。
         destroyed = true
+        // **顺序不变量：采集必须在引擎停止之前关掉。**
+        //
+        // 为什么：内核采集线程正阻塞在 `PcmPull.readPcm` 上（有界阻塞，最长约 100 ms 醒一次），
+        // 而引擎停止要等这个线程退出 —— 先 close 采集环能立刻唤醒它并让它返回空，引擎才停得干净。
+        // 顺序反了不只是「白等一轮」：旧引擎还会在一个已关闭的出口上取数，而新服务实例随后会建
+        // **新的**采集环 —— 两个实例指向不同出口，现场无法解释（`CaptureController` 的 KDoc 同款不变量）。
+        captureController.close()
+        // 投影必须显式 stop：不 stop 会让系统持续显示「正在投屏」，并一直占用投影配额。
+        try {
+            pendingProjection?.stop()
+        } catch (_: Throwable) {
+            // 停止路径：投影可能已被系统回收，stop 抛异常没有可做的补救。
+        }
+        pendingProjection = null
         engineLifecycle.close()
         engineScope.cancel()
         stopPlayback()
@@ -300,11 +428,142 @@ class AudioLinkService : Service() {
      * - `listenPort = 0` = 用内核默认端口（`audiolink-types::DEFAULT_QUIC_PORT = 58290`）——
      *   刻意**不在 Kotlin 侧硬编码端口号**，避免与内核漂移；
      * - `dataDir = filesDir`：证书 / 信任库落在应用私有目录（ADR-011）；
-     * - `capture = null`：M1 Android 不做发送方向 → 能力位只有 `CAN_RECEIVE`，
-     *   UI 据此把"发送"置灰，而不是假装能发（能力位由内核如实给出，Kotlin 侧不美化）。
+     * - `capture`：**按当前发送源决定**（见 [captureArgument]）。「关闭」时传 `null` ——
+     *   这是合法状态：能力位只有 `CAN_RECEIVE`，UI 据此把发送入口置灰，而不是假装能发
+     *   （能力位由内核如实给出，Kotlin 侧不美化）；「内录 / 麦克风」时传 [captureController]
+     *   的 `PcmPull` 出口，采集线程由它托管。
+     *   ⚠️ `capture` 是**引擎启动参数**（内核 `engine_bridge` 在 start 时读），运行期换不了 ——
+     *   所以「关闭 ⇄ 非关闭」的切换必须重启引擎（判定见 [CaptureWiring.requiresEngineRestart]），
+     *   而「内录 ⇄ 麦克风」不需要（两者共用同一个出口）。
      */
+    /**
+     * 引擎启动时该传给 `capture` 的东西：发送源关闭 → `null`（**合法状态**），否则给采集出口。
+     *
+     * 返回类型刻意不写出来：它是 FFI 生成物里的 `PcmPull`，而调用点只关心「有 / 无」。
+     */
+    private fun captureArgument() =
+        if (CaptureWiring.engineCaptureEnabled(captureSelection)) captureController.pull else null
+
+    /**
+     * 应用发送源选择（主线程，在 [refreshState] 的拍点上调用）。
+     *
+     * 三态要做三件事：
+     * 1. **跨态切换要重启引擎**（`capture` 是启动参数）：只有「关闭 ⇄ 非关闭」需要；
+     *    内录 ⇄ 麦克风 共用同一个出口 —— 重启会掐断正在播的接收流，能不做就不做；
+     * 2. **采集源要跟着换**：内录需要已授权的投影（没有就等回执，这不是错误）；麦克风直接开；
+     * 3. **前台类型位要跟着换**（Android 14+ 的硬要求，见 [foregroundServiceTypes]）。
+     *
+     * 这里**不**再调 [refreshState]：调用方（[refreshState] / 回执处理）本来就会走完这一拍，
+     * 再调一次只会让同一拍刷两遍。
+     */
+    private fun applyCaptureSource(next: CaptureSourceKind?) {
+        val previous = captureSelection
+        captureSelection = next
+        // 用户重新选了源：上一次的「拒绝授权」提示到此为止（它已完成告知的职责）。
+        captureNotice = null
+
+        if (CaptureWiring.requiresEngineRestart(previous, next) && engineStatus != null) {
+            // 引擎在跑且「要不要采集」变了 → 必须重启才能换掉 capture 参数；
+            // 走现成的 stopEngine/startEngine（各自带配对快照清理与发布权限检查）。
+            stopEngine()
+            startEngine()
+        }
+
+        when (next) {
+            null -> captureController.stop()
+
+            CaptureSourceKind.Microphone -> captureController.startMicrophone()
+
+            CaptureSourceKind.SystemLoopback -> {
+                val projection = pendingProjection
+                if (projection != null) {
+                    captureController.startLoopback(projection)
+                }
+                // 没有投影 = 还没授权：保持等待（回执到了会启动），这里不该报错。
+            }
+        }
+        updateForegroundTypes()
+    }
+
+    /** 按当前发送源刷新前台通知与类型位（Android 14+ 要求「使用中的类型」出现在类型位里）。 */
+    private fun updateForegroundTypes() {
+        if (destroyed) return
+        startForegroundWithTypes()
+    }
+
+    /** 通知正文 = 播放状态（前段）+ 采集状态（后段）；发送源关闭且无提示时只有前段。 */
+    private fun composeNotificationText(): String {
+        val base = playbackNote.ifEmpty { getString(R.string.notif_starting) }
+        val note = captureNotice
+            ?: CaptureWiring.captureNote(captureSelection, captureController.snapshot())
+        return if (note.isNullOrEmpty()) base else "$base · $note"
+    }
+
+    /** 内录授权成功：取投影，并（若当前发送源就是内录）启动采集。 */
+    private fun handleCaptureGranted(intent: Intent) {
+        val resultCode = intent.getIntExtra(
+            MediaProjectionRequestActivity.EXTRA_RESULT_CODE,
+            Activity.RESULT_CANCELED,
+        )
+        val data: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(MediaProjectionRequestActivity.EXTRA_RESULT_DATA, Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            val legacy: Intent? = intent.getParcelableExtra(MediaProjectionRequestActivity.EXTRA_RESULT_DATA)
+            legacy
+        }
+        if (data == null) {
+            // 回执缺数据（Activity 侧已判过一次，这里是服务侧兜底）：必须让用户看见。
+            captureNotice = "系统内录：授权回执缺少数据，无法取得投影"
+            lastError = captureNotice
+            refreshState()
+            return
+        }
+        val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        val projection = try {
+            manager.getMediaProjection(resultCode, data)
+        } catch (t: Throwable) {
+            // 授权回执本身有问题（数据被系统回收、state 已失效）：必须让用户看见，不能静默。
+            captureNotice = "系统内录：取得投影失败（${t.javaClass.simpleName}: ${t.message}）"
+            lastError = captureNotice
+            refreshState()
+            return
+        }
+        if (projection == null) {
+            captureNotice = "系统内录：系统没有给出投影（授权可能已过期）"
+            lastError = captureNotice
+            refreshState()
+            return
+        }
+        pendingProjection = projection
+        if (captureSelection == CaptureSourceKind.SystemLoopback) {
+            captureController.startLoopback(projection)
+        }
+        updateForegroundTypes()
+        refreshState()
+    }
+
+    /**
+     * 内录授权被拒：**保持关闭**并给出用户可见反馈。
+     *
+     * 两条刻意的选择：
+     * 1. **不静默吞**：写进 [captureNotice]（随通知正文与 UI 状态出网），并同时记进 [lastError]；
+     * 2. **不偷偷换成麦克风**：换源必须是用户的动作（FR-38 的三态由用户选），
+     *    替用户换一个正在录音的源比「什么都没发生」更糟。
+     */
+    private fun handleCaptureDenied() {
+        pendingProjection = null
+        captureNotice = "系统内录：未获授权，发送源保持关闭"
+        lastError = captureNotice
+        applyCaptureSource(null)
+        refreshState()
+    }
+
     private fun startEngine() {
         engineLifecycle.start()
+        // 引擎起来后立刻刷一次：把「引擎启动前登记的」发送源请求落地（[refreshState] 会消费标量请求），
+        // 也让 UI 尽快看到 `engineRunning = true`（不必等下一拍）。
+        mainHandler.post { refreshState() }
     }
 
     /** 立即清除旧快照；底层停止进入进程级队列，不随服务销毁而取消。 */
@@ -321,15 +580,32 @@ class AudioLinkService : Service() {
      * * `connectedDevice` 自 **API 30** 起才有该类型位 —— 在 API 29 上提交未知位属于未定义行为，
      *   因此这里按版本精确分级（而不是简单地 `>= Q` 一刀切）。
      */
-    private fun foregroundServiceTypes(): Int = when {
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R ->
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+    private fun foregroundServiceTypes(): Int {
+        var types = when {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R ->
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
 
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
 
-        else -> 0
+            else -> 0
+        }
+        // 采集用的类型位：Android 14+ 要求「正在使用的类型」必须出现在 startForeground 的类型位里，
+        // 否则系统按「未声明用途」处置（麦克风被静音、内录拿不到投影）。
+        // 版本门槛：microphone 自 API 30 起有该位，mediaProjection 自 API 29 起有该位。
+        when (CaptureWiring.extraForegroundServiceType(captureSelection)) {
+            CaptureServiceType.None -> Unit
+
+            CaptureServiceType.Microphone -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            }
+
+            CaptureServiceType.MediaProjection -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            }
+        }
+        return types
     }
 
     /** 启动播放器并接上播放环；失败**不抛**（服务要活着，错误进状态给 UI 看）。 */
@@ -356,7 +632,11 @@ class AudioLinkService : Service() {
                     LowLatencyPlayer.performanceModeName(report.performanceMode),
                 )
             }
-            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
+            playbackNote = text
+            getSystemService(NotificationManager::class.java).notify(
+                NOTIFICATION_ID,
+                buildNotification(composeNotificationText()),
+            )
         } catch (e: IllegalStateException) {
             lastError = "播放启动失败：${e.message}"
             candidate.stop()
@@ -379,7 +659,18 @@ class AudioLinkService : Service() {
     /** 采一份快照推给 UI。设备读数都来自播放器内部的播放线程快照，主线程不碰 `AudioTrack`。 */
     private fun refreshState() {
         if (destroyed) return
+
+        // 消费 UI 的发送源请求（请求式入口，见 companion 的 requestCaptureSource）。
+        if (captureSourceRequestPending) {
+            captureSourceRequestPending = false
+            applyCaptureSource(requestedCaptureSource)
+        }
+
         val snapshot = player?.stats()
+        val captureSnapshot = captureController.snapshot()
+        val captureRing = captureController.ringStats()
+        val captureNote = captureNotice
+            ?: CaptureWiring.captureNote(captureSelection, captureSnapshot)
         val engine = engineStatus
         val pairing = pairingState
 
@@ -449,7 +740,28 @@ class AudioLinkService : Service() {
             pairingPin = pairing.pin,
             peers = pairing.peers,
             pairingNote = pairing.note,
+
+            // ---- 发送采集（FR-06/07）----
+            captureSelection = captureSelection,
+            captureState = captureSnapshot.state,
+            captureAttempts = captureSnapshot.attempts,
+            captureNote = captureNote,
+            captureRingOverflowFrames = captureRing.overflowFrames,
+            captureRingAvailableFrames = captureRing.availableFrames,
         )
+
+        // 采集状态变化要反映到通知正文：否则用户只看到「正在播放」，采集失败/被拒是**静默**的。
+        // 只在文本变化时 notify（每 500 ms 无意义刷新会被系统降频，也浪费一次跨进程调用）。
+        val text = composeNotificationText()
+        if (text != lastNotificationText) {
+            lastNotificationText = text
+            try {
+                getSystemService(NotificationManager::class.java)
+                    .notify(NOTIFICATION_ID, buildNotification(text))
+            } catch (_: Throwable) {
+                // 通知失败不该影响音频路径（用户关掉通知权限时系统本就会丢弃）。
+            }
+        }
         // 配对面板是"按需拉"的：主线程只读快照，真正的 FFI 调用丢到 IO（见 refreshPairingAsync）。
         refreshPairingAsync()
     }
