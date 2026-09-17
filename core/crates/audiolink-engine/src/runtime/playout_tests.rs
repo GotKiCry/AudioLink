@@ -111,6 +111,64 @@ fn sequence_cursor_and_stale_detection_cross_u32_wrap() {
 }
 
 #[test]
+fn depth_downgrade_records_active_drops_not_late_drops() {
+    // 第 85 轮：降档那一拍（PlayoutDepthAction::DropOldest）是**控制器的主动策略选择**，
+    // 不是「帧到得太晚」。它必须记 depth_drops，且不得再污染 late_drops ——
+    // 否则严格档会把一个每次降档必现的设计代价判成质量违规。
+    let (tx, rx) = crossbeam_channel::bounded(4);
+    let stats = telemetry();
+    let mut pending = None;
+    let mut expected = Some(0);
+    tx.send(frame(0)).unwrap();
+    tx.send(frame(1)).unwrap();
+
+    assert!(
+        drop_oldest_due_frames(&rx, &mut pending, &mut expected, &stats, 1),
+        "队列没断，应当正常走完丢弃"
+    );
+    assert_eq!(expected, Some(1), "丢一拍必须推进播放游标");
+
+    let aggregator = stats.lock().unwrap();
+    assert_eq!(aggregator.depth_drops(), 1, "降档主动丢帧记 depth_drops");
+    assert_eq!(
+        aggregator.snapshot().late_drops,
+        0,
+        "主动丢帧不得再记 late_drops（late_drops 的零容忍留给真迟到）"
+    );
+}
+
+#[test]
+fn truly_late_frame_still_records_late_drops() {
+    // 反向必须成立：序号已经落后于播放游标的帧是真迟到（网络 / 调度把它拖过了播放拍），
+    // 即使它出现在降档那一拍的丢弃循环里，也仍然记 late_drops —— 既有语义一字未改。
+    let (tx, rx) = crossbeam_channel::bounded(4);
+    let stats = telemetry();
+    let mut pending = None;
+    let mut expected = Some(7);
+    tx.send(frame(6)).unwrap();
+
+    assert!(drop_oldest_due_frames(
+        &rx,
+        &mut pending,
+        &mut expected,
+        &stats,
+        1
+    ));
+
+    let aggregator = stats.lock().unwrap();
+    assert_eq!(
+        aggregator.snapshot().late_drops,
+        1,
+        "真迟到仍记 late_drops：这是网络 / 调度质量问题，严格档零容忍不变"
+    );
+    assert_eq!(
+        aggregator.depth_drops(),
+        1,
+        "同一拍里控制器请求的这次丢弃另记 depth_drops"
+    );
+}
+
+#[test]
 fn packet_gap_emits_non_silent_concealment_before_recovery_frame() {
     let packets = encoded_packets(4);
     let mut receiver = AudioReceiver::new(CodecConfig::m1_default()).unwrap();

@@ -127,6 +127,16 @@ pub struct SoakSample {
     pub state: &'static str,
     /// **接收侧**遥测快照（欠载 / 掩盖 / 队列水位都只在那一边可见）。
     pub stats: StreamStats,
+    /// **接收侧**降档主动丢帧的累计拍数。
+    ///
+    /// 与 `stats.late_drops` 是两本账（第 85 轮拆分）：`late_drops` = 帧到得太晚（网络 / 调度
+    /// 质量问题，严格档仍零容忍）；这里是抖动深度**降档**那一拍控制器主动丢最旧帧换更低延迟
+    /// （`PlayoutDepthAction::DropOldest`，设计上每次降档必现）。两者因果不同，混在一个计数里
+    /// 会让严格档把一个固定事件判成质量违规。
+    ///
+    /// 它**不在 `StreamStats` 里**（那是冻结的 wire 载荷，追加字段会打断旧版本节点），
+    /// 由调用方从 `Engine::depth_drops` 读出来一起送进来。
+    pub depth_drops: u32,
 }
 
 /// 异常种类。
@@ -206,6 +216,8 @@ pub struct Violation {
     pub detail: String,
     /// 当时的接收侧遥测。
     pub stats: StreamStats,
+    /// 当时的降档主动丢帧累计值（与 `stats.late_drops` 并列的第二本账）。
+    pub depth_drops: u32,
 }
 
 /// 每分钟一条的粗采样。
@@ -217,6 +229,8 @@ pub struct CoarseSample {
     pub at_secs: u64,
     /// 当时的遥测。
     pub stats: StreamStats,
+    /// 当时的降档主动丢帧累计值（趋势用；与 `stats.late_drops` 并列）。
+    pub depth_drops: u32,
 }
 
 /// 汇总（报告里 summary 段的数据源）。
@@ -234,6 +248,10 @@ pub struct SoakSummary {
     pub last_violation: Option<(u64, &'static str)>,
     /// 最后一次采样的遥测。
     pub final_stats: Option<StreamStats>,
+    /// 末次采样时**接收侧**的降档主动丢帧累计值。
+    ///
+    /// 单列可见、**不参与判定**（阈值口径待定，见 `depth_drops_judged`）。
+    pub depth_drops: u32,
     /// 判定。
     pub verdict: &'static str,
 }
@@ -291,6 +309,8 @@ pub struct SoakMonitor {
     expected_bitrate_updates: u64,
     previous: Option<StreamStats>,
     previous_state: Option<&'static str>,
+    /// 末次采样读到的降档主动丢帧累计值（报告用；不参与判定）。
+    last_depth_drops: u32,
     stall_run: u32,
     samples: u64,
     violations: Vec<Violation>,
@@ -313,6 +333,7 @@ impl SoakMonitor {
             expected_bitrate_updates: 0,
             previous: None,
             previous_state: None,
+            last_depth_drops: 0,
             stall_run: 0,
             samples: 0,
             violations: Vec::new(),
@@ -336,6 +357,7 @@ impl SoakMonitor {
                 sample.at_secs,
                 format!("会话状态 {}（应为 {STREAMING}）", sample.state),
                 stats,
+                sample.depth_drops,
             );
         }
         self.previous_state = Some(sample.state);
@@ -349,6 +371,7 @@ impl SoakMonitor {
                 stats.underruns,
                 sample.at_secs,
                 stats,
+                sample.depth_drops,
             );
             self.check_delta(
                 ViolationKind::PlayoutConcealment,
@@ -358,6 +381,7 @@ impl SoakMonitor {
                 stats.plc_count,
                 sample.at_secs,
                 stats,
+                sample.depth_drops,
             );
             self.check_delta(
                 ViolationKind::LateDrop,
@@ -367,6 +391,7 @@ impl SoakMonitor {
                 stats.late_drops,
                 sample.at_secs,
                 stats,
+                sample.depth_drops,
             );
             self.check_delta(
                 ViolationKind::NackRetransmit,
@@ -376,6 +401,7 @@ impl SoakMonitor {
                 stats.nack_count,
                 sample.at_secs,
                 stats,
+                sample.depth_drops,
             );
         }
 
@@ -388,6 +414,7 @@ impl SoakMonitor {
                     stats.loss_pct_x100, self.thresholds.max_loss_pct_x100
                 ),
                 stats,
+                sample.depth_drops,
             );
         }
 
@@ -414,6 +441,7 @@ impl SoakMonitor {
                         deviation % 100
                     ),
                     stats,
+                    sample.depth_drops,
                 );
             }
         }
@@ -427,6 +455,7 @@ impl SoakMonitor {
                     sample.at_secs,
                     format!("连续 {} 次采样码率为 0", self.stall_run),
                     stats,
+                    sample.depth_drops,
                 );
             }
         } else {
@@ -440,9 +469,13 @@ impl SoakMonitor {
                 bucket,
                 at_secs: sample.at_secs,
                 stats,
+                depth_drops: sample.depth_drops,
             });
         }
 
+        // 主动丢帧只如实记录、不参与判定：它是控制器每次降档必现的策略代价，
+        // 阈值口径待定（Lead 决策），所以这里既不算违规也不悄悄丢掉这个数。
+        self.last_depth_drops = sample.depth_drops;
         self.previous = Some(stats);
     }
 
@@ -540,6 +573,7 @@ impl SoakMonitor {
             dropped_violations: self.dropped_violations,
             last_violation: self.last_violation,
             final_stats: self.previous,
+            depth_drops: self.last_depth_drops,
             // 判定看**按类计数**而不是留存条数：配额为 0 时现场一条不留，
             // 但异常确实发生过，判定不能因此变绿。
             verdict: if self.kind_counts.iter().all(|count| *count == 0) {
@@ -561,7 +595,7 @@ impl SoakMonitor {
                     "at_secs": violation.at_secs,
                     "kind": violation.kind.name(),
                     "detail": violation.detail,
-                    "stats": stats_json(violation.stats),
+                    "stats": stats_json(violation.stats, violation.depth_drops),
                 })
             })
             .collect();
@@ -572,7 +606,7 @@ impl SoakMonitor {
                 json!({
                     "bucket": sample.bucket,
                     "at_secs": sample.at_secs,
-                    "stats": stats_json(sample.stats),
+                    "stats": stats_json(sample.stats, sample.depth_drops),
                 })
             })
             .collect();
@@ -610,7 +644,14 @@ impl SoakMonitor {
                 "bitrate_judged": self.bitrate_judged(),
                 "expected_bitrate_bps_final": self.expected_bitrate_bps,
                 "expected_bitrate_updates": self.expected_bitrate_updates,
-                "final_stats": summary.final_stats.map(stats_json),
+                // 降档主动丢帧：末次累计值 + 「这次到底判没判它」。
+                // 显式写 judged=false，是免得下一个人看到这个数在报告里就以为判据漏了 ——
+                // 阈值口径待定，严格档的零容忍只挂在 late_drops 上。
+                "depth_drops": summary.depth_drops,
+                "depth_drops_judged": false,
+                "final_stats": summary
+                    .final_stats
+                    .map(|stats| stats_json(stats, summary.depth_drops)),
             },
             "violations": violations,
             "coarse": coarse,
@@ -647,6 +688,12 @@ impl SoakMonitor {
                 stats.rtt_us,
             );
         }
+        let _ = writeln!(
+            out,
+            "两本账：真迟到 {} 拍（严格档零容忍）· 降档主动丢帧 {} 拍（单列可见，不参与判定）",
+            summary.final_stats.map_or(0, |stats| stats.late_drops),
+            summary.depth_drops,
+        );
         let total: u64 = summary.kind_counts.iter().sum();
         let _ = writeln!(
             out,
@@ -702,6 +749,7 @@ impl SoakMonitor {
         after: u32,
         at_secs: u64,
         stats: StreamStats,
+        depth_drops: u32,
     ) {
         if after <= threshold {
             return;
@@ -713,6 +761,7 @@ impl SoakMonitor {
                 at_secs,
                 format!("{label} +{}（累计 {after}）", after - baseline),
                 stats,
+                depth_drops,
             );
         }
     }
@@ -723,6 +772,7 @@ impl SoakMonitor {
         at_secs: u64,
         detail: String,
         stats: StreamStats,
+        depth_drops: u32,
     ) {
         // 先记账，再决定要不要留现场：快照可能被配额挡掉，
         // 但「这一类总共几条、最后一次在何时」必须是完整事实。
@@ -744,12 +794,17 @@ impl SoakMonitor {
             kind,
             detail,
             stats,
+            depth_drops,
         });
     }
 }
 
 /// 遥测快照 → JSON（手写字段，避免为一个报告把 `serde` feature 拉进依赖图）。
-fn stats_json(stats: StreamStats) -> Value {
+///
+/// `depth_drops` 由调用方单独传进来：它不在 `StreamStats` 里（那是冻结的 wire 载荷，
+/// 追加字段会打断旧版本节点），但报告里每一处遥测都该并排看得到两本账 ——
+/// 「真迟到」与「降档主动丢帧」。
+fn stats_json(stats: StreamStats, depth_drops: u32) -> Value {
     json!({
         "stream_id": stats.stream_id,
         "rtt_us": stats.rtt_us,
@@ -765,6 +820,7 @@ fn stats_json(stats: StreamStats) -> Value {
         "nack_count": stats.nack_count,
         "e2e_latency_us": stats.e2e_latency_us,
         "late_drops": stats.late_drops,
+        "depth_drops": depth_drops,
     })
 }
 #[cfg(test)]
@@ -782,10 +838,16 @@ mod tests {
     }
 
     fn sample(at_secs: u64, stats: StreamStats) -> SoakSample {
+        sample_depth(at_secs, stats, 0)
+    }
+
+    /// 带降档主动丢帧累计值的采样（第二本账的用例用）。
+    fn sample_depth(at_secs: u64, stats: StreamStats, depth_drops: u32) -> SoakSample {
         SoakSample {
             at_secs,
             state: STREAMING,
             stats,
+            depth_drops,
         }
     }
 
@@ -810,6 +872,50 @@ mod tests {
         assert_eq!(summary.violations, 0);
         assert_eq!(summary.verdict, "ok");
         assert!(monitor.violations().is_empty());
+    }
+
+    #[test]
+    fn depth_drops_are_visible_but_never_judged() {
+        // 第 85 轮：降档主动丢帧单列可见、不参与判定 —— 严格档的零容忍只挂在 late_drops 上。
+        // 这条用例同时钉住两件事：它进不了 violations，也不能从报告里消失。
+        let mut monitor = SoakMonitor::new(SoakThresholds::default(), 160_000);
+        monitor.observe(sample_depth(0, stats(160_000), 0));
+        monitor.observe(sample_depth(3, stats(160_000), 0));
+        // t≈30 s：抖动深度降档，控制器主动丢最旧一帧。
+        monitor.observe(sample_depth(30, stats(160_000), 1));
+
+        assert!(
+            monitor.violations().is_empty(),
+            "主动丢帧不是质量违规（阈值口径待定）：{:?}",
+            monitor.violations()
+        );
+        let summary = monitor.summary();
+        assert_eq!(summary.verdict, "ok");
+        assert_eq!(summary.depth_drops, 1, "但它必须如实可见");
+
+        let parsed: Value = serde_json::from_str(&monitor.report_json(&meta())).unwrap();
+        assert_eq!(parsed["summary"]["depth_drops"], 1);
+        assert_eq!(
+            parsed["summary"]["depth_drops_judged"], false,
+            "报告必须写清这个数没被判，免得被当成漏判"
+        );
+        assert_eq!(parsed["summary"]["final_stats"]["depth_drops"], 1);
+        assert_eq!(parsed["summary"]["final_stats"]["late_drops"], 0);
+        let text = monitor.summary_text(&meta());
+        assert!(text.contains("降档主动丢帧 1 拍"), "摘要要打印：{text}");
+        assert!(text.contains("真迟到 0 拍"), "两本账都要打印：{text}");
+
+        // 同一遍里真迟到仍然是红：late_drops 的语义与零容忍一字未改。
+        let mut truly_late = stats(160_000);
+        truly_late.late_drops = 1;
+        monitor.observe(sample_depth(31, truly_late, 1));
+        let kinds: Vec<&str> = monitor
+            .violations()
+            .iter()
+            .map(|violation| violation.kind.name())
+            .collect();
+        assert_eq!(kinds, vec!["late_drop"]);
+        assert_eq!(monitor.summary().verdict, "failed");
     }
 
     #[test]

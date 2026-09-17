@@ -1256,6 +1256,21 @@ impl Engine {
         Some(telemetry.snapshot())
     }
 
+    /// **降档主动丢帧**的累计拍数（本机视角，按 `peer` 隔离）；对端不存在 → `None`。
+    ///
+    /// 与 [`Self::telemetry`] 快照里的 `late_drops` 是两个口径（第 85 轮拆分）：
+    /// `late_drops` = 帧到得太晚、来不及播（网络 / 调度质量问题）；本计数 = 抖动深度降档那一拍
+    /// 控制器主动丢最旧帧换更低延迟（`PlayoutDepthAction::DropOldest`，设计上每次降档必现）。
+    ///
+    /// **为什么不在 `StreamStats` 里**：那是 1 Hz `STREAM_STATS` 的 postcard 载荷，字段顺序即
+    /// wire 顺序，解码端拒绝尾随字节 —— 追加字段会打断旧版本节点（§13 兼容）。所以它是
+    /// **进程内可读**的观测口径：同进程的 soak-runner 靠它把「主动丢帧」与「真迟到」分开报告。
+    pub fn depth_drops(&self, peer: NodeId) -> Option<u32> {
+        let peers = self.inner.peers.lock().ok()?;
+        let telemetry = peers.get(&peer)?.telemetry.lock().ok()?;
+        Some(telemetry.depth_drops())
+    }
+
     /// §6 的当前时钟估计；`None` = 对端不存在，或**有效样本 < 8 尚未收敛**。
     ///
     /// 绝不返回「样本不足但看起来像真的」的偏移：调用方拿到 `None` 就该明确呈现「未收敛/未测」。
@@ -4402,15 +4417,14 @@ fn playout_main(
                 continue;
             }
             PlayoutDepthAction::DropOldest(count) => {
-                for _ in 0..count {
-                    match take_due_frame(&frames, &mut pending, &mut expected_seq, &telemetry) {
-                        DueFrame::Ready(_) | DueFrame::Missing => {
-                            if let Ok(mut telemetry) = telemetry.lock() {
-                                telemetry.record_late_drop();
-                            }
-                        }
-                        DueFrame::Disconnected => break 'playout,
-                    }
+                if !drop_oldest_due_frames(
+                    &frames,
+                    &mut pending,
+                    &mut expected_seq,
+                    &telemetry,
+                    count,
+                ) {
+                    break 'playout;
                 }
             }
             PlayoutDepthAction::Play => {}
@@ -4460,6 +4474,37 @@ fn playout_main(
     if let Some(open) = sink.as_mut() {
         open.stop();
     }
+}
+
+/// 抖动深度**降档**：丢掉控制器要求的最旧 `count` 拍。
+///
+/// 记账口径（第 85 轮拆分）：这一路径记 [`TelemetryAggregator::record_depth_drop`]，**不**记
+/// `late_drops` —— 降档是控制器为了降低排队延迟做出的**主动策略选择**，与链路质量无关，
+/// 干净回环上每次降档都会发生一次（t≈30 s 首次降档）。`late_drops` 只留给「帧到得太晚」，
+/// 即 `take_due_frame` 对落后于播放游标的帧的记账（保持原样，一字未改）。
+///
+/// 计的是**播放拍**而不是「帧」：控制器请求丢一拍时，那一拍取到的可能是真实帧（真的丢了音频），
+/// 也可能是空拍（游标空推进）。两种都是这次降档的代价，一起计入。
+///
+/// 返回 `false` = 队列已断开，调用方应当结束播放循环。
+fn drop_oldest_due_frames(
+    frames: &Receiver<PlaybackFrame>,
+    pending: &mut Option<PlaybackFrame>,
+    expected_seq: &mut Option<u32>,
+    telemetry: &Arc<Mutex<TelemetryAggregator>>,
+    count: usize,
+) -> bool {
+    for _ in 0..count {
+        match take_due_frame(frames, pending, expected_seq, telemetry) {
+            DueFrame::Ready(_) | DueFrame::Missing => {
+                if let Ok(mut telemetry) = telemetry.lock() {
+                    telemetry.record_depth_drop();
+                }
+            }
+            DueFrame::Disconnected => return false,
+        }
+    }
+    true
 }
 
 enum DueFrame {

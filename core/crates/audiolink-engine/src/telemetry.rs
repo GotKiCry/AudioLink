@@ -45,6 +45,20 @@ pub struct TelemetryAggregator {
     packets_received: u64,
     underruns: u32,
     late_drops: u32,
+    /// 抖动深度**降档**时控制器主动丢弃的最旧拍数。
+    ///
+    /// 与 `late_drops` 的分工（第 83/85 轮定位，Lead 的定性依据）：`late_drops` 是
+    /// 「帧**到得太晚、来不及播**」—— 网络 / 调度质量问题；这里是**控制器的主动策略选择**
+    /// （`PlayoutDepthAction::DropOldest`：丢最旧一帧换取更低的排队延迟），干净链路上每次降档
+    /// 必然发生。两者成因不同，共用计数器会让严格档把一个「设计上每次都会发生的策略代价」
+    /// 判成质量违规。
+    ///
+    /// **刻意不进 [`StreamStats`]**：那是 `STREAM_STATS`(0x13) 的 postcard 载荷，字段顺序即
+    /// wire 顺序，而解码端**拒绝尾随字节**（`audiolink-proto` 的 `payload_decode`）——
+    /// 往结构体末尾追加字段会让旧版本节点的解码直接报错（破坏 §13 兼容）。
+    /// 因此它是**进程内可见**的观测计数：同进程消费方用 [`Self::depth_drops`] 读；
+    /// 要跨机 / 上 UI，必须走协议版本升级那条路，不能靠给 `StreamStats` 加字段。
+    depth_drops: u32,
     plc_count: u32,
     nack_count: u32,
 
@@ -83,6 +97,7 @@ impl TelemetryAggregator {
             packets_received: 0,
             underruns: 0,
             late_drops: 0,
+            depth_drops: 0,
             plc_count: 0,
             nack_count: 0,
             rtt_us: 0,
@@ -130,6 +145,19 @@ impl TelemetryAggregator {
     pub fn record_received(&mut self, payload_len: usize) {
         self.packets_received = self.packets_received.saturating_add(1);
         self.window_bytes = self.window_bytes.saturating_add(payload_len as u64);
+    }
+
+    /// 记录一次抖动深度**降档**的主动丢帧（`PlayoutDepthAction::DropOldest`）。
+    ///
+    /// 与 [`Self::record_late_drop`] 是两个口径：那条是「帧到得太晚」，这条是「控制器主动
+    /// 用丢弃换低延迟」。详见本结构体 `depth_drops` 字段的说明。
+    pub fn record_depth_drop(&mut self) {
+        self.record_depth_drops(1);
+    }
+
+    /// 一次记录多拍降档主动丢弃（降一档最多两帧）。
+    pub fn record_depth_drops(&mut self, count: u32) {
+        self.depth_drops = self.depth_drops.saturating_add(count);
     }
 
     /// 记录一个数据报确定为丢失（乱序等待超时 / 序号跳跃确认）。
@@ -229,6 +257,9 @@ impl TelemetryAggregator {
     /// 当前快照（§10 的 `StreamStats`），可直接作为 `STREAM_STATS` 载荷发送。
     ///
     /// `e2e_latency_us` 取窗口 P50：它是**验收主指标**，必须反映「典型体验」而不是被尖刺污染。
+    ///
+    /// **`depth_drops` 不在这个快照里**（见同名字段说明）：`StreamStats` 是冻结的 wire schema，
+    /// 追加字段会打断旧版本节点的解码。要读它请用 [`Self::depth_drops`]。
     pub fn snapshot(&self) -> StreamStats {
         StreamStats {
             stream_id: self.stream_id,
@@ -266,6 +297,12 @@ impl TelemetryAggregator {
         self.packets_received
     }
 
+    /// 降档主动丢帧的累计拍数（**不在 [`StreamStats`] 里**，见字段说明；真迟到仍看
+    /// `StreamStats::late_drops`）。
+    pub const fn depth_drops(&self) -> u32 {
+        self.depth_drops
+    }
+
     /// 端到端窗口内的样本数（判断「有没有跑够样本」用）。
     pub fn e2e_samples(&self) -> usize {
         self.e2e.len()
@@ -281,6 +318,7 @@ impl TelemetryAggregator {
         self.packets_received = 0;
         self.underruns = 0;
         self.late_drops = 0;
+        self.depth_drops = 0;
         self.plc_count = 0;
         self.nack_count = 0;
         self.loss_pct_x100 = 0;
@@ -401,6 +439,33 @@ mod tests {
         assert_eq!(stats.late_drops, 1);
         assert_eq!(stats.plc_count, 1);
         assert_eq!(stats.nack_count, 1);
+    }
+
+    #[test]
+    fn depth_drops_are_booked_apart_from_late_drops() {
+        // 第 85 轮：降档主动丢帧（DropOldest）与真迟到必须分开记账 ——
+        // 共用一个计数器会让严格档把一个每次降档必现的策略代价判成质量违规。
+        let mut aggregator = TelemetryAggregator::with_windows(1, codec(), 64, 64);
+
+        aggregator.record_depth_drop();
+        aggregator.record_depth_drops(2);
+        aggregator.record_late_drop();
+
+        assert_eq!(aggregator.depth_drops(), 3, "主动丢帧按拍累计");
+        assert_eq!(
+            aggregator.snapshot().late_drops,
+            1,
+            "主动丢帧不得污染 late_drops"
+        );
+
+        // 真迟到仍只走 late_drops，反向也不串。
+        aggregator.record_late_drop();
+        assert_eq!(aggregator.snapshot().late_drops, 2);
+        assert_eq!(aggregator.depth_drops(), 3, "真迟到不得污染 depth_drops");
+
+        aggregator.reset();
+        assert_eq!(aggregator.depth_drops(), 0, "会话重建必须清零");
+        assert_eq!(aggregator.snapshot().late_drops, 0);
     }
 
     #[test]

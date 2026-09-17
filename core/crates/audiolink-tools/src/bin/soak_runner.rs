@@ -440,6 +440,10 @@ async fn run(
         let at_secs = started.elapsed().as_secs();
         let stats = engine_b.telemetry(peer_on_b).unwrap_or_default();
         let state = peer_state(&engine_b, peer_on_b);
+        // 降档主动丢帧：与 stats.late_drops 并列的第二本账。它**不在 `StreamStats` 里**
+        //（那是冻结的 wire 载荷，追加字段会让旧版本节点解码报错），只能在同进程里读
+        // 接收侧引擎的账本。
+        let depth_drops = engine_b.depth_drops(peer_on_b).unwrap_or(0);
 
         // 期望值要**先**跟上这一拍的目标码率，再判这一拍的采样。
         if follow_encoder_target {
@@ -462,11 +466,18 @@ async fn run(
                 at_secs,
                 state,
                 stats,
+                depth_drops,
             });
         }
 
         if !quiet {
-            print_progress(at_secs, state, stats, monitor.violations().len());
+            print_progress(
+                at_secs,
+                state,
+                stats,
+                monitor.violations().len(),
+                depth_drops,
+            );
         }
     }
     if !quiet {
@@ -565,9 +576,16 @@ async fn wait_for_streaming(engine: &Engine, peer: NodeId, timeout: Duration) ->
     bail!("等会话进入 streaming 超时（{timeout:?}）")
 }
 
-fn print_progress(at_secs: u64, state: &str, stats: StreamStats, violations: usize) {
+fn print_progress(
+    at_secs: u64,
+    state: &str,
+    stats: StreamStats,
+    violations: usize,
+    depth_drops: u32,
+) {
+    // 「迟到」与「主动丢」并排打印：前者是真迟到（网络 / 调度），后者是降档的策略代价。
     print!(
-        "\r    t={}s  {:<13} 码率 {:>7} bps  丢包 {:>3}  欠载 {:>3}  掩盖 {:>3}  迟到 {:>3}  NACK {:>3}  异常 {}   ",
+        "\r    t={}s  {:<13} 码率 {:>7} bps  丢包 {:>3}  欠载 {:>3}  掩盖 {:>3}  迟到 {:>3}  主动丢 {:>3}  NACK {:>3}  异常 {}   ",
         at_secs,
         state,
         stats.bitrate_bps,
@@ -575,6 +593,7 @@ fn print_progress(at_secs: u64, state: &str, stats: StreamStats, violations: usi
         stats.underruns,
         stats.plc_count,
         stats.late_drops,
+        depth_drops,
         stats.nack_count,
         violations,
     );
