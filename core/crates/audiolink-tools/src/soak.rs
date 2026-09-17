@@ -395,6 +395,23 @@ pub struct SoakMeta {
     /// 开始时刻（Unix 秒）。
     pub started_at_unix: u64,
 }
+/// 一次「发送侧目标码率变更」的记录（来自 `EngineEvent::CodecAdapted`）。
+///
+/// 记的是**目标码率**（自适应算出来的那个数），不是接收侧实测链路码率 ——
+/// 两者差一个冗余双发份数，而且实测值里还混着自适应之外的噪声（重传、突发）。
+/// 自适应的「动作」只能从目标序列上看出来，见 `docs/22-m2-soak-runner.md` §13。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodecAdaptation {
+    /// 采样时刻（秒，距开流）。
+    pub at_secs: u64,
+    /// 变更前的目标码率（bps）。
+    pub from_bps: i32,
+    /// 变更后的目标码率（bps）。
+    pub to_bps: i32,
+    /// 触发原因（人类可读，来自引擎事件）。
+    pub reason: String,
+}
+
 /// 采样监视器。
 #[derive(Debug)]
 pub struct SoakMonitor {
@@ -412,6 +429,11 @@ pub struct SoakMonitor {
     /// 单次采样（1 s 桶）内新增欠载的最大值 —— 「最坏的那一秒补了多少拍静音」。
     /// 只做可见（换算连续静音下界用），**不参与判定**。
     max_underruns_per_sample: u32,
+    /// 发送侧目标码率的变更序列（自适应动作的时间线）；空 = 这次跑自适应一次没动。
+    codec_adaptations: Vec<CodecAdaptation>,
+    /// 期望值允不允许跟随自适应目标：`--expected-bps auto` 为 true，
+    /// 钉死（`--expected-bps N`）或不判（`0`）时为 false —— 观测照记，判据不被动摇。
+    follow_codec_target: bool,
     stall_run: u32,
     samples: u64,
     violations: Vec<Violation>,
@@ -436,6 +458,8 @@ impl SoakMonitor {
             previous_state: None,
             last_depth_drops: 0,
             max_underruns_per_sample: 0,
+            codec_adaptations: Vec::new(),
+            follow_codec_target: true,
             stall_run: 0,
             samples: 0,
             violations: Vec::new(),
@@ -627,6 +651,40 @@ impl SoakMonitor {
         self.expected_bitrate_bps > 0 && self.thresholds.bitrate_tolerance_pct_x100 > 0
     }
 
+    /// 期望值要不要跟随自适应目标（默认跟）。
+    ///
+    /// `--expected-bps N`（钉死）时关掉：**观测照记**，但判据不被自适应牵走 ——
+    /// 「故意把目标写错就该红」那条自检依赖这一点。
+    pub const fn set_follow_codec_target(&mut self, follow: bool) {
+        self.follow_codec_target = follow;
+    }
+
+    /// 记一次发送侧目标码率变更（来自 `EngineEvent::CodecAdapted`），并让期望值跟着走。
+    ///
+    /// 返回期望值是否真的被改写（同值不算）。**观测与跟随是同一个入口**：
+    /// 报告里的 `codec_adaptations` 因此永远是「判据实际看到的那条时间线」，
+    /// 不会出现「报告记录了变更、判据却没跟着」的错位。
+    pub fn observe_codec_adaptation(
+        &mut self,
+        at_secs: u64,
+        from_bps: i32,
+        to_bps: i32,
+        reason: String,
+    ) -> bool {
+        self.codec_adaptations.push(CodecAdaptation {
+            at_secs,
+            from_bps,
+            to_bps,
+            reason,
+        });
+        self.follow_encoder_target(to_bps)
+    }
+
+    /// 发送侧目标码率的变更序列（按发生顺序）。
+    pub fn codec_adaptations(&self) -> &[CodecAdaptation] {
+        &self.codec_adaptations
+    }
+
     /// 期望码率跟着发送侧编码器的**实际**目标码率走。
     ///
     /// 自适应每升 / 降一级（`EngineEvent::CodecAdapted`）就调用一次：
@@ -635,7 +693,7 @@ impl SoakMonitor {
     /// **不会把判据从「不判」打开**：起跑时的期望值为 0（`--expected-bps 0`）时一律不跟随 ——
     /// 判据的开关只在 [`Self::new`] 时由调用方点定，跑动中不偷偷变。
     pub fn follow_encoder_target(&mut self, encoder_target_bps: i32) -> bool {
-        if self.initial_expected_bitrate_bps == 0 {
+        if !self.follow_codec_target || self.initial_expected_bitrate_bps == 0 {
             return false;
         }
         let next = expected_bitrate_bps_from_codec(encoder_target_bps);
@@ -645,6 +703,31 @@ impl SoakMonitor {
         self.expected_bitrate_bps = next;
         self.expected_bitrate_updates = self.expected_bitrate_updates.saturating_add(1);
         true
+    }
+
+    /// 一行说清自适应目标动了没有（摘要用）。
+    pub fn codec_adaptation_text(&self) -> String {
+        if self.codec_adaptations.is_empty() {
+            return "自适应目标：全程未变更（0 次）".to_owned();
+        }
+        let down = self
+            .codec_adaptations
+            .iter()
+            .filter(|change| change.to_bps < change.from_bps)
+            .count();
+        let up = self
+            .codec_adaptations
+            .iter()
+            .filter(|change| change.to_bps > change.from_bps)
+            .count();
+        let last = self
+            .codec_adaptations
+            .last()
+            .map_or(0, |change| change.to_bps);
+        format!(
+            "自适应目标：变更 {} 次（降级 {down} / 恢复 {up}），末次目标 {last} bps",
+            self.codec_adaptations.len()
+        )
     }
 
     /// 一行说清「静音（欠载）占比」与它的预算（摘要用）。
@@ -753,6 +836,21 @@ impl SoakMonitor {
             })
             .collect();
 
+        // 自适应目标的时间线：报告里必须能回答「自适应到底动没动、什么时候、往哪边」
+        // ——桌面端目前只把 CodecAdapted 写进日志（UI 侧记为遗留），报告是唯一的落盘证据。
+        let codec_adaptations: Vec<Value> = self
+            .codec_adaptations
+            .iter()
+            .map(|change| {
+                json!({
+                    "at_secs": change.at_secs,
+                    "from_bps": change.from_bps,
+                    "to_bps": change.to_bps,
+                    "reason": change.reason,
+                })
+            })
+            .collect();
+
         // 按类计数与「最后一次」进报告，是真实 8 h 跑换来的教训：
         // 快照会被配额截断，于是「哪一类刷了多少条、最后一次发生在什么时候」
         // 成了判断事件**是否仍在发生**的唯一线索（旧报告只有「留存的 200 条」，
@@ -808,6 +906,12 @@ impl SoakMonitor {
                 // 「最坏一秒」与它的**下界**：连续性推不出来，但下界是硬结论（见 docs/22 §11.5）。
                 // 两者都**不参与判定**。
                 "max_underruns_per_sample": self.max_underruns_per_sample,
+                // 自适应动作的规模：变更次数 + 末次**目标**码率（0 = 全程没观察到变更）。
+                "codec_adapted_count": self.codec_adaptations.len(),
+                "codec_target_bps_final": self
+                    .codec_adaptations
+                    .last()
+                    .map_or(0, |change| change.to_bps),
                 "longest_silence_lower_bound_beats": longest_silence_lower_bound_beats(
                     self.max_underruns_per_sample,
                     beats_per_sample(meta.frame_ms),
@@ -816,6 +920,7 @@ impl SoakMonitor {
                     .final_stats
                     .map(|stats| stats_json(stats, summary.depth_drops)),
             },
+            "codec_adaptations": codec_adaptations,
             "violations": violations,
             "coarse": coarse,
         });
@@ -838,6 +943,7 @@ impl SoakMonitor {
             meta.expected_bitrate_source.name()
         );
         let _ = writeln!(out, "{}", self.underrun_text(meta));
+        let _ = writeln!(out, "{}", self.codec_adaptation_text());
         if let Some(stats) = summary.final_stats {
             let _ = writeln!(
                 out,
@@ -890,6 +996,20 @@ impl SoakMonitor {
                 out,
                 "  … 其余 {} 条见 JSON 报告",
                 self.violations.len() - 10
+            );
+        }
+        for change in self.codec_adaptations.iter().take(10) {
+            let _ = writeln!(
+                out,
+                "  t={:>5}s  自适应目标 {} → {} bps（{}）",
+                change.at_secs, change.from_bps, change.to_bps, change.reason
+            );
+        }
+        if self.codec_adaptations.len() > 10 {
+            let _ = writeln!(
+                out,
+                "  … 自适应另有 {} 次变更见 JSON 报告",
+                self.codec_adaptations.len() - 10
             );
         }
         out
@@ -1726,5 +1846,53 @@ mod tests {
         let parsed: Value = serde_json::from_str(&monitor.report_json(&meta())).unwrap();
         assert_eq!(parsed["summary"]["max_underruns_per_sample"], 7);
         assert_eq!(parsed["summary"]["longest_silence_lower_bound_beats"], 1);
+    }
+    #[test]
+    fn codec_adaptations_are_recorded_and_following_is_switchable() {
+        // 默认（auto）：记时间线 + 期望值跟着走。
+        let mut monitor = SoakMonitor::new(SoakThresholds::default(), 320_000);
+        assert!(monitor.observe_codec_adaptation(
+            5,
+            160_000,
+            320_000,
+            "连续 10 s 无丢包 → 恢复一级".to_owned()
+        ));
+        assert_eq!(monitor.expected_bitrate_bps(), 640_000);
+        assert_eq!(monitor.codec_adaptations().len(), 1);
+
+        // 钉死（--expected-bps N）：观测照记，判据不被自适应牵走 —— 判定链路自检靠这一点。
+        let mut fixed = SoakMonitor::new(SoakThresholds::default(), 100_000);
+        fixed.set_follow_codec_target(false);
+        assert!(!fixed.observe_codec_adaptation(
+            5,
+            160_000,
+            320_000,
+            "丢包 8% 持续 3 s → 降级".to_owned()
+        ));
+        assert_eq!(fixed.expected_bitrate_bps(), 100_000, "钉死值不该被改写");
+        assert_eq!(fixed.codec_adaptations().len(), 1, "但变更必须如实可见");
+
+        let mut meta = meta();
+        meta.expected_bitrate_source = BitrateExpectationSource::FixedCli;
+        let parsed: Value = serde_json::from_str(&fixed.report_json(&meta)).unwrap();
+        assert_eq!(parsed["summary"]["codec_adapted_count"], 1);
+        assert_eq!(parsed["summary"]["codec_target_bps_final"], 320_000);
+        assert_eq!(parsed["codec_adaptations"][0]["at_secs"], 5);
+        assert_eq!(parsed["codec_adaptations"][0]["from_bps"], 160_000);
+        assert_eq!(parsed["codec_adaptations"][0]["to_bps"], 320_000);
+
+        let text = fixed.summary_text(&meta);
+        assert!(
+            text.contains("自适应目标：变更 1 次（降级 0 / 恢复 1），末次目标 320000 bps"),
+            "{text}"
+        );
+        assert!(
+            text.contains("t=    5s  自适应目标 160000 → 320000 bps"),
+            "{text}"
+        );
+
+        // 一次都没动也要说清楚：「0 次」是结论，不是空白。
+        let still = SoakMonitor::new(SoakThresholds::default(), 320_000);
+        assert!(still.codec_adaptation_text().contains("全程未变更（0 次）"));
     }
 }

@@ -462,6 +462,8 @@ async fn run(
         println!("判据档位：回环稳态（零容忍）——欠载按**绝对值 0** 判，不给比例预算\n");
     }
     let mut monitor = SoakMonitor::new(thresholds, expected_bps);
+    // 钉死的期望值不跟随自适应（观测照记）：判定链路自检要的就是「写错就该红」。
+    monitor.set_follow_codec_target(follow_encoder_target);
     // 自适应改的是**发送侧**的目标码率：订阅 node-a 的事件，每个采样 tick 捞一次，
     // 让判据的期望值跟着走（`try_recv` 不阻塞；每秒清一次，广播通道容量 256 够用）。
     let mut events_a = engine_a.subscribe();
@@ -480,19 +482,29 @@ async fn run(
         // 接收侧引擎的账本。
         let depth_drops = engine_b.depth_drops(peer_on_b).unwrap_or(0);
 
-        // 期望值要**先**跟上这一拍的目标码率，再判这一拍的采样。
-        if follow_encoder_target {
-            loop {
-                match events_a.try_recv() {
-                    Ok(EngineEvent::CodecAdapted { to_bps, .. }) => {
-                        monitor.follow_encoder_target(to_bps);
+        // 自适应目标：**总是**观测（不只是「跟随期望值」那一路）——
+        // 它是「自适应到底动没动、往哪边」的唯一直接证据（docs/22 §13）。
+        // 另外：期望值要**先**跟上这一拍的目标码率，再判这一拍的采样。
+        loop {
+            match events_a.try_recv() {
+                Ok(EngineEvent::CodecAdapted {
+                    from_bps,
+                    to_bps,
+                    reason,
+                }) => {
+                    monitor.observe_codec_adaptation(at_secs, from_bps, to_bps, reason.clone());
+                    if !quiet {
+                        // 进度行用 `\r` 原地刷新：变更另起一行，免得糊在一起。
+                        println!(
+                            "\n  [自适应] t={at_secs}s 目标 {from_bps} → {to_bps} bps（{reason}）"
+                        );
                     }
-                    // 追不上（旧消息被覆盖）不是错误：继续取后面那一条 ——
-                    // 期望值宁可晚一拍，也不能停在旧值上。
-                    Err(TryRecvError::Lagged(_)) => continue,
-                    Err(_) => break,
-                    Ok(_) => {}
                 }
+                // 追不上（旧消息被覆盖）不是错误：继续取后面那一条 ——
+                // 期望值宁可晚一拍，也不能停在旧值上。
+                Err(TryRecvError::Lagged(_)) => continue,
+                Err(_) => break,
+                Ok(_) => {}
             }
         }
 
