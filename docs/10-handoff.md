@@ -427,6 +427,14 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   接收侧遥测 `(nack_count, plc_count, underruns) = (48, 15, 0)` —— 重传 48 次、PLC 15 次、**欠载 0**。
   这组数字把两件事分开了：双发 + NACK 补**内容**、PLC 兜没补上的内容，而**时刻**始终由 epoch 排播钉住、
   抖动缓冲吸收到达抖动，所以「丢包严重」影响的是音质，不是组内同步。看板行标题随之更新（4% → 4% 与 30%）。
+- **第 69 轮：澄清一份「看起来很吓人」的历史报告，并用 90 s 对照坐实修复**。复查时看到
+  `target/evidence/soak/soak-8h-netem.json` 里 `verdict: "failed"` + 200 条违规（全是 `bitrate_out_of_range`）、
+  `dropped_violations: 6855`，差点当成当前代码的长跑失败。查代码后确认：`SoakThresholds::weak_network`
+  把 `bitrate_tolerance_pct_x100` 设为 0（= 不判）、判定逻辑有 `> 0` 守卫、还有专门单测；
+  而那份报告**正是 `soak.rs` 注释里描述的那一次修复前长跑**（`violations_total: 7055` 与 docs/22 §9 完全对上）。
+  **同参数对照**：用当前二进制跑 90 s 宽容档 → `verdict=ok violations=0 dropped=0 samples=88`（vs 修复前 7055）。
+  docs/22 新增 §10 写清「怎么一眼分清历史报告与当前判定」（违规类型 / 摘要字段 / 档位自述三条）。
+  **真正的 8 h rerun（用当前代码）仍在跑，约 30 min 后出报告 —— 那才是 M2 稳定性行的回填依据。**
 
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 

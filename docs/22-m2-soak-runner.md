@@ -221,4 +221,32 @@ cargo run -q -p audiolink-tools --bin soak-runner -- run --seconds 90 \
 
 旧报告（无这些字段）仍可被 `tools/soak-report.ps1` 解析 —— 脚本只在字段存在时多打印一段「按类 + 最后一次」。
 
+---
+
+## 10. 读报告时的坑：`soak-8h-netem.json` 是**修复前的证据**，不是当前判定（2026-09-17 第 69 轮补）
+
+第 69 轮复查时踩了一次：看到 `target/evidence/soak/soak-8h-netem.json` 里 `verdict: "failed"`、
+200 条违规（**全部** `bitrate_out_of_range`）、`dropped_violations: 6855`，差点当成「当前代码的长跑失败」。
+它其实就是 §9 描述的那一次 —— 修复**之前**的 8 h 跑，留在这里是当缺陷证据用的。
+
+怎么一眼分清：
+
+| 判据 | 修复前的报告 | 当前代码 |
+|---|---|---|
+| 违规类型 | 清一色 `bitrate_out_of_range`，`dropped_violations` 是数千量级 | 宽容档下码率违规**应当为 0** |
+| 摘要字段 | 没有 `violations_total` / `violations_by_kind` / `last_violation_kind` | 这些字段齐全（§9.3） |
+| 档位自述 | 日志写「弱网（宽容）：只钉会话不断与掩盖比例 ≤ 1%」，违规里却有码率 | 同一句自述，违规里不会有码率 |
+
+**同参数对照（可复现）**：用当前二进制、完全相同的参数再跑 90 s 宽容档：
+
+```text
+异常：共 0 条（留存 0 条，未留存 0 条）→ 判定 ok
+verdict=ok violations=0 dropped=0 samples=88
+```
+
+0 违规 vs 修复前的 7055 —— 这就是那次修复最直接的对照。报告也留在
+`target/evidence/soak/tolerant-90s-current.json`。若哪天 `soak-8h-netem.json` 被重新生成，
+请连同 `started_at_unix` 一起看：它当前是历史证据，不是体检结果。
+
+
 
