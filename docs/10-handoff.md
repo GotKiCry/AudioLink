@@ -471,6 +471,13 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   一个「插回后 4 s 内上行 0 包」的读数就把链路层与数据面干净分开了。修复方向与判据已写进 `docs/48` §2.4 / §5，
   候选方案①（应用层 200 ms 探活）先做对照实验，不行再上②（FR-27 重连）。本轮门禁未跑（只改测试诊断代码 +
   文档，未动产品代码）；新读数留在 `network_outage.rs` 里，是有价值的常驻护栏。
+  **过程中的一次自伤（值得记）**：新加的诊断读数最初是**串行等待**，插在「恢复」测量之前 ——
+  于是把「恢复后 2 s 内的非静音回调数」那个窗口**等过期**了，`two_second_outage_recovery_is_recorded`
+  与 `brief_outage_self_heals_within_budget` 两条测试**确定性变红**（隔离跑也红，所以不是并行 flake，
+  而是真回归）。这与 `docs/48` §4 记过的是**同一个坑**（「窗口从 restore_at 起算，而恢复本身可能晚于它」），
+  只是这次换成了「等待把窗口吃掉」。修法：诊断读数收 `Arc<AtomicU64>` 并用 `tokio::spawn` **并发**等，
+  **判据先取、读数后收**。教训：**诊断代码也有副作用** —— 加读数时先问一句「它会不会改变被测对象的
+  时间线」。修好后 outage 3/3 连跑两次、engine 36/36、lib 150/150、clippy 零告警（提交 fcb48da）。
   **看板同步仍被 GraphQL 二级限流挡住**：本轮 `pwsh tools/sync-board.ps1` 三次尝试全部失败 ——
   `gh project list --owner GotKiCry` 报 **`unknown owner type`**，而 `gh api graphql` 直连给出的真因是
   `API rate limit already exceeded for user ID 24805948`（错误类型 `RATE_LIMIT`/`graphql_rate_limit`）。
