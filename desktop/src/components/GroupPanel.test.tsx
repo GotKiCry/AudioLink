@@ -197,20 +197,23 @@ describe("成员退出与加入", () => {
 });
 
 describe("成员同步质量分级的上色（§6.5）", () => {
-  it("good：绿字 + 原样展示分级词 + 时钟偏移 tooltip", () => {
+  it("good：绿字 + 人话「同步质量良好」+ 时钟偏移 tooltip", () => {
+    // 改坏：把 t("group.good") 换回 member.quality → 中文界面里蹦出一个英文原词 good，红。
     panel({ peers: [], groups: [group(7, [member("aaaa0001", "good", 42)])] });
 
     const badge = screen.getByTitle(t("group.offset", { us: 42 }));
     expect(badge.className).toContain("text-emerald-400");
-    expect(badge.textContent).toBe("good");
+    expect(badge.textContent).toBe(t("group.good"));
+    expect(badge.textContent).not.toBe("good");
   });
 
-  it("fair：琥珀色 + 原样展示分级词", () => {
+  it("fair：琥珀色 + 人话「同步质量一般」", () => {
     panel({ peers: [], groups: [group(7, [member("aaaa0001", "fair", 900)])] });
 
     const badge = screen.getByTitle(t("group.offset", { us: 900 }));
     expect(badge.className).toContain("text-amber-400");
-    expect(badge.textContent).toBe("fair");
+    expect(badge.textContent).toBe(t("group.fair"));
+    expect(badge.textContent).not.toBe("fair");
   });
 
   it("poor + 没有时钟估计：红字 + **人话**「同步质量差」+ tooltip「还没有时钟估计」", () => {
@@ -242,7 +245,33 @@ describe("成员同步质量分级的上色（§6.5）", () => {
     expect(fair.className).not.toContain("text-emerald-400");
     expect(poor.className).not.toContain("text-emerald-400");
     // 分级词本身也要能区分（不只靠颜色 —— UI 规格 §5）
-    expect([good.textContent, fair.textContent, poor.textContent]).toEqual(["good", "fair", t("group.poor")]);
+    expect([good.textContent, fair.textContent, poor.textContent]).toEqual([
+      t("group.good"),
+      t("group.fair"),
+      t("group.poor"),
+    ]);
+  });
+
+  it("未知档位：不涂绿、不冒充 good，而是中性色 + 把原值显式写出来", () => {
+    // 契约里 quality 是 string（引擎目前穷举 good/fair/poor），但"将来引擎加一档"是迟早的事。
+    // 改坏：把兜底改回绿色（或沿用 t("group.good")）→ 一个**未知**质量被显示成"良好"，
+    // 不报错、不留痕。这条断言就是那个兜底的钉子。
+    panel({ peers: [], groups: [group(7, [member("aaaa0001", "unknown", 42)])] });
+
+    const badge = screen.getByTitle(t("group.offset", { us: 42 }));
+    expect(badge.className).not.toContain("text-emerald-400");
+    expect(badge.className).toContain("text-neutral-400");
+    expect(badge.textContent).toBe(t("group.quality_unknown", { quality: "unknown" }));
+    expect(badge.textContent).toContain("unknown");
+    expect(badge.textContent).not.toBe(t("group.good"));
+  });
+
+  it("未知档位不是对某个特定值的特判：换个没见过的词也一样，且照常给「还没有时钟估计」", () => {
+    panel({ peers: [], groups: [group(7, [member("aaaa0001", "excellent", null)])] });
+
+    const badge = screen.getByTitle(t("group.no_clock"));
+    expect(badge.className).not.toContain("text-emerald-400");
+    expect(badge.textContent).toContain("excellent");
   });
 
   it("组摘要与 epoch 原样展示：u64 的 epochId 不做数字转换（不丢精度）", () => {

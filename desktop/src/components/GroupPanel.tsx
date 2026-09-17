@@ -19,6 +19,32 @@ interface GroupPanelProps {
   onLeave: (idShort: string, groupId: number) => void;
 }
 
+/**
+ * 成员同步质量 → 颜色 + 文案。
+ *
+ * 三档都走 `t()`：早先只有 poor 有人话（「同步质量差」），而 fair / good 直接印英文原词，
+ * 于是同一个 chip 行里一英一中 —— 中文界面上尤其刺眼。
+ *
+ * **为什么「不认识」的档位不涂绿**：契约里 `quality` 是 `string`（引擎目前穷举三档，
+ * 见 `engine_bridge.rs` 的 `quality_name`），但"将来引擎加一档"是迟早的事：
+ * 那时若 `else` 兜到绿色，界面会把一个**未知**质量显示成"良好"，而且不报错、不留痕。
+ * 所以兜底是中性色 + **把原值显式写出来**（排查时一眼看到引擎到底给了什么）。
+ *
+ * 写成函数而不是常量表：文案在渲染期求值，切语言时才会跟着变（同 `types.ts::peerStateLabel`)。
+ */
+function qualityStyle(quality: string): { className: string; text: string } {
+  switch (quality) {
+    case "good":
+      return { className: "text-emerald-400", text: t("group.good") };
+    case "fair":
+      return { className: "text-amber-400", text: t("group.fair") };
+    case "poor":
+      return { className: "text-red-400", text: t("group.poor") };
+    default:
+      return { className: "text-neutral-400", text: t("group.quality_unknown", { quality }) };
+  }
+}
+
 export function GroupPanel({
   peers,
   groups,
@@ -134,37 +160,34 @@ export function GroupPanel({
                 <span className="text-neutral-500">epoch {group.epochId}</span>
               </div>
               <ul className="flex flex-wrap gap-2">
-                {group.members.map((member) => (
-                  <li
-                    key={member.idShort}
-                    className="flex items-center gap-1 rounded bg-neutral-800 px-2 py-0.5"
-                  >
-                    <span className="text-neutral-200">fp:{member.idShort}</span>
-                    <span
-                      className={
-                        member.quality === "poor"
-                          ? "text-red-400"
-                          : member.quality === "fair"
-                            ? "text-amber-400"
-                            : "text-emerald-400"
-                      }
-                      title={
-                        member.offsetUs === null
-                          ? t("group.no_clock")
-                          : t("group.offset", { us: member.offsetUs })
-                      }
+                {group.members.map((member) => {
+                  const badge = qualityStyle(member.quality);
+                  return (
+                    <li
+                      key={member.idShort}
+                      className="flex items-center gap-1 rounded bg-neutral-800 px-2 py-0.5"
                     >
-                      {member.quality === "poor" ? t("group.poor") : member.quality}
-                    </span>
-                    <button
-                      type="button"
-                      className="text-neutral-400 hover:text-red-400"
-                      onClick={() => onLeave(member.idShort, group.groupId)}
-                    >
-                      {t("group.leave")}
-                    </button>
-                  </li>
-                ))}
+                      <span className="text-neutral-200">fp:{member.idShort}</span>
+                      <span
+                        className={badge.className}
+                        title={
+                          member.offsetUs === null
+                            ? t("group.no_clock")
+                            : t("group.offset", { us: member.offsetUs })
+                        }
+                      >
+                        {badge.text}
+                      </span>
+                      <button
+                        type="button"
+                        className="text-neutral-400 hover:text-red-400"
+                        onClick={() => onLeave(member.idShort, group.groupId)}
+                      >
+                        {t("group.leave")}
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
               <div className="mt-1 flex flex-wrap gap-2">
                 {selectable
