@@ -1,6 +1,8 @@
 //! 依赖许可审计（M5 合规清单的第一步）。
 //!
-//! 输入是两份**现成**的 JSON：`cargo metadata`（Rust 侧）与 `pnpm licenses list --json`（前端侧）。
+//! 输入是三份**现成**的 JSON：`cargo metadata`（Rust 侧）、`pnpm licenses list --json`（前端侧），
+//! 以及 Gradle 侧采集的 Android 依赖清单（**可以缺，但缺席必须在产物里写明** ——
+//! 见 [`render_android_missing_section`]：产物看起来完整、流水线全绿，是最坏的一种失败）。
 //! 本模块只做一件事：把许可表达式判成「能不能发布」，并渲染成人能读的报告。
 //!
 //! 判定语义（SPDX 表达式的三种连接词）：
@@ -327,11 +329,11 @@ pub fn render_report(rust: &[Entry], frontend: &[Entry]) -> String {
 
     out.push_str("## 覆盖面（诚实清单）\n\n");
     out.push_str("- **已覆盖**：Rust workspace 的全部依赖（`cargo metadata`）、桌面前端依赖（`pnpm licenses`）；\n");
-    out.push_str("  Android（Gradle/Maven）依赖见**文末专节**（该节存在与否取决于是否采集过）。\n");
-    out.push_str("- **未覆盖**：随包分发的二进制（.exe / .apk 内的第三方库）、字体与图标资源、以及 Android 侧的**投放位置**（声明入口）。\n");
-    out.push_str(
-        "- 本报告回答的是「许可是否允许这样分发」；署名/免责文本的**实际投放位置**是另一件事。\n",
-    );
+    out.push_str("  Android（Gradle/Maven）依赖由 `--android` 纳入 —— 是否采集见文末「Android（Gradle/Maven）依赖」一节");
+    out.push_str("（**未采集时那里会显式写明**，不会静悄悄缺席）。\n");
+    out.push_str("- **未覆盖**：随包分发的二进制（.exe / .apk 内的第三方库）、字体与图标资源。\n");
+    out.push_str("- 署名/免责文本的**投放位置已在产品内**：桌面「关于 / 第三方声明」面板读 `resource_dir()/THIRD-PARTY-NOTICES.md`，\n");
+    out.push_str("  Android「开源许可」页读 `assets/THIRD-PARTY-NOTICES.md`（见 `docs/41-compliance-license-audit.md` §7/§9）。\n");
     out
 }
 
@@ -470,6 +472,12 @@ mod tests {
         assert!(first.contains("| bad | 1.0.0 | GPL-3.0-only |"));
         assert!(first.contains("| warn | 2.0.0 | MPL-2.0 |"));
         assert!(first.contains("未覆盖"), "覆盖面必须写在报告里");
+        // 第 110 轮复核：Android 投放位早已落进产品（桌面「关于」+ Android「开源许可」），
+        // 模板里再把它写成缺口，等于每次生成都把过时口径写回去。
+        assert!(
+            !first.contains("Android 侧的**投放位置**"),
+            "Android 投放位置已落地，不该再被渲染成缺口"
+        );
     }
 }
 
@@ -964,6 +972,26 @@ mod android_tests {
         assert_eq!(entries[0].verdict, Verdict::Allowed);
         assert_eq!(entries[1].verdict, Verdict::Notice);
     }
+
+    #[test]
+    fn missing_android_list_is_stated_instead_of_silently_absent() {
+        // 缺席：必须留下一段显式说明，且给出怎么补。
+        let missing = render_android_missing_section();
+        assert!(
+            missing.contains("没有提供 Android 依赖清单"),
+            "缺席必须在产物里写明：{missing}"
+        );
+        assert!(
+            missing.contains("tools/android-licenses.ps1"),
+            "缺席时要告诉人怎么补：{missing}"
+        );
+
+        // 对照：空表**不**渲染成「有一栏但 0 个组件」—— 只有「没提供清单」才走缺席段。
+        assert!(
+            render_android_section(&[]).is_empty(),
+            "空表返回空串是刻意的：缺清单由 render_android_missing_section 表达"
+        );
+    }
 }
 
 /// 渲染 Android 依赖一节（追加到报告 / 声明尾部）。
@@ -1006,5 +1034,23 @@ pub fn render_android_section(entries: &[Entry]) -> String {
         }
         out.push('\n');
     }
+    out
+}
+
+/// 本次**没有**提供 Android 依赖清单时，往报告 / 声明尾部追加的显式说明。
+///
+/// 为什么必须有这一段：[`render_android_section`] 对空表返回**空串**，于是「没采集 Android」
+/// 与「采到 0 个组件」在产物里长得一模一样 —— 而正文那句「见文末『Android』一节」会指向一个
+/// **不存在的节**。用户拿到的是不完整的第三方声明，流水线却全绿（第 110 轮 task-36 的范围外发现）。
+/// 宁可让产物自己说清楚缺什么，也不让它看起来完整。
+#[must_use]
+pub fn render_android_missing_section() -> String {
+    let mut out = String::new();
+    out.push_str("## Android（Gradle/Maven）依赖\n\n");
+    out.push_str(
+        "> ⚠️ **本次没有提供 Android 依赖清单** —— 本报告 / 本声明**不含 Android 一栏**。\n",
+    );
+    out.push_str("> 采集在 Gradle 侧：先跑 `pwsh tools/android-licenses.ps1`（产出 `target/evidence/compliance/android-licenses.json`），\n");
+    out.push_str("> 再跑 `pwsh tools/license-audit.ps1`。**发布产物必须带这一栏**（发布前检查单里的一条）。\n");
     out
 }

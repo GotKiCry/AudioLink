@@ -6,8 +6,8 @@
 
 | 来源 | 包数 | allowed | notice | denied |
 |---|---|---|---|---|
-| Rust（cargo metadata） | 635 | 620 | 15 | 0 |
-| 前端（pnpm licenses） | 88 | 86 | 2 | 0 |
+| Rust（cargo metadata） | 651 | 636 | 15 | 0 |
+| 前端（pnpm licenses） | 154 | 151 | 3 | 0 |
 
 **Rust：无 `denied` 依赖。**
 
@@ -33,19 +33,21 @@
 
 **前端：无 `denied` 依赖。**
 
-### 前端 · notice（2 个，需要人看一眼）
+### 前端 · notice（3 个，需要人看一眼）
 
 | 包 | 版本 | 许可 |
 |---|---|---|
 | lightningcss | 1.32.0, 1.33.0 | MPL-2.0 |
 | lightningcss-win32-x64-msvc | 1.32.0, 1.33.0 | MPL-2.0 |
+| lru-cache | 11.5.2 | BlueOak-1.0.0 |
 
 ## 覆盖面（诚实清单）
 
 - **已覆盖**：Rust workspace 的全部依赖（`cargo metadata`）、桌面前端依赖（`pnpm licenses`）；
-  Android（Gradle/Maven）依赖见**文末专节**（该节存在与否取决于是否采集过）。
-- **未覆盖**：随包分发的二进制（.exe / .apk 内的第三方库）、字体与图标资源、以及 Android 侧的**投放位置**（声明入口）。
-- 本报告回答的是「许可是否允许这样分发」；署名/免责文本的**实际投放位置**是另一件事。
+  Android（Gradle/Maven）依赖由 `--android` 纳入 —— 是否采集见文末「Android（Gradle/Maven）依赖」一节（**未采集时那里会显式写明**，不会静悄悄缺席）。
+- **未覆盖**：随包分发的二进制（.exe / .apk 内的第三方库）、字体与图标资源。
+- 署名/免责文本的**投放位置已在产品内**：桌面「关于 / 第三方声明」面板读 `resource_dir()/THIRD-PARTY-NOTICES.md`，
+  Android「开源许可」页读 `assets/THIRD-PARTY-NOTICES.md`（见 `docs/41-compliance-license-audit.md` §7/§9）。
 ## Android（Gradle/Maven）依赖
 
 > 采集：解析 `gradlew :app:dependencies` 的依赖树 + 读 Gradle 缓存里 POM 的 `<licenses>`；

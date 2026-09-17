@@ -215,7 +215,10 @@ jobs:
       # M5 合规：依赖许可审计（Rust 全量 + 桌面前端）。
       # 为什么放在这个 job：它同时有 cargo 与 pnpm（两边都能采到），不必再加一个 job。
       # 护栏的意义是「新引入一个不能分发的依赖」在 CI 里就红，而不是等发布前才发现。
-      - name: License audit (Rust + frontend)
+      # ⚠️ 这一步**不含 Android**：Gradle 依赖要由 tools/android-licenses.ps1 先采（需要 Gradle 与依赖缓存，
+      #    本 job 没有）。缺清单时报告会自己写明「本次不含 Android 一栏」，不再静悄悄跳过 ——
+      #    详见 docs/compliance/license-report.md 的「覆盖面（诚实清单）」一节。
+      - name: License audit (Rust + frontend; Android 一列见 tools/android-licenses.ps1)
         run: pwsh tools/license-audit.ps1
 
   # ---------- 版本一致性：单一来源校验（旧版靠人工同步三处，必错）----------

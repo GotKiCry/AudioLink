@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use audiolink_tools::license::{
-    Verdict, audit_android, audit_cargo_metadata, audit_npm_licenses, collect_notices,
-    render_android_section, render_notices, render_report,
+    Entry, Verdict, audit_android, audit_cargo_metadata, audit_npm_licenses, collect_notices,
+    render_android_missing_section, render_android_section, render_notices, render_report,
 };
 
 fn main() {
@@ -58,6 +58,8 @@ fn run() -> anyhow::Result<()> {
     };
 
     // Android（Gradle/Maven）依赖：采集在 Gradle 侧，这里只做规范化 + 判定。
+    // 「有没有给清单」与「清单里有几个组件」是两件事：前者决定产物里写依赖表还是写缺席说明。
+    let android_provided = android_path.is_some();
     let android = match android_path {
         Some(path) => {
             let json = std::fs::read_to_string(&path)
@@ -68,7 +70,7 @@ fn run() -> anyhow::Result<()> {
     };
 
     let mut report = render_report(&rust, &frontend);
-    report.push_str(&render_android_section(&android));
+    report.push_str(&android_section(&android, android_provided));
     if let Some(path) = write_path {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -81,7 +83,7 @@ fn run() -> anyhow::Result<()> {
     if let Some(path) = notices_path {
         let (entries, texts) = collect_notices(&rust_json).map_err(anyhow::Error::msg)?;
         let mut notices = render_notices(&entries, &texts, &frontend);
-        notices.push_str(&render_android_section(&android));
+        notices.push_str(&android_section(&android, android_provided));
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("创建 {}", parent.display()))?;
@@ -123,6 +125,19 @@ fn run() -> anyhow::Result<()> {
         anyhow::bail!("{} 个依赖的许可不允许这样分发", denied.len());
     }
     Ok(())
+}
+
+/// Android 那一节：**采到清单**就渲染依赖表，**没提供清单**就写一段显式的缺席说明。
+///
+/// 为什么不直接 `push_str(&render_android_section(&android))`：那个函数对空表返回空串，
+/// 于是「没采集 Android」与「采到 0 个组件」在产物里完全一样，而正文那句「见文末『Android』一节」
+/// 会指向一个**不存在的节** —— 产物看起来完整、流水线全绿。缺席必须自己说出来。
+fn android_section(entries: &[Entry], provided: bool) -> String {
+    if provided {
+        render_android_section(entries)
+    } else {
+        render_android_missing_section()
+    }
 }
 
 fn usage() {
