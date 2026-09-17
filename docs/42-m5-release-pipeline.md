@@ -424,6 +424,140 @@ arm64-v8a + armeabi-v7a**。已全部回退 —— 需求文档是契约，支�
 真正的「装上去」：需要两个版本 + Release 托管 + 干净机器（看板的 `[M5] 真实更新流程验证`）。
 本轮做完的是**发布前能自动核对的那一半**。
 
+---
+
+## 12. 自动更新端到端验证：一条命令 + 一条人工清单（2026-09-17）
+
+§5.3 与 §11.4 留着同一句话没兑现：「真的装上去」需要**两个版本 + Release 托管 + 干净机器**。
+这一轮把它拆开：**能自动化的全部自动化，剩下的收敛成一条能照做的人工清单**。
+
+### 12.1 一条命令
+
+    pwsh -File tools/updater-local-e2e.ps1
+
+六个阶段，每段独立判定 PASS/FAIL（一段失败不会遮住后面的阶段）：
+
+| 阶段 | 断言 | 2026-09-17 实测（真实产物 3,793.5 KB） |
+|---|---|---|
+| S1 | 由 `tools/tauri-latest-json.ps1` 从当前 `.sig` 生成 `latest.json` | `version=0.1.0`；签名前 40 字符 `dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBm…` |
+| S2 | 清单 + 安装包 + `.sig` 组装成一个可托管目录 | `serve/` 下三个文件 |
+| S3 | 在 127.0.0.1 起静态托管（HttpListener；不联网、不依赖 python） | `http://127.0.0.1:8321` 就绪 |
+| S4 | 走 HTTP 取清单与安装包：可达 + 字段齐全 + 字节一致 | `sha256=E5A99CA19A7773C9…`（HTTP 取回 == 托管文件） |
+| S5 | 版本比较语义：新 / 同 / 旧 | `0.1.0 vs 0.0.9 → 1`、`vs 0.1.0 → 0`、`vs 0.9.9 → -1` |
+| S6 | 用**配置公钥**验签**从 HTTP 取回**的字节；再改 1 字节必须被拒 | `E2E-HOSTED: positive ok bytes=3884530` / `E2E-HOSTED: negative rejected InvalidSignature` |
+
+退出码就是门禁语义，刻意区分「真的验证了」与「只是没报错」：
+
+| 退出码 | 含义 | 实测 |
+|---|---|---|
+| 0 | 六段全部通过（含验签正例与负例） | ✓ 见上表 |
+| 1 | 有断言失败 | ✓ `-TamperHostedPackage` 场景（§12.2） |
+| 2 | **缺少带签名的构建产物 → 验签环节根本没执行**（不等于通过） | ✓ `-BundleDir` 指向空目录 |
+
+### 12.2 它怎么证明自己不是「只会打印 PASS」
+
+上面那两个非 0 退出码就是证据本身（2026-09-17 真跑）：
+
+（1）**破坏性自检**：组装完成后把托管包改 1 字节（清单里的签名一个字符都不动）：
+
+    pwsh -File tools/updater-local-e2e.ps1 -TamperHostedPackage
+    # 退出码 1
+    FAIL  S6 验签：配置公钥 + 从 HTTP 取回的字节（正例通过 / 改 1 字节被拒）
+          Rust 端到端验签测试失败（exit 101）
+    thread 'hosted_release_end_to_end_from_local_http' panicked at desktop\src-tauri\tests\updater_hosted_e2e.rs:179:10:
+    本地托管的发布包 + 清单签名 + 配置公钥必须验签通过: InvalidSignature
+
+（2）**缺产物**：`-BundleDir` 指到一个空目录 → 退出码 2，并打印
+「缺少「带签名的安装包」：验签环节无法执行 —— 本脚本不假装通过」，同时告诉你产物怎么造。
+
+脚本还额外防了一件事：S6 跑完会检查 Rust 输出里**有没有那两条标记行**（`E2E-HOSTED: positive ok` /
+`E2E-HOSTED: negative rejected InvalidSignature`）——少任何一条就判失败，
+避免「测试被跳过」被当成「验证通过」。
+
+### 12.3 边界：哪一环由谁覆盖
+
+| 环节 | 覆盖者 | 能进 CI 吗 |
+|---|---|---|
+| 清单生成 | `tools/tauri-latest-json.ps1`（S1） | ✓ 已在 `release.yml` |
+| 清单 ↔ 本地产物配套（离线验签） | `tools/check-update.mjs` | ✓ 已在 `release.yml` |
+| 篡改包被拒（纯算法） | `tests/updater_signature.rs`（8 个用例） | ✓ 每次 `cargo test` |
+| 篡改包被拒（**从 HTTP 取回的真实字节**） | `tests/updater_hosted_e2e.rs` + 本脚手架（S4/S6） | ⚠ 需要带签名的产物：release job 可以，PR CI 只会拿到退出码 2 |
+| 本地托管 + HTTP 可达 + 字段 + 版本语义 | 本脚手架（S3/S4/S5） | ⚠ 同上 |
+| 插件**真的**按 `endpoints` 拉清单与包 | 无 | ✗ 见 §12.5 |
+| 下载后的**真安装**（干净机器） | 无 | ✗ 见 §12.5 |
+
+想接进发布流程（本轮**没有改 CI**，改 `.github/workflows/release.yml` 是另一件事）：
+在「Verify update manifest against the artifacts」之后加一步 `- run: pwsh -File tools/updater-local-e2e.ps1`。
+release job 有签名产物，六段会真的跑完；**PR CI 不要加** —— 那里没有 `TAURI_SIGNING_PRIVATE_KEY`，只会拿到退出码 2。
+
+### 12.4 必须人工的四步（为什么 + 怎么做）
+
+**第 1 步：把版本提到 0.1.1（三处；单一来源是根 Cargo.toml）**
+
+| 文件 | 字段 | 改成 |
+|---|---|---|
+| `Cargo.toml` | `[workspace.package] version` | `0.1.1` |
+| `desktop/src-tauri/tauri.conf.json` | `version` | `0.1.1` |
+| `android/app/build.gradle.kts` | `versionName` | `0.1.1` |
+
+然后跑 `pwsh -File tools/check-version.ps1` → 期望最后一行是 **`版本一致：0.1.1`**
+（不一致它会 `exit 1`，并把哪一份对不上列出来）。
+
+为什么人工：版本号是发布事实；改漏一处，客户端会**永远**认为「已是最新」。
+
+**第 2 步：发布（草稿 → 正式）**
+
+- 触发（二选一）：`gh workflow run release.yml -f publish=true -f version=0.1.1`，
+  或者 `git tag v0.1.1; git push origin v0.1.1`。
+- 观察 1：`desktop installer` job 里「Generate update manifest」与
+  「Verify update manifest against the artifacts」都是 **success**。后者就是 `tools/check-update.mjs` ——
+  清单与产物不配套会**当场红**（§11.1 抓过这种）。
+- 观察 2：草稿 Release 的资产里应有 `AudioLink_0.1.1_x64-setup.exe`、它的 `.sig`、以及 `latest.json`。
+- ⚠ **坑（§8.2 实测过）**：手动 dispatch 的 `version` **只决定 tag 名**，资产名与清单里的版本跟着
+  **代码里的版本号**走。所以必须先做第 1 步，否则会得到「tag 是 v0.1.1、资产却叫 `AudioLink_0.1.0_…`」的错位组合。
+- ⚠ **草稿不对外**：`endpoints` 指向 `releases/latest/download/latest.json`，而 `releases/latest`
+  **只认正式 Release**（§8.2 实测：草稿状态下该地址是 404）。必须把草稿点成 **Publish release**。
+
+为什么人工：对外发布不可逆，而且需要仓库写权限。
+
+**第 3 步：干净机器装 v0.1.0**
+
+- 在**另一台机器**（或同一台机器的另一个 Windows 用户）上装 `AudioLink_0.1.0_x64-setup.exe`。
+- 观察：关于/托盘显示的版本是 **0.1.0**。
+- 为什么人工：安装会写 `Program Files` / 注册表，「干净」本身是环境属性。
+
+**第 4 步：客户端检测 → 下载 → 验签 → 安装**
+
+- 打开「软件更新」面板 → 点 **检查更新**。
+- 观察 A（验「检测」）：面板显示 **发现新版本 0.1.1（当前 0.1.0）**，带发布日期与更新说明。
+  若显示的是错误：把界面上的**中文错误原文**贴回来 —— 错误层已翻成人话（例如与签名相关的失败），
+  那通常意味着 `latest.json` 与安装包不配套（§11.1 的病）。
+- 点 **下载并安装 0.1.1** → 出现确认提示（「安装会先与对端优雅收尾……现在安装吗？」）→ 点 **确认安装**。
+- 观察 B（验「下载 + 验签」）：状态显示 **下载中…（验签通过后才会启动安装器）**，
+  随后 AudioLink 退出、安装器接管、装完自动重开。
+- 观察 C（验「装上去」）：重开后版本是 **0.1.1**；再点一次「检查更新」显示 **已是最新版本（0.1.1）**。
+- 为什么人工：需要真实网络到 GitHub + 真安装器进程；而且 `endpoints` 是**编译期**常量，
+  脚手架无法让**已经编译好的**客户端改去访问本地托管。
+
+**（可选）只想验「下载 + 验签」而不动 Release**
+
+临时把 `desktop/src-tauri/tauri.conf.json` 的 `plugins.updater.endpoints` 改成
+`["http://127.0.0.1:8321/latest.json"]`，再把托管清单里 `platforms.windows-x86_64.url` 改成本地地址
+（脚手架生成的清单 url 指向 GitHub），然后 `pnpm tauri:dev` 里点「检查更新」。
+
+走这条路时**下载与验签是真的**（同一个插件、同一把公钥），但**安装器仍会真的运行** ——
+不要在正在用的机器上点安装；验证完记得把 `endpoints` 改回去。
+
+### 12.5 仍未做（诚实清单）
+
+- **插件真的按 `endpoints` 拉取**没有自动化：`endpoints` 是编译期常量；要驱动真插件得拿到 `AppHandle`
+  （`tauri::test` 的 mock 需要给 `tauri` 开 `test` feature，会把测试依赖面扩大），不在本轮范围。
+- **真安装**没有自动化（改系统状态；且 Windows 上会 `exit(0)` 拉起安装器）。
+- **CI 未接线**：只写了怎么接（§12.3 末段），改 `.github/workflows/release.yml` 不在本轮 write scope。
+- 版本比较用的是与插件一致的判据（`remote > current`）+ 简化的 x.y.z 比较：**pre-release 语义**
+  （如 `0.1.1-beta`）没有覆盖；需要时以插件里的 `semver` crate 为准。
+
+
 
 
 
