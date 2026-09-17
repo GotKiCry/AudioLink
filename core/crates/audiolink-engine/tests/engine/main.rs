@@ -21,6 +21,7 @@ mod gain_control;
 mod group_epoch;
 mod group_join;
 mod group_management;
+mod group_multi;
 mod group_sync;
 mod handshake_deadline;
 mod latency_budget;
