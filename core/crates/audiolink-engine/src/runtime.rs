@@ -2845,8 +2845,11 @@ struct PlayoutHandle {
     /// M4 汇聚：本会话挂在哪台混音器上、用的是哪个源号（停止时要把这一路摘掉）。
     mixer: Option<PlayoutMix>,
     mix_source: Option<u32>,
-    /// FR-27：本路成为 owner 时拿到的槽位凭据 —— `Drop` 里据此让位（见下方 `Drop` 实现）。
-    owner_slot: Option<Arc<PlayoutMixSlot>>,
+    /// M4/FR-27：本会话的混音器槽位凭据 —— `Drop` 里据此让位（见下方 `Drop` 实现）。
+    ///
+    /// **每一路都持有它**（不再只有 owner 才拿）：接管是**懒**的，guest 随时可能成为 owner，
+    /// 而每次成为 owner 都要有凭据让位。
+    mix_slot: Arc<PlayoutMixSlot>,
 }
 
 impl PlayoutHandle {
@@ -2931,13 +2934,11 @@ impl Drop for PlayoutHandle {
         {
             guard.remove_source(source);
         }
-        // ③ FR-27：owner **立刻**让位，不等播放线程 join 完。
-        //    让位必须发生在下一个会话 `acquire_playout_mixer` 之前，否则新会话抢不到 owner。
+        // ③ M4/FR-27：owner **立刻**让位，不等播放线程 join 完。
+        //    让位必须发生在别的会话尝试接管之前，否则它们一直抢不到 owner。
         //    世代 CAS：只有「仍是当前 owner」的这一路清得掉，旧 owner 迟到的退出不会误清新 owner。
-        if let (Some(slot), Some(source)) = (self.owner_slot.as_ref(), self.mix_source) {
-            let _ = slot
-                .owner
-                .compare_exchange(source, 0, Ordering::SeqCst, Ordering::SeqCst);
+        if let Some(source) = self.mix_source {
+            release_playout_owner(&self.mix_slot, source);
         }
     }
 }
@@ -2954,10 +2955,7 @@ struct PlayoutOwnerGuard {
 
 impl Drop for PlayoutOwnerGuard {
     fn drop(&mut self) {
-        let _ =
-            self.slot
-                .owner
-                .compare_exchange(self.source, 0, Ordering::SeqCst, Ordering::SeqCst);
+        release_playout_owner(&self.slot, self.source);
     }
 }
 
@@ -4032,10 +4030,8 @@ struct PlayoutAssignment {
     mixer: PlayoutMix,
     /// 本路的源号（停止时用它 `remove_source`）。
     source: u32,
-    /// 本路是否**真正持有播放设备**：只有 owner 会建 sink 并把混音结果写出去。
-    is_owner: bool,
-    /// 本路成为 owner 时拿到的槽位凭据；退出路径**必须**用它让位。guest 为 `None`。
-    owner_slot: Option<Arc<PlayoutMixSlot>>,
+    /// 本路的槽位凭据。**每一路都有** —— 谁抢到 owner 谁写设备，而谁能抢到是运行期决定的。
+    slot: Arc<PlayoutMixSlot>,
 }
 
 /// 取得（必要时创建）引擎级混音器，并给本会话分配一个源号。
@@ -4043,9 +4039,15 @@ struct PlayoutAssignment {
 /// 只有 owner 会真的打开播放设备，其余会话把解码后的 PCM 混进来 —— 这就是 M4 的
 /// 「同一接收端多路混音」。路数超过 FR-12 的上限时明确报 STREAM_LIMIT，而不是悄悄丢掉一路。
 ///
-/// FR-27 的 owner 接管：槽里**已有**混音器不再等于「我不是 owner」—— 上一个 owner 退出时会
-/// 让位（见 `PlayoutHandle::drop` / `PlayoutOwnerGuard`），这里 CAS 抢到就重新打开设备。
-/// `compare_exchange` 保证并发接管只有一个赢家；新建槽位时 owner 初值为 0，同一句 CAS 必然抢到。
+/// # 这里**不**决定谁是 owner（M4/FR-27 懒接管）
+///
+/// 早先的版本在这里做一次 `compare_exchange(0 → 本路源号)` 定 owner，只在建立播放管线
+/// （收到 `OPEN_STREAM`）时被调用一次。它有两个漏：
+///
+/// 1. **已经在混音的 guest 没有任何通路重新走这里** —— owner 退出后它只能永远哑着混音；
+/// 2. 首路的 owner 身份与「这一次调用」绑死，运行期再无可让位/接管的时机。
+///
+/// 所以 owner 的取得与让出都挪进播放循环（见 `playout_main` 的接管块）：谁在运行期抢到谁写设备。
 fn acquire_playout_mixer(
     inner: &Arc<Inner>,
     codec: &CodecConfig,
@@ -4082,18 +4084,50 @@ fn acquire_playout_mixer(
             .add_source(source)
             .map_err(|_| AudioLinkError::stream_limit(MIXER_FULL))?;
     }
-    // 抢 owner：抢到就重新打开设备（本路成为真正的播放路），抢不到就是「继续做混音路数」
-    // 的旧语义 —— 设备仍由别的会话写着，本路只把样本混进去。
-    let is_owner = slot
-        .owner
-        .compare_exchange(0, source, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok();
     Ok(PlayoutAssignment {
         mixer: Arc::clone(&slot.mixer),
         source,
-        is_owner,
-        owner_slot: is_owner.then(|| Arc::clone(&slot)),
+        slot,
     })
+}
+
+/// 设备打开失败后的重试间隔（M4/FR-27 懒接管）。
+///
+/// 为什么必须有退避：`factory()` 在设备忙、权限不足、音频服务没起来时会失败，而播放拍是
+/// 20 ms 一拍 —— 不退避就是每秒 50 次打开设备尝试，既把设备句柄与 CPU 打满，也把日志刷成噪声。
+/// 250 ms 足以让瞬时故障过去，又不至于让接管明显迟到（验收给接管的窗口是秒级）。
+const OWNER_TAKEOVER_RETRY: Duration = Duration::from_millis(250);
+
+/// 抢 owner：成功 = 本路接下来负责把混音结果写进设备。
+///
+/// owner 里存的是**源号**（0 = 无人持有），所以「让位」能写成一次
+/// `compare_exchange(我的源号 → 0)` —— 只有仍是当前 owner 的那一路清得掉，旧 owner 迟到的
+/// 退出不会误清新 owner。CAS 也保证并发接管只有一个赢家：不会两路同时写同一台设备。
+fn claim_playout_owner(slot: &PlayoutMixSlot, source: u32) -> bool {
+    slot.owner
+        .compare_exchange(0, source, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+}
+
+/// 让位（幂等）：对「已经不是 owner」的调用者是空操作。
+fn release_playout_owner(slot: &PlayoutMixSlot, source: u32) {
+    let _ = slot
+        .owner
+        .compare_exchange(source, 0, Ordering::SeqCst, Ordering::SeqCst);
+}
+
+/// 打开播放设备，并把「零重采样」硬闸（NFR-13）过一遍。
+///
+/// 失败时**不动**已经打开的 sink：调用方自己决定是「保留旧的」（看门狗重建失败）还是
+/// 「本来就没有」（接管失败，让位后重试）。
+fn open_playout_sink(
+    factory: &(dyn Fn() -> Result<Box<dyn PlayoutSink>, AudioError> + Send + Sync),
+    sink: &mut Option<Box<dyn PlayoutSink>>,
+) -> Result<(), AudioLinkError> {
+    let open = factory().map_err(|error| audio_error(&error))?;
+    require_unified_format("playout", open.backend_name(), open.device_format())?;
+    *sink = Some(open);
+    Ok(())
 }
 
 /// 一拍的提交结果。
@@ -4114,28 +4148,32 @@ enum FrameWrite {
 /// 写出一帧。
 ///
 /// 没接混音器时就是直通 sink（M1 起的行为）；接上之后本路先把样本混进去，
-/// 只有 owner（真正持有设备的那一路）才把混音结果写出去 —— 于是多路只开一次设备。
+/// 只有 owner（**运行期抢到设备**的那一路）才把混音结果写出去 —— 于是多路只开一次设备。
+///
+/// 这里不看「建会话时我是不是 owner」：本路此时有没有 `sink` 就是答案（懒接管的全部状态
+/// 只有这一个 `Option`）。没有 sink 只说明别人持有设备，帧照样要混进去。
 fn write_frame(
     sink: &mut Option<Box<dyn PlayoutSink>>,
     mixer: &Option<Arc<Mutex<PcmMixer>>>,
-    mix_source: Option<u32>,
+    mix_source: u32,
     samples: &[f32],
     mixed: &mut Vec<f32>,
 ) -> FrameWrite {
-    let (Some(mixer), Some(source)) = (mixer.as_ref(), mix_source) else {
+    let Some(mixer) = mixer.as_ref() else {
+        // 没有引擎级混音器：M1 的直通语义（本路直接写设备；没有设备就无处输出）。
         return match sink.as_mut() {
-            None => FrameWrite::Ok, // 非 owner：本路不持有设备
+            None => FrameWrite::Ok,
             Some(open) => write_into(open, samples),
         };
     };
     let Ok(mut guard) = mixer.lock() else {
         return FrameWrite::Fatal;
     };
-    if guard.push(source, samples).is_err() {
+    if guard.push(mix_source, samples).is_err() {
         return FrameWrite::Fatal;
     }
     let Some(open) = sink.as_mut() else {
-        return FrameWrite::Ok; // 非 owner：混进去就完事
+        return FrameWrite::Ok; // 还不是 owner：混进去就完事
     };
     guard.mix_frame(mixed);
     write_into(open, mixed)
@@ -4213,22 +4251,20 @@ fn spawn_playout_thread(
     let PlayoutAssignment {
         mixer,
         source: mix_source,
-        is_owner,
-        owner_slot,
+        slot,
     } = acquire_playout_mixer(inner, codec)?;
     let thread_mixer = Some(mixer.clone());
-    // 只有 owner 会真的建 sink；其余会话只把帧混进去。
-    let factory = if is_owner {
-        Some(Arc::clone(factory))
-    } else {
-        None
-    };
-    // FR-27：owner 的让位守卫跟着播放线程走 —— 线程自己死掉（设备被拔、写失败、建 sink 失败、
-    // panic）也必须让位，否则引擎会永远以为「还有人持有设备」，下一个会话只能哑着混音。
-    let owner_guard = owner_slot.clone().map(|slot| PlayoutOwnerGuard {
-        slot,
+    // M4 懒接管：**每一路**都拿着工厂与槽位 —— 谁在运行期抢到 owner 谁写设备。
+    // 所以不能再按「建会话时是不是 owner」裁剪工厂：那正是「已经在混音的 guest」哑掉的第二个原因
+    // （它连打开设备的工具都没有）。
+    let thread_factory = Arc::clone(factory);
+    let thread_slot = Arc::clone(&slot);
+    // 让位守卫跟着播放线程走：线程自己死掉（设备被拔、写失败、建 sink 失败、panic）也必须让位，
+    // 否则引擎会永远以为「还有人持有设备」，别的路数一直抢不到。
+    let owner_guard = PlayoutOwnerGuard {
+        slot: Arc::clone(&slot),
         source: mix_source,
-    });
+    };
 
     let join = std::thread::Builder::new()
         .name("audiolink-playout".to_string())
@@ -4236,7 +4272,7 @@ fn spawn_playout_thread(
             // 守卫活到闭包结束：**所有**退出路径（含早期 return 与 panic）都会在 drop 时让位。
             let _owner_guard = owner_guard;
             playout_main(
-                factory.as_ref().map(|factory| factory.as_ref()),
+                thread_factory.as_ref(),
                 frame_ms,
                 pcm,
                 telemetry,
@@ -4247,7 +4283,8 @@ fn spawn_playout_thread(
                 events,
                 thread_gain,
                 thread_mixer.clone(),
-                Some(mix_source),
+                mix_source,
+                thread_slot,
                 frame_rx,
                 ready_tx,
             );
@@ -4265,7 +4302,7 @@ fn spawn_playout_thread(
             gain,
             mixer: Some(mixer),
             mix_source: Some(mix_source),
-            owner_slot,
+            mix_slot: slot,
         }),
         // 线程自己报的错：它已经在退出路径上让位了（线程侧的守卫）。
         Ok(Err(error)) => Err(error),
@@ -4282,7 +4319,7 @@ fn spawn_playout_thread(
 
 #[allow(clippy::too_many_arguments)]
 fn playout_main(
-    factory: Option<&(dyn Fn() -> Result<Box<dyn PlayoutSink>, AudioError> + Send + Sync)>,
+    factory: &(dyn Fn() -> Result<Box<dyn PlayoutSink>, AudioError> + Send + Sync),
     frame_ms: u64,
     pcm_len: usize,
     telemetry: Arc<Mutex<TelemetryAggregator>>,
@@ -4293,29 +4330,33 @@ fn playout_main(
     events: broadcast::Sender<EngineEvent>,
     gain_state: Arc<Mutex<GainState>>,
     mixer: Option<PlayoutMix>,
-    mix_source: Option<u32>,
+    mix_source: u32,
+    mix_slot: Arc<PlayoutMixSlot>,
     frames: Receiver<PlaybackFrame>,
     ready_tx: std::sync::mpsc::Sender<Result<(), AudioLinkError>>,
 ) {
-    let mut sink: Option<Box<dyn PlayoutSink>> = match factory {
-        Some(factory) => match factory() {
-            Ok(sink) => Some(sink),
+    // M4 懒接管：本路有没有设备**不是**建会话时定下的，而是运行期抢来的 —— 所以这里
+    // 一开始可以是 None，循环里再抢（见下方的接管块）。
+    let mut sink: Option<Box<dyn PlayoutSink>> = None;
+    // FR-28 看门狗只在「本路真的持有设备」时存在：非 owner 的「没有输出」是它的正常状态。
+    let mut watchdog: Option<SinkWatchdog> = None;
+    // 接管失败后的退避截止时刻（见 `OWNER_TAKEOVER_RETRY`）；初始为「现在」= 立即可试。
+    let mut owner_retry_after = Instant::now();
+
+    // 首次接管尝试：**每一条路都走这里**。首路必然抢到（owner 初值 0），后续路数抢不到就只混音。
+    //
+    // 为什么这一次要同步做完并把结果交给 `ready_tx`：建立播放管线那一步必须能回答「对端开流
+    // 成功了吗」—— 抢到 owner 却打不开设备是**失败**，要上报，而不是安静地降级成 guest。
+    if claim_playout_owner(&mix_slot, mix_source) {
+        match open_playout_sink(factory, &mut sink) {
+            Ok(()) => watchdog = Some(SinkWatchdog::new(Instant::now())),
             Err(error) => {
-                let _ = ready_tx.send(Err(audio_error(&error)));
+                // 打不开就不能占着 owner：让回，让别的路数去试。
+                release_playout_owner(&mix_slot, mix_source);
+                let _ = ready_tx.send(Err(error));
                 return;
             }
-        },
-        // 非 owner：本路不建 sink，样本只混进 owner 的输出。
-        None => None,
-    };
-
-    // 「零重采样」硬闸（NFR-13）：播放侧同样不得静默 SRC（只有真的打开设备的那一路才需要查）。
-    if let Some(open) = sink.as_ref()
-        && let Err(error) =
-            require_unified_format("playout", open.backend_name(), open.device_format())
-    {
-        let _ = ready_tx.send(Err(error));
-        return;
+        }
     }
 
     let _ = ready_tx.send(Ok(()));
@@ -4330,9 +4371,6 @@ fn playout_main(
     let mut refill_after_underrun = false;
     let mut scheduled_reported = false;
     let mut mixed: Vec<f32> = Vec::new();
-    // FR-28：只对**真的持有设备**的那一路（owner）启用看门狗 —— 非 owner 不建 sink，
-    // 「没有输出」是它的正常状态。
-    let mut watchdog = sink.is_some().then(|| SinkWatchdog::new(Instant::now()));
 
     'playout: while !stop.load(Ordering::Relaxed) {
         // 睡到下一个提交时刻。节奏必须由**本地时钟**决定，数据到没到只影响
@@ -4361,6 +4399,44 @@ fn playout_main(
             }
         }
         next_write += period;
+
+        // M4/FR-27 懒接管：owner 退出后，**已经在混音的 guest** 没有任何别的通路能重新拿到设备
+        // ——它不会再收到一次 `OPEN_STREAM`，所以接管动作必须长在每一拍上。
+        //
+        // 抢到就开设备（成为 owner），抢不到就说明别人正持有 —— CAS 单赢家，不会两路同写一台设备。
+        // 只在 `sink.is_none()`（本路还没有设备）时才试，且失败要退避，绝不每拍试开。
+        if sink.is_none() && now >= owner_retry_after && claim_playout_owner(&mix_slot, mix_source)
+        {
+            match open_playout_sink(factory, &mut sink) {
+                Ok(()) => {
+                    watchdog = Some(SinkWatchdog::new(Instant::now()));
+                    tracing::info!(
+                        source = mix_source,
+                        "M4 混音器 owner 接管：本路重新打开播放设备"
+                    );
+                }
+                Err(error) => {
+                    // 打开失败**必须让回**并退避（见 `OWNER_TAKEOVER_RETRY`）：
+                    // 占着 owner 不放会让整台引擎永远没有设备写；每拍都试开则会把设备句柄与
+                    // CPU 一起打满，还会把日志刷成噪声。
+                    release_playout_owner(&mix_slot, mix_source);
+                    owner_retry_after = Instant::now() + OWNER_TAKEOVER_RETRY;
+                    tracing::warn!(
+                        source = mix_source,
+                        context = error.context(),
+                        "M4 混音器 owner 接管失败，已让回并退避重试"
+                    );
+                    let _ = events.send(EngineEvent::Error {
+                        code: ErrorCode::SinkRebuild.as_u16(),
+                        context: format!(
+                            "混音器 owner 接管失败（已让回，{} ms 后重试）：{}",
+                            OWNER_TAKEOVER_RETRY.as_millis(),
+                            error.context()
+                        ),
+                    });
+                }
+            }
+        }
 
         // 起步攒帧：不足当前目标深度就继续等。这一拍**不补静音也不算欠载** ——
         // 还没开始播，谈不上「欠」；把攒帧期算成欠载会让欠载率失去意义。
@@ -4407,8 +4483,8 @@ fn playout_main(
             && let Some(stall) = watchdog.poll(now)
         {
             let attempt = watchdog.attempts().saturating_add(1);
-            let reopened = factory.map(|factory| reopen_playout_sink(factory, &mut sink));
-            let rebuilt = matches!(reopened, Some(Ok(())));
+            let reopened = reopen_playout_sink(factory, &mut sink);
+            let rebuilt = reopened.is_ok();
             watchdog.note_rebuild_attempt(Instant::now(), rebuilt);
 
             // 2002 SINK_REBUILD：这是「自愈动作真的发生过」的唯一可见证据
@@ -4416,18 +4492,17 @@ fn playout_main(
             let _ = events.send(EngineEvent::Error {
                 code: ErrorCode::SinkRebuild.as_u16(),
                 context: match reopened {
-                    Some(Ok(())) => format!(
+                    Ok(()) => format!(
                         "播放器 {} ms 没有接走任何一帧音频但链路正常，已重建（第 {attempt} 次尝试，累计成功 {} 次）",
                         stall.silent_for.as_millis(),
                         watchdog.rebuilds()
                     ),
-                    Some(Err(error)) => format!(
+                    Err(error) => format!(
                         "播放器 {} ms 没有输出且重建失败（第 {attempt} 次尝试，累计成功 {} 次）：{}",
                         stall.silent_for.as_millis(),
                         watchdog.rebuilds(),
                         error.context()
                     ),
-                    None => "非 owner 会话不应进入看门狗".to_owned(),
                 },
             });
 
