@@ -392,6 +392,18 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 - **第 63–64 轮的看板同步受阻**：GitHub GraphQL 触发二级限流（`/rate_limit` 显示额度充足，但连续查询被拒），
   第 63 轮的同步动作本身成功了（脚本报「说明更新 1」），但**远端回读核对没做成**；第 64 轮的看板改动已写好、
   待限流恢复后执行 sync 并补核对。**下轮第一件事：核对 M4 行正文是否含本轮结论，并补第 64 轮的行。**
+- **第 65 轮：`schedule_playout` 的 API 护栏 + 一处待查观察**。第 59 轮动过这条显式 API 的实现
+  （「播放句柄未就绪」从报 `cap_unsupported` 改成暂存、开流后补应用），但**没有测试**；本轮在
+  `group_epoch.rs` 补上 `schedule_playout_reports_the_timeline`（真双 Engine + 真 QUIC：配对 → 等 streaming
+  → 开流 → 等首帧建立序号基准 → 设定基准 → 断言 `PlayoutScheduled` 的 epoch_id 原样报出；基准取未来 10 s，
+  以免落在过去走 Drop 分支而不报时间线）。连跑 3 次全绿；集成 32 + 单测 150 全绿。
+  **待查（实测行为，没写成契约）**：在「配对完成、但还没开流」的时刻调用这条 API 会拿到
+  `BadRequest { context: "session task is gone" }`（`send_command` 只在 command 通道关闭时报这句），
+  也就是那一刻**接受侧的会话任务已经不在了**。是「无流会话被提前回收」的缺陷，还是「会话任务只在流期间
+  存在」的既定设计，需要单独查；查清之前这条测试只覆盖开流之后的语义。
+- **看板同步仍受阻（第 63–65 轮）**：GitHub GraphQL 二级限流，连续三轮的远端写入/核对都没做成。
+  第 64 轮（多组共存）与第 65 轮（schedule_playout 护栏）的行都已写进 `tools/sync-board.ps1` 且 `PARSE-OK`，
+  **待限流恢复后执行一次 `pwsh tools/sync-board.ps1` 并回读核对**。下轮第一件事仍是这个。
 
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
