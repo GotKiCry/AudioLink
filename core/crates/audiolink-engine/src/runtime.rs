@@ -36,7 +36,9 @@
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -150,6 +152,47 @@ pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// （597 / 3417 / 3310 ms，见 `tests/engine/network_outage.rs`），峰值直接压过验收的 3 s 预算。
 /// 降到 1 s 后上界 ≈ 1 s，余量充足；代价是每个会话每秒一个几十字节的探测包。
 pub const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(1);
+
+/// 断链重连的总预算（FR-27）：从收到重连请求算起，超过它即判 ReconnectFailed。
+///
+/// 20 s 的依据是 M2 的验收形状：**拔网 10 s** 要能回来，另外留 10 s 给「插回后第一次握手真正
+/// 成功」的余量（移动网络切换时首次握手可能要多试几次）。
+pub const DEFAULT_RECONNECT_BUDGET: Duration = Duration::from_secs(20);
+
+/// 单次重连尝试的超时。**必须远小于总预算**：断网期间每次拨号都挂在握手等待上，一次尝试若吃掉
+/// 十几秒，退避循环会退化成「只试一两次」，插回网线时正好卡在尝试中间 —— 那等于没有重连。
+const RECONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(800);
+
+/// 重连退避的起点与上限。
+///
+/// 上限不放大是为了守住 M2 的 3 s：最坏恢复 ≈ 一次尝试超时 + 一次退避 = 800 + 400 = **1.2 s**，
+/// 还得留余量给「重连后再等第一帧音频」。上一版用 1.5 s + 1.0 s，最坏 2.5 s 已贴着验收线，
+/// 叠上握手与抖动就会越线（队友在 docs/50 §2.7 算过这笔账）。
+const RECONNECT_BACKOFF_MIN: Duration = Duration::from_millis(150);
+const RECONNECT_BACKOFF_MAX: Duration = Duration::from_millis(400);
+
+/// 会话「多久没听到对端任何包」就认定链路需要重建（FR-27 的触发阈值）。
+///
+/// **必须明显大于时钟探测的稳态间隔**（`STEADY_INTERVAL_MS` = 1 s，双方互发）—— 这个判据的适用对象
+/// 是**发起方**，而发起方在单向推流里几乎收不到业务包，它的「心跳」就是对端那 1 s 一次的探测。
+/// 第一版取 1 s，结果是**正常推流也会误报**：一发一收刚好贴着阈值，于是反复重建连接、音频永远不稳
+/// （实测症状：恢复延迟 None，15 s 窗口内没声音，但两侧会话表都显示 Streaming）。
+/// 3 s = 三次探测都没来，才认定对方真的不在了；相对 20 s 的重连预算也留足了触发余量。
+const LINK_STALL_THRESHOLD_MS: u64 = 3_000;
+
+/// 断链重连请求（FR-27）。
+struct ReconnectRequest {
+    /// 对端地址（重拨用）。
+    addr: std::net::SocketAddr,
+    /// 对端身份；新会话必须还是它，否则说明重拨连到了别的设备。
+    peer: NodeId,
+    /// 投递这个请求的那条会话。
+    ///
+    /// 带着它走是为了两件事：① 单飞门（`reconnect_in_flight`）挂在这条会话上，重连终局时
+    /// 必须由**同一个对象**清位 —— 摘表之后从 `peers` 里已经找不到它了；
+    /// ② 预算耗尽要落 `ReconnectFailed` 时也有对象可落。
+    session: Arc<PeerSession>,
+}
 
 /// 引擎配置。
 pub struct EngineConfig {
@@ -454,6 +497,17 @@ struct PeerSession {
     pairing: Mutex<PairingState>,
     /// M4 观测：最近一帧的（到达毫秒 << 32 | 编号）。一次 64 位原子写，读者不会读到撕裂组合。
     rx_axis: Arc<AtomicU64>,
+    /// FR-27：对端最近一次「有任何包到达」的本机单调时刻（µs）。0 = 还没听到过。
+    ///
+    /// 为什么需要它：拔网时 QUIC **不会报错** —— 它只是收不到回包，直到 idle_timeout（30 s）才把
+    /// 连接判死。所以「链路是不是断了」不能等读写报错，必须自己数「多久没听到对端」。
+    last_rx_us: AtomicU64,
+    /// FR-27：本会话是否已有一条重连在飞（**单飞门**）。
+    ///
+    /// 重连请求至少有三个来源：两个链路错误出口 + 静默看门狗。两套 `reconnect_once` 并发时
+    /// 会互相摘掉对方刚插进表里的会话，症状是「接上又断」—— 所以投递前先在这里抢一次，
+    /// 终局（成功、失败、引擎关闭）时清位。
+    reconnect_in_flight: AtomicBool,
     /// §13 能力协商结果（`None` = 还没协商完）。
     capabilities: Mutex<Option<PeerCapabilities>>,
     /// §7：**待应用**的组基准 —— 收到 `GROUP_EPOCH` 时若播放句柄还没建好（流没开），先存这里，
@@ -474,6 +528,17 @@ struct PairingState {
 impl PeerSession {
     /// M4 观测：记下「最近一帧的编号 ↔ 到达时刻」。
     ///
+    /// 距离「最后一次听到对端任何包」过去了多少毫秒。
+    ///
+    /// 一次都没听到过时返回 0：刚建好的会话不该被判成静默，否则重连会在握手期就自己触发。
+    fn silent_for_ms(&self) -> u64 {
+        let last = self.last_rx_us.load(Ordering::Relaxed);
+        if last == 0 {
+            return 0;
+        }
+        now_monotonic_us().saturating_sub(last) / 1_000
+    }
+
     /// 打包成**一次** 64 位原子写（高 32 位 = 毫秒时刻，低 32 位 = 编号），于是读者不会读到
     /// 「新编号 + 旧时刻」这种撕裂组合；单次 relaxed 存储，实时路径不加锁、不分配。
     fn note_rx_axis(&self, sample_index: u32) {
@@ -574,7 +639,21 @@ struct Inner {
     /// M3 多会话：引擎级共享采集枢纽（第一个会话启流时创建，最后一个停止时摘掉）。
     capture_hub: Mutex<Option<Arc<CaptureHub>>>,
     /// M4 汇聚：引擎级混音器（第一个接收会话创建 sink，后续会话把自己的帧混进来）。
-    playout_mixer: Mutex<Option<Arc<Mutex<PcmMixer>>>>,
+    ///
+    /// FR-27：槽位里除了混音器还带着「谁在真正持有播放设备」—— 见 [`PlayoutMixSlot`]。
+    /// 这个槽**从第一次建起永不置空**（这是 M4 多路汇聚的前提），所以「槽里有没有东西」
+    /// 绝不能当作「我是不是 owner」的判据。
+    playout_mixer: Mutex<Option<Arc<PlayoutMixSlot>>>,
+    /// FR-27 断链重连请求：会话任务退出前把「这条会话说要重拨」交给监督任务。
+    ///
+    /// 为什么用通道而不是原地重连：会话任务的连接是**参数**，它一旦因链路错误退出就换不了连接；
+    /// 而重拨 + 重新握手 + 重新开流需要对整个引擎操作。通道把这两件事分开。
+    reconnect_tx: mpsc::UnboundedSender<ReconnectRequest>,
+    /// FR-27：关闭通知。重连监督任务阻塞在 `recv()` 上，而引擎关闭时**没有人会 drop
+    /// 发送端**（`Inner` 自己持着 `reconnect_tx`），`recv()` 便永不返回 —— 那个任务留在
+    /// `TaskTracker` 里，`Engine::shutdown()` 的 `tasks.wait()` 就会一直等下去（实测：
+    /// 验收测试在收尾处挂到超时，断言却已全绿）。
+    shutdown_notify: tokio::sync::Notify,
 }
 
 impl Inner {
@@ -670,7 +749,9 @@ impl Engine {
 
         let (events, _) = broadcast::channel(256);
 
-        Ok(Arc::new(Self {
+        let (reconnect_tx, reconnect_rx) = mpsc::unbounded_channel();
+
+        let engine = Arc::new(Self {
             inner: Arc::new(Inner {
                 local,
                 identity,
@@ -685,8 +766,44 @@ impl Engine {
                 shutdown: AtomicBool::new(false),
                 tasks: Mutex::new(TaskTracker::new()),
                 listen_addr,
+                reconnect_tx,
+                shutdown_notify: tokio::sync::Notify::new(),
             }),
-        }))
+        });
+        engine.spawn_reconnect_supervisor(reconnect_rx);
+        Ok(engine)
+    }
+
+    /// 断链重连监督任务（FR-27）：串行收请求，每条交给一个引擎任务去退避重拨。
+    ///
+    /// 持 `Weak` 而不是 `Arc`：这个任务跑在引擎自己的任务表里，强引用会构成自我引用环、让引擎
+    /// 永远回收不掉。升级失败即代表引擎已释放，退出即可。
+    ///
+    /// 子任务走 `inner.spawn` 而不是裸 `tokio::spawn`：只有前者登记在 `TaskTracker` 里，
+    /// 引擎关闭时才回收得到（队友在 docs/50 §2.9 指出上一版漏了这点）。
+    fn spawn_reconnect_supervisor(
+        self: &Arc<Self>,
+        mut requests: mpsc::UnboundedReceiver<ReconnectRequest>,
+    ) {
+        let weak = Arc::downgrade(self);
+        let _ = self.inner.spawn(async move {
+            while let Some(engine) = weak.upgrade() {
+                if engine.inner.shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
+                // **不能裸等 `recv()`**：引擎关闭时没有任何人会 drop 发送端（`Inner` 自己
+                // 持着 `reconnect_tx`），`recv()` 永不返回 ⇒ 本任务留在 `TaskTracker` 里，
+                // `Engine::shutdown()` 的 `tasks.wait()` 会一直等下去。所以同时等关闭通知。
+                let request = tokio::select! {
+                    request = requests.recv() => request,
+                    () = engine.inner.shutdown_notify.notified() => break,
+                };
+                let Some(request) = request else { break };
+                let _ = engine
+                    .inner
+                    .spawn(reconnect_once(Arc::clone(&engine), request));
+            }
+        });
     }
 
     /// 本机节点描述。
@@ -866,10 +983,13 @@ impl Engine {
     }
 
     /// M4：引擎级混音器的累计观测（没有混音器时返回 None）。
+    ///
+    /// FR-27 判据 ⑨：重连 n 次后 `sources` 不得单调增长 —— 停止与让位都要把源号还回去，
+    /// 否则反复重连会撞上 FR-12 的 8 路上限。
     pub fn mixer_stats(&self) -> Option<audiolink_audio::mixer::MixSnapshot> {
         let slot = self.inner.playout_mixer.lock().ok()?;
-        let mixer = slot.as_ref()?;
-        let guard = mixer.lock().ok()?;
+        let slot = slot.as_ref()?;
+        let guard = slot.mixer.lock().ok()?;
         Some(guard.snapshot())
     }
 
@@ -1314,6 +1434,8 @@ impl Engine {
         let tasks = {
             let tasks = self.inner.tasks.lock().unwrap_or_else(|e| e.into_inner());
             self.inner.shutdown.store(true, Ordering::Relaxed);
+            // 叫醒重连监督任务：它不在任务表里自己做退出判定，只等这个通知（见 Inner 的字段文档）。
+            self.inner.shutdown_notify.notify_one();
             tasks.close();
             tasks.clone()
         };
@@ -1588,7 +1710,7 @@ async fn run_session(
                     }
                     HandshakeEvent::Rejected { error } => {
                         finish_ready(&mut ready, Err(error.clone()));
-                        report_peer_gone(&inner, &session, &error);
+                        report_peer_gone(&inner, &session, &error, false);
                         drop_session(&inner, &session, error.context());
                         return;
                     }
@@ -1684,6 +1806,8 @@ async fn run_session(
     let mut capture: Option<CaptureHandle> = None;
     let mut pending_redundant: Option<EncodedFrame> = None;
     let mut stream_id: Option<u32> = None;
+    // FR-27：静默触发只做一次 —— 重连是整条连接的重建，反复触发只会互相打断。
+    let mut reconnect_started = false;
     let mut epoch_id: u64 = 0;
 
     // §8.1 辅助抗丢包：接收侧的缺失跟踪 + 发送侧的重传窗口。
@@ -1852,7 +1976,12 @@ async fn run_session(
                 let message = match message {
                     Ok(message) => message,
                     Err(error) => {
-                        report_peer_gone(&inner, &session, &net_error(&error));
+                        report_peer_gone(
+                            &inner,
+                            &session,
+                            &net_error(&error),
+                            matches!(&role, Role::Initiator) && stream_id.is_some(),
+                        );
                         break;
                     }
                 };
@@ -1875,6 +2004,10 @@ async fn run_session(
             datagram = connection.read_datagram_into(&mut rx_buf) => {
                 match datagram {
                     Ok(len) => {
+                        // FR-27：任何一个包到达都算「听到对端」—— 静默看门狗全靠这个时刻。
+                        session
+                            .last_rx_us
+                            .store(now_monotonic_us(), Ordering::Relaxed);
                         let Some(slice) = rx_buf.get(..len) else { continue; };
                         let Ok(datagram) = AudioDatagram::decode(slice) else {
                             continue; // §1.1：非法数据报忽略并计数，不断流
@@ -2031,7 +2164,12 @@ async fn run_session(
                         }
                     }
                     Err(error) => {
-                        report_peer_gone(&inner, &session, &net_error(&error));
+                        report_peer_gone(
+                            &inner,
+                            &session,
+                            &net_error(&error),
+                            matches!(&role, Role::Initiator) && stream_id.is_some(),
+                        );
                         break;
                     }
                 }
@@ -2113,6 +2251,23 @@ async fn run_session(
             }
 
             _ = ticker.tick() => {
+                // FR-27 静默看门狗：拔网时 QUIC 不报错（它只是收不到回包，直到 idle_timeout 30 s
+                // 才判连接死），所以「链路断了」必须由自己数「多久没听到对端」来发现 —— 否则重连
+                // 只能等 idle_timeout，远迟于 M2 的 3 s 预算。
+                // 只有**发起方且在推流**的会话才拨号，理由见 report_peer_gone 的文档。
+                if !reconnect_started
+                    && stream_id.is_some()
+                    && matches!(&role, Role::Initiator)
+                    && session.silent_for_ms() >= LINK_STALL_THRESHOLD_MS
+                {
+                    reconnect_started = true;
+                    report_peer_gone(
+                        &inner,
+                        &session,
+                        &AudioLinkError::bad_request("link went silent while streaming"),
+                        true,
+                    );
+                }
                 let estimate = clock_estimate_of(&session);
                 let adaptive_jitter_p95 = arrival_jitter.summary().map(|summary| summary.p95);
                 arrival_jitter.clear();
@@ -2263,6 +2418,8 @@ fn create_session(
         state: Mutex::new(SessionState::Handshaking),
         pairing: Mutex::new(PairingState::default()),
         rx_axis: Arc::new(AtomicU64::new(u64::MAX)),
+        last_rx_us: AtomicU64::new(0),
+        reconnect_in_flight: AtomicBool::new(false),
         capabilities: Mutex::new(None),
         pending_schedule: Mutex::new(None),
     });
@@ -2672,6 +2829,8 @@ struct PlayoutHandle {
     /// M4 汇聚：本会话挂在哪台混音器上、用的是哪个源号（停止时要把这一路摘掉）。
     mixer: Option<PlayoutMix>,
     mix_source: Option<u32>,
+    /// FR-27：本路成为 owner 时拿到的槽位凭据 —— `Drop` 里据此让位（见下方 `Drop` 实现）。
+    owner_slot: Option<Arc<PlayoutMixSlot>>,
 }
 
 impl PlayoutHandle {
@@ -2738,6 +2897,54 @@ impl PlayoutHandle {
     }
 }
 
+/// 句柄被 drop 即收工：停线程、还混音源号、owner 让位。
+///
+/// # 为什么把这三件事放在 `Drop` 里（FR-27 审计 §4 的清单）
+///
+/// 播放句柄的退出路径不止「正常停止」一条：会话收尾（`stop_playout`）、`CloseStream`、
+/// 建立播放管线失败、句柄被替换、引擎关闭……只在 `stop_playout` 里做清理，别的路径就会
+/// 留下「线程还活着 + 源号没还 + owner 标志还立着」—— 后者的后果很具体：下一个会话抢不到
+/// owner，于是又落回「有混音器但没人写设备」的哑状态。
+impl Drop for PlayoutHandle {
+    fn drop(&mut self) {
+        // ① 让播放线程在下一拍退出（幂等：正常停止时 `stop_playout` 已经置过）。
+        self.stop.store(true, Ordering::Relaxed);
+        // ② M4：把这一路从混音器里摘掉 —— 停了就不该再占路数（否则重连几次就撞上 8 路上限）。
+        if let (Some(mixer), Some(source)) = (self.mixer.as_ref(), self.mix_source)
+            && let Ok(mut guard) = mixer.lock()
+        {
+            guard.remove_source(source);
+        }
+        // ③ FR-27：owner **立刻**让位，不等播放线程 join 完。
+        //    让位必须发生在下一个会话 `acquire_playout_mixer` 之前，否则新会话抢不到 owner。
+        //    世代 CAS：只有「仍是当前 owner」的这一路清得掉，旧 owner 迟到的退出不会误清新 owner。
+        if let (Some(slot), Some(source)) = (self.owner_slot.as_ref(), self.mix_source) {
+            let _ = slot
+                .owner
+                .compare_exchange(source, 0, Ordering::SeqCst, Ordering::SeqCst);
+        }
+    }
+}
+
+/// 播放线程侧的 owner 让位守卫（FR-27）。
+///
+/// owner 线程自己也会死：设备被拔、写失败、建 sink 失败、线程 panic。三种情况都不经过
+/// `PlayoutHandle`，所以线程必须自带一份让位凭据 —— `Drop` 保证**任何**退出路径都让位。
+struct PlayoutOwnerGuard {
+    slot: Arc<PlayoutMixSlot>,
+    /// 本路的源号（世代凭据）。
+    source: u32,
+}
+
+impl Drop for PlayoutOwnerGuard {
+    fn drop(&mut self) {
+        let _ =
+            self.slot
+                .owner
+                .compare_exchange(self.source, 0, Ordering::SeqCst, Ordering::SeqCst);
+    }
+}
+
 async fn stop_capture(handle: &mut Option<CaptureHandle>) {
     if let Some(handle) = handle.take() {
         handle.stop.store(true, Ordering::Relaxed);
@@ -2751,17 +2958,15 @@ async fn stop_capture(handle: &mut Option<CaptureHandle>) {
 
 /// 停止并等待播放线程退出；先断开帧通道唤醒接收，再在阻塞池 join。
 /// 会话退出即代表其平台回调已停止，不再把旧回调带入下一次引擎启动。
+///
+/// 「置 stop / 摘路数 / owner 让位」三件事都集中在 `PlayoutHandle::drop`（见其文档）：
+/// 这里只负责把线程句柄取出来，**先 drop 句柄再 join** —— 让位必须立刻生效，
+/// 等 join 会让重连后的新会话抢不到 owner，落回「有混音器但没人写设备」。
 async fn stop_playout(handle: &mut Option<PlayoutHandle>) {
-    if let Some(handle) = handle.take() {
-        handle.stop.store(true, Ordering::Relaxed);
-        // M4：把这一路从混音器里摘掉 —— 停了就不该再占路数（否则重连几次就会撞上 8 路上限）。
-        if let (Some(mixer), Some(source)) = (handle.mixer.as_ref(), handle.mix_source)
-            && let Ok(mut guard) = mixer.lock()
-        {
-            guard.remove_source(source);
-        }
-        drop(handle.frames);
-        join_audio_thread(handle.join).await;
+    if let Some(mut handle) = handle.take() {
+        let join = handle.join.take();
+        drop(handle);
+        join_audio_thread(join).await;
     }
 }
 
@@ -3579,6 +3784,137 @@ async fn send_control(
         .map_err(|e| net_error(&e))
 }
 
+/// 重连单飞门（FR-27）：请求在飞期间挡住重复投递，本函数的**任何**退出路径都会放门。
+///
+/// 放在 `Drop` 里而不是每个 `return` 前面：`reconnect_once` 有成功、预算耗尽、引擎关闭
+/// 三条出口，漏掉任何一条都会让那条会话**永远**发不出重连请求（门再也没人放）。
+struct ReconnectFlightGuard(Arc<PeerSession>);
+
+impl Drop for ReconnectFlightGuard {
+    fn drop(&mut self) {
+        self.0.reconnect_in_flight.store(false, Ordering::SeqCst);
+    }
+}
+
+/// 收掉一次失败尝试留下的会话：摘表 + 明确 `Shutdown`（不留孤儿）。
+async fn discard_stale_session(engine: &Arc<Engine>, peer: NodeId) {
+    let stale = engine
+        .inner
+        .peers
+        .lock()
+        .ok()
+        .and_then(|mut peers| peers.remove(&peer));
+    if let Some(stale) = stale {
+        let _ = stale.commands.send(SessionCommand::Shutdown).await;
+    }
+}
+
+/// 一次断链重连：摘掉旧会话 → 退避重拨 → 成功后把流接回去。
+///
+/// 四条纪律：
+///
+/// 1. **旧会话必须先摘掉**：`connect_inner` 会按地址查重，对同地址的第二次连接直接回 1009 BUSY，
+///    不摘就是「重连必然失败」。
+/// 2. **重拨必须走完整的 `connect_inner`**：它内部的 `is_trusted(peer_id)` 决定是否要求 PIN ——
+///    重连**不绕过信任库**，已配对过的对端凭指纹免 PIN，陌生人一样要 PIN。
+/// 3. **预算用尽要明确落 `ReconnectFailed`**：绝不留一条「看起来在重连」的僵尸状态。
+/// 4. **接流失败不能吞**：上一版用 `let _ =` 吞掉，队友指出那会让「重连成功但没声音」变成静默故障。
+async fn reconnect_once(engine: Arc<Engine>, request: ReconnectRequest) {
+    // 单飞门由**投递请求的那条会话**持有：本函数无论从哪条路径退出（成功、预算耗尽、
+    // 引擎关闭、早退），门都要放掉 —— 否则这条会话再也发不出重连请求。
+    let _flight = ReconnectFlightGuard(Arc::clone(&request.session));
+    let deadline = Instant::now() + DEFAULT_RECONNECT_BUDGET;
+    let mut backoff = RECONNECT_BACKOFF_MIN;
+    let mut old_session: Option<Arc<PeerSession>> = None;
+    let mut last_error: Option<AudioLinkError> = None;
+
+    while Instant::now() < deadline {
+        if engine.inner.shutdown.load(Ordering::Relaxed) {
+            return;
+        }
+
+        // 每轮都重摘一次：上一轮尝试可能已经把新会话插进了表里。
+        if let Some(session) = engine
+            .inner
+            .peers
+            .lock()
+            .ok()
+            .and_then(|mut peers| peers.remove(&request.peer))
+        {
+            // 摘表**之前/同时**必须让它收工：只摘表不发 Shutdown 会留下活着的僵尸会话 ——
+            // 它攥着旧连接与采集枢纽一直跑到 QUIC idle_timeout（30 s），期间还会二次投递
+            // 重连请求（审计 §2.6-①）。显式收工让「采集枢纽交接」变成确定行为。
+            let _ = session.commands.send(SessionCommand::Shutdown).await;
+            old_session = Some(session);
+        }
+
+        match tokio::time::timeout(
+            RECONNECT_ATTEMPT_TIMEOUT,
+            engine.connect_inner(request.addr),
+        )
+        .await
+        {
+            Ok(Ok(peer)) if peer == request.peer => {
+                // 迁移表（session.rs）：Reconnecting --ReconnectOk--> Streaming。
+                if let Some(session) = old_session.as_ref() {
+                    session.apply(SessionEvent::ReconnectOk);
+                    session.set_state(SessionState::Streaming);
+                }
+                if let Err(error) = engine.start_send(request.peer).await {
+                    // 「重连成功但流接不回来」是这一环最容易静默失败的地方：事件不订阅、
+                    // 状态已是 Streaming，只有日志能把根因留在现场。
+                    tracing::warn!(
+                        peer = %request.peer.short(),
+                        "重连成功，但恢复推流失败：{}",
+                        error.context()
+                    );
+                    let _ = engine.inner.events.send(EngineEvent::Error {
+                        code: error.code().as_u16(),
+                        context: format!(
+                            "reconnect succeeded but resuming the stream failed: {}",
+                            error.context()
+                        ),
+                    });
+                }
+                return;
+            }
+            Ok(Ok(_)) => {
+                last_error = Some(AudioLinkError::bad_request(
+                    "reconnected peer identity does not match the session being restored",
+                ));
+            }
+            Ok(Err(error)) => last_error = Some(error),
+            Err(_) => {
+                // 800 ms 只是**外层 future** 的截止：`connect_inner` 在此之前已经
+                // `create_session` 插表并 spawn 了会话任务，丢弃外层 future 收不掉它
+                // （审计 §2.6-③）。它若继续跑，会照旧握手、把自己标成 Streaming，而这一轮
+                // 已被判失败 —— 下一轮摘表又不给它收尾，僵尸 +1（还可能占掉一路混音源号）。
+                discard_stale_session(&engine, request.peer).await;
+                last_error = Some(AudioLinkError::bad_request("reconnect attempt timed out"));
+            }
+        }
+
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(RECONNECT_BACKOFF_MAX);
+    }
+
+    // 终局必须落在**看得见的那条会话**上：表里若已没有它（本轮摘表拿到了别的新会话），
+    // 至少要落在投递请求的那条会话上，不留「看起来在重连」的僵尸状态。
+    let session = old_session.as_ref().unwrap_or(&request.session);
+    session.apply(SessionEvent::ReconnectFailed);
+    session.set_state(SessionState::Failed);
+    let detail = last_error
+        .map(|error| error.context().to_string())
+        .unwrap_or_else(|| String::from("reconnect budget exhausted without a single attempt"));
+    let _ = engine.inner.events.send(EngineEvent::PeerDisconnected {
+        id: request.peer,
+        reason: format!(
+            "reconnect gave up after {} s: {detail}",
+            DEFAULT_RECONNECT_BUDGET.as_secs()
+        ),
+    });
+}
+
 fn report_error(inner: &Arc<Inner>, session: &Arc<PeerSession>, error: &AudioLinkError) {
     session.apply(SessionEvent::LinkDegraded);
     let _ = inner.events.send(EngineEvent::Error {
@@ -3587,13 +3923,45 @@ fn report_error(inner: &Arc<Inner>, session: &Arc<PeerSession>, error: &AudioLin
     });
 }
 
-fn report_peer_gone(inner: &Arc<Inner>, session: &Arc<PeerSession>, error: &AudioLinkError) {
+/// 报告一条会话的对端已经不在（链路错误；对端主动 BYE 走的是状态机的另一条边）。
+///
+/// FR-27：`allow_reconnect` 为真时把重拨交给监督任务、会话先进 `Reconnecting`，而不是直接终局。
+/// **判据必须是「本端是发起方**且正在推流」**（由调用点给出）—— 队友在 docs/50 §4.2 里指出：
+/// 接收侧也会置 `stream_id`，若拿它单独当判据就会**双向拨号**，而接收侧去连一个没在监听的发送端
+/// 必然失败，失败路径还会把接收侧自己的会话从表里摘掉（实测症状：声音在响、peers() 却是空表）。
+fn report_peer_gone(
+    inner: &Arc<Inner>,
+    session: &Arc<PeerSession>,
+    error: &AudioLinkError,
+    allow_reconnect: bool,
+) {
     session.apply(SessionEvent::LinkLost);
-    session.set_state(SessionState::Failed);
     let _ = inner.events.send(EngineEvent::PeerDisconnected {
         id: session.id,
         reason: format!("{}: {}", error.code().as_u16(), error.context()),
     });
+
+    if allow_reconnect && !inner.shutdown.load(Ordering::Relaxed) {
+        // 迁移表（session.rs）：Streaming/Degraded --LinkLost--> Reconnecting。
+        session.set_state(SessionState::Reconnecting);
+        // **单飞**（审计 §2.6-②）：请求至少有三个来源（两个链路错误出口 + 静默看门狗），
+        // 两套 `reconnect_once` 并发时会互相摘掉对方刚插进表里的会话，症状是「接上又断」。
+        // `swap` 返回旧值：已经有一条在飞就什么都不做，状态仍留在 Reconnecting。
+        if !session.reconnect_in_flight.swap(true, Ordering::SeqCst) {
+            let request = ReconnectRequest {
+                addr: session.addr,
+                peer: session.id,
+                session: Arc::clone(session),
+            };
+            if inner.reconnect_tx.send(request).is_err() {
+                // 监督任务已经没了（引擎正在关）：放门并落终局，不留「看起来在重连」的假状态。
+                session.reconnect_in_flight.store(false, Ordering::SeqCst);
+                session.set_state(SessionState::Failed);
+            }
+        }
+    } else {
+        session.set_state(SessionState::Failed);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3610,15 +3978,62 @@ static NEXT_MIX_SOURCE: std::sync::atomic::AtomicU32 = std::sync::atomic::Atomic
 /// 混音路数超过 FR-12 上限时的错误上下文。
 const MIXER_FULL: &str = "mixer is full (FR-12 allows 8 sources)";
 
+/// 引擎级混音槽（M4）：混音器 + 「谁在真正持有播放设备」的世代标记。
+///
+/// # 为什么必须有它（FR-27 审计 §2.2 定位的断点）
+///
+/// 这个槽**从第一次建起永不置空**（M4 多路汇聚靠的就是复用同一个混音器），而旧代码把
+/// 「槽里已经有东西」当成了「我不是 owner」：接收侧第一条会话结束、重连后的第二条会话建立
+/// 播放管线时，新会话必然拿到 `is_owner = false` ⇒ 不建 sink ⇒ 每帧只把 PCM 混进混音器、
+/// **一个字节都不写设备**。表现就是两侧状态都显示 `Streaming`、恢复延迟却是 `None`。
+///
+/// 断点的本质是：owner 是一个**身份**，却被记成了「槽里有没有东西」这种**一次性事实**。
+/// 把 owner 变成可让位、可接管的状态，重连后的新会话就会重新打开设备并把混音输出接回
+/// 扬声器，而 `PcmMixer` 对象继续复用 —— 多路混音语义不变。
+struct PlayoutMixSlot {
+    /// 多路汇聚的混音器（owner 与 guest 共用这一个对象）。
+    mixer: PlayoutMix,
+    /// 当前 owner 的**源号**（0 = 无人持有播放设备）。
+    ///
+    /// 用源号当世代、而不是一个裸布尔：源号由 `NEXT_MIX_SOURCE` 全局单调分配、永不重复，
+    /// 于是「让位」可以写成一次 `compare_exchange(我的源号 → 0)` —— **只有仍是当前 owner 的
+    /// 那一路清得掉**。裸布尔做不到这一点：旧 owner 迟到的退出会把刚接管的新 owner 的标志
+    /// 清成 false，第三个会话随后就能抢到 owner，同一台设备被两路同时写。
+    owner: AtomicU32,
+}
+
+impl PlayoutMixSlot {
+    /// FR-27：当前是否真有人持有播放设备（观测用；测试的判据 ⑧ 想知道的就是它）。
+    #[allow(dead_code)]
+    fn owner_alive(&self) -> bool {
+        self.owner.load(Ordering::SeqCst) != 0
+    }
+}
+
+/// 一路会话在引擎级混音器上的登记结果。
+struct PlayoutAssignment {
+    /// 引擎级混音器（owner 与 guest 共用同一个对象）。
+    mixer: PlayoutMix,
+    /// 本路的源号（停止时用它 `remove_source`）。
+    source: u32,
+    /// 本路是否**真正持有播放设备**：只有 owner 会建 sink 并把混音结果写出去。
+    is_owner: bool,
+    /// 本路成为 owner 时拿到的槽位凭据；退出路径**必须**用它让位。guest 为 `None`。
+    owner_slot: Option<Arc<PlayoutMixSlot>>,
+}
+
 /// 取得（必要时创建）引擎级混音器，并给本会话分配一个源号。
 ///
-/// 返回 (混音器, 源号, 是否是 owner)：只有 owner 会真的打开播放设备，
-/// 其余会话把解码后的 PCM 混进来 —— 这就是 M4 的「同一接收端多路混音」。
-/// 路数超过 FR-12 的上限时明确报 STREAM_LIMIT，而不是悄悄丢掉一路。
+/// 只有 owner 会真的打开播放设备，其余会话把解码后的 PCM 混进来 —— 这就是 M4 的
+/// 「同一接收端多路混音」。路数超过 FR-12 的上限时明确报 STREAM_LIMIT，而不是悄悄丢掉一路。
+///
+/// FR-27 的 owner 接管：槽里**已有**混音器不再等于「我不是 owner」—— 上一个 owner 退出时会
+/// 让位（见 `PlayoutHandle::drop` / `PlayoutOwnerGuard`），这里 CAS 抢到就重新打开设备。
+/// `compare_exchange` 保证并发接管只有一个赢家；新建槽位时 owner 初值为 0，同一句 CAS 必然抢到。
 fn acquire_playout_mixer(
     inner: &Arc<Inner>,
     codec: &CodecConfig,
-) -> Result<(Option<PlayoutMix>, Option<u32>, bool), AudioLinkError> {
+) -> Result<PlayoutAssignment, AudioLinkError> {
     let mut slot = inner
         .playout_mixer
         .lock()
@@ -3629,30 +4044,40 @@ fn acquire_playout_mixer(
         sample_rate: 48_000,
         channels: 2,
     };
-    match slot.as_ref() {
-        Some(mixer) => {
-            let mut guard = mixer.lock().unwrap_or_else(|e| e.into_inner());
-            guard
-                .add_source(source)
-                .map_err(|_| AudioLinkError::stream_limit(MIXER_FULL))?;
-            Ok((Some(Arc::clone(mixer)), Some(source), false))
-        }
+    // 槽里已有混音器就复用（M4 语义），没有才新建。
+    let slot = match slot.as_ref() {
+        Some(existing) => Arc::clone(existing),
         None => {
-            let mixer = Arc::new(Mutex::new(PcmMixer::new(
-                format,
-                codec.frame_samples(),
-                PLAYBACK_QUEUE_FRAMES,
-            )));
-            {
-                let mut guard = mixer.lock().unwrap_or_else(|e| e.into_inner());
-                guard
-                    .add_source(source)
-                    .map_err(|_| AudioLinkError::stream_limit(MIXER_FULL))?;
-            }
-            *slot = Some(Arc::clone(&mixer));
-            Ok((Some(mixer), Some(source), true))
+            let fresh = Arc::new(PlayoutMixSlot {
+                mixer: Arc::new(Mutex::new(PcmMixer::new(
+                    format,
+                    codec.frame_samples(),
+                    PLAYBACK_QUEUE_FRAMES,
+                ))),
+                owner: AtomicU32::new(0),
+            });
+            *slot = Some(Arc::clone(&fresh));
+            fresh
         }
+    };
+    {
+        let mut guard = slot.mixer.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .add_source(source)
+            .map_err(|_| AudioLinkError::stream_limit(MIXER_FULL))?;
     }
+    // 抢 owner：抢到就重新打开设备（本路成为真正的播放路），抢不到就是「继续做混音路数」
+    // 的旧语义 —— 设备仍由别的会话写着，本路只把样本混进去。
+    let is_owner = slot
+        .owner
+        .compare_exchange(0, source, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok();
+    Ok(PlayoutAssignment {
+        mixer: Arc::clone(&slot.mixer),
+        source,
+        is_owner,
+        owner_slot: is_owner.then(|| Arc::clone(&slot)),
+    })
 }
 
 /// 写出一帧。
@@ -3711,20 +4136,34 @@ fn spawn_playout_thread(
     let frame_ms = u64::from(codec.frame_ms.max(1));
     let pcm = codec.interleaved_frame();
 
-    // M4 汇聚：混音器是**引擎级**的。第一个接收会话是 owner（真正打开 sink），
-    // 后续会话把自己的帧混进来 —— 同一台设备只被打开一次，多路在软件侧求和 + 软限幅。
-    let (mixer, mix_source, is_owner) = acquire_playout_mixer(inner, codec)?;
-    let thread_mixer = mixer.clone();
+    // M4 汇聚：混音器是**引擎级**的。owner 真正打开 sink，其余会话把自己的帧混进来 ——
+    // 同一台设备只被打开一次，多路在软件侧求和 + 软限幅。
+    // FR-27：owner 是**可让位、可接管**的，所以重连后的新会话也会在这里抢到 owner 并重新开设备。
+    let PlayoutAssignment {
+        mixer,
+        source: mix_source,
+        is_owner,
+        owner_slot,
+    } = acquire_playout_mixer(inner, codec)?;
+    let thread_mixer = Some(mixer.clone());
     // 只有 owner 会真的建 sink；其余会话只把帧混进去。
     let factory = if is_owner {
         Some(Arc::clone(factory))
     } else {
         None
     };
+    // FR-27：owner 的让位守卫跟着播放线程走 —— 线程自己死掉（设备被拔、写失败、建 sink 失败、
+    // panic）也必须让位，否则引擎会永远以为「还有人持有设备」，下一个会话只能哑着混音。
+    let owner_guard = owner_slot.clone().map(|slot| PlayoutOwnerGuard {
+        slot,
+        source: mix_source,
+    });
 
     let join = std::thread::Builder::new()
         .name("audiolink-playout".to_string())
         .spawn(move || {
+            // 守卫活到闭包结束：**所有**退出路径（含早期 return 与 panic）都会在 drop 时让位。
+            let _owner_guard = owner_guard;
             playout_main(
                 factory.as_ref().map(|factory| factory.as_ref()),
                 frame_ms,
@@ -3737,7 +4176,7 @@ fn spawn_playout_thread(
                 events,
                 thread_gain,
                 thread_mixer.clone(),
-                mix_source,
+                Some(mix_source),
                 frame_rx,
                 ready_tx,
             );
@@ -3753,13 +4192,20 @@ fn spawn_playout_thread(
             join: Some(join),
             sync,
             gain,
-            mixer,
-            mix_source,
+            mixer: Some(mixer),
+            mix_source: Some(mix_source),
+            owner_slot,
         }),
+        // 线程自己报的错：它已经在退出路径上让位了（线程侧的守卫）。
         Ok(Err(error)) => Err(error),
-        Err(_) => Err(AudioLinkError::bad_request(
-            "playout sink did not report readiness in time",
-        )),
+        Err(_) => {
+            // 超时：线程可能还活着，甚至已经抢到 owner。置 stop 让它下一拍退出，
+            // 由它自己的守卫让位 —— 不留下「线程还在、owner 标志还立着」的孤儿。
+            stop.store(true, Ordering::Relaxed);
+            Err(AudioLinkError::bad_request(
+                "playout sink did not report readiness in time",
+            ))
+        }
     }
 }
 
