@@ -59,7 +59,16 @@ pub fn expected_bitrate_bps_from_codec(codec_bitrate_bps: i32) -> u32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SoakThresholds {
     /// 允许的累计欠载上限（回环稳态默认 0）。
+    ///
+    /// **判据读的就是它**；弱网档的值由 [`Self::max_underrun_pct_x100`] 折算而来。
     pub max_underruns: u32,
+    /// 允许的**欠载比例**上限（百分比 ×100；0 = 不按比例折算 → 保持 [`Self::max_underruns`] 原样 = 不判）。
+    ///
+    /// 口径：累计欠载拍数 ÷ **计划总拍数**（计划秒数 × 1000 ÷ 帧长），见 `docs/22-m2-soak-runner.md` §10。
+    /// 引擎里 `underrun` 的语义就是「这一拍没帧 → 补静音并计数」，所以这个比例就是**静音总占比**。
+    /// 它只解释「绝对上限是怎么来的」；判定仍走 [`Self::max_underruns`] 那一条路径（累计值增量）。
+    /// 严格档保持 0：干净回环按**绝对值 0** 判，不按比例。
+    pub max_underrun_pct_x100: u16,
     /// 允许的 PCM 掩盖帧上限（默认 0）。
     pub max_plc: u32,
     /// 允许的迟到丢弃上限（默认 0）。
@@ -85,6 +94,7 @@ impl Default for SoakThresholds {
     fn default() -> Self {
         Self {
             max_underruns: 0,
+            max_underrun_pct_x100: 0,
             max_plc: 0,
             max_late_drops: 0,
             max_nack: 0,
@@ -96,19 +106,107 @@ impl Default for SoakThresholds {
     }
 }
 
+/// 弱网档的欠载比例**建议值**（百分比 ×100）：**1.00%，待产品确认**。
+///
+/// 依据是**验收意图**，不是现状：「静音总占比 ≤ 1%」与弱网档已经钉死的
+/// [`SoakThresholds::max_plc`]（掩盖帧 ≤ 总帧数的 1%）同量级 —— 欠载（补静音）与 PLC（掩盖帧）
+/// 是同一种「这一拍没有真音频」的两半，把后者钉在 1%、把前者放开成不限，逻辑上说不通。
+///
+/// **代价（必须说清）**：8 h 弱网实测欠载占比 **10.68%**（153762 / 1440000 拍），
+/// 按这个建议值跑**必然 failed**。那不是判据过严，而是第一次把「8 h 无静音」这条验收**真的判起来**：
+/// 结论是「它从来没通过」，与「本轮改坏了」是两回事。
+/// 若产品要的是「先别退化」而不是「现在就可听」，用
+/// [`WEAK_UNDERRUN_PCT_X100_TRANSITION`]（或 CLI `--max-underrun-pct 12`）。
+pub const WEAK_UNDERRUN_PCT_X100_SUGGESTED: u16 = 100;
+
+/// 过渡口径：现状基线 **10.68%** 之上留一点余量 → **12.00%，待产品确认**。
+///
+/// 它是**不退化闸门**：只承诺「未来不比现在更差」，**不**承诺可听。
+/// 与建议值的代价对比见 `docs/22-m2-soak-runner.md` §10.3。
+pub const WEAK_UNDERRUN_PCT_X100_TRANSITION: u16 = 1_200;
+
+/// 计划总拍数 = 计划秒数 × 1000 ÷ 帧长（帧长下限取 1，避免除零）。
+pub const fn planned_beats(planned_secs: u64, frame_ms: u32) -> u64 {
+    let frame_ms = if frame_ms == 0 { 1 } else { frame_ms };
+    planned_secs.saturating_mul(1_000) / frame_ms as u64
+}
+
+/// 由「比例上限」折算出的**绝对预算**（拍数）：`beats × pct_x100 ÷ 10000`。
+///
+/// `pct_x100 == 0` → `u32::MAX`（不判）——与既有 `max_underruns = u32::MAX` 的约定一致，
+/// 于是「关掉这条判据」在弱网档仍然只有一条语义明确的路径。
+pub fn underrun_budget(beats: u64, pct_x100: u16) -> u32 {
+    if pct_x100 == 0 {
+        return u32::MAX;
+    }
+    u32::try_from(beats.saturating_mul(u64::from(pct_x100)) / 10_000).unwrap_or(u32::MAX)
+}
+
+/// 实际欠载比例（百分比 ×100，四舍五入到 0.01%）：`underruns ÷ beats`。`beats == 0` 时返回 0。
+pub fn underrun_pct_x100(underruns: u64, beats: u64) -> u64 {
+    if beats == 0 {
+        return 0;
+    }
+    underruns.saturating_mul(10_000).saturating_add(beats / 2) / beats
+}
+
+/// 1 Hz 采样桶内的拍数（= 1000 ÷ 帧长，向上取整；帧长 0 按 1 兜底）。
+pub fn beats_per_sample(frame_ms: u32) -> u64 {
+    let frame_ms = if frame_ms == 0 { 1 } else { frame_ms };
+    1_000u64.div_ceil(u64::from(frame_ms))
+}
+
+/// 「最坏一秒」里**最长连续静音拍数的下界**（不是判据，只是可读的下界）。
+///
+/// 一秒有 `beats` 拍、其中 `silent` 拍静音，静音最多被非静音切成 `beats - silent + 1` 段，
+/// 于是最长的那一段至少 ⌈silent ÷ (beats - silent + 1)⌉ 拍；真实最长静音只会**更长**。
+/// 真正的连续性推不出来（只有累计遥测 + 1 Hz 采样），见 `docs/22-m2-soak-runner.md` §11.5。
+pub fn longest_silence_lower_bound_beats(silent: u32, beats: u64) -> u64 {
+    let silent = u64::from(silent).min(beats);
+    if silent == 0 {
+        return 0;
+    }
+    let segments = beats.saturating_sub(silent).saturating_add(1);
+    silent.div_ceil(segments)
+}
+
 impl SoakThresholds {
-    /// 弱网档（`--tolerant`）：只钉「会话不断 + 掩盖比例 ≤ 1%」。
+    /// 弱网档（`--tolerant`）：钉「会话不断 + 掩盖比例 ≤ 1% + 静音总占比 ≤
+    /// [`WEAK_UNDERRUN_PCT_X100_SUGGESTED`]」。
     ///
-    /// 这份清单是 8 h / 5 Mbps / 2% 丢包 / 15 ms 抖动 的实测钉出来的：
+    /// 这份清单是 8 h / 5 Mbps / 2% 丢包 / 15±15 ms 抖动 的实测钉出来的：
     /// 那一次跑出 7055 条异常，**全部**是 `bitrate_out_of_range` —— 瞬时码率在自适应与重传下
-    /// 本就随弱网摆动，把硬阈值留在弱网档里只会制造假警报，与欠载 / 迟到 / NACK / 瞬时丢包同理。
+    /// 本就随弱网摆动，把硬阈值留在弱网档里只会制造假警报，与迟到 / NACK / 瞬时丢包同理。
     /// 码率判据用 `bitrate_tolerance_pct_x100 = 0`（= 不判）关掉，而不是塞一个巨大的数字进去：
     /// 语义要能一眼读懂，且与字段文档一致。
+    ///
+    /// **欠载不再不判**（第 88 轮复核的结论）：旧版把 `max_underruns` 设成 `u32::MAX`，
+    /// 而 `underrun` 的语义是「补静音」—— 于是「8 h 无静音」这条验收被制度性放开，
+    /// 8 h 弱网实测 153762 次静音也照样判 `ok`。现在改成「按比例给预算」：
+    /// 既有「累计值增量」判定路径一点没动，只是那个上限不再是无量纲的 `u32::MAX`。
     pub fn weak_network(planned_secs: u64, frame_ms: u32) -> Self {
-        let total_frames = planned_secs.saturating_mul(1_000) / u64::from(frame_ms.max(1));
+        Self::weak_network_with_underrun_pct(
+            planned_secs,
+            frame_ms,
+            WEAK_UNDERRUN_PCT_X100_SUGGESTED,
+        )
+    }
+
+    /// 同上，但欠载预算按调用方给的百分比（×100；0 = 不判）。
+    ///
+    /// 这是「**待产品确认**」那条口径的试跑入口（CLI：`--max-underrun-pct N`，仅弱网档）：
+    /// 建议值 [`WEAK_UNDERRUN_PCT_X100_SUGGESTED`]、过渡值 [`WEAK_UNDERRUN_PCT_X100_TRANSITION`]，
+    /// 或任何产品定下的数字，都能不改代码地跑一次。
+    pub fn weak_network_with_underrun_pct(
+        planned_secs: u64,
+        frame_ms: u32,
+        underrun_pct_x100: u16,
+    ) -> Self {
+        let beats = planned_beats(planned_secs, frame_ms);
         Self {
-            max_plc: u32::try_from(total_frames / 100).unwrap_or(u32::MAX),
-            max_underruns: u32::MAX,
+            max_plc: u32::try_from(beats / 100).unwrap_or(u32::MAX),
+            max_underruns: underrun_budget(beats, underrun_pct_x100),
+            max_underrun_pct_x100: underrun_pct_x100,
             max_late_drops: u32::MAX,
             max_nack: u32::MAX,
             max_loss_pct_x100: u16::MAX,
@@ -311,6 +409,9 @@ pub struct SoakMonitor {
     previous_state: Option<&'static str>,
     /// 末次采样读到的降档主动丢帧累计值（报告用；不参与判定）。
     last_depth_drops: u32,
+    /// 单次采样（1 s 桶）内新增欠载的最大值 —— 「最坏的那一秒补了多少拍静音」。
+    /// 只做可见（换算连续静音下界用），**不参与判定**。
+    max_underruns_per_sample: u32,
     stall_run: u32,
     samples: u64,
     violations: Vec<Violation>,
@@ -334,6 +435,7 @@ impl SoakMonitor {
             previous: None,
             previous_state: None,
             last_depth_drops: 0,
+            max_underruns_per_sample: 0,
             stall_run: 0,
             samples: 0,
             violations: Vec::new(),
@@ -363,10 +465,11 @@ impl SoakMonitor {
         self.previous_state = Some(sample.state);
 
         if let Some(previous) = self.previous {
-            self.check_delta(
-                ViolationKind::Underrun,
-                "欠载",
-                self.thresholds.max_underruns,
+            // 「最坏一秒」：只记增量最大值，供报告换算连续静音的下界（见 docs/22 §11.5）。
+            self.max_underruns_per_sample = self
+                .max_underruns_per_sample
+                .max(stats.underruns.saturating_sub(previous.underruns));
+            self.check_underruns(
                 previous.underruns,
                 stats.underruns,
                 sample.at_secs,
@@ -499,6 +602,11 @@ impl SoakMonitor {
         &self.coarse
     }
 
+    /// 单次采样（1 s 桶）内新增欠载的最大值；0 = 没观察到。
+    pub const fn max_underruns_per_sample(&self) -> u32 {
+        self.max_underruns_per_sample
+    }
+
     /// **当前**期望码率（bps）；0 = 不判码率。
     pub const fn expected_bitrate_bps(&self) -> u32 {
         self.expected_bitrate_bps
@@ -537,6 +645,40 @@ impl SoakMonitor {
         self.expected_bitrate_bps = next;
         self.expected_bitrate_updates = self.expected_bitrate_updates.saturating_add(1);
         true
+    }
+
+    /// 一行说清「静音（欠载）占比」与它的预算（摘要用）。
+    ///
+    /// 口径：累计欠载拍数 ÷ **计划总拍数**（计划秒数 × 1000 ÷ 帧长）。累计值是全流从起点数的，
+    /// 包含预热期 —— 短跑里预热占比大，所以短跑的百分比会偏高，别拿它代表稳态（见 `docs/22` §11.4）。
+    pub fn underrun_text(&self, meta: &SoakMeta) -> String {
+        let beats = planned_beats(meta.planned_seconds, meta.frame_ms);
+        let underruns = self.previous.map_or(0, |stats| u64::from(stats.underruns));
+        let ratio = underrun_pct_x100(underruns, beats);
+        let budget = if self.thresholds.max_underrun_pct_x100 == 0 {
+            if self.thresholds.max_underruns == u32::MAX {
+                "不判".to_owned()
+            } else {
+                format!("上限 {} 拍（绝对值）", self.thresholds.max_underruns)
+            }
+        } else {
+            format!(
+                "上限 {} 拍 = 计划总拍数的 {}.{:02}%",
+                self.thresholds.max_underruns,
+                self.thresholds.max_underrun_pct_x100 / 100,
+                self.thresholds.max_underrun_pct_x100 % 100
+            )
+        };
+        // 「最坏一秒」给的是连续静音的下界（不是判据）：静音总占比看不出「集中成片」，
+        // 而验收写的是「无长断音」——这一行至少让人看出最坏的一秒有多静。
+        let worst = self.max_underruns_per_sample;
+        let bound = longest_silence_lower_bound_beats(worst, beats_per_sample(meta.frame_ms));
+        format!(
+            "静音（欠载）：{underruns} 拍 / 计划 {beats} 拍 = {}.{:02}%（{budget}）；\
+             最坏一秒 {worst} 拍（连续静音下界 ≥ {bound} 拍，非判据）",
+            ratio / 100,
+            ratio % 100
+        )
     }
 
     /// 一行说清码率判据现在是什么状态（摘要用）。
@@ -624,6 +766,15 @@ impl SoakMonitor {
         }
         let total_violations: u64 = summary.kind_counts.iter().sum();
 
+        // 静音程度：累计欠载 ÷ **计划总拍数**（口径见 `docs/22-m2-soak-runner.md` §11）。
+        // 判据读的是折算出的绝对预算，但读报告的人首先要知道「这一次到底有多少拍在补静音」——
+        // 所以比例单独可见，且与预算并列。
+        let beats = planned_beats(meta.planned_seconds, meta.frame_ms);
+        let underruns = summary
+            .final_stats
+            .map_or(0, |stats| u64::from(stats.underruns));
+        let underrun_ratio = underrun_pct_x100(underruns, beats);
+
         let report = json!({
             "tool": "soak-runner",
             "started_at_unix": meta.started_at_unix,
@@ -649,6 +800,18 @@ impl SoakMonitor {
                 // 阈值口径待定，严格档的零容忍只挂在 late_drops 上。
                 "depth_drops": summary.depth_drops,
                 "depth_drops_judged": false,
+                // 静音（欠载）这条判据的三个数：实际比例 / 判据用的绝对预算 / 预算的比例来源。
+                // `max_underrun_pct_x100 == 0` 表示这次没按比例给预算（严格档按绝对值 0 判）。
+                "underrun_pct_x100": underrun_ratio,
+                "underrun_budget": self.thresholds.max_underruns,
+                "max_underrun_pct_x100": self.thresholds.max_underrun_pct_x100,
+                // 「最坏一秒」与它的**下界**：连续性推不出来，但下界是硬结论（见 docs/22 §11.5）。
+                // 两者都**不参与判定**。
+                "max_underruns_per_sample": self.max_underruns_per_sample,
+                "longest_silence_lower_bound_beats": longest_silence_lower_bound_beats(
+                    self.max_underruns_per_sample,
+                    beats_per_sample(meta.frame_ms),
+                ),
                 "final_stats": summary
                     .final_stats
                     .map(|stats| stats_json(stats, summary.depth_drops)),
@@ -674,6 +837,7 @@ impl SoakMonitor {
             self.bitrate_expectation_text(),
             meta.expected_bitrate_source.name()
         );
+        let _ = writeln!(out, "{}", self.underrun_text(meta));
         if let Some(stats) = summary.final_stats {
             let _ = writeln!(
                 out,
@@ -729,6 +893,39 @@ impl SoakMonitor {
             );
         }
         out
+    }
+
+    /// 欠载的判定：口径与其它计数器完全一致（累计值的增量越过上限才算异常），
+    /// 只是把**上限是怎么来的**写进现场 —— 弱网档的上限是从「比例」折算出来的，
+    /// 只写绝对数，读报告的人算不出它等于多少静音。
+    fn check_underruns(
+        &mut self,
+        before: u32,
+        after: u32,
+        at_secs: u64,
+        stats: StreamStats,
+        depth_drops: u32,
+    ) {
+        let threshold = self.thresholds.max_underruns;
+        if after <= threshold {
+            return;
+        }
+        let baseline = before.max(threshold);
+        if after <= baseline {
+            return;
+        }
+        let over = after - baseline;
+        let detail = if self.thresholds.max_underrun_pct_x100 > 0 {
+            format!(
+                "欠载 +{over}（累计 {after}；上限 {} 拍 = 计划总拍数的 {}.{:02}%）",
+                threshold,
+                self.thresholds.max_underrun_pct_x100 / 100,
+                self.thresholds.max_underrun_pct_x100 % 100
+            )
+        } else {
+            format!("欠载 +{over}（累计 {after}）")
+        };
+        self.push_violation(ViolationKind::Underrun, at_secs, detail, stats, depth_drops);
     }
 
     /// 计数器增量的判定。
@@ -1109,7 +1306,11 @@ mod tests {
             28_800 * 1_000 / 20 / 100,
             "掩盖上限 = 总帧数的 1%"
         );
-        assert_eq!(thresholds.max_underruns, u32::MAX);
+        assert_eq!(
+            thresholds.max_underruns,
+            underrun_budget(28_800 * 1_000 / 20, WEAK_UNDERRUN_PCT_X100_SUGGESTED),
+            "欠载不再不判：预算 = 计划总拍数 × 建议比例"
+        );
         assert_eq!(thresholds.max_late_drops, u32::MAX);
         assert_eq!(thresholds.max_nack, u32::MAX);
         assert_eq!(thresholds.max_loss_pct_x100, u16::MAX);
@@ -1348,5 +1549,182 @@ mod tests {
         assert_eq!(parsed["summary"]["expected_bitrate_updates"], 1);
         assert_eq!(parsed["summary"]["bitrate_judged"], true);
         assert_eq!(parsed["summary"]["verdict"], "ok");
+    }
+    #[test]
+    fn underrun_budget_is_derived_from_the_planned_beats() {
+        // 口径：比例 × 计划总拍数（计划秒数 × 1000 ÷ 帧长）。8 h / 20 ms → 1 440 000 拍。
+        assert_eq!(planned_beats(28_800, 20), 1_440_000);
+        assert_eq!(planned_beats(60, 20), 3_000);
+        assert_eq!(planned_beats(60, 0), 60_000, "帧长 0 按 1 兜底，不能除零");
+
+        let weak = SoakThresholds::weak_network(28_800, 20);
+        assert_eq!(weak.max_underrun_pct_x100, WEAK_UNDERRUN_PCT_X100_SUGGESTED);
+        assert_eq!(weak.max_underruns, 14_400, "1% × 1 440 000 拍");
+        assert_eq!(weak.max_plc, 14_400, "掩盖帧 1% 的口径没动");
+        assert_eq!(weak.max_late_drops, u32::MAX, "弱网档的迟到仍不判");
+        assert_eq!(weak.bitrate_tolerance_pct_x100, 0, "弱网档仍不判码率");
+
+        assert_eq!(underrun_budget(1_440_000, 0), u32::MAX, "0 = 不判");
+        assert_eq!(underrun_budget(1_440_000, 1_200), 172_800, "12% 的过渡闸门");
+
+        // 严格档：按绝对值 0 判，比例字段不参与。
+        let strict = SoakThresholds::default();
+        assert_eq!(strict.max_underruns, 0);
+        assert_eq!(strict.max_underrun_pct_x100, 0);
+        assert_eq!(strict.max_late_drops, 0, "严格档对迟到的零容忍没被削弱");
+    }
+
+    #[test]
+    fn underrun_ratio_is_rounded_to_two_decimals() {
+        assert_eq!(underrun_pct_x100(0, 1_440_000), 0);
+        assert_eq!(underrun_pct_x100(153_762, 1_440_000), 1_068, "10.68%");
+        assert_eq!(underrun_pct_x100(1, 10_000), 1, "0.01%");
+        assert_eq!(underrun_pct_x100(9_999, 10_000), 9_999, "99.99%");
+        assert_eq!(underrun_pct_x100(5, 0), 0, "没有拍就没有比例");
+    }
+
+    #[test]
+    fn weak_profile_now_judges_silence_and_the_8h_baseline_is_red() {
+        // 8 h 弱网实测：153762 拍静音 / 1 440 000 拍 = 10.68%，而建议预算 1% = 14400 拍。
+        let thresholds = SoakThresholds::weak_network(28_800, 20);
+        let mut monitor = SoakMonitor::new(thresholds, 0);
+        monitor.observe(sample(0, stats(320_000)));
+        let mut silent = stats(320_000);
+        silent.underruns = 153_762;
+        monitor.observe(sample(1, silent));
+
+        let violation = monitor
+            .violations()
+            .iter()
+            .find(|violation| violation.kind == ViolationKind::Underrun)
+            .expect("越预算必须判");
+        assert!(
+            violation.detail.contains("上限 14400 拍"),
+            "{}",
+            violation.detail
+        );
+        assert!(
+            violation.detail.contains("计划总拍数的 1.00%"),
+            "现场要写清上限的来路：{}",
+            violation.detail
+        );
+        assert_eq!(monitor.summary().verdict, "failed");
+    }
+
+    #[test]
+    fn transition_budget_admits_the_measured_baseline() {
+        // 过渡口径（12%）只承诺「不比现在更差」：同一个 153762 在它下面不算异常。
+        // 两种口径的代价差别，就是这条测试与上一条的差别。
+        let thresholds = SoakThresholds::weak_network_with_underrun_pct(
+            28_800,
+            20,
+            WEAK_UNDERRUN_PCT_X100_TRANSITION,
+        );
+        assert_eq!(thresholds.max_underruns, 172_800);
+        let mut monitor = SoakMonitor::new(thresholds, 0);
+        monitor.observe(sample(0, stats(320_000)));
+        let mut silent = stats(320_000);
+        silent.underruns = 153_762;
+        monitor.observe(sample(1, silent));
+        assert!(
+            monitor.violations().is_empty(),
+            "过渡闸门按设计放行现状：{:?}",
+            monitor.violations()
+        );
+        assert_eq!(monitor.summary().verdict, "ok");
+    }
+
+    #[test]
+    fn zero_underrun_pct_keeps_the_old_dont_judge_semantics() {
+        let thresholds = SoakThresholds::weak_network_with_underrun_pct(60, 20, 0);
+        assert_eq!(thresholds.max_underruns, u32::MAX);
+        let mut monitor = SoakMonitor::new(thresholds, 0);
+        monitor.observe(sample(0, stats(320_000)));
+        let mut silent = stats(320_000);
+        silent.underruns = 999_999;
+        monitor.observe(sample(1, silent));
+        assert!(monitor.violations().is_empty(), "0 = 不判");
+    }
+
+    #[test]
+    fn strict_profile_keeps_absolute_zero_tolerance_on_silence() {
+        let mut monitor = SoakMonitor::new(SoakThresholds::default(), 0);
+        monitor.observe(sample(0, stats(160_000)));
+        let mut one = stats(160_000);
+        one.underruns = 1;
+        monitor.observe(sample(1, one));
+        assert_eq!(
+            monitor.violations()[0].detail,
+            "欠载 +1（累计 1）",
+            "严格档不带比例口径的自述"
+        );
+        assert_eq!(monitor.summary().verdict, "failed");
+    }
+
+    #[test]
+    fn report_and_summary_show_the_realized_silence_ratio() {
+        let thresholds = SoakThresholds::weak_network(28_800, 20);
+        let mut monitor = SoakMonitor::new(thresholds, 0);
+        monitor.observe(sample(0, stats(320_000)));
+        let mut silent = stats(320_000);
+        silent.underruns = 153_762;
+        monitor.observe(sample(1, silent));
+
+        let mut meta = meta();
+        meta.planned_seconds = 28_800;
+        meta.expected_bitrate_source = BitrateExpectationSource::Off;
+        let parsed: Value = serde_json::from_str(&monitor.report_json(&meta)).unwrap();
+        assert_eq!(parsed["summary"]["underrun_pct_x100"], 1_068);
+        assert_eq!(parsed["summary"]["underrun_budget"], 14_400);
+        assert_eq!(parsed["summary"]["max_underrun_pct_x100"], 100);
+
+        let text = monitor.summary_text(&meta);
+        assert!(
+            text.contains("静音（欠载）：153762 拍 / 计划 1440000 拍 = 10.68%"),
+            "{text}"
+        );
+        assert!(
+            text.contains("上限 14400 拍 = 计划总拍数的 1.00%"),
+            "{text}"
+        );
+    }
+    #[test]
+    fn worst_second_and_the_contiguity_lower_bound() {
+        // 下界公式：一秒 k 拍静音 / B 拍 → 最长连续静音 ≥ ⌈k ÷ (B − k + 1)⌉。
+        assert_eq!(beats_per_sample(20), 50);
+        assert_eq!(beats_per_sample(0), 1_000);
+        assert_eq!(longest_silence_lower_bound_beats(0, 50), 0);
+        assert_eq!(longest_silence_lower_bound_beats(1, 50), 1);
+        assert_eq!(
+            longest_silence_lower_bound_beats(25, 50),
+            1,
+            "交替排列下界就是 1"
+        );
+        assert_eq!(
+            longest_silence_lower_bound_beats(45, 50),
+            8,
+            "45 拍静音至少连成 8 拍 —— 这才是「长断音」侧的下界"
+        );
+        assert_eq!(longest_silence_lower_bound_beats(50, 50), 50, "整秒全静音");
+        assert_eq!(
+            longest_silence_lower_bound_beats(9_999, 50),
+            50,
+            "超桶容量按整秒算"
+        );
+
+        // 采样桶增量：取最大，不参与判定。
+        let mut monitor = SoakMonitor::new(SoakThresholds::weak_network(60, 20), 0);
+        monitor.observe(sample(0, stats(320_000)));
+        for (secs, total) in [(1u64, 3u32), (2, 10), (3, 12)] {
+            let mut bumped = stats(320_000);
+            bumped.underruns = total;
+            monitor.observe(sample(secs, bumped));
+        }
+        assert_eq!(monitor.max_underruns_per_sample(), 7);
+        assert!(monitor.violations().is_empty(), "12 拍没超 30 拍预算");
+
+        let parsed: Value = serde_json::from_str(&monitor.report_json(&meta())).unwrap();
+        assert_eq!(parsed["summary"]["max_underruns_per_sample"], 7);
+        assert_eq!(parsed["summary"]["longest_silence_lower_bound_beats"], 1);
     }
 }

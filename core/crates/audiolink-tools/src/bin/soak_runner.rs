@@ -57,7 +57,10 @@ soak-runner —— 回环长跑 + 指标采集 + 异常快照
                     数字 = 钉死在这个值上（判定链路自检用）；0 = 不判码率
   --warmup-seconds  预热秒数（不参与判定），默认 3
   --quiet           不打印每秒进度
-  --tolerant        弱网档：只钉「会话不断 + 掩盖比例 ≤ 1%」，不判欠载/迟到/NACK/瞬时丢包/码率
+  --tolerant        弱网档：钉「会话不断 + 掩盖帧 ≤ 总帧数 1% + 静音（欠载）≤ 计划总拍数 N%」，
+                    不判迟到/NACK/瞬时丢包/码率
+  --max-underrun-pct 弱网档的静音（欠载）上限，百分比（可小数），默认 1.00（建议值，**待产品确认**）；
+                    12 = 现状基线之上的「不退化闸门」。0 = 不判。仅 --tolerant 下有效
 
 弱网注入（可选，M2 验收口径见 docs/05-roadmap.md）：
   --netem-loss-pct        丢包率（百分比，可小数），默认 0
@@ -106,6 +109,7 @@ fn real_main() -> Result<ExitCode> {
     let mut report: Option<PathBuf> = None;
     let mut quiet = false;
     let mut tolerant = false;
+    let mut max_underrun_pct: Option<u16> = None;
     let mut netem_loss_pct_x100: u16 = 0;
     let mut netem_delay_ms: u32 = 0;
     let mut netem_jitter_ms: u32 = 0;
@@ -149,6 +153,20 @@ fn real_main() -> Result<ExitCode> {
                 tolerant = true;
                 index += 1;
             }
+            "--max-underrun-pct" => {
+                // 与 `--netem-loss-pct` 同风格：接受小数百分比，内部按 ×100 存。
+                let raw = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow!("{key} 缺少取值"))?;
+                let value: f64 = raw
+                    .parse()
+                    .with_context(|| format!("{key} 的取值不是数字：{raw}"))?;
+                if !(0.0..=100.0).contains(&value) {
+                    bail!("{key} 必须在 0..=100 之间：{raw}");
+                }
+                max_underrun_pct = Some((value * 100.0).round() as u16);
+                index += 2;
+            }
             "--netem-loss-pct" => {
                 let raw = args
                     .get(index + 1)
@@ -185,6 +203,15 @@ fn real_main() -> Result<ExitCode> {
         }
     }
 
+    // 这条闸门**只在弱网档存在**：严格档的欠载零容忍（绝对值 0）不接受预算 ——
+    // 给它预算就等于悄悄放宽「干净回环零静音」，那是藏问题不是修问题。
+    if max_underrun_pct.is_some() && !tolerant {
+        bail!(
+            "--max-underrun-pct 只在弱网档（--tolerant）下有意义：\
+             严格档按**绝对值 0** 判欠载，不给预算"
+        );
+    }
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -204,6 +231,7 @@ fn real_main() -> Result<ExitCode> {
         report,
         quiet,
         tolerant,
+        max_underrun_pct,
         netem,
     ))
 }
@@ -292,6 +320,7 @@ async fn run(
     report: Option<PathBuf>,
     quiet: bool,
     tolerant: bool,
+    max_underrun_pct: Option<u16>,
     netem: NetemOptions,
 ) -> Result<ExitCode> {
     let dir = tempfile::TempDir::new().context("创建临时目录失败")?;
@@ -407,25 +436,31 @@ async fn run(
 
     let started_at_unix = unix_now();
     // 判据档位：默认是**回环稳态**（任何非零欠载/掩盖/丢包都是缺陷信号）；
-    // 弱网档只钉三件事 —— 会话不断、修复后仍丢包 ≤ 1%、（可选）码率不跑偏。
-    // 理由：弱网下欠载/迟到本来就是给定条件的一部分，把它们算成「故障」等于永远红。
-    // 弱网档的判据是「**可听**」，不是「零异常」：会话必须一直在 streaming，
-    // 掩盖比例 ≤ 1%（偶发掩盖可以，成片掩盖不行）—— 这是「可听」的量化版本。
-    // 其余口径集中在 `SoakThresholds::weak_network`，那里同时记着为什么放宽。
+    // 弱网档钉四件事 —— 会话不断、掩盖帧 ≤ 总帧数的 1%、**静音（欠载）≤ 计划总拍数的 N%**、
+    // （可选）码率不跑偏。理由：弱网下迟到本来就是给定条件的一部分，把它算成「故障」等于永远红；
+    // 但「静音」不是给定条件 —— 它是「可听」的反面，所以必须判（第 88 轮复核的结论）。
+    // 其余口径集中在 `SoakThresholds::weak_network`，那里同时记着为什么放宽、以及比例的代价。
     let planned_secs = if seconds == 0 { 28_800 } else { seconds };
     let thresholds = if tolerant {
-        SoakThresholds::weak_network(planned_secs, frame_ms)
+        match max_underrun_pct {
+            Some(pct) => {
+                SoakThresholds::weak_network_with_underrun_pct(planned_secs, frame_ms, pct)
+            }
+            None => SoakThresholds::weak_network(planned_secs, frame_ms),
+        }
     } else {
         SoakThresholds::default()
     };
-    println!(
-        "判据档位：{}\n",
-        if tolerant {
-            "弱网（宽容）：只钉会话不断与掩盖比例 ≤ 1%"
-        } else {
-            "回环稳态（零容忍）"
-        }
-    );
+    if tolerant {
+        println!(
+            "判据档位：弱网（宽容）——会话不断 + 掩盖帧 ≤ 总帧数的 1% + **静音（欠载）≤ 计划总拍数的 {}.{:02}%**（预算 {} 拍）\n",
+            thresholds.max_underrun_pct_x100 / 100,
+            thresholds.max_underrun_pct_x100 % 100,
+            thresholds.max_underruns,
+        );
+    } else {
+        println!("判据档位：回环稳态（零容忍）——欠载按**绝对值 0** 判，不给比例预算\n");
+    }
     let mut monitor = SoakMonitor::new(thresholds, expected_bps);
     // 自适应改的是**发送侧**的目标码率：订阅 node-a 的事件，每个采样 tick 捞一次，
     // 让判据的期望值跟着走（`try_recv` 不阻塞；每秒清一次，广播通道容量 256 够用）。

@@ -9,8 +9,9 @@
 ## 1. 用法
 
 ```text
-soak-runner run [--seconds 28800] [--frame-ms 20] [--report PATH] [--expected-bps 320000] [--warmup-seconds 3] [--quiet]
-                [--tolerant] [--netem-loss-pct N] [--netem-delay-ms N] [--netem-jitter-ms N] [--netem-bandwidth-kbps N] [--netem-seed N]
+soak-runner run [--seconds 28800] [--frame-ms 20] [--report PATH] [--expected-bps auto] [--warmup-seconds 3] [--quiet]
+                [--tolerant] [--max-underrun-pct N]
+                [--netem-loss-pct N] [--netem-delay-ms N] [--netem-jitter-ms N] [--netem-bandwidth-kbps N] [--netem-seed N]
 ```
 
 | 参数 | 含义 |
@@ -18,10 +19,11 @@ soak-runner run [--seconds 28800] [--frame-ms 20] [--report PATH] [--expected-bp
 | `--seconds` | 观测时长，默认 28800（8 h）；CI 冒烟用 60 |
 | `--frame-ms` | 帧长（10 / 20 / 40 / 60），默认 20 |
 | `--report` | 报告路径，默认 `target/evidence/soak/soak-<unix>.json` |
-| `--expected-bps` | 目标码率，默认 320000（冗余双发后的期望）；`0` = 不判码率 |
+| `--expected-bps` | 期望码率：`auto`（默认）= 由**本次实际** codec 配置推导（目标 × 冗余双发 2 份），并跟随自适应升降；数字 = 钉死（判定链路自检）；`0` = 不判码率 |
 | `--warmup-seconds` | 预热秒数，默认 3（预热期的越界不判） |
 | `--quiet` | 不打印每秒进度 |
-| `--tolerant` | 弱网档判据：只钉「会话不断 + 掩盖比例 ≤ 1%」，不判欠载/迟到/NACK/瞬时丢包（详见 `docs/24`） |
+| `--tolerant` | 弱网档判据：会话不断 + 掩盖帧 ≤ 总帧数 1% + **静音（欠载）≤ 计划总拍数 N%**（默认 1.00，**待产品确认**，见 §11）；不判迟到/NACK/瞬时丢包/码率 |
+| `--max-underrun-pct` | 弱网档的静音（欠载）上限，百分比可小数（默认 1.00）；`0` = 不判。**仅弱网档有效** —— 严格档按绝对值 0 判，给它预算会直接报错 |
 | `--netem-*` | 在两个 Engine 之间插入弱网中继（丢包 / 延迟 / 抖动 / 限速），M2 弱网验收见 `docs/24-m2-netem-sim.md` |
 
 退出码：**0 = 无异常；1 = 有异常；2 = 用法 / 初始化失败**。
@@ -40,7 +42,7 @@ soak-runner run [--seconds 28800] [--frame-ms 20] [--report PATH] [--expected-bp
 | 种类 | 触发 |
 |---|---|
 | `not_streaming` | 会话离开 streaming（状态变化时只记一条，避免每采样刷屏） |
-| `underrun` | 播放欠载计数增加 |
+| `underrun` | 播放欠载计数增加（引擎里这一拍**没帧就补静音**，所以它就是「静音拍数」）。严格档按**绝对值 0** 判；弱网档按**比例预算**判（见 §11） |
 | `playout_concealment` | PCM 掩盖帧增加（真丢了包） |
 | `packet_loss` | 丢包率超过阈值 |
 | `late_drop` | 迟到丢弃增加 |
@@ -65,6 +67,10 @@ soak-runner run [--seconds 28800] [--frame-ms 20] [--report PATH] [--expected-bp
   "summary": {
     "samples": 18, "violations": 0, "dropped_violations": 0,
     "verdict": "ok",
+    "underrun_pct_x100": 6, "underrun_budget": 30, "max_underrun_pct_x100": 100,
+    "max_underruns_per_sample": 2, "longest_silence_lower_bound_beats": 1,
+    "bitrate_judged": true, "expected_bitrate_bps_final": 640000,
+    "depth_drops": 0, "depth_drops_judged": false,
     "final_stats": { "bitrate_bps": 320800, "loss_pct_x100": 0, "underruns": 0,
                       "plc_count": 0, "late_drops": 0, "nack_count": 0,
                       "buffer_level_us": 20000, "rtt_us": 1848, "...": 0 }
@@ -74,6 +80,13 @@ soak-runner run [--seconds 28800] [--frame-ms 20] [--report PATH] [--expected-bp
 }
 ```
 
+- 静音（欠载）判据的三个数：`underrun_pct_x100`（实际占比）/ `underrun_budget`（判据用的绝对预算）/
+  `max_underrun_pct_x100`（预算的比例来源，0 = 这次没按比例给预算）—— 见 §11；
+- `max_underruns_per_sample` 与 `longest_silence_lower_bound_beats`：最坏一秒补了多少拍静音、
+  以及由它推出的**连续静音下界**（**不参与判定**，见 §11.5）；
+- `expected_bitrate_bps` 是**起跑值**，判据实际用的是 `summary.expected_bitrate_bps_final`（跟随发送侧自适应），
+  `expected_bitrate_source` 说明来路（`follow-encoder-target` / `fixed-cli` / `off`）；
+- `depth_drops` 是「降档主动丢帧」的独立账（与 `late_drops` 不同因），当前**只可见、不判**（`depth_drops_judged: false`）；
 - `violations`：留存上限 200 条（超出只计入 `dropped_violations`）—— 8 h 跑不该产出无限大的报告；
 - `coarse`：每 60 s 一条粗采样（8 h 约 480 条），既能看趋势又不撑爆报告；
 - 报告**手写字段**而不直接序列化 `StreamStats`，避免为一个报告把 `serde` feature 拉进内核依赖图。
@@ -105,8 +118,8 @@ soak-runner run [--seconds 28800] [--frame-ms 20] [--report PATH] [--expected-bp
 
 | 层 | 内容 |
 |---|---|
-| 单元（8 项） | 稳态零异常、计数器增量 → 快照（含 delta 文案）、丢包/码率/挂住判定、状态离开 streaming 只记一条、快照上限与 `dropped_violations`、每分钟粗采样、JSON 报告字段、摘要文本 |
-| 端到端（人工，本条给出命令与数字） | 20 s 冒烟（exit 0）+ 目标码率写错（exit 1） |
+| 单元（27 项） | 稳态零异常、计数器增量 → 快照（含 delta 文案）、丢包/码率/挂住判定、状态离开 streaming 只记一条、快照上限与 `dropped_violations`、每分钟粗采样、JSON 报告字段、摘要文本；**码率期望值**：推导含冗余份数、跟随自适应且仍有牙齿、跟随不打开判据、来路进报告；**静音（欠载）**：预算 = 比例 × 计划总拍数、比例四舍五入、8 h 基线在建议值下必红 / 在过渡闸门下放行、0 = 不判、严格档仍是绝对值 0、最坏一秒与连续静音下界、报告与摘要都带比例 |
+| 端到端（人工，本条给出命令与数字） | 20 s 冒烟（exit 0）+ 目标码率写错（exit 1）；**弱网档静音预算对照**：同参数 60 s，默认 1.00% → 0.20% 判 `ok`，`--max-underrun-pct 0.1` → 越线判 `failed`（见 §11.6） |
 
 ```
 cargo test -p audiolink-tools --lib soak
@@ -247,6 +260,97 @@ verdict=ok violations=0 dropped=0 samples=88
 0 违规 vs 修复前的 7055 —— 这就是那次修复最直接的对照。报告也留在
 `target/evidence/soak/tolerant-90s-current.json`。若哪天 `soak-8h-netem.json` 被重新生成，
 请连同 `started_at_unix` 一起看：它当前是历史证据，不是体检结果。
+---
+
+## 11. 欠载（静音）判据：口径、现状基线、建议值与代价（2026-09-17 第 90 轮补，**待产品确认**）
+
+### 11.1 为什么补这条判据
+
+验收写「8 h 无崩溃/**无静音**/无漂移」「2% 随机丢包下可懂、**无长断音**」，
+而引擎里 `underrun` 的语义就是「这一拍没帧 → **补静音**并计数」（`runtime.rs` 播放环的 `Hold` / `missed` 分支）。
+旧版弱网档把 `max_underruns` 设成 `u32::MAX`（完全不判）——「8 h 无静音」这条验收因此被**制度性放开**：
+8 h 弱网实测 153762 次静音，判定照样是 `ok`。本轮把这条判据补上：**让静音程度可判、可见、有据**。
+
+### 11.2 口径（只从现有遥测推，不碰协议）
+
+- **静音总占比** = 累计 `underruns` ÷ **计划总拍数**；
+- **计划总拍数** = 计划秒数 × 1000 ÷ 帧长（8 h / 20 ms → **1 440 000** 拍）；
+- 阈值字段 `SoakThresholds::max_underrun_pct_x100`（百分比 ×100，**0 = 不判**）；
+  构造档位时折算成绝对预算 `max_underruns`，判定仍走原有的「累计值增量」路径（`check_underruns`）——
+  与「换一条判定路径」相比，这条更小的改动同时保证了严格档的语义不变（严格档 `max_underruns = 0`，按绝对值判）；
+- 三个数都进报告：`summary.underrun_pct_x100` / `summary.underrun_budget` / `summary.max_underrun_pct_x100`；
+- `StreamStats` 是 0x13 的**冻结**载荷，本判据**没有**为它加字段（旧节点会解码报错，第 86 轮踩过）。
+
+### 11.3 实测现状（建议值的依据）
+
+| 跑法 | 报告 | 累计欠载 | 计划总拍数 | 静音占比 | 每分钟增量峰值 |
+|---|---|---|---|---|---|
+| 8 h 弱网（2% 丢包 / 15+15 ms / 5 Mbps，宽容档）**首次** | `soak-8h-netem.json` | 4307 | 1 440 000 | **0.30%** | 497 拍 |
+| 同上，**重跑**（同参数） | `soak-8h-netem-rerun.json` | 153762 | 1 440 000 | **10.68%** | **1836 拍** |
+| 干净回环 900 s 严格档（机器安静） | `strict-clean-900s.json` | 0 | 45 000 | **0.00%** | 0 |
+| 干净回环 900 s 严格档（与构建同时跑） | `strict-clean-900s-autobps.json` | 29 | 45 000 | **0.06%** | — |
+| 弱网 60 s 宽容档（同命令，**机器安静**） | 控制台（§11.6 第 1 行） | 6 | 3 000 | **0.20%** | 1 拍/s |
+| 弱网 60 s 宽容档（同命令，**机器有负载**） | `tolerant-60s-underrun-pct1.json` | 280 | 3 000 | **9.33%** | 57 拍/s |
+
+两次 8 h 差 35 倍**不是链路退化**，而是分布不同：首次的增量摊在全场（max 497 拍/min），
+重跑是**集中爆发**（max 1836 拍/min ≈ 那一分钟 61% 的拍在补静音），且两者的最后 10 分钟都归零。
+这与 §9.2 留的那条「长跑期间机器上有其它负载」一致。
+⇒ 静音占比与严格档的 `late_drop` 有**同一条前提**：**要拿它做验收，就得独占机器**。
+
+### 11.4 建议值（**待产品确认**）
+
+| 口径 | 值 | 含义 | 代价 |
+|---|---|---|---|
+| **建议值**（验收意图） | **1.00%** | 「静音总占比 ≤ 1%」，与弱网档已钉死的「掩盖帧 ≤ 总帧数 1%」同量级 —— 欠载（补静音）与 PLC（掩盖帧）是「这一拍没有真音频」的两半 | 安静机器上的两次 8 h 弱网实测：首次 0.30% 过、重跑 10.68% **不过**。即它会**红**，因为那份重跑本身被争用污染了 —— 这是真话，不是判据过严 |
+| **过渡闸门**（不退化） | **12.00%** | 现状基线 10.68% 之上留余量，只承诺「不比现在更差」 | 今天就能过，但把「约 10% 的时间在补静音」制度化；**不**承诺可听 |
+
+代码里对应 `WEAK_UNDERRUN_PCT_X100_SUGGESTED = 100`（弱网档默认）与
+`WEAK_UNDERRUN_PCT_X100_TRANSITION = 1200`；CLI `--max-underrun-pct N` 可在**不改代码**的前提下试跑任何值
+（`0` = 不判）。**这两个值都只是建议，产品定案前不写进验收表**；严格档**不接受**这条预算 ——
+`--max-underrun-pct` 与严格档一起用会直接报错（避免悄悄放宽「干净回环零静音」）。
+
+### 11.5 遗留：「长断音」（连续静音）推不出来
+
+「静音总占比」与「长断音」是两件事。现有遥测只有**累计计数**，且接收侧 1 Hz 才发布一次快照 ——
+**推不出**「最长连续静音」。能给的只有一条**下界**：
+一秒内 k 拍静音、该秒共 B 拍，静音至多被非静音切成 `B − k + 1` 段，于是最长连续静音 ≥ ⌈k ÷ (B − k + 1)⌉ 拍。
+报告因此只给**最坏一秒**的静音拍数（`summary.max_underruns_per_sample`）与由它算出的下界
+（`summary.longest_silence_lower_bound_beats`），并明确标注**下界**（真实只会更长）、**不参与判定**。
+真正的连续性指标需要在引擎播放线程里直接统计「最长连续静音拍数」，并经**事件**（不是 `StreamStats`）上报 —— 记为遗留。
+
+### 11.6 短跑对照：新判据真的会参与判定（该红就红）
+
+同一组参数（60 s / 2% 丢包 / 15+15 ms / 5 Mbps / `--tolerant`）跑了三次，只有**预算**与**被机器负载影响的实测值**不同：
+
+| 跑法 | 报告 | 实测 | 预算 | 判定 |
+|---|---|---|---|---|
+| 默认 1.00% | 控制台（机器安静） | 6 拍 = 0.20% | 30 拍 | **ok**（判据生效、没越线） |
+| 默认 1.00% | `tolerant-60s-underrun-pct1.json` | 280 拍 = **9.33%** | 30 拍 | **failed**（`underrun×9`，首次越线 t=4s） |
+| `--max-underrun-pct 0.1` | `tolerant-60s-underrun-pct0p1.json` | 12 拍 = 0.40% | 3 拍 | **failed**（`underrun×4`） |
+
+第 1/3 行是「判据真的参与判定」的直接证据：**同一组参数**，只把预算从 30 拍改成 3 拍，判定就从 ok 变 failed；
+快照细节自带口径 —— `欠载 +1（累计 4；上限 3 拍 = 计划总拍数的 0.10%）`。
+第 2 行说明另一件事：这条判据会**如实反映机器争用** —— 同一命令在机器有负载时静音占比从 0.20% 涨到 9.33%
+（增量集中在 t=35..38 s，最坏一秒 57 拍）。它不是「过严」，而是「8 h 无静音」这条验收**必须独占机器**的又一份证据
+（与严格档 `late_drop` 零容忍同一条前提，见 §11.3 末段）。
+
+---
+
+## 12. 抖动口径：验收表的「30 ms 抖动」= ±15 ms（2026-09-17 第 90 轮钉死）
+
+三份 8 h / 90 s 弱网报告注入的参数都是 `--netem-delay-ms 15 --netem-jitter-ms 15`，
+而 `docs/05-roadmap.md` 的 M2 验收写的是「5 Mbps / 2% 丢包 / **30 ms 抖动**」。二者关系一次写清：
+
+- `audiolink-tools::netem` 的抖动语义是「实际单向延迟在 `delay_ms ± jitter_ms` 之间**均匀**取值」
+  （`netem.rs` 的 `NetemConfig::jitter_ms` 文档与实现），所以 `--netem-jitter-ms 15` = 抖动幅度 **±15 ms**，
+  **峰峰 30 ms**；单测里也按这个口径写（`±15 ms 覆盖 30 ms 抖动`）；
+- 验收表里的「30 ms 抖动」指的正是这个**峰峰值**，**不是** ±30 ms；
+- `--netem-delay-ms 15` 是**固定单向延迟**（均值），与抖动是两回事：报告口径 = 15 ms 延迟 + ±15 ms 抖动。
+
+**后续统一写法**：报告与看板一律写
+`--netem-loss-pct 2 --netem-delay-ms 15 --netem-jitter-ms 15 --netem-bandwidth-kbps 5000`，
+需要引用验收口径时写「30 ms 抖动（峰峰）= ±15 ms」，不再单独出现裸的「30 ms 抖动」字样。
+
 
 
 
