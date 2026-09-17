@@ -29,6 +29,8 @@ use tokio::task::JoinHandle;
 #[derive(Clone, Copy)]
 struct Stamp {
     at: Instant,
+    /// 全是零样本 = 排播补的静音（不是真实音频）。
+    silence: bool,
 }
 
 /// 每次写出都盖时间戳的播放端（同一进程、同一单调时钟，两端可比）。
@@ -57,7 +59,10 @@ impl PlayoutSink for StampingSink {
     fn write(&mut self, samples: &[f32]) -> Result<(), AudioError> {
         self.inner.write(samples)?;
         if let Ok(mut list) = self.stamps.lock() {
-            list.push(Stamp { at: Instant::now() });
+            list.push(Stamp {
+                at: Instant::now(),
+                silence: samples.iter().all(|sample| sample.abs() < 0.01),
+            });
         }
         Ok(())
     }
@@ -408,4 +413,111 @@ async fn group_sync_survives_heavy_loss() {
     sender.shutdown().await;
     receiver_a.shutdown().await;
     receiver_b.shutdown().await;
+}
+/// 动态加入 × 链路丢包：新成员在**链路已经在丢包**时加入同步组，还能拿到基准并跟上吗？
+///
+/// 这是 `docs/33` §10.2 记的「丢包与动态加入的组合」。新成员拿组基准走的是**控制流**（不受数据报丢包影响），
+/// 但它的**播放**要靠数据报 —— 所以要问的是「丢包中新加入的那台能不能与老成员对齐」。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn late_joiner_aligns_under_loss() {
+    let dir = tempfile::TempDir::new().expect("临时目录");
+    let frame_ms = 20_u32;
+    let lead_ms = 120_u32;
+
+    let mut send_config = EngineConfig::new("sender", dir.path().join("sender"));
+    send_config.listen = "127.0.0.1:0".parse().unwrap();
+    send_config.codec.frame_ms = frame_ms;
+    send_config.capture = Some(Arc::new(move || {
+        Ok(Box::new(SyntheticCapture::new(frame_ms, 440.0)?))
+    }));
+    let sender = Engine::start(send_config).await.expect("发送引擎");
+
+    let stamps: Vec<Arc<Mutex<Vec<Stamp>>>> =
+        (0..3).map(|_| Arc::new(Mutex::new(Vec::new()))).collect();
+    let (receiver_a, accept_a) =
+        start_receiver(dir.path(), 0, Arc::clone(&stamps[0]), frame_ms).await;
+    let (receiver_b, accept_b) =
+        start_receiver(dir.path(), 1, Arc::clone(&stamps[1]), frame_ms).await;
+    let (receiver_c, accept_c) =
+        start_receiver(dir.path(), 2, Arc::clone(&stamps[2]), frame_ms).await;
+
+    // 三条链路各自注入：每 50 个音频数据报成串丢 2 个（约 4%）。
+    let relay_a = LossRelay::start(receiver_a.local_addr(), 512, 50, 2).await;
+    let relay_b = LossRelay::start(receiver_b.local_addr(), 512, 50, 2).await;
+    let relay_c = LossRelay::start(receiver_c.local_addr(), 512, 50, 2).await;
+
+    let mut events_a = receiver_a.subscribe();
+    let mut events_b = receiver_b.subscribe();
+    let mut events_c = receiver_c.subscribe();
+
+    let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+        let id_a = connect_and_pair(&sender, &receiver_a, relay_a.addr).await;
+        let id_b = connect_and_pair(&sender, &receiver_b, relay_b.addr).await;
+        let id_c = connect_and_pair(&sender, &receiver_c, relay_c.addr).await;
+        wait_streaming(&sender, id_a).await;
+        wait_streaming(&sender, id_b).await;
+        wait_streaming(&sender, id_c).await;
+
+        // ① 老成员先成组、开流，并在丢包链路上跑一会儿。
+        let group_id = sender
+            .create_group(&[id_a, id_b], lead_ms)
+            .await
+            .expect("建组");
+        sender
+            .start_send_many(&[id_a, id_b])
+            .await
+            .expect("两台一起开流");
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        // ② 第 3 台**在丢包进行中**加入同步组，再开流。
+        sender
+            .join_group(id_c, group_id)
+            .await
+            .expect("第 3 台加入同步组");
+        sender.start_send(id_c).await.expect("第 3 台开流");
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    })
+    .await;
+    outcome.expect("120 s 内必须完成配对、建组、动态加入与开流");
+
+    let mut audible = Vec::new();
+    let mut times: Vec<Vec<Instant>> = Vec::new();
+    for entry in &stamps {
+        let guard = entry.lock().unwrap();
+        audible.push(guard.iter().filter(|stamp| !stamp.silence).count());
+        times.push(guard.iter().map(|stamp| stamp.at).collect());
+    }
+    let scheduled = [
+        drain_scheduled(&mut events_a),
+        drain_scheduled(&mut events_b),
+        drain_scheduled(&mut events_c),
+    ];
+    let dropped = relay_a.dropped() + relay_b.dropped() + relay_c.dropped();
+    let (samples, absolute_p50, absolute_p95) = deviation_ms(&times[0], &times[1]);
+    println!(
+        "[group-join-loss] 注入丢弃 {dropped} 个包；三台排播 {scheduled:?} · 非静音写出 {audible:?}；A/B 绝对偏差 P50 {absolute_p50:.2} ms · P95 {absolute_p95:.2} ms（样本 {samples}）"
+    );
+
+    assert!(dropped > 0, "中继一个包都没丢 —— 这条测试失去意义");
+    assert!(
+        scheduled.iter().all(|count| *count > 0),
+        "三台都必须排播：{scheduled:?}"
+    );
+    assert!(
+        audible.iter().all(|count| *count > 0),
+        "三台都必须出声：{audible:?}"
+    );
+    assert!(
+        absolute_p95 <= 10.0,
+        "丢包 + 动态加入时老成员仍在 M3 验收线上：P95 = {absolute_p95:.2} ms"
+    );
+
+    accept_a.abort();
+    accept_b.abort();
+    accept_c.abort();
+    sender.shutdown().await;
+    receiver_a.shutdown().await;
+    receiver_b.shutdown().await;
+    receiver_c.shutdown().await;
 }
