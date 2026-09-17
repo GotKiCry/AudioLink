@@ -56,6 +56,9 @@ export interface PeerView {
   addr: string;
   state: PeerState;
   trusted: boolean;
+  /** 重连成功次数（0 = 从未重连）：界面据此显示回执。 */
+  /** 重连成功次数（Rust 侧总是序列化它；此处声明为可选，因为测试夹具用 Partial<PeerView> 展开构造）。 */
+  reconnects?: number;
   /** §13 能力协商结果；null = 还没走完能力交换（握手中就是 null）。 */
   capabilities: PeerCapabilitiesView | null;
 }

@@ -992,6 +992,7 @@ fn peer_view(status: &PeerStatus, sending: Option<NodeId>) -> PeerView {
         state: map_state(status.state, sending == Some(status.id)),
         trusted: status.trusted,
         capabilities: capabilities_view(status.capabilities),
+        reconnects: status.reconnects,
     }
 }
 
@@ -1508,6 +1509,7 @@ mod tests {
         let near = NodeId::from_bytes([1u8; 32]);
         let status = |id: NodeId, e2e: u32| PeerStatus {
             id,
+            reconnects: 0,
             capabilities: None,
             name: format!("peer-{}", id.short()),
             addr: "127.0.0.1:58290".parse().expect("addr"),
@@ -1542,6 +1544,7 @@ mod tests {
         let peer = NodeId::from_bytes([7u8; 32]);
         let sender_side = vec![PeerStatus {
             id: peer,
+            reconnects: 0,
             name: "phone".to_string(),
             addr: "192.168.1.23:58290".parse().expect("addr"),
             state: SessionState::Streaming,
@@ -1601,6 +1604,7 @@ mod tests {
         let id = NodeId::from_bytes([0xab; 32]);
         let status = PeerStatus {
             id,
+            reconnects: 0,
             name: "客厅 R1".to_string(),
             addr: "192.168.1.23:58290".parse().expect("addr"),
             state: SessionState::Streaming,
