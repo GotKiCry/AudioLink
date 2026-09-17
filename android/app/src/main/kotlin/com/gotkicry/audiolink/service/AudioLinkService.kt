@@ -29,11 +29,16 @@ import com.gotkicry.audiolink.capture.CaptureSourceKind
 import com.gotkicry.audiolink.capture.CaptureState
 import com.gotkicry.audiolink.capture.MediaProjectionRequestActivity
 import com.gotkicry.audiolink.core.EngineStartConfig
+import com.gotkicry.audiolink.core.FfiException
 import com.gotkicry.audiolink.core.LocalStatus
+import com.gotkicry.audiolink.core.connect
 import com.gotkicry.audiolink.core.displayedPin
 import com.gotkicry.audiolink.core.engineStart
 import com.gotkicry.audiolink.core.engineStop
 import com.gotkicry.audiolink.core.peers
+import com.gotkicry.audiolink.core.startSend
+import com.gotkicry.audiolink.core.stopSend
+import com.gotkicry.audiolink.core.submitPin
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -77,6 +82,69 @@ class AudioLinkService : Service() {
 
         /** 发送源的枚举名（`CaptureSourceKind.name`）；不传 = 关闭。 */
         const val EXTRA_CAPTURE_SOURCE = "capture_source"
+
+        // ---- 发送方向（FR-17 手工 IP 连接 + §8 推流）：与采集同一套「Intent 请求式」入口 ----
+
+        /** UI → 服务：连接目标地址（本机作为**发起方**）。 */
+        const val ACTION_CONNECT = "com.gotkicry.audiolink.action.CONNECT"
+
+        /** 目标地址（`192.168.1.5` 或 `192.168.1.5:58290`）。 */
+        const val EXTRA_TARGET_ADDR = "target_addr"
+
+        /** UI → 服务：提交对端屏幕上显示的 6 位 PIN（`connect` 返回 `1002` 之后）。 */
+        const val ACTION_SUBMIT_PIN = "com.gotkicry.audiolink.action.SUBMIT_PIN"
+
+        /** 用户输入的 6 位 PIN。 */
+        const val EXTRA_PIN = "pin"
+
+        /** 配对 PIN 位数（协议 §5：6 位数字）。**只用于本地格式校验**，权威在服务端 `PinGate`。 */
+        private const val PIN_LENGTH = 6
+
+        /** 「已停止发送」的固定说法：与「已断开」严格区分（`stopSend` 只停流、保留连接）。 */
+        private const val STOPPED_SENDING_NOTE = "已停止发送（连接保持）"
+
+        /** UI → 服务：开始向当前对端推流。 */
+        const val ACTION_START_SEND = "com.gotkicry.audiolink.action.START_SEND"
+
+        /** UI → 服务：停止推流（**保留连接与信任** —— 内核 `Engine::stop_send` 的语义）。 */
+        const val ACTION_STOP_SEND = "com.gotkicry.audiolink.action.STOP_SEND"
+
+        /**
+         * UI 入口：连接一台电脑（发送方向）。
+         *
+         * 为什么这一族走 Intent 而不是 task-8 那种 `@Volatile` 标量：连接/推流是**离散动作**
+         * （不是每拍下发的连续意图），必须在服务自己的线程与生命周期里执行 —— 同 [setCaptureSource]。
+         */
+        fun connect(context: Context, addr: String) {
+            context.startService(
+                Intent(context, AudioLinkService::class.java)
+                    .setAction(ACTION_CONNECT)
+                    .putExtra(EXTRA_TARGET_ADDR, addr),
+            )
+        }
+
+        /** UI 入口：提交对端屏幕上显示的 6 位 PIN（`1002 NOT_PAIRED` 之后继续**同一条**连接）。 */
+        fun submitPin(context: Context, pin: String) {
+            context.startService(
+                Intent(context, AudioLinkService::class.java)
+                    .setAction(ACTION_SUBMIT_PIN)
+                    .putExtra(EXTRA_PIN, pin),
+            )
+        }
+
+        /** UI 入口：开始向当前对端推流。 */
+        fun startSend(context: Context) {
+            context.startService(
+                Intent(context, AudioLinkService::class.java).setAction(ACTION_START_SEND),
+            )
+        }
+
+        /** UI 入口：停止推流（连接保持不变）。 */
+        fun stopSend(context: Context) {
+            context.startService(
+                Intent(context, AudioLinkService::class.java).setAction(ACTION_STOP_SEND),
+            )
+        }
 
         /**
          * UI → 服务：请求切换发送源（FR-38 的「关闭 / 系统内录 / 麦克风」）；`null` = 关闭。
@@ -238,6 +306,20 @@ class AudioLinkService : Service() {
     /** 最近一次写进通知的正文：只在变化时 notify（避免每 500 ms 一次无意义刷新）。 */
     private var lastNotificationText: String = ""
 
+    // ---- 发送方向（本机 → 对端）----
+
+    /** 发送方向的 UI 状态（连接 + 推流）。主线程读写（[onStartCommand] 与 [refreshState] 同线程）。 */
+    private var senderState = SenderUiState()
+
+    /**
+     * 本机的发送**意图**：最后一次 `startSend()` 成功、且还没 `stopSend()`。
+     *
+     * 为什么要单独记：内核没有「本机是否在推流」的直接查询（`peers()` 只给会话状态），
+     * 而「连着但暂时没数据」（采集等授权）时发帧数同样是 0 —— 用遥测反推会把它显示成
+     * 「没在发送」，与用户刚点的动作不符（口径见 [SenderStateMapper.isSending]）。
+     */
+    private var localSendStarted = false
+
     /** 本实例的配对查询域；状态只在主线程发布，JNI 查询在 IO 上执行。 */
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var destroyed = false
@@ -355,6 +437,32 @@ class AudioLinkService : Service() {
                 }
                 applyCaptureSource(requested)
                 refreshState()
+                return START_STICKY
+            }
+
+            ACTION_CONNECT -> {
+                startForegroundWithTypes()
+                val addr = intent?.getStringExtra(EXTRA_TARGET_ADDR).orEmpty()
+                connectSender(addr)
+                return START_STICKY
+            }
+
+            ACTION_SUBMIT_PIN -> {
+                startForegroundWithTypes()
+                val pin = intent?.getStringExtra(EXTRA_PIN).orEmpty()
+                submitSenderPin(pin)
+                return START_STICKY
+            }
+
+            ACTION_START_SEND -> {
+                startForegroundWithTypes()
+                startSender()
+                return START_STICKY
+            }
+
+            ACTION_STOP_SEND -> {
+                startForegroundWithTypes()
+                stopSender()
                 return START_STICKY
             }
         }
@@ -500,6 +608,34 @@ class AudioLinkService : Service() {
             startEngine()
         }
 
+        // 推流中把采集源切到「关闭」：**先停流、再停采集**。
+        // 顺序反了会出现「采集已停、流还开着」的空窗 —— 对端会一直等一个永远不会到的流
+        // （它那边的播放环会一路欠载）。
+        // 注意：`stopSend()` 只停流、**保留连接与信任**（内核 `Engine::stop_send` 的语义），
+        // 所以文案是「已停止发送」而不是「已断开」。
+        if (SenderStateMapper.shouldStopSendOnCaptureChange(senderState.sending, next)) {
+            localSendStarted = false
+            senderState = senderState.copy(sending = false, note = STOPPED_SENDING_NOTE)
+            engineScope.launch {
+                withContext(Dispatchers.IO) {
+                    try {
+                        stopSend()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (t: Throwable) {
+                        // 停流失败不阻断停采集：用户的意图是「别发了」，采集该停还是得停。
+                        senderState = senderState.copy(
+                            error = SenderStateMapper.noteForSendFailure(ffiCodeOf(t), ffiContextOf(t)),
+                        )
+                    }
+                }
+                captureController.stop()
+                refreshState()
+            }
+            updateForegroundTypes()
+            return
+        }
+
         when (next) {
             null -> captureController.stop()
 
@@ -588,6 +724,223 @@ class AudioLinkService : Service() {
         lastError = captureNotice
         applyCaptureSource(null)
         refreshState()
+    }
+
+    // ---------------------------------------------------------------------------
+    // 发送方向（本机 → 对端）：连接与推流
+    // ---------------------------------------------------------------------------
+
+    /** 连接一台电脑（本机作为**发起方**）。 */
+    private fun connectSender(addr: String) {
+        senderState = senderState.copy(
+            targetAddr = addr,
+            connecting = true,
+            note = null,
+            error = null,
+        )
+        val generation = engineLifecycle.generation
+        engineScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                try {
+                    Result.success(connect(addr))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    Result.failure(t)
+                }
+            }
+            if (destroyed || !engineLifecycle.isCurrent(generation)) return@launch
+            outcome.fold(
+                onSuccess = { peer ->
+                    senderState = senderState.copy(
+                        connecting = false,
+                        peerIdShort = peer.idShort,
+                        peerState = peer.state,
+                        peerStateLabel = PairingStateMapper.stateLabel(peer.state),
+                        awaitingPin = false,
+                        note = null,
+                        error = null,
+                    )
+                },
+                onFailure = { error -> applyConnectFailure(error) },
+            )
+            refreshState()
+        }
+    }
+
+    /**
+     * 连接失败的处理：`1002 NOT_PAIRED` 走**提示**（引导输入 PIN），其余走错误。
+     *
+     * `1002` 不是失败：FFI 的 `connect` 文档写明「QUIC 握手与会话已经在，UI 提示用户输入 PIN
+     * 后调用 `submit_pin` 即可继续**同一条**连接」，所以它与真正的失败必须分开显示 ——
+     * 混在一起会让用户以为连接坏了，去反复重连（那反而会丢掉已完成的握手）。
+     */
+    private fun applyConnectFailure(error: Throwable) {
+        val code = ffiCodeOf(error)
+        val detail = ffiContextOf(error)
+        senderState = if (SenderStateMapper.connectFailureIsNotice(code)) {
+            senderState.copy(
+                connecting = false,
+                awaitingPin = true,
+                note = SenderStateMapper.noteForConnectFailure(code, detail),
+                error = null,
+            )
+        } else {
+            senderState.copy(
+                connecting = false,
+                awaitingPin = false,
+                note = null,
+                error = SenderStateMapper.noteForConnectFailure(code, detail),
+            )
+        }
+    }
+
+    /** 提交对端屏幕上显示的 6 位 PIN（`1002` 之后继续同一条连接）。 */
+    private fun submitSenderPin(pin: String) {
+        if (pin.length != PIN_LENGTH) {
+            senderState = senderState.copy(
+                error = "配对码应该是 $PIN_LENGTH 位数字",
+                note = null,
+            )
+            refreshState()
+            return
+        }
+        val generation = engineLifecycle.generation
+        engineScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                try {
+                    submitPin(pin)
+                    Result.success(Unit)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    Result.failure(t)
+                }
+            }
+            if (destroyed || !engineLifecycle.isCurrent(generation)) return@launch
+            outcome.fold(
+                onSuccess = {
+                    senderState = senderState.copy(awaitingPin = false, note = null, error = null)
+                },
+                onFailure = { error ->
+                    senderState = senderState.copy(
+                        note = null,
+                        error = SenderStateMapper.noteForSendFailure(ffiCodeOf(error), ffiContextOf(error)),
+                    )
+                },
+            )
+            refreshState()
+        }
+    }
+
+    /** 开始推流。 */
+    private fun startSender() {
+        // 单对端语义的兜底：`startSend()` **不带 peer 参数**，内核按 `current_peer()`（优先 streaming、
+        // 否则第一个）选对端 —— 本机若同时还有一条入站会话，就可能发到错误的设备上。
+        // 宁可让用户看到一句人话，也不静默发错（见 [SenderStateMapper.sessionGate]）。
+        val gate = SenderStateMapper.sessionGate(senderState.peerIdShort, pairingState.peers)
+        if (gate != SendGate.Allowed) {
+            senderState = senderState.copy(error = SenderStateMapper.gateNote(gate), note = null)
+            refreshState()
+            return
+        }
+        val generation = engineLifecycle.generation
+        engineScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                try {
+                    startSend()
+                    Result.success(Unit)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    Result.failure(t)
+                }
+            }
+            if (destroyed || !engineLifecycle.isCurrent(generation)) return@launch
+            outcome.fold(
+                onSuccess = {
+                    localSendStarted = true
+                    senderState = senderState.copy(sending = true, note = null, error = null)
+                },
+                onFailure = { error ->
+                    localSendStarted = false
+                    senderState = senderState.copy(
+                        sending = false,
+                        error = SenderStateMapper.noteForSendFailure(ffiCodeOf(error), ffiContextOf(error)),
+                    )
+                },
+            )
+            refreshState()
+        }
+    }
+
+    /**
+     * 停止推流。**只停流、不断连**。
+     *
+     * 依据：内核 `Engine::stop_send` 的文档原文是「关闭与对端的流（**保留连接与信任**）」，
+     * 它只发一条 `CLOSE_STREAM` 控制帧并停采集（`SessionCommand::CloseStream` 分支），
+     * 会话本身留在表里 —— 所以文案是「已停止发送」而不是「已断开」，用户再点一次就能继续。
+     */
+    private fun stopSender(note: String = STOPPED_SENDING_NOTE) {
+        localSendStarted = false
+        senderState = senderState.copy(sending = false, note = note, error = null)
+        val generation = engineLifecycle.generation
+        engineScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                try {
+                    stopSend()
+                    Result.success(Unit)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    Result.failure(t)
+                }
+            }
+            if (destroyed || !engineLifecycle.isCurrent(generation)) return@launch
+            outcome.onFailure { error ->
+                senderState = senderState.copy(
+                    error = SenderStateMapper.noteForSendFailure(ffiCodeOf(error), ffiContextOf(error)),
+                )
+            }
+            refreshState()
+        }
+    }
+
+    /**
+     * 会话状态同步：**内核是唯一权威**。会话从表里消失（断开 / 被对端关掉）就把发送状态归零。
+     *
+     * 空表要当成「还没拉到」而不是「已断开」：刚 `connect()` 完的那一小段里 `peers()` 可能还是空的，
+     * 那会儿把状态清零会让用户看到一条假断开。
+     */
+    private fun syncSenderWithPeers() {
+        val expected = senderState.peerIdShort ?: return
+        if (pairingState.peers.isEmpty()) return
+        val peer = pairingState.peers.firstOrNull { it.idShort.equals(expected, ignoreCase = true) }
+        senderState = if (peer == null) {
+            localSendStarted = false
+            senderState.copy(
+                peerIdShort = null,
+                peerState = "",
+                peerStateLabel = "",
+                sending = false,
+                awaitingPin = false,
+                note = "与电脑的连接已断开",
+            )
+        } else {
+            senderState.copy(peerState = peer.state, peerStateLabel = peer.stateLabel)
+        }
+    }
+
+    /** FFI 失败的错误码（`docs/03-protocol.md` §11 的数值）；非 FFI 异常返回 0。 */
+    private fun ffiCodeOf(error: Throwable): Int = when (error) {
+        is FfiException.Failure -> error.code.toInt()
+        else -> 0
+    }
+
+    /** FFI 失败的机械上下文；非 FFI 异常退回 `message`。 */
+    private fun ffiContextOf(error: Throwable): String? = when (error) {
+        is FfiException.Failure -> error.context
+        else -> error.message
     }
 
     private fun startEngine() {
@@ -703,6 +1056,8 @@ class AudioLinkService : Service() {
         val captureNote = captureNotice
             ?: CaptureWiring.captureNote(captureSelection, captureSnapshot)
         val engine = engineStatus
+        // 发送方向：会话状态以 pairingState.peers 为权威（同一拍里刚刷新，见 syncSenderWithPeers）。
+        syncSenderWithPeers()
         val pairing = pairingState
 
         // task-8：把 UI 的请求下发给播放器（设备调用本身仍在播放线程里做）。
@@ -779,6 +1134,11 @@ class AudioLinkService : Service() {
             captureNote = captureNote,
             captureRingOverflowFrames = captureRing.overflowFrames,
             captureRingAvailableFrames = captureRing.availableFrames,
+
+            // ---- 发送方向（本机 → 对端）----
+            sender = senderState.copy(
+                sending = SenderStateMapper.isSending(localSendStarted, senderState),
+            ),
         )
 
         // 采集状态变化要反映到通知正文：否则用户只看到「正在播放」，采集失败/被拒是**静默**的。

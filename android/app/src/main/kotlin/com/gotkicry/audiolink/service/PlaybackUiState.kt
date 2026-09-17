@@ -125,6 +125,10 @@ data class PlaybackUiState(
     val captureRingOverflowFrames: Long = 0,
     /** 采集环当前可读帧数（诊断）。 */
     val captureRingAvailableFrames: Int = 0,
+
+    // ---- 发送方向（本机 → 对端，FR-17 / §8）----
+    /** 连接 + 推流的状态快照；字段含义见 [SenderUiState]。 */
+    val sender: SenderUiState = SenderUiState(),
 ) {
     /**
      * [pairingPin] 是否已经没有对应的活跃配对会话 —— 口径与理由见

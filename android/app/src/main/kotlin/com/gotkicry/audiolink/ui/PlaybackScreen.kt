@@ -14,11 +14,14 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,11 +34,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gotkicry.audiolink.audio.LowLatencyPlayer
+import com.gotkicry.audiolink.capture.CaptureSourceKind
+import com.gotkicry.audiolink.capture.CaptureState
 import com.gotkicry.audiolink.diagnostics.ProtocolSelfTest
 import com.gotkicry.audiolink.diagnostics.SelfTestResult
 import com.gotkicry.audiolink.service.AudioLinkService
 import com.gotkicry.audiolink.service.PeerUi
 import com.gotkicry.audiolink.service.PlaybackUiState
+import com.gotkicry.audiolink.service.SendGate
+import com.gotkicry.audiolink.service.SenderStateMapper
+import com.gotkicry.audiolink.service.SenderUiState
 import java.util.Locale
 import kotlinx.coroutines.launch
 
@@ -54,6 +62,12 @@ import kotlinx.coroutines.launch
 fun PlaybackScreen(
     state: PlaybackUiState,
     onTogglePlayback: (Boolean) -> Unit,
+    // 发送方向的四个动作（FR-17 / §8）：与 [onTogglePlayback] 同风格 —— UI 只回传动作，
+    // 具体调用哪个 FFI 导出由服务决定（见 AudioLinkService 的 companion 入口）。
+    onConnect: (String) -> Unit = {},
+    onSubmitPin: (String) -> Unit = {},
+    onStartSend: () -> Unit = {},
+    onStopSend: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // 自检状态刻意放在 UI 本地：它**不依赖服务**（验的是协议层），
@@ -94,6 +108,17 @@ fun PlaybackScreen(
             state.pairingPin?.let { pin ->
                 PairingCard(pin = pin, stale = state.pinIsStale, note = state.pairingNote)
             }
+            // 发送入口：连接是发送的前提，所以紧随配对卡（PIN 卡在最前，见上）。
+            SendCard(
+                sender = state.sender,
+                captureSelection = state.captureSelection,
+                captureState = state.captureState,
+                engineRunning = state.engineRunning,
+                onConnect = onConnect,
+                onSubmitPin = onSubmitPin,
+                onStartSend = onStartSend,
+                onStopSend = onStopSend,
+            )
             ServiceCard(state = state, onTogglePlayback = onTogglePlayback)
             // 省电白名单（FR-37）：服务能不能长期活下去，与它会不会被系统省电策略回收直接相关，
             // 所以紧贴服务卡。判断与文案全在 service 层（PowerWhitelistMapper），这里只渲染。
@@ -152,11 +177,112 @@ fun PlaybackScreen(
             }
 
             Text(
-                "M1 说明：引擎随服务启停，本机角色是「接收端」（可接收、不可发送）。播放环里的 PCM 来自内核解码 ——" +
-                    "PC 端尚未连接/推流时，供给欠载会持续增长、输出为静音，属预期；" +
+                "说明：引擎随服务启停。接收方向由电脑发起连接，播放环里的 PCM 来自内核解码 ——" +
+                    "对端尚未连接/推流时，供给欠载会持续增长、输出为静音，属预期；" +
+                    "发送方向用上面的「发送」卡片：本机主动连接电脑并推流（采集源在「发送源」里选）。" +
                     "低延迟是否生效与缓冲帧数不受此影响，可直接读。",
                 style = MaterialTheme.typography.bodySmall,
             )
+        }
+    }
+}
+
+/**
+ * 发送（本机 → 电脑）：目标地址 → 连接 →（需要时）输入 PIN → 开始 / 停止发送。
+ *
+ * **这里只渲染**：能不能连、能不能发、提示与错误全部由 service 的 [SenderStateMapper] 算好
+ * （`PlaybackUiState.sender`）。UI 再判一遍门禁，迟早会与 service 漂移（第 107 轮那条教训：
+ * 「与被测实现共享推导」的断言会在阈值写错时永远为真）。
+ */
+@Composable
+private fun SendCard(
+    sender: SenderUiState,
+    captureSelection: CaptureSourceKind?,
+    captureState: CaptureState,
+    engineRunning: Boolean,
+    onConnect: (String) -> Unit,
+    onSubmitPin: (String) -> Unit,
+    onStartSend: () -> Unit,
+    onStopSend: () -> Unit,
+) {
+    var addr by remember { mutableStateOf(sender.targetAddr) }
+    var pin by remember { mutableStateOf("") }
+
+    // 服务侧规范化后的地址回填到输入框（用户只填 IP 时，服务会补上默认端口）。
+    LaunchedEffect(sender.targetAddr) {
+        if (sender.targetAddr.isNotEmpty()) addr = sender.targetAddr
+    }
+
+    val connectGate = SenderStateMapper.canConnect(sender, engineRunning)
+    val startGate = SenderStateMapper.canStartSend(sender, engineRunning, captureSelection, captureState)
+    val stopGate = SenderStateMapper.canStopSend(sender, engineRunning)
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+
+    Card {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("发送（手机 → 电脑）", style = MaterialTheme.typography.titleMedium)
+            Text(SenderStateMapper.sessionLabel(sender), color = MaterialTheme.colorScheme.primary)
+
+            OutlinedTextField(
+                value = addr,
+                onValueChange = { addr = it },
+                label = { Text("电脑地址") },
+                placeholder = { Text("192.168.1.5 或 192.168.1.5:58290") },
+                singleLine = true,
+                enabled = !sender.connecting,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            SenderStateMapper.gateNote(SenderStateMapper.addressGate(addr))?.let { hint ->
+                Text(hint, style = MaterialTheme.typography.bodySmall, color = muted)
+            }
+            Button(onClick = { onConnect(addr) }, enabled = connectGate == SendGate.Allowed) {
+                Text(if (sender.connecting) "连接中…" else "连接电脑")
+            }
+            if (connectGate != SendGate.Allowed) {
+                SenderStateMapper.gateNote(connectGate)?.let { hint ->
+                    Text(hint, style = MaterialTheme.typography.bodySmall, color = muted)
+                }
+            }
+
+            // 需要本机输码时才出现输入框（`connect` 返回 1002 之后）—— 不是错误态，是流程中的一步。
+            if (sender.awaitingPin) {
+                OutlinedTextField(
+                    value = pin,
+                    onValueChange = { input -> pin = input.filter { it.isDigit() }.take(6) },
+                    label = { Text("电脑上显示的 6 位数字") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(onClick = { onSubmitPin(pin) }, enabled = pin.length == 6) {
+                    Text("提交配对码")
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onStartSend, enabled = startGate == SendGate.Allowed) {
+                    Text("开始发送")
+                }
+                OutlinedButton(onClick = onStopSend, enabled = stopGate == SendGate.Allowed) {
+                    Text("停止发送")
+                }
+            }
+            if (startGate != SendGate.Allowed) {
+                SenderStateMapper.gateNote(startGate)?.let { hint ->
+                    Text(hint, style = MaterialTheme.typography.bodySmall, color = muted)
+                }
+            }
+            // 允许但采集还没就绪时的补充提示（例如「授权后会自动开始发送」）。
+            SenderStateMapper.captureNote(captureSelection, captureState)?.let { hint ->
+                Text(hint, style = MaterialTheme.typography.bodySmall, color = muted)
+            }
+            sender.note?.let { hint -> Text(hint, color = MaterialTheme.colorScheme.primary) }
+            sender.error?.let { message ->
+                Text(
+                    message,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
 }

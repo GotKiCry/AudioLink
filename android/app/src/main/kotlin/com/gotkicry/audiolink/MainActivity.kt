@@ -16,9 +16,10 @@ import com.gotkicry.audiolink.ui.AudioLinkTheme
 import com.gotkicry.audiolink.ui.PlaybackScreen
 
 /**
- * 单页信息架构（docs/08-ui-spec.md §3.1）：M1 只落地「本机状态」这一半 ——
- * 服务启停 + 播放可观测项（低延迟是否生效 / 采样率 / 声道 / 缓冲帧数 / 欠载）。
- * 节点列表与发送源切换属 M2+，等内核接上后再填。
+ * 单页信息架构（docs/08-ui-spec.md §3.1）：M1 落地「本机状态」这一半 ——
+ * 服务启停 + 播放可观测项（低延迟是否生效 / 采样率 / 声道 / 缓冲帧数 / 欠载）；
+ * 发送方向（连接电脑 + 推流，FR-17/§8）与发送源切换（FR-06/07）已接线，
+ * 节点自动发现列表仍属 M2+。
  *
  * 注意：Activity 只负责 UI。前台服务（AudioLinkService）由用户操作显式启动，
  * 不存在「必须先打开 App 才能工作」的隐式依赖；状态经 `AudioLinkService.state` 收流，
@@ -55,6 +56,12 @@ class MainActivity : ComponentActivity() {
                             AudioLinkService.stop(this)
                         }
                     },
+                    // 发送方向：四个动作分别对应内核的 connect / submitPin / startSend / stopSend。
+                    // 这里只把「用户点了什么」转成服务请求；能不能连、能不能发由 service 判定并回写状态。
+                    onConnect = { addr -> AudioLinkService.connect(this, addr) },
+                    onSubmitPin = { pin -> AudioLinkService.submitPin(this, pin) },
+                    onStartSend = { AudioLinkService.startSend(this) },
+                    onStopSend = { AudioLinkService.stopSend(this) },
                 )
             }
         }
