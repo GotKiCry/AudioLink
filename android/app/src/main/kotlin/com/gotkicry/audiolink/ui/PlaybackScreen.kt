@@ -95,6 +95,9 @@ fun PlaybackScreen(
                 PairingCard(pin = pin, stale = state.pinIsStale, note = state.pairingNote)
             }
             ServiceCard(state = state, onTogglePlayback = onTogglePlayback)
+            // 省电白名单（FR-37）：服务能不能长期活下去，与它会不会被系统省电策略回收直接相关，
+            // 所以紧贴服务卡。判断与文案全在 service 层（PowerWhitelistMapper），这里只渲染。
+            PowerWhitelistCard()
             SelfTestCard(
                 result = selfTestResult,
                 running = selfTestRunning,
