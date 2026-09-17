@@ -12,10 +12,19 @@
 //!   `0` = 无异常，`1` = 有异常，`2` = 用法 / 初始化失败。
 //!
 //! ```text
-//! soak-runner run [--seconds 28800] [--frame-ms 20] [--report PATH] [--expected-bps 320000] [--warmup-seconds 3] [--quiet]
+//! soak-runner run [--seconds 28800] [--frame-ms 20] [--report PATH] [--expected-bps auto] [--warmup-seconds 3] [--quiet]
 //! ```
 //!
 //! 短时自检（CI 冒烟）：`soak-runner run --seconds 60`。真正的 8 h 长跑用 `--seconds 28800`。
+//!
+//! # 期望码率默认不写死
+//!
+//! `--expected-bps` 的默认值是 `auto`：期望码率 = 本次**真实使用**的 codec 目标码率
+//! （`EngineConfig::codec.bitrate_bps`）× 冗余双发份数，并且随 §8 自适应的升 / 降级跟着走。
+//! 理由是实测出来的：干净回环上自适应会把编码器目标从 160 kbps 推到上限 320 kbps，
+//! 接收侧于是从 320 kbps 长到 640.8 kbps —— 钉死一个数字（旧默认 320000）必然把整条干净链路
+//! 判成全红（第 82 轮 900 s：878 条 `bitrate_out_of_range`，其余七类全 0）。
+//! 判据本身没松：它判的是「**收到的**码率有没有跟上发送侧实际想发的量」。
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -27,20 +36,25 @@ use audiolink_audio::{NullPlayout, PlayoutSink, SyntheticCapture};
 use audiolink_engine::session::SessionState;
 use audiolink_engine::{Engine, EngineConfig, EngineEvent};
 use audiolink_tools::netem::{NetemConfig, NetemRelay};
-use audiolink_tools::soak::{SoakMeta, SoakMonitor, SoakSample, SoakThresholds};
+use audiolink_tools::soak::{
+    BitrateExpectationSource, REDUNDANT_COPIES, SoakMeta, SoakMonitor, SoakSample, SoakThresholds,
+    expected_bitrate_bps_from_codec,
+};
 use audiolink_types::{ErrorCode, NodeId, StreamStats};
+use tokio::sync::broadcast::error::TryRecvError;
 
 const USAGE: &str = "\
 soak-runner —— 回环长跑 + 指标采集 + 异常快照
 
 用法：
-  soak-runner run [--seconds 28800] [--frame-ms 20] [--report PATH] [--expected-bps 320000] [--warmup-seconds 3] [--quiet]
+  soak-runner run [--seconds 28800] [--frame-ms 20] [--report PATH] [--expected-bps auto] [--warmup-seconds 3] [--quiet]
 
 参数：
   --seconds         观测时长（秒），默认 28800（8 h）；冒烟用 60
   --frame-ms        帧长（10 / 20 / 40 / 60），默认 20
   --report          报告路径，默认 target/evidence/soak/soak-<unix 秒>.json
-  --expected-bps    目标码率（bps），默认 320000（冗余双发后的期望值）；0 = 不判码率
+  --expected-bps    期望码率（bps）：auto（默认）= 由本次实际 codec 配置推导，并跟随自适应升降；
+                    数字 = 钉死在这个值上（判定链路自检用）；0 = 不判码率
   --warmup-seconds  预热秒数（不参与判定），默认 3
   --quiet           不打印每秒进度
   --tolerant        弱网档：只钉「会话不断 + 掩盖比例 ≤ 1%」，不判欠载/迟到/NACK/瞬时丢包/码率
@@ -88,7 +102,7 @@ fn real_main() -> Result<ExitCode> {
     let mut seconds: u64 = 28_800;
     let mut frame_ms: u32 = 20;
     let mut warmup_seconds: u64 = 3;
-    let mut expected_bps: u32 = 320_000;
+    let mut expected_bps = ExpectedBps::Auto;
     let mut report: Option<PathBuf> = None;
     let mut quiet = false;
     let mut tolerant = false;
@@ -116,8 +130,7 @@ fn real_main() -> Result<ExitCode> {
                 index += 2;
             }
             "--expected-bps" => {
-                expected_bps = u32::try_from(next_u64(&args, index, key)?)
-                    .map_err(|_| anyhow!("{key} 超出范围"))?;
+                expected_bps = ExpectedBps::parse(&args, index, key)?;
                 index += 2;
             }
             "--report" => {
@@ -222,6 +235,45 @@ impl NetemOptions {
     }
 }
 
+/// `--expected-bps` 的取值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpectedBps {
+    /// 默认：期望值由本次**真实使用**的 codec 配置推出，并跟随自适应的升 / 降级。
+    Auto,
+    /// 钉死在给定数字上（`0` = 不判码率）：
+    /// 「故意把目标写错就该红」这条判定链路自检要的正是这种语义。
+    Fixed(u32),
+}
+
+impl ExpectedBps {
+    /// 解析取值：`auto` 或非负整数。
+    fn parse(args: &[String], index: usize, key: &str) -> Result<Self> {
+        let raw = args
+            .get(index + 1)
+            .ok_or_else(|| anyhow!("{key} 缺少取值"))?;
+        if raw.eq_ignore_ascii_case("auto") {
+            return Ok(Self::Auto);
+        }
+        let value = raw
+            .parse::<u64>()
+            .with_context(|| format!("{key} 的取值既不是 auto 也不是整数：{raw}"))?;
+        u32::try_from(value)
+            .map(Self::Fixed)
+            .map_err(|_| anyhow!("{key} 超出范围：{raw}"))
+    }
+}
+
+/// 期望码率的来路（启动横幅用），把「这次拿什么在判」说清楚。
+fn describe_expected_source(source: BitrateExpectationSource, codec_bitrate_bps: i32) -> String {
+    match source {
+        BitrateExpectationSource::Off => "命令行钉死：不判码率".to_owned(),
+        BitrateExpectationSource::FixedCli => "命令行钉死（不跟随自适应）".to_owned(),
+        BitrateExpectationSource::FollowCodecTarget => format!(
+            "由实际 codec 配置推导：{codec_bitrate_bps} bps × {REDUNDANT_COPIES} 份冗余，并跟随自适应升降"
+        ),
+    }
+}
+
 fn next_u64(args: &[String], index: usize, key: &str) -> Result<u64> {
     let raw = args
         .get(index + 1)
@@ -236,17 +288,12 @@ async fn run(
     seconds: u64,
     frame_ms: u32,
     warmup_seconds: u64,
-    expected_bps: u32,
+    expected: ExpectedBps,
     report: Option<PathBuf>,
     quiet: bool,
     tolerant: bool,
     netem: NetemOptions,
 ) -> Result<ExitCode> {
-    println!("=== AudioLink soak-runner（真实 QUIC 回环 · 不出声）===");
-    println!(
-        "计划 {seconds} s · 帧长 {frame_ms} ms · 预热 {warmup_seconds} s · 目标码率 {expected_bps} bps\n"
-    );
-
     let dir = tempfile::TempDir::new().context("创建临时目录失败")?;
     let dir_a = dir.path().join("node-a");
     let dir_b = dir.path().join("node-b");
@@ -259,6 +306,26 @@ async fn run(
     config_a.capture = Some(Arc::new(move || {
         Ok(Box::new(SyntheticCapture::new(frame_ms, 440.0)?))
     }));
+
+    // 期望码率的来路：默认跟着**本次真实使用的** codec 配置走。
+    // 引擎每帧主帧 + 冗余帧各发一次，接收侧遥测按收到的字节记账 ⇒ 期望值 = 目标 × 冗余份数。
+    let codec_bitrate_bps = config_a.codec.bitrate_bps;
+    let (expected_bps, expected_source) = match expected {
+        ExpectedBps::Auto => (
+            expected_bitrate_bps_from_codec(codec_bitrate_bps),
+            BitrateExpectationSource::FollowCodecTarget,
+        ),
+        ExpectedBps::Fixed(0) => (0, BitrateExpectationSource::Off),
+        ExpectedBps::Fixed(bps) => (bps, BitrateExpectationSource::FixedCli),
+    };
+    // 钉死的期望值**不**跟随自适应：判定链路自检要的正是「目标写错就该红」的语义。
+    let follow_encoder_target = expected_source == BitrateExpectationSource::FollowCodecTarget;
+
+    println!("=== AudioLink soak-runner（真实 QUIC 回环 · 不出声）===");
+    println!(
+        "计划 {seconds} s · 帧长 {frame_ms} ms · 预热 {warmup_seconds} s · 期望码率 {expected_bps} bps（{}）\n",
+        describe_expected_source(expected_source, codec_bitrate_bps)
+    );
 
     let mut config_b = EngineConfig::new("soak-receiver", &dir_b);
     config_b.listen = "127.0.0.1:0".parse().context("解析监听地址失败")?;
@@ -360,6 +427,9 @@ async fn run(
         }
     );
     let mut monitor = SoakMonitor::new(thresholds, expected_bps);
+    // 自适应改的是**发送侧**的目标码率：订阅 node-a 的事件，每个采样 tick 捞一次，
+    // 让判据的期望值跟着走（`try_recv` 不阻塞；每秒清一次，广播通道容量 256 够用）。
+    let mut events_a = engine_a.subscribe();
     let started = std::time::Instant::now();
     let mut next_tick = tokio::time::Instant::now();
     println!("开始观测（预热 {warmup_seconds} s 不参与判定）…");
@@ -370,6 +440,22 @@ async fn run(
         let at_secs = started.elapsed().as_secs();
         let stats = engine_b.telemetry(peer_on_b).unwrap_or_default();
         let state = peer_state(&engine_b, peer_on_b);
+
+        // 期望值要**先**跟上这一拍的目标码率，再判这一拍的采样。
+        if follow_encoder_target {
+            loop {
+                match events_a.try_recv() {
+                    Ok(EngineEvent::CodecAdapted { to_bps, .. }) => {
+                        monitor.follow_encoder_target(to_bps);
+                    }
+                    // 追不上（旧消息被覆盖）不是错误：继续取后面那一条 ——
+                    // 期望值宁可晚一拍，也不能停在旧值上。
+                    Err(TryRecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        }
 
         if at_secs >= warmup_seconds {
             monitor.observe(SoakSample {
@@ -392,6 +478,7 @@ async fn run(
         planned_seconds: seconds,
         frame_ms,
         expected_bitrate_bps: expected_bps,
+        expected_bitrate_source: expected_source,
         started_at_unix,
     };
     let path = report.unwrap_or_else(|| default_report_path(started_at_unix));

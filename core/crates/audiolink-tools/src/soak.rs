@@ -6,6 +6,24 @@
 //! 判据口径是「回环稳态不该出现的东西」：欠载、PCM 掩盖、丢包、迟到丢弃、NACK 重传
 //! 在一条 127.0.0.1 的链路上都应当是 0 —— 任何非零值都是缺陷信号，不是噪声。
 //!
+//! # 码率判据：期望值从哪来
+//!
+//! 接收侧遥测的 `bitrate_bps` 记的是**收到的字节**，而引擎对每个音频帧都主帧 + 冗余帧各发一次
+//! （`docs/03-protocol.md` §8.1），所以它天然是发送侧编码器目标码率的 [`REDUNDANT_COPIES`] 倍。
+//! 再把期望值钉死成一个数字就是刻舟求剑：干净链路上 §8 的自适应会把目标从 160 kbps 一路推到上限
+//! 320 kbps，接收侧于是从 320 kbps 长到 640 kbps —— 拿 320000 当期望值，第 82 轮的 900 s 实测
+//! 直接判出 878 条 `bitrate_out_of_range`（其余七类全 0）。
+//!
+//! 期望值因此有两条来路，语义各自分明：
+//!
+//! - **跟随**（[`SoakMonitor::follow_encoder_target`]，runner 的默认）：期望值 = 发送侧**当前**目标
+//!   码率 × 冗余份数，起点由本次真实使用的 `CodecConfig::bitrate_bps` 推出。它判的是
+//!   「收到的码率有没有跟上发送侧实际想发的量」——断流、只收到一份副本、码率塌到下限不恢复，仍是异常。
+//! - **钉死**（`--expected-bps N`）：判据钉在给定数字上，用于「故意把目标写错」这类判定链路自检。
+//!
+//! 关掉码率判据只有两条路：`expected_bitrate_bps == 0`，或 `bitrate_tolerance_pct_x100 == 0`
+//! （弱网档，见 [`SoakThresholds::weak_network`]）。两者都在构造时点定，跑动中不会被悄悄打开。
+//!
 //! 本模块**不碰套接字也不睡觉**：只吃采样、吐判定，因此可以完整单测（编排在 `bin/soak_runner.rs`）。
 
 use std::fmt::Write as _;
@@ -18,6 +36,24 @@ pub const STREAMING: &str = "streaming";
 
 /// 粗采样粒度（秒）：报告里每分钟留一条，8 h 约 480 条 —— 既看得到趋势，又不至于把报告撑爆。
 pub const COARSE_BUCKET_SECS: u64 = 60;
+
+/// 冗余双发的份数：引擎对每个音频帧**主帧 + 冗余帧**各发一次（`docs/03-protocol.md` §8.1）。
+///
+/// 接收侧遥测的 `bitrate_bps` 按**收到的字节**记账，因此它是发送侧编码器目标码率的两倍。
+/// 这不是可以随便挑的口径，而是链路的既有事实：期望值不算上它，就必然差整整一倍
+/// （第 82 轮实测：目标 320 kbps、接收侧 640.8 kbps）。
+pub const REDUNDANT_COPIES: u32 = 2;
+
+/// 由**发送侧编码器的目标码率**推出接收侧的期望码率（= 目标 × [`REDUNDANT_COPIES`]）。
+///
+/// 入参应当取自本次运行**真实使用**的配置（`EngineConfig::codec.bitrate_bps`），而不是抄一个常量 ——
+/// 默认期望值因此跟着实际配置走，改配置不用改判据。
+/// 非正数返回 0，与「不判码率」同义（见 [`SoakMonitor::new`]）。
+pub fn expected_bitrate_bps_from_codec(codec_bitrate_bps: i32) -> u32 {
+    u32::try_from(codec_bitrate_bps)
+        .unwrap_or(0)
+        .saturating_mul(REDUNDANT_COPIES)
+}
 
 /// 判定阈值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +238,29 @@ pub struct SoakSummary {
     pub verdict: &'static str,
 }
 
+/// 期望码率的**来路**（写进报告：这次到底拿什么在判）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitrateExpectationSource {
+    /// 不判码率（`--expected-bps 0`）。
+    Off,
+    /// 命令行钉死的固定值（`--expected-bps N`）：判据不跟随自适应。
+    FixedCli,
+    /// 跟随发送侧编码器的**实际**目标码率（runner 的默认）：
+    /// 起点由本次真实使用的 `CodecConfig::bitrate_bps` 推出，之后随 `CODEC_ADAPTED` 事件走。
+    FollowCodecTarget,
+}
+
+impl BitrateExpectationSource {
+    /// 稳定名字（报告字段用）。
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::FixedCli => "fixed-cli",
+            Self::FollowCodecTarget => "follow-encoder-target",
+        }
+    }
+}
+
 /// 报告元信息（由调用方填：本次跑的参数）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SoakMeta {
@@ -209,8 +268,14 @@ pub struct SoakMeta {
     pub planned_seconds: u64,
     /// 帧长（ms）。
     pub frame_ms: u32,
-    /// 目标码率（bps）；0 = 不判码率。
+    /// **起跑时**的期望码率（bps）；0 = 不判码率。
+    ///
+    /// 跟随来路（[`BitrateExpectationSource::FollowCodecTarget`]）时它只是起点：
+    /// 跑动中的当前值在 [`SoakMonitor::expected_bitrate_bps`]，报告里另有
+    /// `summary.expected_bitrate_bps_final`。
     pub expected_bitrate_bps: u32,
+    /// 期望码率的来路（决定它会不会跟着发送侧自适应目标走）。
+    pub expected_bitrate_source: BitrateExpectationSource,
     /// 开始时刻（Unix 秒）。
     pub started_at_unix: u64,
 }
@@ -218,7 +283,12 @@ pub struct SoakMeta {
 #[derive(Debug)]
 pub struct SoakMonitor {
     thresholds: SoakThresholds,
+    /// **当前**期望码率（判据用的就是它）：可以固定，也可以跟着发送侧自适应走。
     expected_bitrate_bps: u32,
+    /// **起跑时**的期望码率：跟随的起点，也是「判 / 不判」的开关。
+    initial_expected_bitrate_bps: u32,
+    /// 期望值被跟随改写了几次（0 = 这次跑没跟随过，判据一直在拿同一个数判）。
+    expected_bitrate_updates: u64,
     previous: Option<StreamStats>,
     previous_state: Option<&'static str>,
     stall_run: u32,
@@ -231,11 +301,16 @@ pub struct SoakMonitor {
 }
 
 impl SoakMonitor {
-    /// 新建监视器；`expected_bitrate_bps = 0` 表示不判码率。
+    /// 新建监视器；`expected_bitrate_bps = 0` 表示不判码率（构造时点定，跑动中不会被打开）。
+    ///
+    /// 期望值不一定来自命令行：runner 默认把它设成「本次**实际** codec 配置 × 冗余份数」，
+    /// 再用 [`Self::follow_encoder_target`] 跟着自适应走 —— 见模块文档「码率判据：期望值从哪来」。
     pub fn new(thresholds: SoakThresholds, expected_bitrate_bps: u32) -> Self {
         Self {
             thresholds,
             expected_bitrate_bps,
+            initial_expected_bitrate_bps: expected_bitrate_bps,
+            expected_bitrate_updates: 0,
             previous: None,
             previous_state: None,
             stall_run: 0,
@@ -319,6 +394,9 @@ impl SoakMonitor {
         // `bitrate_tolerance_pct_x100 == 0` 就是「不判码率」（弱网档用）。
         // 这条必须显式写出来：下面的 `deviation > tolerance` 在 tolerance 为 0 时
         // 会退化成「任何偏离都算异常」，把「不判」悄悄变成「全判」。
+        //
+        // 期望值本身可以是固定的（`--expected-bps N`），也可以跟随发送侧的目标码率
+        // （`follow_encoder_target`）——但「判 / 不判」只由上面两个条件决定，跟随不会把它打开。
         if self.expected_bitrate_bps > 0
             && stats.bitrate_bps > 0
             && self.thresholds.bitrate_tolerance_pct_x100 > 0
@@ -388,6 +466,71 @@ impl SoakMonitor {
         &self.coarse
     }
 
+    /// **当前**期望码率（bps）；0 = 不判码率。
+    pub const fn expected_bitrate_bps(&self) -> u32 {
+        self.expected_bitrate_bps
+    }
+
+    /// 起跑时的期望码率（bps）。
+    pub const fn initial_expected_bitrate_bps(&self) -> u32 {
+        self.initial_expected_bitrate_bps
+    }
+
+    /// 期望值被跟随改写了几次。
+    pub const fn expected_bitrate_updates(&self) -> u64 {
+        self.expected_bitrate_updates
+    }
+
+    /// 码率判据是否在生效：「期望值 > 0」且「容忍度 > 0」，两个开关都开着才算。
+    pub const fn bitrate_judged(&self) -> bool {
+        self.expected_bitrate_bps > 0 && self.thresholds.bitrate_tolerance_pct_x100 > 0
+    }
+
+    /// 期望码率跟着发送侧编码器的**实际**目标码率走。
+    ///
+    /// 自适应每升 / 降一级（`EngineEvent::CodecAdapted`）就调用一次：
+    /// 期望值 = 新目标 × 冗余份数。返回是否真的改动了期望值（收到同值不算一次跟随）。
+    ///
+    /// **不会把判据从「不判」打开**：起跑时的期望值为 0（`--expected-bps 0`）时一律不跟随 ——
+    /// 判据的开关只在 [`Self::new`] 时由调用方点定，跑动中不偷偷变。
+    pub fn follow_encoder_target(&mut self, encoder_target_bps: i32) -> bool {
+        if self.initial_expected_bitrate_bps == 0 {
+            return false;
+        }
+        let next = expected_bitrate_bps_from_codec(encoder_target_bps);
+        if next == 0 || next == self.expected_bitrate_bps {
+            return false;
+        }
+        self.expected_bitrate_bps = next;
+        self.expected_bitrate_updates = self.expected_bitrate_updates.saturating_add(1);
+        true
+    }
+
+    /// 一行说清码率判据现在是什么状态（摘要用）。
+    pub fn bitrate_expectation_text(&self) -> String {
+        if !self.bitrate_judged() {
+            return if self.expected_bitrate_bps == 0 {
+                "关闭（期望值 0 = 不判码率）".to_owned()
+            } else {
+                "关闭（容忍度 0 = 不判码率，弱网档）".to_owned()
+            };
+        }
+        let tolerance = f64::from(self.thresholds.bitrate_tolerance_pct_x100) / 100.0;
+        if self.expected_bitrate_updates == 0 {
+            format!(
+                "期望 {} bps（固定），容忍 ±{tolerance:.2}%",
+                self.expected_bitrate_bps
+            )
+        } else {
+            format!(
+                "期望 {} bps（起跑 {} bps，跟随编码器目标 {} 次），容忍 ±{tolerance:.2}%",
+                self.expected_bitrate_bps,
+                self.initial_expected_bitrate_bps,
+                self.expected_bitrate_updates
+            )
+        }
+    }
+
     /// 汇总。
     pub fn summary(&self) -> SoakSummary {
         SoakSummary {
@@ -453,6 +596,7 @@ impl SoakMonitor {
             "planned_seconds": meta.planned_seconds,
             "frame_ms": meta.frame_ms,
             "expected_bitrate_bps": meta.expected_bitrate_bps,
+            "expected_bitrate_source": meta.expected_bitrate_source.name(),
             "summary": {
                 "samples": summary.samples,
                 "violations": summary.violations,
@@ -463,6 +607,9 @@ impl SoakMonitor {
                 "last_violation_kind": summary.last_violation.map(|(_, kind)| kind),
                 "violation_limit_per_kind": self.thresholds.max_violations_per_kind,
                 "verdict": summary.verdict,
+                "bitrate_judged": self.bitrate_judged(),
+                "expected_bitrate_bps_final": self.expected_bitrate_bps,
+                "expected_bitrate_updates": self.expected_bitrate_updates,
                 "final_stats": summary.final_stats.map(stats_json),
             },
             "violations": violations,
@@ -479,6 +626,12 @@ impl SoakMonitor {
             out,
             "soak 汇总：采样 {} 次 · 计划 {} s · 帧长 {} ms",
             summary.samples, meta.planned_seconds, meta.frame_ms
+        );
+        let _ = writeln!(
+            out,
+            "码率判据：{}（来路 {}）",
+            self.bitrate_expectation_text(),
+            meta.expected_bitrate_source.name()
         );
         if let Some(stats) = summary.final_stats {
             let _ = writeln!(
@@ -641,6 +794,7 @@ mod tests {
             planned_seconds: 60,
             frame_ms: 20,
             expected_bitrate_bps: 160_000,
+            expected_bitrate_source: BitrateExpectationSource::FixedCli,
             started_at_unix: 1_700_000_000,
         }
     }
@@ -964,5 +1118,129 @@ mod tests {
         let text = monitor.summary_text(&meta());
         assert!(text.contains("按类：underrun×4"), "摘要要按类点名：{text}");
         assert!(text.contains("最后一次异常：t=4s [underrun]"), "{text}");
+    }
+
+    #[test]
+    fn derived_expectation_counts_the_redundant_copies() {
+        // 期望值的默认来路：由**本次实际使用的** codec 配置推出，并且必须算上冗余双发 ——
+        // 引擎每帧主帧 + 冗余帧各发一次，接收侧遥测按收到的字节记账，不算就是整整差一倍。
+        assert_eq!(REDUNDANT_COPIES, 2);
+        assert_eq!(expected_bitrate_bps_from_codec(160_000), 320_000);
+        assert_eq!(expected_bitrate_bps_from_codec(0), 0);
+        assert_eq!(
+            expected_bitrate_bps_from_codec(-1),
+            0,
+            "非正数（不判码率）不该被当成有效码率"
+        );
+    }
+
+    #[test]
+    fn expectation_follows_the_encoder_target_and_still_has_teeth() {
+        // 第 82 轮 900 s 干净回环的实测形态：自适应把编码器目标从 160 kbps 推到上限 320 kbps，
+        // 接收侧于是从 320 kbps 长到 640.8 kbps。期望值跟着目标走，那 878 条越界才不该出现。
+        let mut monitor = SoakMonitor::new(SoakThresholds::default(), 320_000);
+        monitor.observe(sample(0, stats(320_528)));
+        assert!(
+            monitor.violations().is_empty(),
+            "起跑点（目标 160 kbps × 2）不该越界：{:?}",
+            monitor.violations()
+        );
+
+        // 自适应升一级：期望值跟着挪，接收侧也就继续落在容忍带内。
+        assert!(monitor.follow_encoder_target(176_000), "目标变了就该跟随");
+        assert_eq!(monitor.expected_bitrate_bps(), 352_000);
+        monitor.observe(sample(1, stats(352_000)));
+        assert!(monitor.violations().is_empty());
+
+        // 推到上限：640800 bps 落在新期望值的 ±30% 内。
+        assert!(monitor.follow_encoder_target(320_000));
+        assert_eq!(monitor.expected_bitrate_bps(), 640_000);
+        assert_eq!(monitor.expected_bitrate_updates(), 2);
+        assert!(!monitor.follow_encoder_target(320_000), "同值不算一次跟随");
+        for secs in 2..12 {
+            monitor.observe(sample(secs, stats(640_800)));
+        }
+        assert!(
+            monitor.violations().is_empty(),
+            "跟随之后不该再有越界：{:?}",
+            monitor.violations()
+        );
+        assert_eq!(monitor.summary().verdict, "ok");
+
+        // 但判据仍然有牙齿：接收到的码率塌到 100 kbps（只剩一份副本 / 链路退化）必须判。
+        monitor.observe(sample(12, stats(100_000)));
+        assert!(
+            monitor
+                .violations()
+                .iter()
+                .any(|violation| violation.kind == ViolationKind::BitrateOutOfRange),
+            "期望值跟随≠关掉判据：码率塌掉仍要判：{:?}",
+            monitor.violations()
+        );
+    }
+
+    #[test]
+    fn following_never_switches_the_bitrate_criterion_on() {
+        // `--expected-bps 0` = 不判码率。跟随不能把它偷偷打开 —— 那等于藏问题。
+        let mut monitor = SoakMonitor::new(SoakThresholds::default(), 0);
+        assert!(!monitor.follow_encoder_target(320_000));
+        assert_eq!(monitor.expected_bitrate_bps(), 0);
+        assert!(!monitor.bitrate_judged());
+        monitor.observe(sample(0, stats(1)));
+        monitor.observe(sample(1, stats(4_000_000)));
+        assert!(monitor.violations().is_empty());
+        assert_eq!(monitor.summary().verdict, "ok");
+    }
+
+    #[test]
+    fn bitrate_criterion_state_is_readable_in_one_line() {
+        let mut fixed = SoakMonitor::new(SoakThresholds::default(), 320_000);
+        assert!(fixed.bitrate_judged());
+        assert!(
+            fixed
+                .bitrate_expectation_text()
+                .contains("期望 320000 bps（固定）"),
+            "{}",
+            fixed.bitrate_expectation_text()
+        );
+
+        fixed.follow_encoder_target(320_000);
+        let text = fixed.bitrate_expectation_text();
+        assert!(
+            text.contains("期望 640000 bps") && text.contains("跟随编码器目标 1 次"),
+            "{text}"
+        );
+
+        let off = SoakMonitor::new(SoakThresholds::default(), 0);
+        assert!(!off.bitrate_judged());
+        assert!(off.bitrate_expectation_text().contains("期望值 0"));
+
+        let weak = SoakMonitor::new(SoakThresholds::weak_network(60, 20), 320_000);
+        assert!(!weak.bitrate_judged(), "弱网档不判码率");
+        assert!(weak.bitrate_expectation_text().contains("弱网档"));
+    }
+
+    #[test]
+    fn report_names_where_the_expectation_came_from() {
+        let mut monitor = SoakMonitor::new(
+            SoakThresholds::default(),
+            expected_bitrate_bps_from_codec(160_000),
+        );
+        assert!(monitor.follow_encoder_target(320_000));
+        monitor.observe(sample(0, stats(640_800)));
+
+        let mut meta = meta();
+        meta.expected_bitrate_bps = 320_000;
+        meta.expected_bitrate_source = BitrateExpectationSource::FollowCodecTarget;
+        let parsed: Value = serde_json::from_str(&monitor.report_json(&meta)).unwrap();
+        assert_eq!(
+            parsed["expected_bitrate_bps"], 320_000,
+            "顶格字段仍是起跑值（tools/soak-report.ps1 在读它）"
+        );
+        assert_eq!(parsed["expected_bitrate_source"], "follow-encoder-target");
+        assert_eq!(parsed["summary"]["expected_bitrate_bps_final"], 640_000);
+        assert_eq!(parsed["summary"]["expected_bitrate_updates"], 1);
+        assert_eq!(parsed["summary"]["bitrate_judged"], true);
+        assert_eq!(parsed["summary"]["verdict"], "ok");
     }
 }
