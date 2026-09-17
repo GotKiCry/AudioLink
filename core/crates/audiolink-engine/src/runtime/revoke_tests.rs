@@ -190,3 +190,147 @@ async fn 移除一台设备不影响其它对端() {
     receiver.shutdown().await;
     accept.abort();
 }
+
+/// 读侧接口：信任库列表必须反映**白名单的全部条目**，包括从来没有会话的那些。
+///
+/// 「换机后残留的旧记录」就是这样进来的：直接落在 trust.json 里，界面上从来没有过它的卡片。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn 信任库列表反映没有会话的历史记录() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("receiver");
+
+    // 启动**之前**就把两条记录写进信任库：一条「很久没连过的设备」，一条「残留的旧记录」。
+    let stale = NodeId::from_bytes([0x11; NodeId::LEN]);
+    let leftover = NodeId::from_bytes([0x22; NodeId::LEN]);
+    {
+        let mut store = TrustStore::load(data_dir.join("trust.json")).unwrap();
+        store
+            .trust(TrustEntry {
+                id: stale,
+                name: "很久没连过的设备".to_string(),
+                platform: Platform::Windows,
+                paired_at_unix: 1_700_000_000,
+            })
+            .unwrap();
+        store
+            .trust(TrustEntry {
+                id: leftover,
+                name: "换机后残留".to_string(),
+                platform: Platform::Android,
+                paired_at_unix: 1_700_000_100,
+            })
+            .unwrap();
+    }
+
+    let receiver = engine(dir.path(), "receiver").await;
+    let accept = receiver.spawn_accept_loop();
+
+    // 前提：这两条都**没有会话**（否则这条测试就退化成 task-33 已经覆盖的场景）。
+    assert!(
+        receiver.peers().is_empty(),
+        "还没有任何连接，会话表应当是空的"
+    );
+    let listed: Vec<NodeId> = receiver
+        .trusted_peers()
+        .iter()
+        .map(|entry| entry.id)
+        .collect();
+    assert_eq!(listed.len(), 2, "两条历史记录都该在列表里：{listed:?}");
+    assert!(listed.contains(&stale) && listed.contains(&leftover));
+    // 名字也要带出来：界面上「移除哪一台」靠它认。
+    assert!(
+        receiver
+            .trusted_peers()
+            .iter()
+            .any(|entry| entry.id == leftover && entry.name == "换机后残留")
+    );
+
+    // 无会话也能移除，且列表立刻少一条。
+    assert!(receiver.revoke_trust(leftover).await.unwrap());
+    let after: Vec<NodeId> = receiver
+        .trusted_peers()
+        .iter()
+        .map(|entry| entry.id)
+        .collect();
+    assert_eq!(after, vec![stale], "撤回后列表应当只剩下另一条");
+    assert!(!trusted_on_disk(&receiver, leftover));
+    assert!(
+        trusted_on_disk(&receiver, stale),
+        "没被移除的那条不该受影响"
+    );
+
+    receiver.shutdown().await;
+    accept.abort();
+}
+
+/// **task-35 的成功判据**：白名单里有、但**当前没有会话**的设备也能被移除。
+///
+/// 这正是 task-33 做不到的场景：桌面 UI 的对端卡片来自会话表，会话没了就解析不出 id，
+/// 于是「换机后残留的旧信任记录」只能去删 trust.json —— 隐私说明承诺的另一半没兑现。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn 无会话的已配对设备也能被移除() {
+    let dir = tempfile::tempdir().unwrap();
+    let receiver = engine(dir.path(), "receiver").await;
+    let accept = receiver.spawn_accept_loop();
+    let sender = engine(dir.path(), "sender").await;
+    let _ = pair(&sender, &receiver).await;
+    let sender_id = sender.info().id;
+    assert!(
+        trusted_on_disk(&receiver, sender_id),
+        "配对成功后接收端应当信任发起端"
+    );
+
+    // 让发起端**整个退出**：接收侧的会话随之消失，但信任记录还在 —— 这就是「无会话的已配对设备」。
+    sender.shutdown().await;
+    let session_gone = settles(|| !receiver.peers().iter().any(|peer| peer.id == sender_id)).await;
+    assert!(session_gone, "发起端退出后接收侧的会话表应当清空");
+    assert!(
+        receiver
+            .trusted_peers()
+            .iter()
+            .any(|entry| entry.id == sender_id),
+        "会话没了但信任记录还在 —— 读侧必须能列出它（本任务要覆盖的正是这一类设备）"
+    );
+    assert!(
+        trusted_on_disk(&receiver, sender_id),
+        "读侧列表不是内存幻觉：磁盘上也还在"
+    );
+
+    // 走同一个移除入口：没有会话也照样能移除。
+    assert!(
+        receiver.revoke_trust(sender_id).await.unwrap(),
+        "无会话设备也该能移除"
+    );
+    assert!(
+        !trusted_on_disk(&receiver, sender_id),
+        "移除后信任库必须干净"
+    );
+    assert!(
+        !receiver
+            .trusted_peers()
+            .iter()
+            .any(|entry| entry.id == sender_id),
+        "读侧列表也不该再有它（撤回后列表要立刻更新）"
+    );
+
+    // 「移除生效」的可判定证据：同一身份再连回来必须**重新配对**。
+    let sender_again = engine(dir.path(), "sender").await;
+    assert_eq!(
+        sender_again.info().id,
+        sender_id,
+        "同一个 data_dir 应当是同一身份（否则后半段断言就没意义了）"
+    );
+    let again = sender_again
+        .connect(receiver.local_addr())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        again.code(),
+        ErrorCode::NotPaired,
+        "被移除的设备再连接必须重新配对"
+    );
+
+    sender_again.shutdown().await;
+    receiver.shutdown().await;
+    accept.abort();
+}

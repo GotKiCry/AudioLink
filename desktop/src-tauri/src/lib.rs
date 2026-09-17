@@ -36,6 +36,7 @@ use update::UpdateCheckView;
 use view::{
     AlignmentView, CaptureDeviceView, GroupView, LocalStatus, NoticesView, PeerView,
     RevokeTrustResult, StartSendResult, SubmitPinResult, TelemetryRow, TelemetryView,
+    TrustedPeerView,
 };
 
 #[tauri::command]
@@ -69,6 +70,17 @@ async fn local_status(bridge: State<'_, EngineBridge>) -> Result<LocalStatus, Co
 #[tauri::command]
 async fn list_peers(bridge: State<'_, EngineBridge>) -> Result<Vec<PeerView>, CommandError> {
     bridge.list_peers().await
+}
+
+/// 已配对设备列表（FR-18 的读侧）：**信任库**快照，含当前没有会话的那些。
+///
+/// 与 list_peers 的分工：那个是会话表（界面上的对端卡片），这个是白名单 ——
+/// 换机后残留的旧信任记录只在这一侧出现，而它们正是「取消配对」要覆盖的对象。
+#[tauri::command]
+async fn list_trusted_peers(
+    bridge: State<'_, EngineBridge>,
+) -> Result<Vec<TrustedPeerView>, CommandError> {
+    bridge.list_trusted_peers().await
 }
 
 /// 手工 IP 连接（契约 §6 `connect`；需求 FR-17：发现被 AP 隔离时的兜底入口）。
@@ -311,6 +323,7 @@ pub fn run() {
             version,
             local_status,
             list_peers,
+            list_trusted_peers,
             list_capture_devices,
             active_capture_device,
             connect,

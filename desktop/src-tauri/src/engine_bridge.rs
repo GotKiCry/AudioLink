@@ -59,8 +59,8 @@ use crate::settings::AutoConnectPolicy;
 use crate::view::{
     AlignmentView, CaptureDeviceView, GroupMemberView, GroupView, LocalStatus, NoticesView,
     PairRequiredPayload, PeerCapabilitiesView, PeerState, PeerView, RevokeTrustResult,
-    StartSendResult, SubmitPinResult, TelemetryRow, TelemetryView, alignment_view, notices_view,
-    render_telemetry_csv,
+    StartSendResult, SubmitPinResult, TelemetryRow, TelemetryView, TrustedPeerView, alignment_view,
+    notices_view, render_telemetry_csv,
 };
 
 // ---------------------------------------------------------------------------
@@ -455,6 +455,24 @@ impl EngineBridge {
             .map_err(|error| engine_error("set_peer_gain", &error))
     }
 
+    /// 全部**已配对设备**（`list_trusted_peers`）：信任库快照，含**当前没有会话**的那些。
+    ///
+    /// 与 [EngineBridge::list_peers] 的分工：那个是会话表（有卡片的对端），这个是白名单。
+    /// 界面的「已配对设备」列表用它 —— 换机后残留的旧记录只在这一侧出现。
+    pub async fn list_trusted_peers(&self) -> Result<Vec<TrustedPeerView>, CommandError> {
+        let engine = self.engine().await?;
+        Ok(engine
+            .trusted_peers()
+            .into_iter()
+            .map(|entry| TrustedPeerView {
+                id_short: entry.id.short(),
+                name: entry.name,
+                platform: entry.platform.as_str().to_string(),
+                paired_at_unix: entry.paired_at_unix,
+            })
+            .collect())
+    }
+
     /// 移除设备（FR-18）：断开该对端会话 + 撤销信任 + 清掉指向它的「上次设备」记录。
     ///
     /// 三件事必须一起做，理由各不相同：
@@ -464,7 +482,8 @@ impl EngineBridge {
     /// * 地址必须**在撤之前**取 —— 撤完之后那条会话就不在 `peers()` 里了。
     pub async fn revoke_trust(&self, id_short: &str) -> Result<RevokeTrustResult, CommandError> {
         let engine = self.engine().await?;
-        let peer = resolve_peer(&engine, id_short)?;
+        // 双源解析：无会话的已配对设备只能从信任库解析出来（见 `resolve_revocable`）。
+        let peer = resolve_revocable(&engine, id_short)?;
         let addr = engine
             .peers()
             .iter()
@@ -1263,6 +1282,53 @@ fn should_forget_last_peer(last_peer: Option<&str>, revoked_addr: Option<&str>) 
     matches!((last_peer, revoked_addr), (Some(last), Some(addr)) if last == addr)
 }
 
+/// 解析「要移除的那台设备」：**先查会话表，再查信任库**。
+///
+/// 为什么不复用 [resolve_peer]：它只认会话表，而移除要覆盖的场景恰恰是「白名单里有、
+/// 当前没有会话」的那些设备（换机后残留的旧记录、很久没连过的设备）——
+/// 它们在会话表里**根本不存在**，用会话表解析必然报「找不到这个设备」。
+fn resolve_revocable(engine: &Engine, id_short: &str) -> Result<NodeId, CommandError> {
+    if id_short.trim().is_empty() {
+        return Err(CommandError::bad_request(
+            "缺少设备标识，请先刷新列表",
+            "resolve_revocable: id_short 为空",
+        ));
+    }
+    let sessions: Vec<NodeId> = engine.peers().iter().map(|peer| peer.id).collect();
+    let trusted: Vec<NodeId> = engine
+        .trusted_peers()
+        .iter()
+        .map(|entry| entry.id)
+        .collect();
+    find_revocable(&sessions, &trusted, id_short).ok_or_else(|| {
+        CommandError::bad_request(
+            "找不到这个设备：它既没有连接，也不在已配对列表里",
+            format!("resolve_revocable: id_short={}", id_short.trim()),
+        )
+    })
+}
+
+/// 双源查找的核心（抽出来是为了能钉住它）：**先会话表、再信任库**。
+///
+/// 只认短码（与全会话表命令同一口径，界面上展示的也是它），返回完整指纹。
+/// 顺序无关正确性（同一台设备两侧的指纹必然相同），但会话表优先能让「正连着的设备」
+/// 少走一次信任库查找。
+fn find_revocable(
+    session_ids: &[NodeId],
+    trusted_ids: &[NodeId],
+    id_short: &str,
+) -> Option<NodeId> {
+    let trimmed = id_short.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    session_ids
+        .iter()
+        .chain(trusted_ids.iter())
+        .find(|id| id.short_matches(trimmed))
+        .copied()
+}
+
 fn resolve_peer(engine: &Engine, id_short: &str) -> Result<NodeId, CommandError> {
     let trimmed = id_short.trim();
     if trimmed.is_empty() {
@@ -1401,6 +1467,34 @@ fn unix_millis() -> u128 {
 mod tests {
     use super::*;
     use audiolink_engine::GroupMember;
+
+    /// 移除入口的双源解析：**先会话表、再信任库**。
+    ///
+    /// 改坏：只查会话表（task-33 的写法）→ 「白名单里有、但没有会话」的设备永远解析不出 id，
+    /// 「你可以取消配对」对它们不成立。这条用例就是那个缺口的守卫。
+    #[test]
+    fn revocable_ids_come_from_sessions_then_from_the_trust_store() {
+        let session = NodeId::from_bytes([0x01; NodeId::LEN]);
+        let trusted_only = NodeId::from_bytes([0x02; NodeId::LEN]);
+        let unknown = NodeId::from_bytes([0x03; NodeId::LEN]);
+
+        assert_eq!(
+            find_revocable(&[session], &[trusted_only], &session.short()),
+            Some(session)
+        );
+        // 没有会话、只在信任库里的那台 —— 本任务存在的理由。
+        assert_eq!(
+            find_revocable(&[session], &[trusted_only], &trusted_only.short()),
+            Some(trusted_only)
+        );
+        // 两侧都没有：交给调用方报「找不到这个设备」。
+        assert_eq!(
+            find_revocable(&[session], &[trusted_only], &unknown.short()),
+            None
+        );
+        // 空串不猜（调用方有专门的「缺少设备标识」文案）。
+        assert_eq!(find_revocable(&[session], &[trusted_only], "  "), None);
+    }
 
     /// 移除设备时「要不要清上次设备记录」这条判断：只有指向被移除的那一台才清。
     ///

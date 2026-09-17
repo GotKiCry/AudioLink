@@ -254,6 +254,25 @@ export interface AutoConnectPolicy {
  * 尤其「本来就不在信任库里」与「顺手清掉了上次设备记录」是两件不同的事，
  * 返回空值等于让用户无法判断是否生效。
  */
+/**
+ * 一条**已配对设备**（`list_trusted_peers` 的元素）。
+ *
+ * 与 `PeerView` 的区别在数据来源：`PeerView` 来自会话表（界面上的对端卡片），
+ * 这份来自**信任库**（白名单）—— 换机后残留的旧记录、很久没连过的设备只在这一侧出现，
+ * 而它们正是「取消配对」要覆盖的对象。
+ * `idShort` 与 `PeerView.idShort` 同口径，所以两处共用同一个移除入口。
+ */
+export interface TrustedPeerView {
+  /** 指纹短码（与 `PeerView.idShort` 同一口径）。 */
+  idShort: string;
+  /** 配对时记下的展示名（对端自报，仅展示）。 */
+  name: string;
+  /** `windows` / `android` / `unknown`。 */
+  platform: string;
+  /** 首次配对成功的 Unix 秒。 */
+  pairedAtUnix: number;
+}
+
 export interface RevokeTrustResult {
   /** 是否真的从信任库里删掉了（`false` = 本来就不在，幂等）。 */
   removed: boolean;

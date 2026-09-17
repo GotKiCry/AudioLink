@@ -98,6 +98,27 @@ pub struct PeerView {
     pub reconnects: u64,
 }
 
+/// 一条**已配对设备**（`list_trusted_peers` 的元素）。
+///
+/// 与 [PeerView] 的区别在数据来源：`PeerView` 来自**会话表**（当前连着或在握手的对端），
+/// 这份来自**信任库**（白名单）—— 换机后残留的旧记录、很久没连过的设备只在这里出现，
+/// 而它们正是「取消配对」要覆盖的对象。
+///
+/// `id_short` 与 `PeerView.idShort` 是**同一口径**（`NodeId::short()`），所以两处可以共用
+/// 同一个移除入口（界面不必知道自己拿的 id 来自哪一侧）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustedPeerView {
+    /// 指纹短码（与 `PeerView.idShort` 同一口径）。
+    pub id_short: String,
+    /// 配对时记下的展示名（对端自报，仅展示）。
+    pub name: String,
+    /// `windows` / `android` / `unknown`。
+    pub platform: String,
+    /// 首次配对成功的 Unix 秒（只用于展示「何时配对」）。
+    pub paired_at_unix: u64,
+}
+
 /// 移除设备（`revoke_trust`）的结果。
 ///
 /// 为什么不返回 `null`：这是一次**不可逆**的隐私操作，界面必须能如实说出「做了什么」——
@@ -622,6 +643,22 @@ mod notices_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+
+    /// 已配对设备列表是**前端契约**：字段名错了界面就永远读到空值（静默空列表）。
+    #[test]
+    fn trusted_peer_json_shape_matches_contract() {
+        let json = serde_json::to_string(&TrustedPeerView {
+            id_short: "3f9a1c0b".to_string(),
+            name: "旧手机".to_string(),
+            platform: "android".to_string(),
+            paired_at_unix: 1_700_000_000,
+        })
+        .expect("序列化已配对设备");
+        assert_eq!(
+            json,
+            r#"{"idShort":"3f9a1c0b","name":"旧手机","platform":"android","pairedAtUnix":1700000000}"#
+        );
+    }
 
     /// 移除设备的结果是**前端契约**：字段名错了界面就永远读不到真实值（静默谎报）。
     #[test]

@@ -1472,6 +1472,24 @@ impl Engine {
         .await
     }
 
+    /// 全部**已配对设备**（信任库快照）。
+    ///
+    /// # 为什么需要它与 `peers()` 并存
+    ///
+    /// `peers()` 读的是**会话表**（当前连着或在握手的对端）；这里是**白名单**。两者的差集正是
+    /// 最典型的清理场景 —— 换机后残留的旧信任记录、很久没连过的设备：它们只在这一侧，
+    /// 而那正是「取消配对」承诺要覆盖的对象。
+    ///
+    /// 返回的 `id` 是**完整指纹**，可以直接喂给 [Engine::revoke_trust]；其余字段仅供展示
+    /// （信任判定只看指纹，见 `audiolink-identity` 的模块文档）。
+    pub fn trusted_peers(&self) -> Vec<TrustEntry> {
+        self.inner
+            .trust
+            .lock()
+            .map(|trust| trust.entries().to_vec())
+            .unwrap_or_default()
+    }
+
     /// 移除设备（FR-18）：**先断会话、再撤信任** —— 顺序不能反。
     ///
     /// # 为什么是这个顺序（两条都不是口味问题）

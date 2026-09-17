@@ -20,6 +20,7 @@ import type {
   PeerView,
   RevokeTrustResult,
   StartSendResult,
+  TrustedPeerView,
   SubmitPinResult,
   TelemetryRow,
   TelemetryView,
@@ -41,6 +42,14 @@ export const api = {
   localStatus: (): Promise<LocalStatus> => invoke<LocalStatus>("local_status"),
   /** `list_peers` —— 当前对端列表（首屏水合用；之后靠 `audiolink://peer` 事件）。 */
   listPeers: (): Promise<PeerView[]> => invoke<PeerView[]>("list_peers"),
+  /**
+   * `list_trusted_peers` —— **已配对设备**（信任库快照），含当前没有会话的那些。
+   *
+   * 与 `listPeers` 的分工：那个是会话表（有卡片的对端），这个覆盖「白名单里有、但没卡片」的
+   * 设备 —— 换机后残留的旧记录只能从这条读侧接口才看得见、才移得掉。
+   */
+  listTrustedPeers: (): Promise<TrustedPeerView[]> =>
+    invoke<TrustedPeerView[]>("list_trusted_peers"),
   listCaptureDevices: (): Promise<CaptureDeviceView[]> => invoke("list_capture_devices"),
   activeCaptureDevice: (): Promise<CaptureDeviceView | null> => invoke("active_capture_device"),
   /** `connect` —— 手工 IP 连接。 */
