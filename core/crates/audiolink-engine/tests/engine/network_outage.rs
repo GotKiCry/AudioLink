@@ -279,34 +279,21 @@ async fn count_sound_until(
     }
 }
 
-/// 等**回程**（服务端 → 客户端）第一个通过的包，返回它相对调用时刻的延迟。
+/// 等某个中继计数器越过 before，返回它相对**调用时刻**的延迟。
 ///
-/// 为什么盯回程而不是上行：拔网期间发送侧的保活包照样往闸门里灌（闸门只是把它们丢掉），
-/// 所以上行计数一插回就会涨、反映不出「链路是否真的通了」；而接收端收不到包就不会回包，
-/// 回程计数**必须等包真的过去并换来对端响应**才会涨。
-async fn wait_down_packet(relay: &OutageRelay, before: u64, budget: Duration) -> Option<u128> {
+/// 两个设计点都是踩出来的：
+///
+/// 1. 参数收 `Arc<AtomicU64>` 而不是 `&OutageRelay` —— 这个等待要能丢进 `tokio::spawn` 与主流程
+///    **并发**跑。它只是解读用的读数，一旦串行就会把持续性判据那个 2 s 窗口等过期（本轮踩过一次：
+///    插回后 2 s 内的非静音回调数被测成 0，那是窗口过期，不是链路问题）。
+/// 2. 用来盯**回程**计数时它才有「链路真的通了」的含义：拔网期间发送侧的保活包照样往闸门里灌
+///    （闸门只是丢掉它们），所以上行计数一插回就涨、反映不出路径是否可用；而接收端收不到包就不会
+///    回包，回程计数**必须等包真的过去并换来对端响应**才会涨。
+async fn wait_counter(counter: Arc<AtomicU64>, before: u64, budget: Duration) -> Option<u128> {
     let start = Instant::now();
     let deadline = start + budget;
     loop {
-        if relay.fwd_down() > before {
-            return Some(start.elapsed().as_millis());
-        }
-        if Instant::now() >= deadline {
-            return None;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-}
-
-/// 等一个计数器越过 before，返回延迟。用来量「某类包多久重新开始通过」。
-async fn wait_count<G>(read: G, before: u64, budget: Duration) -> Option<u128>
-where
-    G: Fn() -> u64,
-{
-    let start = Instant::now();
-    let deadline = start + budget;
-    loop {
-        if read() > before {
+        if counter.load(Ordering::Relaxed) > before {
             return Some(start.elapsed().as_millis());
         }
         if Instant::now() >= deadline {
@@ -459,21 +446,38 @@ async fn run_outage(
 
     let restore_at = Instant::now();
     relay.restore();
-    let link_up_ms = wait_down_packet(relay, down_before_restore, Duration::from_secs(15)).await;
-    let audio_up_ms = wait_count(
-        || relay.fwd_big_up(),
+    // 两个诊断读数**并发**等（见 wait_counter 的文档）：它们是解读用的，绝不能拖住判据。
+    let down_probe = tokio::spawn(wait_counter(
+        Arc::clone(&relay.fwd_down),
+        down_before_restore,
+        Duration::from_secs(15),
+    ));
+    let big_probe = tokio::spawn(wait_counter(
+        Arc::clone(&relay.fwd_big_up),
         big_before_restore,
         Duration::from_secs(15),
-    )
-    .await;
+    ));
 
     // ⑤ 恢复：必须由**晚于插回时刻**的非静音回调证明。
     //
-    // 观测窗 15 s（2026-09-17 从 8 s 放宽）：10 s 拔网的恢复延迟由 QUIC 的 PTO 退避决定，本身就在
-    // 4~5 s 量级；而本机跑 8 h soak 时 CPU 与回环都被占着，实测会出现 > 8 s 的情况 —— 那是环境竞争，
-    // 不是「不恢复」。窗口太短会把环境噪声记成产品缺陷（本轮 20 轮采样里就踩到过一次）。
+    // 观测窗 15 s（2026-09-17 从 8 s 放宽）：10 s 拔网的恢复延迟由**数据面**的恢复节奏决定
+    // （链路 0.3 s 就通了，但上行会静默数秒，见 docs/48 §2.4），量级在 4~5 s；而本机跑 8 h soak 时
+    // CPU 与回环都被占着，实测会出现 > 8 s 的情况 —— 那是环境竞争，不是「不恢复」。
+    // 窗口太短会把环境噪声记成产品缺陷（本轮 20 轮采样里就踩到过一次）。
     let recovered_at = next_sound_after(writes, restore_at, Duration::from_secs(15)).await;
     let recovery_ms = recovered_at.map(|stamp| stamp.duration_since(restore_at).as_millis());
+
+    // ⑥ 持续性：从**恢复那一刻**起再观察 2 s，仍应持续有音频，而不是吐完积压就哑。
+    //（第一版这里从 restore_at 起算，而恢复本身可能晚于它 —— 于是窗口早就过期，
+    // 测出来恒为 0；那是个测量 bug，不是链路 bug。）
+    let sustained_writes = match recovered_at {
+        Some(stamp) => count_sound_until(writes, stamp, stamp + Duration::from_secs(2)).await,
+        None => 0,
+    };
+
+    // 诊断读数统一在这里收（判据已经取完，读数的等待再久也不影响结论）。
+    let link_up_ms = down_probe.await.unwrap_or(None);
+    let audio_up_ms = big_probe.await.unwrap_or(None);
     let up_rates = sampler.await.unwrap_or_default();
 
     println!(
@@ -496,14 +500,6 @@ async fn run_outage(
         }
     );
     println!("[outage-diag] 插回后每 500 ms 的上行包数：{up_rates:?}");
-
-    // ⑥ 持续性：从**恢复那一刻**起再观察 2 s，仍应持续有音频，而不是吐完积压就哑。
-    //（第一版这里从 restore_at 起算，而恢复本身可能晚于它 —— 于是窗口早就过期，
-    // 测出来恒为 0；那是个测量 bug，不是链路 bug。）
-    let sustained_writes = match recovered_at {
-        Some(stamp) => count_sound_until(writes, stamp, stamp + Duration::from_secs(2)).await,
-        None => 0,
-    };
 
     let sender_state = sender
         .peers()
