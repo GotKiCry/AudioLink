@@ -19,6 +19,7 @@ mod clock_sync;
 mod dynamic_join;
 mod engine_shutdown;
 mod gain_control;
+mod group_capability_fallback;
 mod group_epoch;
 mod group_join;
 mod group_management;

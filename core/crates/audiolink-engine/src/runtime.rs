@@ -53,8 +53,8 @@ use audiolink_net::{
 };
 use audiolink_proto::{AudioDatagram, AudioDatagramHeader, NackList};
 use audiolink_types::{
-    AudioLinkError, Caps, ClockQuality, DATAGRAM_MAX_LEN, DEFAULT_QUIC_PORT, ErrorCode, Flags,
-    NodeId, NodeInfo, Platform, Ptype, StreamStats,
+    AudioLinkError, Capabilities, Caps, ClockQuality, DATAGRAM_MAX_LEN, DEFAULT_QUIC_PORT,
+    ErrorCode, Flags, NodeId, NodeInfo, Platform, Ptype, StreamStats,
 };
 use crossbeam_channel::{Receiver, Sender};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -881,6 +881,13 @@ impl Engine {
                 "a group needs at least one member",
             ));
         }
+        // §13 可选能力的内核兜底：向**不支持** §7 排播的成员建组，等于静默建一个不会同步的组
+        // （对端要么忽略这条通知，要么按自己的时间轴走）。判定必须放在写账本与发帧**之前** ——
+        // 拒绝要零副作用。
+        let missing = members_without_group_epoch(&self.inner, &unique);
+        if !missing.is_empty() {
+            return Err(group_epoch_required_error(&missing));
+        }
         let group_id = (random_u64() as u32).max(1);
         let epoch_id = random_u64().max(1);
         let epoch_local_us = now_monotonic_us();
@@ -926,6 +933,11 @@ impl Engine {
     ///
     /// 新成员除了收到 JOIN，还会补一条 GROUP_EPOCH —— 它需要组基准才能排播。
     pub async fn join_group(&self, member: NodeId, group_id: u32) -> Result<(), AudioLinkError> {
+        // 同一个兜底的**第二个入口**：动态加入也要给新成员补发 `GROUP_EPOCH`，所以同样要求它支持
+        // §7 排播。位置在最前面 —— 拒绝必须发生在账本被改动（下面的 `members.insert`）之前。
+        if agreed_caps_of(&self.inner, member) & Capabilities::GROUP_EPOCH == 0 {
+            return Err(group_epoch_required_error(&[member]));
+        }
         // **整份组基准都要复用**，包括 `epoch_local_us`：它是「样本序号 0 在发送端时钟上的时刻」，
         // 新成员拿它 + 自己的样本序号才换算得出正确的目标时刻。
         //
@@ -3845,6 +3857,59 @@ impl Drop for ReconnectFlightGuard {
     fn drop(&mut self) {
         self.0.reconnect_in_flight.store(false, Ordering::SeqCst);
     }
+}
+
+/// 对端协商结果里的**交集**位图；`0` = 还没有协商结果（或表里没有这条会话）。
+fn agreed_caps_of(inner: &Arc<Inner>, peer: NodeId) -> u32 {
+    current_session(inner, peer)
+        .and_then(|session| session.capabilities.lock().ok().map(|caps| *caps))
+        .flatten()
+        .map(|caps| caps.agreed)
+        .unwrap_or(0)
+}
+
+/// 一组对端里**不支持 §7 同步组排播**（`GROUP_EPOCH`）的那些。
+///
+/// 判据取**协商结果**（`PeerCapabilities::agreed`）而不是本端声明：交集里没有这一位，
+/// 就说明这个组员不会按 epoch 排播 —— 「组内 ±10 ms」的前提根本不成立。
+///
+/// 协商结果还没到位（会话刚建、`HELLO_ACK` 尚未处理完）时按**不支持**处理：同步组的前提是
+/// 「**已知**支持」，未知不能当成支持。
+fn members_without_group_epoch(inner: &Arc<Inner>, members: &BTreeSet<NodeId>) -> Vec<NodeId> {
+    members
+        .iter()
+        .filter(|member| agreed_caps_of(inner, **member) & Capabilities::GROUP_EPOCH == 0)
+        .copied()
+        .collect()
+}
+
+/// §13 可选能力缺失时的**功能调用**拒绝（第 103 轮审计清单 B 的内核兜底）。
+///
+/// # 为什么这里报错，而不是继续降级
+///
+/// `GROUP_EPOCH` 是「组内排播」的**硬前提** —— 界面侧早已据此把建组复选框置灰
+/// （`desktop/src/components/GroupPanel.tsx` 的 `agreedKeys.includes("group_epoch")`）。
+/// 缺了它建出来的组**不会同步**，放行等于让调用方拿着一个成功回执去期待一个不会发生的效果。
+///
+/// 这不改变 §13 的连接语义：那一处判定（`handshake.rs` 的 `missing_required`）管的是**连接**，
+/// 缺可选位时连接照旧建立；这里管的是**一次功能调用**，前提不满足就该拒绝。
+/// 顺带：这也让「非 UI 调用方」（FFI / CLI / 测试）不必自己去读 `peers()` 的能力位才发现踩坑。
+///
+/// 载荷必须**能让人行动**：点名是哪个成员（`NodeId.short()`）缺哪一位。
+fn group_epoch_required_error(missing: &[NodeId]) -> AudioLinkError {
+    let names = missing
+        .iter()
+        .map(|member| member.short())
+        .collect::<Vec<_>>()
+        .join("、");
+    AudioLinkError::owned(
+        ErrorCode::CapUnsupported,
+        format!(
+            "同步组排播（§7 {}）需要每个成员都支持：{} 的协商结果里没有这一位",
+            Capabilities::describe(Capabilities::GROUP_EPOCH),
+            names
+        ),
+    )
 }
 
 /// 取对端在**当前会话表里**的那条会话。
