@@ -307,6 +307,11 @@ pub struct PeerStatus {
     pub stats: StreamStats,
     /// §13 能力协商结果；`None` = 还没走完能力交换。
     pub capabilities: Option<PeerCapabilities>,
+    /// 这条会话成功重连过几次（审计 §2.6-④ 的回执读数）。
+    ///
+    /// 为什么必须出现在**快照**里：`ReconnectOk` 只活在会话状态机里，而 UI 能读到的只有
+    /// `Engine::peers()` 拿到的这份快照。计数不在这里暴露，"重连成功"在界面上就没有回执。
+    pub reconnects: u64,
 }
 
 /// §13 能力协商结果（一个对端一份）。
@@ -594,6 +599,11 @@ impl PeerSession {
                 .unwrap_or(SessionState::Failed),
             trusted: self.trusted.load(Ordering::Relaxed),
             capabilities: self.capabilities.lock().map(|caps| *caps).unwrap_or(None),
+            reconnects: self
+                .machine
+                .lock()
+                .map(|machine| machine.reconnects())
+                .unwrap_or(0),
             stats: self
                 .telemetry
                 .lock()
@@ -619,6 +629,18 @@ impl PeerSession {
         if let Ok(mut machine) = self.machine.lock() {
             let _ = machine.apply(event);
         }
+    }
+
+    /// 状态机当前状态。
+    ///
+    /// 与 [PeerSession::set_state] 写的那个 `state` 快照字段**不是一回事**：这个由**被接受的
+    /// 事件**驱动（计数也挂在迁移成功之后），快照字段只是给 UI 读的最近值。重连回执要走状态机，
+    /// 所以得先看清它现在站在哪一格。
+    fn machine_state(&self) -> SessionState {
+        self.machine
+            .lock()
+            .map(|machine| machine.state())
+            .unwrap_or(SessionState::Failed)
     }
 }
 
@@ -1544,6 +1566,21 @@ async fn run_session(
     let mut ready = ready;
     let codec = inner.config.codec;
     let frame_ms = u64::from(codec.frame_ms.max(1));
+
+    // **状态机的起点**：会话任务开始跑，就代表「连接已发起（本端是发起方）」或
+    // 「入站连接已被接受（本端是应答方）」。
+    //
+    // 缺了这一步，`SessionMachine` 会永远停在 `Idle`：`mark_streaming` 里的 `HandshakeOk`
+    // 从 `Idle` 是**非法迁移**（迁移表只认 `Handshaking → Streaming`），于是 `handshakes` /
+    // `reconnects` / `degradations` 三个计数**全是死的**，UI 看到的「状态」只是
+    // `set_state` 写的快照字段，与状态机彻底脱钩。
+    //
+    // 审计 §2.6-④ 的「重连没有回执」有一半就来自这里：`ReconnectOk` 只在 `Reconnecting` 上
+    // 合法，而这条会话的状态机从来没能离开 `Idle`。
+    session.apply(match &role {
+        Role::Initiator => SessionEvent::ConnectRequested,
+        Role::Responder => SessionEvent::AcceptedInbound,
+    });
 
     let peer_cert = match connection.peer_cert_der() {
         Ok(cert) => cert,
@@ -3810,6 +3847,18 @@ impl Drop for ReconnectFlightGuard {
     }
 }
 
+/// 取对端在**当前会话表里**的那条会话。
+///
+/// 为什么不能用手边的 `Arc<PeerSession>`：重连会把表项**换成人** —— 旧对象已摘表并收到
+/// `Shutdown`，而 UI 读的永远是表里这一条。回执落在旧对象上等于没有回执（审计 §2.6-④）。
+fn current_session(inner: &Arc<Inner>, peer: NodeId) -> Option<Arc<PeerSession>> {
+    inner
+        .peers
+        .lock()
+        .ok()
+        .and_then(|peers| peers.get(&peer).cloned())
+}
+
 /// 收掉一次失败尝试留下的会话：摘表 + 明确 `Shutdown`（不留孤儿）。
 async fn discard_stale_session(engine: &Arc<Engine>, peer: NodeId) {
     let stale = engine
@@ -3833,13 +3882,15 @@ async fn discard_stale_session(engine: &Arc<Engine>, peer: NodeId) {
 ///    重连**不绕过信任库**，已配对过的对端凭指纹免 PIN，陌生人一样要 PIN。
 /// 3. **预算用尽要明确落 `ReconnectFailed`**：绝不留一条「看起来在重连」的僵尸状态。
 /// 4. **接流失败不能吞**：上一版用 `let _ =` 吞掉，队友指出那会让「重连成功但没声音」变成静默故障。
+/// 5. **回执必须落在表里当前那条会话上**：重连会把表项**换成人**（旧会话摘表 + Shutdown、
+///    新会话插表），而 UI 读的永远是 `peers()` 表里的那一条 —— 把 `ReconnectOk` 打在旧对象上
+///    等于没有回执（审计 §2.6-④）。
 async fn reconnect_once(engine: Arc<Engine>, request: ReconnectRequest) {
     // 单飞门由**投递请求的那条会话**持有：本函数无论从哪条路径退出（成功、预算耗尽、
     // 引擎关闭、早退），门都要放掉 —— 否则这条会话再也发不出重连请求。
     let _flight = ReconnectFlightGuard(Arc::clone(&request.session));
     let deadline = Instant::now() + DEFAULT_RECONNECT_BUDGET;
     let mut backoff = RECONNECT_BACKOFF_MIN;
-    let mut old_session: Option<Arc<PeerSession>> = None;
     let mut last_error: Option<AudioLinkError> = None;
 
     while Instant::now() < deadline {
@@ -3848,7 +3899,7 @@ async fn reconnect_once(engine: Arc<Engine>, request: ReconnectRequest) {
         }
 
         // 每轮都重摘一次：上一轮尝试可能已经把新会话插进了表里。
-        if let Some(session) = engine
+        if let Some(stale) = engine
             .inner
             .peers
             .lock()
@@ -3858,8 +3909,9 @@ async fn reconnect_once(engine: Arc<Engine>, request: ReconnectRequest) {
             // 摘表**之前/同时**必须让它收工：只摘表不发 Shutdown 会留下活着的僵尸会话 ——
             // 它攥着旧连接与采集枢纽一直跑到 QUIC idle_timeout（30 s），期间还会二次投递
             // 重连请求（审计 §2.6-①）。显式收工让「采集枢纽交接」变成确定行为。
-            let _ = session.commands.send(SessionCommand::Shutdown).await;
-            old_session = Some(session);
+            //
+            // 除此之外**不要**再用这条旧会话做任何事：它已经不在表里，任何回执都到不了 UI。
+            let _ = stale.commands.send(SessionCommand::Shutdown).await;
         }
 
         match tokio::time::timeout(
@@ -3869,10 +3921,27 @@ async fn reconnect_once(engine: Arc<Engine>, request: ReconnectRequest) {
         .await
         {
             Ok(Ok(peer)) if peer == request.peer => {
-                // 迁移表（session.rs）：Reconnecting --ReconnectOk--> Streaming。
-                if let Some(session) = old_session.as_ref() {
-                    session.apply(SessionEvent::ReconnectOk);
-                    session.set_state(SessionState::Streaming);
+                // 回执落在**表里当前那条会话**上（审计 §2.6-④）。
+                //
+                // 为什么不是手边的旧对象：`connect_inner` 建的是全新对象并插表，旧对象已在上面
+                // 摘表 + 收到 Shutdown —— 把 `ReconnectOk` 打在它身上，`reconnects()` 记在了谁
+                // 也看不到的地方，UI 通过 `peers()` 永远读到 0。
+                if let Some(current) = current_session(&engine.inner, request.peer) {
+                    // 两步迁移是刻意的：新会话在握手完成时已是 Streaming（`mark_streaming`），
+                    // 而迁移表只承认 `(Reconnecting, ReconnectOk)` —— 先把它带回 Reconnecting
+                    // （它确实刚经历一次链路丢失），`ReconnectOk` 才是合法迁移、计数才真的累加。
+                    // 只在它确实处于 Streaming 时做这次往返：状态机若已被别的事件驱动，
+                    // 就交给下面的 `set_state` 兜底，绝不硬把计数塞进去。
+                    if current.machine_state() == SessionState::Streaming {
+                        current.apply(SessionEvent::LinkLost);
+                        current.apply(SessionEvent::ReconnectOk);
+                    }
+                    current.set_state(SessionState::Streaming);
+                    // 拉取式读数之外，也让订阅方（UI 事件流）立刻看到这一次变化。
+                    let _ = engine
+                        .inner
+                        .events
+                        .send(EngineEvent::PeerUpdated(Box::new(current.snapshot())));
                 }
                 if let Err(error) = engine.start_send(request.peer).await {
                     // 「重连成功但流接不回来」是这一环最容易静默失败的地方：事件不订阅、
@@ -3912,9 +3981,10 @@ async fn reconnect_once(engine: Arc<Engine>, request: ReconnectRequest) {
         backoff = (backoff * 2).min(RECONNECT_BACKOFF_MAX);
     }
 
-    // 终局必须落在**看得见的那条会话**上：表里若已没有它（本轮摘表拿到了别的新会话），
-    // 至少要落在投递请求的那条会话上，不留「看起来在重连」的僵尸状态。
-    let session = old_session.as_ref().unwrap_or(&request.session);
+    // 终局同样要落在**看得见的那条会话**上：表里此刻通常没有它（每轮都摘表），于是退回投递
+    // 请求的那条会话 —— 无论如何不留一条「看起来还在重连」的僵尸状态。
+    let session = current_session(&engine.inner, request.peer)
+        .unwrap_or_else(|| Arc::clone(&request.session));
     session.apply(SessionEvent::ReconnectFailed);
     session.set_state(SessionState::Failed);
     let detail = last_error

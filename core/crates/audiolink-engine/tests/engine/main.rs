@@ -37,4 +37,5 @@ mod network_outage;
 mod pcm_delivery;
 mod playout_recovery;
 mod receiver_epoch;
+mod reconnect_receipt;
 mod sink_watchdog;
