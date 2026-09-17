@@ -453,6 +453,13 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   `stamps.iter().enumerate()`）。门禁：fmt ✓ / clippy `-D warnings` ✓ / engine 集成 **36 项**（新增 1）✓
   / lib **150 项** ✓。**又踩一次同一个坑**：`cargo fmt` 之后立刻 `edit` 撞
   `file changed since it was read` —— 跑过格式化就必须重读再改。详见 `docs/33` §10.5。
+  **看板同步仍被 GraphQL 二级限流挡住**：本轮 `pwsh tools/sync-board.ps1` 三次尝试全部失败 ——
+  `gh project list --owner GotKiCry` 报 **`unknown owner type`**，而 `gh api graphql` 直连给出的真因是
+  `API rate limit already exceeded for user ID 24805948`（错误类型 `RATE_LIMIT`/`graphql_rate_limit`）。
+  **两条读数会互相矛盾**：REST 侧 `gh api rate_limit` 仍报 `graphql.remaining = 5000`，
+  所以只看那一行会误判成「额度充足、是脚本或权限问题」；以 GraphQL 实况为准。
+  Token scope 本身没问题（`gh auth status` 含 `project`）。脚本里的任务表（含第 70 与第 71 轮文本）
+  已更新且幂等，窗口一恢复重跑即可补齐 —— 本轮不把限流当成同步成功，也不从脚本输出反推看板状态。
 
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
