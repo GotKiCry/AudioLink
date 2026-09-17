@@ -112,18 +112,29 @@ const CODE_NOT_PAIRED = 1002;
  *
  * 为什么是 5 分钟：这是「看出趋势、又不用翻页」的尺度；更长的历史由导出的 CSV 承担。
  */
-const TELEMETRY_HISTORY_LIMIT = 600;
+export const TELEMETRY_HISTORY_LIMIT = 600;
 
-/** 追加一个采样点并截断到上限（纯函数，便于在无浏览器环境里推演）。 */
-function appendTelemetryRow(history: TelemetryRow[], view: TelemetryView): TelemetryRow[] {
+/**
+ * 追加一个采样点并截断到上限（纯函数）。
+ *
+ * 导出只为单测（`src/lib/reductions.test.ts`）：**截断方向**（丢最旧、留最新）是
+ * 界面上看不出来的 —— 写反了曲线只是「冻结在最初 5 分钟」，不报错、不崩溃。
+ * 注意：这里不注入时钟（`Date.now()` 在调用点），所以断言只钉顺序与长度，不钉时刻。
+ */
+export function appendTelemetryRow(history: TelemetryRow[], view: TelemetryView): TelemetryRow[] {
   const next = [...history, telemetryRowOf(view, Date.now())];
   return next.length > TELEMETRY_HISTORY_LIMIT
     ? next.slice(next.length - TELEMETRY_HISTORY_LIMIT)
     : next;
 }
 
-/** 把单个对端并入列表（事件到达前先本地乐观更新，避免"点了没反应"）。 */
-function upsert(peers: PeerView[], peer: PeerView): PeerView[] {
+/**
+ * 把单个对端并入列表（事件到达前先本地乐观更新，避免"点了没反应"）。
+ *
+ * 导出只为单测：它必须是**不可变**更新 —— 直接改数组元素会让 React 拿不到新引用，
+ * 卡片状态与按钮就停在旧值上（点了没反应，且不报错）。
+ */
+export function upsert(peers: PeerView[], peer: PeerView): PeerView[] {
   const index = peers.findIndex((item) => item.idShort === peer.idShort);
   if (index < 0) {
     return [...peers, peer];

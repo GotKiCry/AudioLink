@@ -203,6 +203,13 @@ jobs:
       - name: Type check & build frontend
         run: pnpm build
         working-directory: desktop
+      # 前端单测（vitest：jsdom + @testing-library/react；配置见 desktop/vitest.config.ts）。
+      # 为什么与 build 同一个 job、不新建 job：这个 job 已经有 node/pnpm 与装好的依赖，
+      # 新建一个只会多一遍 install 与冷启动（本 job 现有的经验：见文件头的 job 拆分说明）。
+      # 测试文件也落在 `tsconfig` 的 include 里，所以上面的 `pnpm build`（tsc --noEmit）会一并做类型检查。
+      - name: Test frontend (vitest)
+        run: pnpm test
+        working-directory: desktop
       - name: Cargo check (shell)
         run: cargo check -p audiolink-desktop
       # M5 合规：依赖许可审计（Rust 全量 + 桌面前端）。

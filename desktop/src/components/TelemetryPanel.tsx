@@ -45,23 +45,40 @@ interface SparklineProps {
 }
 
 /**
+ * 把一串读数映射成折线上的点（`viewBox="0 0 100 32"`）。
+ *
+ * 纵轴按**本窗口峰值**归一化：峰值落在 y=2、零落在 y=30（上下各留 2 的余量）；
+ * 横轴按序号均匀铺满 0–100。
+ *
+ * 为什么单独成函数：这是曲线唯一的数学，而它的缺陷在界面上**看不见** ——
+ * 归一化基准写错只是"形状怪一点"，没人看得出来（docs/25 §3 自认的未验证项就是这条）。
+ * 抽出来用单测钉住「峰值贴顶 / 零点贴底 / 点数与采样点数一致」。
+ * 返回空串 = 画不出来（不足两个点，或窗口内全零 —— 这时画的是假线）。
+ */
+export function sparklinePoints(values: number[]): string {
+  const peak = values.reduce((acc, value) => Math.max(acc, value), 0);
+  if (values.length < 2 || peak <= 0) {
+    return "";
+  }
+  return values
+    .map((value, index) => {
+      const x = (index / (values.length - 1)) * 100;
+      const y = 30 - (value / peak) * 28;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
+/**
  * 一条折线。
  *
  * 纵轴按**本窗口最大值**归一化：遥测的关注点是「趋势与尖峰」，不是绝对刻度；
  * 因此不画网格与坐标轴，只把「最新值」写在右上角（数字面板里有精确值）。
  */
 function Sparkline({ label, unit, values, latest }: SparklineProps) {
-  const peak = values.reduce((acc, value) => Math.max(acc, value), 0);
-  const ready = values.length >= 2 && peak > 0;
-  const points = ready
-    ? values
-        .map((value, index) => {
-          const x = (index / (values.length - 1)) * 100;
-          const y = 30 - (value / peak) * 28;
-          return `${x.toFixed(2)},${y.toFixed(2)}`;
-        })
-        .join(" ")
-    : "";
+  // 空串 = 画不出来：不足两个点、或窗口内全零（画出来是假线）
+  const points = sparklinePoints(values);
+  const ready = points !== "";
 
   return (
     <div className="rounded-lg border border-slate-200 p-2 dark:border-slate-800">
