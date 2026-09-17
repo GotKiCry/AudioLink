@@ -829,7 +829,9 @@ async fn app_layer_probe_shortens_recovery() {
 ///
 /// ⚠️ 这个 3000 是**验收阈值**，不得为了让它变绿而下调 —— 改数字等于改验收口径，
 /// 需要产品确认（docs/48 §5 候选方案④），不是测试的权限。
-#[ignore = "等待 FR-27 重连落地：恢复时间一侧已实测达标（4783 -> 444 ms），但第 75 轮的重连实现会在接收侧留下僵尸会话、把真会话从 peers() 顶掉，故产品代码已回退；详见 docs/50-m2-reconnect.md"]
+#[ignore = "等 FR-27 重连收口：第 75/76 两轮已把恢复时间做到 444 ms 并修掉「双向拨号导致接收侧表被清空」，
+            但重连后音频接不回来（恢复延迟 None）—— patch 存于 target/evidence/fr27-reconnect-attempt.patch，
+            分析见 docs/50-m2-reconnect.md 第 76 轮一节"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ten_second_outage_recovers_within_budget() {
     let dir = tempfile::TempDir::new().expect(r"临时目录");
