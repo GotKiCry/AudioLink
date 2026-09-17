@@ -388,6 +388,10 @@ struct OutageOutcome {
 }
 
 /// 跑一次「拔网 N 秒」的实验。
+///
+/// 参数多是因为它要把一次实验所需的一切都摊开（两侧引擎、中继、写入通道、两个 id、断网时长、
+/// 可选的探活节拍）—— 测试 helper 里这比再包一层结构体更好读，故显式放行参数个数检查。
+#[allow(clippy::too_many_arguments)]
 async fn run_outage(
     sender: &Arc<Engine>,
     receiver: &Arc<Engine>,
@@ -396,6 +400,10 @@ async fn run_outage(
     sender_id: NodeId,
     receiver_id: NodeId,
     outage: Duration,
+    // `Some(interval)` 时，拔网期间由应用层按该节拍主动发控制帧（对照实验用）：
+    // 它回答的是 docs/48 §5 候选方案① 的核心问题 —— 数据面那 4 s 静默，
+    // 应用层主动投喂能不能打破？能，方案① 就够；不能，就得上 FR-27 的重连。
+    probe: Option<Duration>,
 ) -> OutageOutcome {
     // ① 先确认链路真的在出声（对照组）。
     drain(writes);
@@ -403,7 +411,25 @@ async fn run_outage(
         .await
         .expect(r"开流后 10 s 内必须有非静音输出");
 
-    // ② 拔网。
+    // ② 拔网。若要做对照实验，就从**拔网这一刻**开始按节拍投喂。
+    let probe_stop = Arc::new(AtomicBool::new(false));
+    let prober = probe.map(|interval| {
+        let engine = Arc::clone(sender);
+        let stop = Arc::clone(&probe_stop);
+        tokio::spawn(async move {
+            let mut fired = 0_u64;
+            let mut accepted = 0_u64;
+            while !stop.load(Ordering::Relaxed) {
+                fired = fired.saturating_add(1);
+                if engine.broadcast_epoch(200).await.is_ok() {
+                    accepted = accepted.saturating_add(1);
+                }
+                tokio::time::sleep(interval).await;
+            }
+            (fired, accepted)
+        })
+    });
+
     let dropped_before = relay.dropped();
     let arrived_before_cut = relay.big_arrived();
     relay.cut();
@@ -444,6 +470,7 @@ async fn run_outage(
         rows
     });
 
+    probe_stop.store(true, Ordering::Relaxed);
     let restore_at = Instant::now();
     relay.restore();
     // 两个诊断读数**并发**等（见 wait_counter 的文档）：它们是解读用的，绝不能拖住判据。
@@ -479,6 +506,10 @@ async fn run_outage(
     let link_up_ms = down_probe.await.unwrap_or(None);
     let audio_up_ms = big_probe.await.unwrap_or(None);
     let up_rates = sampler.await.unwrap_or_default();
+    let (probe_fired, probe_accepted) = match prober {
+        Some(handle) => handle.await.unwrap_or((0, 0)),
+        None => (0, 0),
+    };
 
     println!(
         "[outage-diag] 拔网 {} ms：到达中继的上行音频包 拔网前 {} → 1 s 后 {} → 拔网结束 {} · 插回后回程首个包 {} · 上行音频数据报 {} · 声音恢复 {}",
@@ -500,6 +531,9 @@ async fn run_outage(
         }
     );
     println!("[outage-diag] 插回后每 500 ms 的上行包数：{up_rates:?}");
+    println!(
+        "[outage-diag] 应用层主动投喂：发出 {probe_fired} 次 · 被引擎接受 {probe_accepted} 次"
+    );
 
     let sender_state = sender
         .peers()
@@ -539,6 +573,7 @@ async fn two_second_outage_recovery_is_recorded() {
             sender_id,
             receiver_id,
             Duration::from_secs(2),
+            None,
         )
         .await
     })
@@ -595,6 +630,7 @@ async fn brief_outage_self_heals_within_budget() {
             sender_id,
             receiver_id,
             Duration::from_secs(4),
+            None,
         )
         .await
     })
@@ -663,6 +699,7 @@ async fn ten_second_outage_self_heals_and_delay_is_recorded() {
             sender_id,
             receiver_id,
             Duration::from_secs(10),
+            None,
         )
         .await
     })
@@ -691,13 +728,68 @@ async fn ten_second_outage_self_heals_and_delay_is_recorded() {
         .expect(r"插回网线后 15 s 内必须重新出声");
     if recovery_ms > 3_000 {
         println!(
-            "[outage] 注意：恢复延迟 {recovery_ms} ms 超出 M2 验收的 3 s 预算（PTO 退避所致，缺口已记账）"
+            "[outage] 注意：恢复延迟 {recovery_ms} ms 超出 M2 验收的 3 s 预算（数据面恢复节奏所致，根因见 docs/48 §2.4，缺口已记账）"
         );
     }
     assert!(
         outcome.sustained_writes >= 20,
         "恢复后 2 s 内只有 {} 个非静音回调：这不是恢复，是吐积压",
         outcome.sustained_writes
+    );
+
+    sender.shutdown().await;
+    receiver.shutdown().await;
+    accept.abort();
+}
+
+/// **对照实验**：拔网期间由应用层每 200 ms 主动投喂控制帧，恢复会不会提前？
+///
+/// 背景见 `docs/48` §2.4：10 s 拔网的 4.5 s **不是链路慢**（链路 0.196~0.326 s 就通了），而是上行
+/// **整段静默** —— 插回后 4 s 内一个包都不发，然后一次放出约 10 s 的积压。这条测试只做一件事：
+/// 把「应用层主动投喂」这个变量加上，看那段静默会不会被打破。
+///
+/// **它刻意不断言 3 s 预算**：假设被否也是有效结论，不该表现成测试失败。判据只有两条 ——
+/// 网真的断过、插回后真的恢复；恢复延迟与上行速率曲线由 `[outage-diag]` 打印，
+/// 拿它跟基线（无投喂：静默 4 s、恢复 4.5 s）对照后再决定走哪条路。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn app_layer_probe_shortens_recovery() {
+    let dir = tempfile::TempDir::new().expect(r"临时目录");
+    let frame_ms = 20_u32;
+    let (sender, receiver, relay, accept, mut writes, sender_id, receiver_id) =
+        wire_up(dir.path(), frame_ms).await;
+
+    let outcome = tokio::time::timeout(Duration::from_secs(90), async {
+        run_outage(
+            &sender,
+            &receiver,
+            &relay,
+            &mut writes,
+            sender_id,
+            receiver_id,
+            Duration::from_secs(10),
+            Some(Duration::from_millis(200)),
+        )
+        .await
+    })
+    .await
+    .expect(r"90 s 内必须跑完");
+
+    println!(
+        "[outage-probe] 拔网 10 s（应用层 200 ms 投喂）：断网期间漏出的非静音回调 {} 个，恢复延迟 {:?} ms，恢复后 2 s 内非静音回调 {} 个；中继丢弃 {} 转发 {}",
+        outcome.noise_while_cut,
+        outcome.recovery_ms,
+        outcome.sustained_writes,
+        relay.dropped(),
+        relay.forwarded(),
+    );
+
+    assert_eq!(
+        outcome.noise_while_cut, 0,
+        r"拔网 400 ms 之后仍有非静音输出：网没真的断"
+    );
+    assert!(
+        outcome.recovery_ms.is_some(),
+        "插回网线后 15 s 内必须重新出声（有投喂也不该比基线更差）"
     );
 
     sender.shutdown().await;
