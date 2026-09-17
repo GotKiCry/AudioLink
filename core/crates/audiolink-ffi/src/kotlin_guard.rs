@@ -378,4 +378,111 @@ mod tests {
         assert!(hostile_doc_lines("let x = \"/*\";").is_empty());
         assert!(hostile_doc_lines("// 普通注释 /* 无所谓 */").is_empty());
     }
+
+    /// 护栏 4：生成物里的 **record 字段**与 Rust 侧逐字段一致（含声明顺序）。
+    ///
+    /// # 为什么必须有它（实测结论，不是推测）
+    ///
+    /// UniFFI 0.29 只生成**函数 / 方法级** checksum（`checksum_func_*` / `checksum_method_*`），
+    /// **没有 record 级 checksum**。实测（2026-09-17）：给 `EngineStartConfig` 加一个字段，
+    /// `uniffi_audiolink_ffi_checksum_func_engine_start` 的值**一字不变**（前后都是 32272）。
+    ///
+    /// 于是「改了 Rust 的 record 字段却忘了重新生成绑定」既不会被 `cargo test` 拦住
+    /// （护栏 2 的块注释闭合、护栏 3 的导出面都仍然成立），也不会在第一次 FFI 调用时被 checksum
+    /// 拦住 —— `.kt` 的 `FfiConverter` 少写一个字段，而 `.so` 按新结构读，两边**静默错位**。
+    /// 所以这里做纯文本比对：Rust 的 `pub struct <Name>` 与生成物的 `data class <Name>`。
+    #[test]
+    fn 生成物记录字段与源码一致() {
+        const RECORDS: &[&str] = &[
+            "EngineStartConfig",
+            "LocalStatus",
+            "PeerView",
+            "TelemetryView",
+        ];
+
+        let source = std::fs::read_to_string(crate_root().join("src").join("engine_bridge.rs"))
+            .expect("读 engine_bridge.rs");
+        let files = generated_bindings();
+        assert!(!files.is_empty(), "找不到生成的 Kotlin 绑定");
+        let kotlin: String = files
+            .iter()
+            .filter_map(|file| std::fs::read_to_string(file).ok())
+            .collect();
+
+        let mut problems = Vec::new();
+        for name in RECORDS {
+            let rust_fields = rust_record_fields(&source, name);
+            assert!(
+                !rust_fields.is_empty(),
+                "Rust 侧找不到 record {name} —— 护栏自身失效了（改了名字就得同步这里）"
+            );
+            let kotlin_fields: Vec<String> = kotlin_record_fields(&kotlin, name)
+                .iter()
+                .map(|field| camel_to_snake(field))
+                .collect();
+            if rust_fields != kotlin_fields {
+                problems.push(format!(
+                    "{name}：Rust {rust_fields:?} ≠ 生成物 {kotlin_fields:?}（多半是改了字段却忘了重新生成绑定）"
+                ));
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "生成物与源码的 record 字段不一致:\n{}",
+            problems.join("\n")
+        );
+    }
+
+    /// 取 Rust 里 `pub struct <name> { … }` 的字段名（声明顺序）。
+    fn rust_record_fields(source: &str, name: &str) -> Vec<String> {
+        let marker = format!("pub struct {name} {{");
+        let Some(start) = source.find(&marker) else {
+            return Vec::new();
+        };
+        let body = &source[start + marker.len()..];
+        let end = body.find("\n}").unwrap_or(body.len());
+        body[..end]
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim().strip_prefix("pub ")?;
+                let (field, _) = rest.split_once(':')?;
+                Some(field.trim().to_string())
+            })
+            .collect()
+    }
+
+    /// 取生成物里 `data class <name> ( … )` 的字段名（声明顺序）。
+    fn kotlin_record_fields(source: &str, name: &str) -> Vec<String> {
+        let marker = format!("data class {name} (");
+        let Some(start) = source.find(&marker) else {
+            return Vec::new();
+        };
+        let body = &source[start + marker.len()..];
+        let end = body.find("\n) {").unwrap_or(body.len());
+        body[..end]
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let rest = line
+                    .strip_prefix("var `")
+                    .or_else(|| line.strip_prefix("val `"))?;
+                let (field, _) = rest.split_once('`')?;
+                Some(field.to_string())
+            })
+            .collect()
+    }
+
+    /// `dataDir` → `data_dir`（UniFFI 的 Kotlin 命名规则）。
+    fn camel_to_snake(camel: &str) -> String {
+        let mut out = String::with_capacity(camel.len() + 4);
+        for ch in camel.chars() {
+            if ch.is_ascii_uppercase() {
+                out.push('_');
+                out.push(ch.to_ascii_lowercase());
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
 }

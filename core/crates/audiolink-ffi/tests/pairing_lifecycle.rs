@@ -43,6 +43,8 @@ async fn ffi_pin_tracks_the_current_connection_and_engine() {
         node_name: "phone".into(),
         data_dir: dir.path().join("phone").to_string_lossy().into(),
         listen_port: free_port(),
+        // 这条用例不关心平台能力位；显式 0 = 与加这个字段之前逐位一致。
+        capabilities: 0,
     };
     assert!(displayed_pin().unwrap().is_none());
     let local = engine_start(config.clone(), None, None).await.unwrap();

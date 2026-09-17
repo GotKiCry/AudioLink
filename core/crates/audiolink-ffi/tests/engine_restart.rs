@@ -155,6 +155,8 @@ async fn check_restarts() {
         node_name: "phone".into(),
         data_dir: dir.path().join("phone").to_string_lossy().into(),
         listen_port: port,
+        // 这条用例不关心平台能力位；显式 0 = 与加这个字段之前逐位一致。
+        capabilities: 0,
     };
     let bind_addr = SocketAddr::from(([0, 0, 0, 0], port));
     let addr = SocketAddr::from(([127, 0, 0, 1], port));

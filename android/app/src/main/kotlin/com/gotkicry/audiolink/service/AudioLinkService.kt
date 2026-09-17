@@ -5,9 +5,11 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.Manifest
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioTrack
 import android.media.projection.MediaProjection
@@ -250,6 +252,9 @@ class AudioLinkService : Service() {
                         nodeName = Build.MODEL.orEmpty().ifBlank { "Android" },
                         dataDir = filesDir.absolutePath,
                         listenPort = 0u,
+                        // §13：把「这台设备具备哪些采集能力」告诉内核，由它带进握手协商 ——
+                        // 不声明的话，内录/麦克风已经可用而对端永远不知道（见 [declaredCapabilities]）。
+                        capabilities = declaredCapabilities(),
                     ),
                     playout = pcmFeed,
                     capture = captureArgument(),
@@ -443,6 +448,32 @@ class AudioLinkService : Service() {
      */
     private fun captureArgument() =
         if (CaptureWiring.engineCaptureEnabled(captureSelection)) captureController.pull else null
+
+    /**
+     * 本机要向对端声明的**平台能力位**（§13）：内录按 API 门槛、麦克风按 manifest 声明。
+     *
+     * 与发送源**无关**：能力位说的是「这台设备能做什么」，不是「此刻正在用什么」——
+     * 发送源关着也照旧声明（口径与 `CAPTURE`/`PLAYOUT` 一致，理由见
+     * [CaptureWiring.declaredCapabilities]）。
+     */
+    private fun declaredCapabilities(): UInt = CaptureWiring.declaredCapabilities(
+        sdkInt = Build.VERSION.SDK_INT,
+        declaresRecordAudio = declaresRecordAudio(),
+    )
+
+    /**
+     * 应用在 manifest 里**声明**了 `RECORD_AUDIO` 吗？
+     *
+     * 查的是 manifest 声明，不是运行时授权：能力位描述的是「能做到」，
+     * 而「用户此刻给不给权限」是采集启动时的事（拒绝授权有自己的用户可见反馈）。
+     * 两者混为一谈会让能力位随用户点击而变，那不是它的语义。
+     */
+    @Suppress("DEPRECATION")
+    private fun declaresRecordAudio(): Boolean =
+        packageManager
+            .getPackageInfo(packageName, PackageManager.GET_PERMISSIONS)
+            .requestedPermissions
+            ?.contains(Manifest.permission.RECORD_AUDIO) == true
 
     /**
      * 应用发送源选择（主线程，在 [refreshState] 的拍点上调用）。

@@ -1449,7 +1449,19 @@ data class EngineStartConfig (
     /**
      * QUIC 监听端口；`0` = 默认 `58290`。
      */
-    var `listenPort`: kotlin.UShort
+    var `listenPort`: kotlin.UShort, 
+    /**
+     * **平台侧额外声明**的能力位（§13 的协商位图，位名与语义见 `audiolink_types::Capabilities`）。
+     *
+     * 语义是「**这台设备能**做什么」，**不是**「此刻正在用什么」—— 与 `CAPTURE` / `PLAYOUT` 同口径
+     * （纯接收端「不需要」CAPTURE，但它并不是「不能」采集）。所以发送源关着也照旧声明：
+     * 对端据此知道「这台设备具备内录 / 麦克风」，真正用不用得上由后续的授权流程与用户选择决定。
+     *
+     * `0`（缺省）＝ 与加上这个字段之前**逐位一致**，也就是内核默认的 `Capabilities::CURRENT`；
+     * 非零值与内核默认取**并集**，因此**不可能**抹掉必需位（`REQUIRED` 只有 `OPUS`）——
+     * 若允许调用方覆盖整张位图，一个只写 `MICROPHONE` 的调用方就会让双方缺必需位、直接拒连。
+     */
+    var `capabilities`: kotlin.UInt = 0u
 ) {
     
     companion object
@@ -1464,19 +1476,22 @@ public object FfiConverterTypeEngineStartConfig: FfiConverterRustBuffer<EngineSt
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterUShort.read(buf),
+            FfiConverterUInt.read(buf),
         )
     }
 
     override fun allocationSize(value: EngineStartConfig) = (
             FfiConverterString.allocationSize(value.`nodeName`) +
             FfiConverterString.allocationSize(value.`dataDir`) +
-            FfiConverterUShort.allocationSize(value.`listenPort`)
+            FfiConverterUShort.allocationSize(value.`listenPort`) +
+            FfiConverterUInt.allocationSize(value.`capabilities`)
     )
 
     override fun write(value: EngineStartConfig, buf: ByteBuffer) {
             FfiConverterString.write(value.`nodeName`, buf)
             FfiConverterString.write(value.`dataDir`, buf)
             FfiConverterUShort.write(value.`listenPort`, buf)
+            FfiConverterUInt.write(value.`capabilities`, buf)
     }
 }
 

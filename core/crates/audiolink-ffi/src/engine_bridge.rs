@@ -36,7 +36,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use audiolink_engine::{Engine, EngineConfig, PeerStatus};
-use audiolink_types::{Caps, DEFAULT_QUIC_PORT, ErrorCode, NodeId, StreamStats};
+use audiolink_types::{Capabilities, Caps, DEFAULT_QUIC_PORT, ErrorCode, NodeId, StreamStats};
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 
@@ -73,6 +73,19 @@ pub struct EngineStartConfig {
     pub data_dir: String,
     /// QUIC 监听端口；`0` = 默认 `58290`。
     pub listen_port: u16,
+    /// **平台侧额外声明**的能力位（§13 的协商位图，位名与语义见 `audiolink_types::Capabilities`）。
+    ///
+    /// 语义是「**这台设备能**做什么」，**不是**「此刻正在用什么」—— 与 `CAPTURE` / `PLAYOUT` 同口径
+    /// （纯接收端「不需要」CAPTURE，但它并不是「不能」采集）。所以发送源关着也照旧声明：
+    /// 对端据此知道「这台设备具备内录 / 麦克风」，真正用不用得上由后续的授权流程与用户选择决定。
+    ///
+    /// `0`（缺省）＝ 与加上这个字段之前**逐位一致**，也就是内核默认的 `Capabilities::CURRENT`；
+    /// 非零值与内核默认取**并集**，因此**不可能**抹掉必需位（`REQUIRED` 只有 `OPUS`）——
+    /// 若允许调用方覆盖整张位图，一个只写 `MICROPHONE` 的调用方就会让双方缺必需位、直接拒连。
+    // UniFFI 的 default 表达式不接受带后缀的字面量（`0u32` 会报 "integer literals with suffix
+    // not supported here"），类型由字段本身决定。
+    #[uniffi(default = 0)]
+    pub capabilities: u32,
 }
 
 /// 本机状态（`localStatus()`）。
@@ -365,9 +378,11 @@ pub async fn engine_start(
             }
         }
 
-        // §13 能力：Android 侧**不**声明系统内录 —— `AudioPlaybackCapture` 尚未实现，
-        // 保持内核默认（`Capabilities::CURRENT`）就是此刻的实话。接上之后在这里加
-        // `|= Capabilities::SYSTEM_LOOPBACK`，能力协商会自动把它带给对端。
+        // §13 能力：调用方（Android 侧）通过 `config.capabilities` **追加**它确实具备的平台能力位
+        // （内录 / 麦克风），内核自身的能力（`Capabilities::CURRENT`）由内核说了算。
+        //
+        // 为什么用并集而不是直接赋值：不变量是「必需位（REQUIRED = OPUS）永远在」。直接赋值等于
+        // 把整张位图的正确性交给调用方 —— 只写一个采集位的调用方会让双方缺必需位、**直接拒连**。
         let mut engine_config = EngineConfig::new(
             config.node_name.clone(),
             PathBuf::from(config.data_dir.clone()),
@@ -375,6 +390,7 @@ pub async fn engine_start(
         if config.listen_port != 0 {
             engine_config.listen.set_port(config.listen_port);
         }
+        engine_config.capabilities = Capabilities::CURRENT | config.capabilities;
         engine_config.playout = playout.map(|feed| playout_factory(share_feed(feed)));
         engine_config.capture = capture.map(|pull| capture_factory(share_pull(pull)));
         let engine = Engine::start(engine_config)
@@ -544,6 +560,8 @@ mod tests {
             node_name: "ffi-test".to_string(),
             data_dir: dir.to_string_lossy().to_string(),
             listen_port: free_udp_port(),
+            // 这条用例不关心平台能力位：显式写 0 = 与加这个字段之前逐位一致。
+            capabilities: 0,
         }
     }
 
