@@ -20,6 +20,9 @@
 
 ## 2. 还缺什么（按阻塞程度排）
 
+> ⚠️ **本节是 2026-09-16 的缺口盘点，不是现状**。按时间顺序往下读：§2.1 由 §5 补、§2.3 由 §6/§8 补、
+> §2.4 与 §2.5 由 §7/§9 与 §13 复核。**§2.2（代码签名证书）至今仍缺**。各条的原判断留在下文，不删。
+
 ### 2.1 自动更新的密钥是**占位符**
 
 `tauri.conf.json` 的 `plugins.updater.pubkey` 现在是 `REPLACE_WITH_TAURI_UPDATER_PUBKEY`。
@@ -41,9 +44,14 @@ Windows 上未签名的安装包会触发 SmartScreen 警告。证书是**外部
 
 release 签名曾人工打通，但 CI 里只有 `assembleDebug`。发布要的是 `assembleRelease` + keystore 注入（密钥走 CI secrets）。
 
-### 2.5 Android 依赖的合规材料缺失
+（**本条已过时**：`release.yml` 的 android job 现在**有** `assembleRelease` 与 keystore secrets 注入（解出 `release.jks` + 写 `keystore.properties`），
+缺 secrets 时明确降级 `assembleDebug` 并打 `::warning::`；本地 release 打包与双 ABI 也都真的跑过 —— 见 §6.1、§7、§9、§13。）
 
-许可审计只覆盖 Rust 与前端（`docs/41` §5），Gradle 依赖还没进清单，Android 侧也没有声明的投放位置。
+### 2.5 Android 依赖的合规材料缺失 ✅ 已补齐（见 §13）
+
+许可审计只覆盖 Rust 与前端（`docs/41` §5），~~Gradle 依赖还没进清单，Android 侧也没有声明的投放位置。~~
+→ **两项都已完成**：Gradle/Maven 依赖进了清单（`docs/41` §8，114 个组件），Android 侧也有随 APK 分发的声明与
+应用内「开源许可」页（`docs/41` §9）。复核依据见 §13。
 
 ## 3. 打包的前置条件（这是有意的）
 
@@ -106,7 +114,7 @@ _up_/_up_/docs/compliance/THIRD-PARTY-NOTICES.md
 
 - **安装后实读**：本条验的是「资源进了安装包 + 包内路径与运行时查找一致」，
   **没有**在干净机器上安装后打开「关于」确认它真的读出来；
-- Android 侧完全没有对应流程（§2.4、§2.5）；
+- ~~Android 侧完全没有对应流程（§2.4、§2.5）；~~ → **已补**：Android 侧现在有 release 打包路径（§7、§9）与随 APK 的声明投放（`docs/41` §9），见 §13；
 - 安装包未签名（§2.2）。
 
 ---
@@ -557,9 +565,32 @@ release job 有签名产物，六段会真的跑完；**PR CI 不要加** ——
 - 版本比较用的是与插件一致的判据（`remote > current`）+ 简化的 x.y.z 比较：**pre-release 语义**
   （如 `0.1.1-beta`）没有覆盖；需要时以插件里的 `semver` crate 为准。
 
+---
 
+## 13. 第 110 轮口径复核（2026-09-17）
 
+审计（`docs/53-m5-audit.md` §2-D）点名：本文 §2.5 与 `docs/41` §5/§6 仍写「Android 依赖未进清单 /
+没有声明的投放位置」，而实况是两项都已做。逐句复核结论如下（`docs/41` 侧的同批改动记在 `docs/41` §10）。
 
+| 原表述 | 判定 | 今天实况 | 依据（符号名 / 可复核读数） |
+|---|---|---|---|
+| §2.5「许可审计只覆盖 Rust 与前端，Gradle 依赖还没进清单，Android 侧也没有声明的投放位置」 | **过时** | ① Gradle/Maven 依赖**进了清单**：114 组件（113 allowed / 1 notice / 0 denied）；② Android 投放**已在**：`assets/THIRD-PARTY-NOTICES.md` + `NoticesLoader` + `LicensesScreen`，入口是主界面顶栏「开源许可」；③ 桌面与 Android 两个投放位文件**同尺寸 1 056 775 B** | `tools/android-licenses.ps1`（采集）→ `tools/license-audit.ps1`（判定 + 同步 assets）；`docs/compliance/license-report.md` 的 Android 节；`android/app/src/main/assets/THIRD-PARTY-NOTICES.md` |
+| §2.4「CI 里只有 `assembleDebug`」 | **过时** | `release.yml` 的 android job 有 `assembleRelease`（四件 keystore secrets → 解出 `release.jks` + 写 `keystore.properties`）；缺 secrets 时**明确降级** `assembleDebug` 并打 `::warning::未配置 Android keystore：本次只出 debug APK（不是发布物）` | `.github/workflows/release.yml` 的 android job |
+| §4.2「Android 侧完全没有对应流程」 | **过时** | 同上两条（打包路径 + 声明投放都在） | —— |
+| §2.1「pubkey 是占位符 / `createUpdaterArtifacts=false`」 | **已由 §5 注明补掉**（无需再改） | 密钥对生成、`createUpdaterArtifacts: true`、`.sig` 实际产出 | §5 |
+| §2.3「没有发布流程」 | **已由 §6/§8 注明补掉** | `release.yml` 跑通过、草稿 Release 真建出来过 | §6、§8 |
+| §2.2「没有代码签名证书」 | **仍成立** | 安装包与绿色版都未签名 | §10.4；看板 `[M5] Windows 代码签名证书`（Todo）|
+| §12.5「CI 未接线（`updater-local-e2e.ps1`）」 | **仍成立** | `release.yml` / `ci.yml` 里都没有这一步（本轮 grep 复核） | `.github/workflows/release.yml`、`ci.yml` |
+| §12.5「真安装没有自动化」「插件按 `endpoints` 拉取没有自动化」 | **仍成立** | 见 §12.3 的覆盖表 | §12.3 |
+| §9.3「两个分 ABI 的包装到真机」 | **仍成立** | 与真机验收同一条阻塞 | §9.3 |
 
+### 13.1 顺带发现（**范围外**，未改，需另行处置）
 
-
+1. **CI 生成的声明可能不含 Android 一栏**：`ci.yml` 的 `License audit (Rust + frontend)` 与 `release.yml` 的
+   `Generate third-party notices` 都**不先跑** `tools/android-licenses.ps1`；脚本找不到
+   `target/evidence/compliance/android-licenses.json` 时只打印「未找到 Android 依赖清单，本次跳过 Android」。
+   本仓库里那份 1 056 775 B 的声明是**本机手动跑过采集**才含 Android 组件的 —— 换言之，发布产物若在 CI 上生成，
+   Android 一栏会**静默缺席**（有提示但不失败）。建议二选一：把采集接进两处 workflow，或让 `-Notices` 在缺 Android 清单时**明确失败**。
+2. `ci.yml` 那一步的名字仍叫 `License audit (Rust + frontend)`，与脚本现在的实际覆盖面（默认含 Android）不符。
+3. `docs/compliance/license-report.md` 里「未覆盖：…Android 侧的**投放位置**（声明入口）」是**自动生成的**，
+   模板在 `core/crates/audiolink-tools/src/license.rs` 的报告渲染函数里 —— 见 `docs/41` §10.1。

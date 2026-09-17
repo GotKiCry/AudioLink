@@ -64,8 +64,8 @@ CLI：`cargo run -q -p audiolink-tools --bin license-audit -- --cargo <json> [--
 ## 5. 覆盖面（诚实清单）
 
 - **已覆盖**：Rust workspace 的全部依赖、桌面前端依赖；
-- **未覆盖**：Android（Gradle）依赖、随包分发的二进制内部第三方库、字体与图标资源；
-- 本报告回答的是「许可是否允许这样分发」；**署名/免责文本的实际投放位置是另一件事**（还没做）。
+- **未覆盖**：~~Android（Gradle）依赖、~~随包分发的二进制内部第三方库、字体与图标资源（Android 依赖已在 §8 补上，见 §10）；
+- 本报告回答的是「许可是否允许这样分发」；**署名/免责文本的实际投放位置是另一件事**（~~还没做~~ → **已做**：桌面 §7、Android §9，见 §10）。
 
 ---
 
@@ -93,7 +93,7 @@ CLI：`cargo run -q -p audiolink-tools --bin license-audit -- --cargo <json> [--
 ### 6.2 还差什么
 
 - **投放位置**：声明文件躺在仓库里 ≠ 用户能看见。放进安装包 / "关于"页展示是发布流程的一步；
-- Android（Gradle）依赖仍未进清单（见 §5 的覆盖面清单）。
+- ~~Android（Gradle）依赖仍未进清单（见 §5 的覆盖面清单）。~~ → **已在 §8 补上（114 个组件）**，见 §10。
 
 ---
 
@@ -118,8 +118,9 @@ CLI：`cargo run -q -p audiolink-tools --bin license-audit -- --cargo <json> [--
 ### 7.1 还差什么
 
 - **真实安装包验证**：本轮只到「资源被收录 + 命令能读到 + 界面能显示」这一层，
-  `tauri build` 出包后在干净机器上打开「关于」还没验过；
-- **Android 侧没有对应投放**：Android 的分发物里同样需要声明，且 Gradle 依赖还没进清单（§5）。
+  `tauri build` 出包后在干净机器上打开「关于」还没验过（**第 110 轮复核仍成立**，见 §10）；
+- ~~**Android 侧没有对应投放**：Android 的分发物里同样需要声明，且 Gradle 依赖还没进清单（§5）。~~
+  → **已在 §9 补上**（声明随 APK 分发 + 应用内「开源许可」页；Gradle 依赖见 §8），见 §10。
 
 ---
 
@@ -155,8 +156,12 @@ Android 一节：**114 个组件，allowed 113 / notice 1 / denied 0**。那一�
 
 ### 8.3 还差什么
 
-- **Android 侧没有投放位置**：桌面端有「关于」面板读声明（§7），Android 应用内还没有对应入口；
+- ~~**Android 侧没有投放位置**：桌面端有「关于」面板读声明（§7），Android 应用内还没有对应入口；~~
+  → **已在 §9 补上**，见 §10；
 - **CI 未接**：Android 许可审计目前是「发布前手动跑」的一步，还没进 workflow（桌面侧的审计在 `desktop` job 里）。
+  **第 110 轮复核仍成立，且依据更精确**：`ci.yml` 的 `License audit (Rust + frontend)` 步骤确实在，
+  但它不跑 `tools/android-licenses.ps1` → `target/evidence/compliance/android-licenses.json` 不存在时脚本只打印
+  「未找到 Android 依赖清单，本次跳过 Android」；`release.yml` 的 `Generate third-party notices` 同样不带 Android 采集。见 §10。
 
 ---
 
@@ -196,6 +201,29 @@ BUILD SUCCESSFUL in 55s
 - **CI 未接**：Android 许可审计仍是「发布前手动跑」；
 - 桌面端的「关于」面板与 Android 这个页面还没有共享同一份文案常量（两边各自维护提示语）。
 
+---
 
+## 10. 第 110 轮口径复核（2026-09-17）
 
+审计（`docs/53-m5-audit.md` §2-D）点名：「§5/§6 仍写 Android 依赖未进清单 / 没有声明的投放位置」。
+逐句复核后，**过时的是四处**（已在原处划掉并指向本节），另有三处**仍然成立**（列在下面，不必再核）。
 
+| 原表述 | 判定 | 今天实况 | 依据（符号名 / 可复核读数） |
+|---|---|---|---|
+| §5「未覆盖：Android（Gradle）依赖、…」 | **过时**（仅该半句） | Android 依赖**已覆盖**：114 个组件（allowed 113 / notice 1 / denied 0） | §8；采集器 `tools/android-licenses.ps1` → `tools/license-audit.ps1` 读 `target/evidence/compliance/android-licenses.json`；报告落点 `docs/compliance/license-report.md` 的「Android（Gradle/Maven）依赖」节 |
+| §5「署名/免责文本的实际投放位置是另一件事（还没做）」 | **过时** | 两处投放都做了 | §7（桌面：`bundle.resources` 的 map 映射 + `third_party_notices` 命令 + 「关于」面板）、§9（Android：`assets/THIRD-PARTY-NOTICES.md` + `NoticesLoader` + `LicensesScreen`）|
+| §6.2「Android（Gradle）依赖仍未进清单」 | **过时** | 同第一行 | §8；`docs/compliance/THIRD-PARTY-NOTICES.md` 内含 Android 组件（如 `com.google.guava:listenablefuture`）|
+| §7.1「Android 侧没有对应投放」 | **过时** | 同第二行 | §9 |
+| §7.1「真实安装包验证…干净机器上打开『关于』还没验过」 | **仍成立** | 验到的只是「资源进包 + 包内路径与运行时查找一致」 | §7.1；`docs/42-m5-release-pipeline.md` §4.2 |
+| §8.3 / §9.3「CI 未接（Android 许可审计）」 | **仍成立，依据更精确** | `ci.yml` 的 `License audit (Rust + frontend)` 步骤在，但它**不**跑 `tools/android-licenses.ps1`；`release.yml` 的 `Generate third-party notices` 同样不带 Android 采集 → 两处 CI 环境下 Android 一栏都会「跳过」 | `.github/workflows/ci.yml`、`release.yml`；`tools/license-audit.ps1` 的 `-SkipAndroid` 分支与「未找到 Android 依赖清单，本次跳过 Android」提示 |
+| §9.3「真机验证（没在真机上点开『开源许可』）」 | **仍成立** | 全仓无「真机点开许可页」的记录 | `docs/` 与 `target/evidence/` 下 grep「开源许可」只命中文档与手册 |
+| §9.3「两边各自维护提示语」 | **仍成立** | 文案**相同**但**各自硬编码**：桌面 `view.rs` 的 `notices_view` 与 Android `NoticesLoader.MISSING_HINT` | `desktop/src-tauri/src/view.rs`；`android/app/src/main/kotlin/com/gotkicry/audiolink/compliance/NoticesLoader.kt` |
+
+### 10.1 本轮顺带发现（**范围外**，未改，需另行处置）
+
+1. `docs/compliance/license-report.md` 里的「**未覆盖**：…以及 Android 侧的**投放位置**（声明入口）」与
+   「署名/免责文本的**实际投放位置**是另一件事」这两句是**自动生成的**，模板在
+   `core/crates/audiolink-tools/src/license.rs` 的报告渲染函数里 —— **改文档没用，下次跑审计会把旧口径写回去**。
+   本轮没动它（write scope 只有 `docs/41` 与 `docs/42`）。
+2. `ci.yml` 里那一步的名字是 `License audit (Rust + frontend)`，与脚本现在的实际覆盖面（默认纳入 Android，
+   只要清单 JSON 在）不符 —— 容易让人以为「CI 已覆盖 Android」。见 `docs/42` §13.1。
