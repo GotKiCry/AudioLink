@@ -36,11 +36,21 @@
 
 | 项 | 说明 |
 |---|---|
-| 桌面 / Android 的「勾选成组」面板 | 引擎侧账本与事件已就绪，UI 交互属 M3 的同步组那一项 |
-| 成员同步质量展示 | 需要每成员的时钟估计质量（Poor → UI 明示「该设备同步质量差」），尚未接线 |
+| 桌面 / Android 的「勾选成组」面板 | 引擎侧账本与事件已就绪，~~UI 交互属 M3 的同步组那一项~~ → **桌面端已做、Android 侧未核到证据，见 §3.1** |
+| 成员同步质量展示 | 需要每成员的时钟估计质量（Poor → UI 明示「该设备同步质量差」），~~尚未接线~~ → **已接线，见 §3.1** |
 | 真机三台同时出声 | 组内 ±10 ms P95 的真机验收仍需设备；量具（sync-measure）与机制都在位 |
 | §7 的 buffer_ms / dac_latency_ms 补偿项 | 要设备出厂 DAC 延迟估计 |
-| 多会话（并行推 ≥ 8 台） | M3 交付物 1 未开始 |
+| 多会话（并行推 ≥ 8 台） | M3 交付物 1 ~~未开始~~ → **回环 8 台已覆盖、真机压测仍挂账，见 §3.1** |
+
+### 3.1 更正（第 97 轮复核，2026-09-17）
+
+| 原表述（§3） | 今天实况 | 证据 |
+|---|---|---|
+| 「桌面 / Android 的「勾选成组」面板｜UI 交互属 M3 的同步组那一项」 | **桌面端已做**（4 个命令 + 勾选建组 + 组卡片）；**Android 侧未核到证据**（`android/` 下 30 个 Kotlin 文件里 `group_id` / `GroupView` / `create_group` / `join_group` 零命中）| `desktop/src-tauri/src/lib.rs:134`（`list_groups`）；`desktop/src/components/GroupPanel.tsx`；面板那轮记录 `docs/31-m3-group-panel.md` |
+| 「成员同步质量展示｜尚未接线」 | **已接线**：§6.5 分级随成员表出网，面板按分级上色 + 悬停显示偏移 | `core/crates/audiolink-engine/src/runtime.rs:686`（`GroupMember`）、`:690`（`quality: ClockQuality`）、`:1001`（`groups()`）、`:1038`（逐成员填分级）；`desktop/src-tauri/src/view.rs:64`；`desktop/src/components/GroupPanel.tsx:145`；`docs/32-m3-member-quality.md` |
+| 「多会话（并行推 ≥ 8 台）｜M3 交付物 1 未开始」 | **回环 8 台已覆盖，真机压测仍挂账** | `core/crates/audiolink-engine/tests/engine/multi_session.rs:215`（`one_capture_feeds_eight_receivers`）；`docs/33-m3-multi-session.md` §9 |
+
+**三行仍成立、不必再核**：「真机三台同时出声」、「§7 的 `buffer_ms` / `dac_latency_ms` 补偿项」（全仓 `dac_latency` 零命中）、§5.2 的两条（三组及以上与重叠成员语义 —— 本轮 grep 全仓无重叠处理，`create_group` 在 `core/crates/audiolink-engine/src/runtime.rs:851`、`join_group` 在 `:906`；真机多组听感）。
 
 ---
 

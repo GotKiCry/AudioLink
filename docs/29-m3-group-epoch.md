@@ -47,7 +47,16 @@
 
 | 项 | 说明 |
 |---|---|
-| GROUP_CREATE / JOIN / LEAVE（0x40–0x42） | 组管理（成员表、动态加入退出、质量展示）仍未实现，0x43 是本轮唯一接上的一条 |
+| GROUP_CREATE / JOIN / LEAVE（0x40–0x42） | 组管理（成员表、动态加入退出、质量展示）~~仍未实现~~ → **已实现，见 §4.1**；0x43 是本轮唯一接上的一条 |
 | §7 的 buffer_ms / dac_latency_ms 补偿项 | 要设备出厂 DAC 延迟估计 |
 | 真机双机 | 两台接收端在同一 epoch 下同时出声、±10 ms P95，仍需第二台设备；量具（sync-measure）与机制都在位 |
-| 多会话 | M3 交付物 1（并行推 ≥ 8 台）未开始 |
+| 多会话 | M3 交付物 1（并行推 ≥ 8 台）~~未开始~~ → **回环已覆盖、真机仍挂账，见 §4.1** |
+
+### 4.1 更正（第 97 轮复核，2026-09-17）
+
+| 原表述（§4） | 今天实况 | 证据 |
+|---|---|---|
+| 「GROUP_CREATE / JOIN / LEAVE（0x40–0x42）｜组管理（成员表、动态加入退出、质量展示）仍未实现」 | 已实现：三帧都有载荷与处理分支；成员账本与动态加入/退出（`docs/30`）、桌面勾选成组面板（`docs/31`）、成员质量展示（`docs/32`）都在 | `core/crates/audiolink-engine/src/runtime.rs:3641` / `:3664` / `:3671`；`core/crates/audiolink-engine/src/dispatch.rs:317`（未实现只剩 `SET_VOLUME_LOCK` / `TELEMETRY_PUSH`）、`:487` |
+| 「多会话｜M3 交付物 1（并行推 ≥ 8 台）未开始」 | **回环已覆盖，真机仍挂账** | `core/crates/audiolink-engine/tests/engine/multi_session.rs:215`；`docs/33-m3-multi-session.md` §9 |
+
+**两行仍成立、不必再核**：「§7 的 `buffer_ms` / `dac_latency_ms` 补偿项」（全仓 `dac_latency` 零命中）、「真机双机」（要第二台设备；无 M3 真机验收记录）。

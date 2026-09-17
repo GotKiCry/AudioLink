@@ -52,7 +52,17 @@
 | 项 | 说明 |
 |---|---|
 | §7 的 buffer_ms / dac_latency_ms 补偿项 | 需要设备出厂 DAC 延迟估计；当前只用 20 ms 迟到门限 |
-| GROUP_EPOCH 控制帧接线 | Engine::schedule_playout 已就绪，但 0x43 的载荷收发与 dispatch 分支还没做 —— 目前要靠上层显式调用，组管理打通后由 GROUP_EPOCH 触发 |
-| GROUP_CREATE / JOIN / LEAVE | 临时同步组（M3 交付物 4）尚未实现，那几个帧仍落在 dispatch 的「未实现」计数里 |
+| GROUP_EPOCH 控制帧接线 | Engine::schedule_playout 已就绪，但 ~~0x43 的载荷收发与 dispatch 分支还没做 —— 目前要靠上层显式调用，组管理打通后由 GROUP_EPOCH 触发~~ → **已接线，见 §4.1** |
+| GROUP_CREATE / JOIN / LEAVE | 临时同步组（M3 交付物 4）~~尚未实现，那几个帧仍落在 dispatch 的「未实现」计数里~~ → **已实现，见 §4.1** |
 | 真机双机验证 | 两台接收端在同一 epoch 下的起播对齐与 ±10 ms P95 需要第二台设备；量具与机制都已就位 |
-| 多会话 | M3 交付物 1（并行推 ≥ 8 台）未开始 |
+| 多会话 | M3 交付物 1（并行推 ≥ 8 台）~~未开始~~ → **回环 8 台已覆盖、真机仍挂账，见 §4.1** |
+
+### 4.1 更正（第 97 轮复核，2026-09-17）
+
+| 原表述（§4） | 今天实况 | 证据 |
+|---|---|---|
+| 「GROUP_EPOCH 控制帧接线｜0x43 的载荷收发与 dispatch 分支还没做」 | 已接线：收（`ControlRequest::GroupEpoch` → 换算本机时钟 → 排播）与发（`Engine::announce_group_epoch`）两端都通 | `core/crates/audiolink-engine/src/runtime.rs:3678`（接收分支）、`:1911`（会话循环发送）、`core/crates/audiolink-engine/src/dispatch.rs:317`（**未实现只剩** `SET_VOLUME_LOCK` / `TELEMETRY_PUSH`）；该轮记录 `docs/29-m3-group-epoch.md` |
+| 「GROUP_CREATE / JOIN / LEAVE｜临时同步组（M3 交付物 4）尚未实现，那几个帧仍落在 dispatch 的「未实现」计数里」 | 已实现：三帧都有载荷与处理分支，成员账本与动态加入/退出可用 | `core/crates/audiolink-engine/src/runtime.rs:3641`（`GroupCreate`）、`:3664`（`GroupJoin`）、`:3671`（`GroupLeave`）；`core/crates/audiolink-engine/src/dispatch.rs:317`（未实现计数里已无这三帧）、`:487`（覆盖度测试同步更新）；该轮记录 `docs/30-m3-group-management.md` |
+| 「多会话｜M3 交付物 1（并行推 ≥ 8 台）未开始」 | **回环侧已覆盖，真机侧仍挂账**：1 发 8 收（同组、`start_send_many`）跑通 | `core/crates/audiolink-engine/tests/engine/multi_session.rs:215`；实测 `docs/33-m3-multi-session.md` §9 |
+
+**两行仍成立、不必再核**：「§7 的 `buffer_ms` / `dac_latency_ms` 补偿项」（本轮全仓 grep `dac_latency` **零命中**；`buffer_ms` 只命中 WASAPI 的设备缓冲，如 `core/crates/audiolink-audio/src/wasapi/capture.rs:44`，与 §7 的补偿项不是一回事）；「真机双机验证」（要第二台设备；本轮复查 `docs/` 与 `target/evidence/` 下无 M3 真机验收记录）。

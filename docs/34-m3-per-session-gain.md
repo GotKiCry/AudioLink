@@ -43,7 +43,15 @@ runtime 里原来有这么一段注释（大意）：**「假装接受了 SET_GA
 
 | 项 | 说明 |
 |---|---|
-| UI 音量控件 | 引擎与 IPC 能力已就绪，桌面/Android 的音量滑块属面板那一项 |
+| UI 音量控件 | 引擎与 IPC 能力已就绪，~~桌面/Android 的音量滑块属面板那一项~~ → **桌面端已做、Android 侧未核到证据，见 §4.1** |
 | 真机听感验证 | RMS 只是幅度证据；「调音量听起来顺不顺、有没有咔哒」要真机 |
 | 每会话静音状态回读 | 现在只下发不回报（UI 想显示当前音量需要一条回读路径） |
 | 真机三台同时出声 | M3 的真机验收项，仍需设备 |
+
+### 4.1 更正（第 97 轮复核，2026-09-17）
+
+| 原表述（§4） | 今天实况 | 证据 |
+|---|---|---|
+| 「UI 音量控件｜引擎与 IPC 能力已就绪，桌面/Android 的音量滑块属面板那一项」 | **桌面端已做**（音量滑块 → `set_peer_gain` 命令 → 引擎，渐变 200 ms）；**Android 侧未核到证据**（`android/` 下 30 个 Kotlin 文件里 `set_gain` / `SET_GAIN` / `setGain` 零命中）| `desktop/src/components/PeerCard.tsx:5`（滑块注释）、`desktop/src-tauri/src/lib.rs:170`（`set_peer_gain`）；该轮记录 `docs/36-desktop-volume-and-group-refresh.md` |
+
+**三行仍成立、不必再核，本表一字未改**：「真机听感验证」（要耳朵）、「每会话静音状态回读」（本轮复查：`core/crates/audiolink-engine/src/gain.rs:104` 的 `current_x1000()` 只在引擎内部，桌面命令表里也只有 `set_peer_gain` 一个写入口 —— 没有对外回读路径，与 `docs/36` §4 的「音量回读」是同一条）、「真机三台同时出声」（要设备）。

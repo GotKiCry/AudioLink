@@ -106,8 +106,22 @@
 
 | 项 | 说明 |
 |---|---|
-| 预约播放（M3 交付物 3） | 播放环按 epoch 驱动的机制尚未实现；本轮只解决「同步误差怎么量」 |
-| 多会话管理（M3 交付物 1） | 发送端并行推 N 台的会话管理与独立统计 |
-| 临时同步组（M3 交付物 4） | 勾选成组、动态加入/退出、成员同步质量展示 |
+| 预约播放（M3 交付物 3） | 播放环按 epoch 驱动的机制~~尚未实现~~ → **已实现，见 §5.1**；本轮只解决「同步误差怎么量」 |
+| 多会话管理（M3 交付物 1） | 发送端并行推 N 台的会话管理与独立统计 → **已做，见 §5.1** |
+| 临时同步组（M3 交付物 4） | 勾选成组、动态加入/退出、成员同步质量展示 → **已做，见 §5.1** |
 | 按偏差自动补偿 | 先有测量再谈补偿；速率微调 vs 手动滑块的取舍要等真机数据 |
 | 声学路径测量 | 本工具量的是**录音对齐**；要量「出声」偏差需要麦克风与更严格的反射处理 |
+
+---
+
+## 5.1 更正（第 97 轮复核，2026-09-17）
+
+§5 是**当轮的后续清单**，其中三条此后都做掉了（原文保留在上面，划掉的是过时部分）：
+
+| 原表述（§5） | 今天实况 | 证据 |
+|---|---|---|
+| 「预约播放（M3 交付物 3）｜播放环按 epoch 驱动的机制尚未实现」 | 已实现：新增 `audiolink-engine::epoch` 纯逻辑模块，播放线程按 `PlayoutAction` 三分支接线，`Engine::schedule_playout` 可用 | `core/crates/audiolink-engine/src/epoch.rs`（16 KB）；`core/crates/audiolink-engine/src/runtime.rs:1167`（`pub async fn schedule_playout`）、`:3515`（`fn apply_schedule`）；该轮记录 `docs/28-m3-scheduled-playout.md` |
+| 「多会话管理（M3 交付物 1）：发送端并行推 N 台的会话管理与独立统计」 | 已做：共享采集枢纽 + `Engine::start_send_many`，回环 1 发 8 收跑通 | `docs/33-m3-multi-session.md` §2、§9；`core/crates/audiolink-engine/tests/engine/multi_session.rs:215`（`one_capture_feeds_eight_receivers`）|
+| 「临时同步组（M3 交付物 4）：勾选成组、动态加入/退出、成员同步质量展示」 | 已做：引擎侧三帧与成员账本（`docs/30`）、桌面勾选成组面板（`docs/31`）、成员质量分级展示（`docs/32`）| 引擎：`core/crates/audiolink-engine/src/runtime.rs:3641`（`ControlRequest::GroupCreate`）、`:3664`（`GroupJoin`）、`:3671`（`GroupLeave`）、`:686`/`:690`（`GroupMember` / `quality`）；桌面：`desktop/src-tauri/src/lib.rs:134`（`list_groups`）、`desktop/src/components/GroupPanel.tsx:145`（按分级上色）|
+
+**两行仍成立、不必再核**（本轮一并复查）：「按偏差自动补偿」—— `drift_ppm` 目前只被估计器算出并随遥测上报（`core/crates/audiolink-engine/src/telemetry.rs:216` `set_clock`、`core/crates/audiolink-engine/src/payload.rs:264`），**没有任何**拿它去调播放的路径；「声学路径测量」—— 要麦克风，本工具只做录音对齐。
