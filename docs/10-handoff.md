@@ -404,6 +404,15 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
 - **看板同步仍受阻（第 63–65 轮）**：GitHub GraphQL 二级限流，连续三轮的远端写入/核对都没做成。
   第 64 轮（多组共存）与第 65 轮（schedule_playout 护栏）的行都已写进 `tools/sync-board.ps1` 且 `PARSE-OK`，
   **待限流恢复后执行一次 `pwsh tools/sync-board.ps1` 并回读核对**。下轮第一件事仍是这个。
+- **第 66 轮：面板欠账还清 + 第 65 轮那个「待查」查清了（结论：非缺陷）**。
+  ① 面板：限流窗口一恢复就补了 `sync-board.ps1`，把第 64（多组共存）、第 65（schedule_playout 护栏）两行
+  写进远端，并删掉第 63 轮遗留的重复行；远端核对 **Done 100 / In Progress 7 / Todo 4**，M4 行正文确认含本轮结论。
+  ② 待查项：现象是「配对完成、还没开流」时调用 `schedule_playout` 报 `BadRequest { session task is gone }`。
+  用探针（连续 2.1 s、每 300 ms 采样两侧 `peers()`）看到会话是**长驻**的（两侧恒为 1），那一刻调用**返回 Ok**。
+  真因是**测试时序**：接受侧的会话登记比 `submit_pin` 返回晚一拍，而这条 API 走的是本端会话表。
+  既然路径确实可用，测试就改为覆盖它 —— 配对 → 等 streaming → 等接收侧登记 → **开流前**设定基准（断言 Ok）
+  → 开流 → 断言 `PlayoutScheduled` 的 epoch_id 原样报出。连跑 3 次全绿、集成 32 + 单测 150 全绿；
+  看板行标题已更正（去掉「+ 一处待查观察」），旧标题条目已删除。
 
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 

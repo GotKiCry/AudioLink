@@ -115,7 +115,7 @@ async fn group_epoch_reaches_the_receiver_and_schedules_playout() {
         "等待量应落在「帧的流内时刻 + 提前量」的量级：{wait_us} µs"
     );
 }
-/// `Engine::schedule_playout` 的**显式 API 语义**：设定基准后必须报出排播时间线。
+/// `Engine::schedule_playout` 的**显式 API 语义**：流还没开就设定基准，也必须在开流后生效。
 ///
 /// 为什么补这一条（第 65 轮）：第 59 轮动过这条路径的实现（把「播放句柄未就绪」从报
 /// `cap_unsupported` 改成暂存、开流后补应用），但那次改动**没有测试**。
@@ -125,7 +125,7 @@ async fn group_epoch_reaches_the_receiver_and_schedules_playout() {
 /// （`send_command` 只在 command 通道关闭时报这句）。它究竟是「无流会话被提前回收」的缺陷，
 /// 还是「会话任务只在流期间存在」的既定设计，需要单独查；查清之前，这条测试只覆盖开流之后的语义。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn schedule_playout_reports_the_timeline() {
+async fn schedule_playout_before_open_stream_still_applies() {
     let dir = tempfile::TempDir::new().expect("临时目录");
     let frame_ms = 20_u32;
     let lead_ms = 120_u32;
@@ -164,7 +164,13 @@ async fn schedule_playout_reports_the_timeline() {
             .await
             .expect("PIN 配对");
 
-        // 配对完成还不等于可以开流：会话要先进入 streaming（握手走完）。
+        // 等待顺序不能省（第 65 轮踩过两次）：
+        // ① 会话要先进入 streaming（握手走完）才能真正开流 —— 否则 `start_send` 会回
+        //    「session ended or is not ready to start capture」；
+        // ② 接受侧的会话登记可能比 `submit_pin` 返回晚一拍 —— 而 `schedule_playout` 走的是
+        //    **本端会话表**，表里没对端时会回「session task is gone」。
+        // 上次我把第 ② 点误记成待查缺陷；探针（跑 2.1 s，两侧 peers 恒为 1）证明会话是长驻的、
+        // 这条 API 在开流前**确实可用**，所以本测试直接覆盖那条路径。
         let ready = Instant::now() + Duration::from_secs(20);
         while !sender
             .peers()
@@ -174,23 +180,22 @@ async fn schedule_playout_reports_the_timeline() {
             assert!(Instant::now() < ready, "会话没有在 20 s 内进入 streaming");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-
-        // 再把流开起来，并等首帧建立「序号 → 样本序号」的换算基准。
-        sender.start_send(receiver_id).await.expect("开流");
-        let deadline = Instant::now() + Duration::from_secs(20);
         while receiver.peers().is_empty() {
-            assert!(Instant::now() < deadline, "接收侧没有在 20 s 内登记到会话");
+            assert!(Instant::now() < ready, "接收侧没有在 20 s 内登记到会话");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(Duration::from_secs(2)).await;
 
-        // ① 设定排播。基准取**未来**（10 s 后）：落在过去的 target 会走 Drop 分支，
-        //    那条路不发时间线事件，于是测试会误以为「排播没生效」。
+        // ① **流还没开**就设定排播：此刻播放句柄还不存在，实现应当暂存、开流后补应用
+        //    —— 第 59 轮改的正是这条路径。基准取**未来**（10 s 后）：落在过去的 target 会走
+        //    Drop 分支，那条路不发时间线事件，于是测试会误以为「排播没生效」。
         let schedule = EpochSchedule::new(epoch_id, now_monotonic_us() + 10_000_000, lead_ms);
         receiver
             .schedule_playout(sender_id, Some(schedule))
             .await
-            .expect("设定排播");
+            .expect("开流前设定排播也应当被接受（先暂存、开流后补应用）");
+
+        // ② 现在开流：暂存的那份应当在播放句柄建好后立刻补应用。
+        sender.start_send(receiver_id).await.expect("开流");
 
         loop {
             if let Ok(EngineEvent::PlayoutScheduled { epoch_id: got, .. }) = events.recv().await {
@@ -205,6 +210,6 @@ async fn schedule_playout_reports_the_timeline() {
     receiver.shutdown().await;
     accept.abort();
 
-    println!("schedule_playout 设定之后报出排播时间线：epoch={got:#x}");
+    println!("schedule_playout 开流前设定 → 开流后补应用：epoch={got:#x}");
     assert_eq!(got, epoch_id, "补应用的必须是当初暂存的那份基准");
 }
