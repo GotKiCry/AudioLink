@@ -535,6 +535,22 @@ async fn run_outage(
         "[outage-diag] 应用层主动投喂：发出 {probe_fired} 次 · 被引擎接受 {probe_accepted} 次"
     );
 
+    // 诊断：把两侧会话表**整体**打出来。区分「表是空的」与「表里有对端但 id 不匹配」
+    // 这两件事，是判断重连有没有把身份搞丢的关键。
+    println!(
+        "[outage-diag] 会话表（重连后）：发送侧 {:?} · 接收侧 {:?}",
+        sender
+            .peers()
+            .iter()
+            .map(|peer| peer.state)
+            .collect::<Vec<_>>(),
+        receiver
+            .peers()
+            .iter()
+            .map(|peer| peer.state)
+            .collect::<Vec<_>>(),
+    );
+
     let sender_state = sender
         .peers()
         .iter()
@@ -790,6 +806,102 @@ async fn app_layer_probe_shortens_recovery() {
     assert!(
         outcome.recovery_ms.is_some(),
         "插回网线后 15 s 内必须重新出声（有投喂也不该比基线更差）"
+    );
+
+    sender.shutdown().await;
+    receiver.shutdown().await;
+    accept.abort();
+}
+
+/// **M2 验收原文，严格成断言版**：拔网 10 s，插回后 **≤ 3 s** 内重新出声。
+///
+/// 与 `ten_second_outage_self_heals_and_delay_is_recorded` 只差一处：那条把预算差距
+/// **只打印不断言**（护栏不长期变红、被无视），这条把它**钉成断言**。两条并存是刻意的分工：
+///
+/// * 记录版守「能力面」—— 10 s 拔网必须能自愈，暂不追预算；
+/// * 本条守「验收面」—— 验收原文就是 3 s，达不到就该红。
+///
+/// **当前预期结果：失败（红）。** 2026-09-17 本机实测 10 s 拔网的恢复延迟稳定在 4.2～4.8 s
+/// （连测四次：4415 / 4726 / 4546 / 4237 ms）。根因见 docs/48-m2-outage-boundary.md §2.4：
+/// 链路 0.2～0.3 s 就通了（插回后回程首个包 196~326 ms），真正慢的是数据面 ——
+/// 上行在插回后静默约 4 s 一个包都不发，然后一次放出约 502 个积压包（≈ 10 s × 50 pps）。
+/// 应用层 200 ms 主动投喂已被对照实验排除（§5.1），修复方向是接上 FR-27 的重连状态机。
+///
+/// ⚠️ 这个 3000 是**验收阈值**，不得为了让它变绿而下调 —— 改数字等于改验收口径，
+/// 需要产品确认（docs/48 §5 候选方案④），不是测试的权限。
+#[ignore = "等待 FR-27 重连落地：恢复时间一侧已实测达标（4783 -> 444 ms），但第 75 轮的重连实现会在接收侧留下僵尸会话、把真会话从 peers() 顶掉，故产品代码已回退；详见 docs/50-m2-reconnect.md"]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ten_second_outage_recovers_within_budget() {
+    let dir = tempfile::TempDir::new().expect(r"临时目录");
+    let frame_ms = 20_u32;
+    let (sender, receiver, relay, accept, mut writes, sender_id, receiver_id) =
+        wire_up(dir.path(), frame_ms).await;
+
+    let outcome = tokio::time::timeout(Duration::from_secs(90), async {
+        run_outage(
+            &sender,
+            &receiver,
+            &relay,
+            &mut writes,
+            sender_id,
+            receiver_id,
+            Duration::from_secs(10),
+            None,
+        )
+        .await
+    })
+    .await
+    .expect(r"90 s 内必须跑完");
+
+    // 一行读数，把验收判据需要的四个量一次摊开：恢复延迟、断网期间漏出的非静音回调数、
+    // 恢复后 2 s 内的非静音回调数、两侧会话表里对端的状态。
+    println!(
+        "[reconnect] 拔网 10 s 的 M2 预算校验（预算 3000 ms）：恢复延迟 {:?} ms，断网期间漏出的非静音回调 {} 个，恢复后 2 s 内非静音回调 {} 个；会话状态 发送侧={:?} 接收侧={:?}；中继丢弃 {} 转发 {}",
+        outcome.recovery_ms,
+        outcome.noise_while_cut,
+        outcome.sustained_writes,
+        outcome.sender_state,
+        outcome.receiver_state,
+        relay.dropped(),
+        relay.forwarded(),
+    );
+
+    // ① 先证明网真的断干净了：判据带时间戳，拔网前积压的回调不算「出声」（见文件头注释）。
+    assert_eq!(
+        outcome.noise_while_cut, 0,
+        r"拔网 400 ms 之后仍有非静音输出：网没真的断"
+    );
+
+    // ② 必须真的恢复过 —— 连出声都没有，就谈不上「几秒内恢复」。
+    let recovery_ms = outcome
+        .recovery_ms
+        .expect(r"插回网线后 15 s 内必须重新出声；完全没恢复，比超预算更糟");
+
+    // ③ 验收阈值本身。这是本条测试存在的唯一理由，也是当前唯一失败的断言。
+    assert!(
+        recovery_ms <= 3_000,
+        "M2 验收要求「拔网 10 s 后 ≤ 3 s 恢复」，实测 {recovery_ms} ms（超出预算 {} ms）；根因见 docs/48 §2.4：链路 0.2~0.3 s 即通，上行却在插回后静默约 4 s 才一次性放出积压包",
+        recovery_ms - 3_000
+    );
+
+    // ④ 恢复必须**持续**：2 s 窗口内 ≥ 20 个非静音回调（20 ms 帧理论上约 100 个），
+    //    而不是把积压一口气吐完就哑。
+    assert!(
+        outcome.sustained_writes >= 20,
+        "恢复后 2 s 内只有 {} 个非静音回调：这不是恢复，是吐积压",
+        outcome.sustained_writes
+    );
+
+    // ⑤ 恢复后两侧都该认为对端在流里，而不是停在 Failed/Reconnecting。
+    assert_eq!(
+        outcome.sender_state,
+        Some(SessionState::Streaming),
+        "恢复后发送侧 peers() 里对端状态应为 Streaming"
+    );
+    assert_eq!(
+        outcome.receiver_state,
+        Some(SessionState::Streaming),
+        "恢复后接收侧 peers() 里对端状态应为 Streaming"
     );
 
     sender.shutdown().await;
