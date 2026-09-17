@@ -61,6 +61,9 @@ runtime.rs:3590  fn report_peer_gone(inner, session, error)
 1. **状态分裂**：`apply(LinkLost)` 让 `SessionMachine` 进入 `Reconnecting`，下一行 `set_state(Failed)` 又把**快照**写成 `failed`。而 `PeerSession::snapshot()`（`runtime.rs:515-537`）读的是 `state` 字段，所以 `peers()`（`runtime.rs:1094`）报 `failed`，机器内部却停在 `reconnecting`。
 2. **两条 `PeerDisconnected`**：`3593` 一条（reason 形如 `"1009: ..."`），`drop_session` 的 `2224` 又一条（reason `"session closed"`）。UI 侧必须去重，否则一次断链画两次「已断开」。
 3. `SessionMachine::reconnects()`（`session.rs:246`）**全仓库没有第二个引用**（只在 `session.rs:329` 的单测里被读）——「重连了几次」目前没有任何出口，遥测/UI 都读不到。
+   > **第 105 轮更正（已修复）**：这条的前提比写的时候更糟 —— 当时不是「有计数、只是没出口」，而是**整个状态机从未被驱动**：全 crate 没有任何地方 apply `ConnectRequested` / `AcceptedInbound`，`SessionMachine` 一直停在 `Idle`。所以 §1.2 第 1 条的「状态分裂」与这里的「计数没出口」**根子是同一个**：`mark_streaming()` 的 `HandshakeOk` 从 `Idle` 出发是**非法迁移**，`handshakes` / `reconnects` / `degradations` **三个计数全是死的**，状态机与 `state` 快照字段早已脱钩（这也解释了它为什么长期无人发现：`peers()` 读的是快照字段，跟状态机早就没关系了）。
+   > 已于第 105 轮修复：**`8726537`** 让 `run_session` 起始按 Role 驱动起点事件（`Initiator → ConnectRequested` / `Responder → AcceptedInbound`），使 `HandshakeOk` / `LinkLost` / `ReconnectOk` 全部成为合法迁移，并把回执 apply 到表里的**当前会话**、补发 `PeerUpdated`；**`f601570`** 把 `PeerStatus.reconnects` 经 `peer_view()` 接进 `PeerView`（UI 契约）与 `types.ts`。红测试 `reconnect_receipt::reconnect_ok_is_visible_through_peers` 修前报「状态 Streaming，reconnects 0」、修后「reconnects 1」。
+   > ⚠️ **副作用**：`handshakes` / `degradations` 两个计数**从现在起才会真的增长**（此前恒为 0）。任何基于「它们一直是 0」的判断或表述都要复查 —— 这也正是本轮留下这条更正的原因。
 
 ### 1.3 情形 B：连接没死 → 上行静默约 4 s（M2 的 10 s 场景走的就是这条）
 
