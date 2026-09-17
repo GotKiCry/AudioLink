@@ -39,7 +39,8 @@ async fn declared_platform_capabilities_reach_the_peer() {
     desktop_config.listen = "127.0.0.1:0".parse().unwrap();
     desktop_config.capabilities = Capabilities::CURRENT | Capabilities::SYSTEM_LOOPBACK;
 
-    // 另一端故意不带内录：模拟尚未接上内录的平台（例如现在的 Android）。
+    // 另一端故意不带内录：模拟**还没接上内录**的平台。注意 Android 自 `a0158a2` 起**会**声明
+    // 内录 / 麦克风（见 `service/CaptureWiring.kt`），所以这一端不代表 Android，只代表「不声明内录的那一端」。
     let mut plain_config = EngineConfig::new("plain", dir.path().join("plain"));
     plain_config.listen = "127.0.0.1:0".parse().unwrap();
     plain_config.capabilities = Capabilities::CURRENT;

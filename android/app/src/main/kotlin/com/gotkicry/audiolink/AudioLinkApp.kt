@@ -11,7 +11,9 @@ import android.app.Application
 class AudioLinkApp : Application() {
     override fun onCreate() {
         super.onCreate()
-        // TODO(M1)：初始化日志、身份（自签证书）与信任库
-        // TODO(M1)：加载 Rust 内核（System.loadLibrary("audiolink_ffi") 由 FFI 层完成）
+        // 这里**不做**两件看起来该在这里做的事，它们都已在别处落地：
+        // ① 身份（自签证书）与信任库：由内核在 `engineStart(dataDir = filesDir)` 时建立（ADR-011），
+        //    与 Application.onCreate 是否跑过无关；
+        // ② 加载 Rust 内核：`System.loadLibrary("audiolink_ffi")` 由 FFI 生成的绑定层完成。
     }
 }

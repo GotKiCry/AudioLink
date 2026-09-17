@@ -18,16 +18,19 @@
 //! 只能持有**工厂**（`Fn() -> Result<Box<dyn ...>>`），由目标线程自己去建。
 //! 这是 ADR-010「内核不持有平台音频线程」的直接推论，不是实现细节。
 //!
-//! # 尚未落地的 M2/M3 能力
+//! # 能力边界（M2 / M3 / M4 已落地；仍未做的写在最后）
 //!
-//! - **抖动缓冲已完成第一阶段**：20--60 ms 自适应目标深度 + 一帧有界重排；
-//!   预约播放、跨设备同步和基于 epoch 的绝对目标时刻仍属 M3。
-//! - **不做预约播放 / 同步组**：§7 的 epoch 驱动排播属 M3 —— 那是「**用** offset 排播」，
-//!   与「**算** offset」是两件事。§6 的时钟同步**已经接线**（见 [`crate::clock`]）：
-//!   `CLOCK_PROBE` / `CLOCK_REPLY` 的收发节奏都在会话任务里，估计结果写进
-//!   `StreamStats.clock_offset_us` / `drift_ppm`。`buffer_level_us` 是「队列里的帧数 × 帧长」的换算值。
-//! - **冗余双发与 NACK 已落地，尚不做自适应码率**：副本都丢时按 §8.1 请求重传
-//!   （重试 ≤ 5 次 / 间隔 10 ms / 窗口 1 s，且只在 RTT < 30 ms 时启用）；窗口内补不回来由 PCM 掩盖兜底。
+//! - **抖动缓冲**：20--60 ms 自适应目标深度 + 一帧有界重排（`docs/18`）。
+//! - **时钟同步（「算」offset）与 §7 预约播放（「用」offset 排播）**：**两者都已接线** ——
+//!   收发节奏见 [`crate::clock`]，排播见 [`crate::epoch`]；估计结果写进
+//!   `StreamStats.clock_offset_us` / `drift_ppm`，`buffer_level_us` 是「队列里的帧数 × 帧长」的换算值。
+//!   （这里特意区分两件事：算得出 offset **不等于**按 offset 排播，后者是 §7 的 epoch 驱动路径。）
+//! - **冗余双发 / NACK / PCM 掩盖 / 自适应码率**：均已落地 —— 副本都丢时按 §8.1 请求重传
+//!   （重试 ≤ 5 次 / 间隔 10 ms / 窗口 1 s，且只在 RTT < 30 ms 时启用），窗口内补不回来由 PCM 掩盖兜底；
+//!   码率由 [`crate::adaptive`] 按对端 `STREAM_STATS` 升降级（`docs/19` / `21` / `17` / `23`）。
+//! - **仍未做（记账，不假装）**：立体声→单声道、20 ms→10 ms 帧长（都要动音频路径的全局形状，
+//!   见 `docs/23` 的「未做」）；DAC 延迟补偿（见 [`crate::epoch`] 的模块文档）；**多个发送端之间的
+//!   采样级对齐**（公共时间基准已在 M4 落地，逐源对齐没有，见 `docs/38` / `39`）。
 //!
 //! # 实时纪律
 //!
@@ -225,8 +228,9 @@ pub struct EngineConfig {
     /// §13 能力协商：本端声明的能力位图；默认 [`audiolink_types::Capabilities::CURRENT`]。
     ///
     /// **为什么要可注入**：`CURRENT` 说的是「**内核**能做到什么」，而真实设备还有平台差异 ——
-    /// Windows 有 WASAPI loopback（系统内录），Android 的内录尚未实现。平台侧在构造引擎时
-    /// 声明自己的能力，能力协商才有意义；把它写死成常量，等于让所有设备都说自己一样。
+    /// Windows 有 WASAPI loopback（系统内录），Android 侧也已接上 `AudioPlaybackCapture` 与麦克风
+    /// （`a0158a2` 起由 FFI 层把这些位传进来）。平台侧在构造引擎时声明自己的能力，能力协商才有意义；
+    /// 把它写死成常量，等于让所有设备都说自己一样。
     pub capabilities: u32,
     /// QUIC 空闲超时；默认 [`DEFAULT_IDLE_TIMEOUT`]（30 s）。
     ///
@@ -3845,7 +3849,8 @@ async fn handle_control(
 
         ControlRequest::StreamStats(stats) => {
             // 对端视角的遥测：① 存成该 peer 的最近快照（Engine::peer_stats，按 peer 隔离）；
-            // ② 透传给 UI。M1 不做自适应决策（M2）。
+            // ② 透传给 UI。**自适应决策不在这里** —— 它在发送侧：由 [`AdaptiveBitrate`]
+            // 按对端丢包 / RTT 升降码率（`crate::adaptive`、`docs/23`）。
             //
             // 存储必须按 peer 分开：EngineEvent::Telemetry **不带对端 id**（契约 §5 的已知局限，
             // M3 修），事件本身区分不了来源，多对端时共用一份快照就会串流。
@@ -3892,7 +3897,8 @@ async fn handle_control(
             }
         }
 
-        // ClockResult / Ping / Pong 及其它 M2/M3 命令：仍然**明确不做**而不是假装接受 ——
+        // 其余控制帧（ClockResult / Ping / Pong 等）：**本分支明确不处理**，忽略而不是假装接受 ——
+        // 时钟同步走 `clock.rs` 的**数据报**路径（`ClockReply`），不经过控制帧。
         // 音量这两条现在已经真的生效（见上面两个分支）。
         _ => {}
     }

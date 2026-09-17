@@ -356,7 +356,8 @@ pub fn run() {
             // 引擎真正的启动是异步的（`Engine::start`），命令层会等到它就绪（见 engine_bridge.rs）。
             let _managed = app.manage(EngineBridge::new(app.handle().clone()));
 
-            // TODO(M5)：启动后自动连接上次设备（FR-31，可关）
+            // FR-31 的「启动后自动连接上次设备」**不由这里**发起：前端挂载后调一次 `try_auto_connect`
+            // （`desktop/src/lib/useAudioLink.ts`）；判定口径与失败静默的理由见 `docs/43` §4。
             build_tray(app)?;
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();

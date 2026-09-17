@@ -506,8 +506,9 @@ impl Capabilities {
 
     /// 当前**内核**实际具备的能力。
     ///
-    /// 注意这是内核的能力，不是某台设备的能力：内录与麦克风要平台侧真的接上之后才算，
-    /// 所以这里暂不声明它们 —— 等 Windows/Android 侧接好再打开对应位。
+    /// 注意这是内核的能力，不是某台设备的能力：内录与麦克风是**平台能力**，所以这里**不声明**它们，
+    /// 由平台侧在构造引擎时用 `EngineConfig::capabilities` 叠加 —— Windows 的 WASAPI loopback 与
+    /// Android 的内录/麦克风都已接上（见 `docs/46` §8.3.5）。
     /// 宁可少声明，也不要声明一件做不到的事。
     pub const CURRENT: u32 =
         Self::OPUS | Self::PCM16 | Self::CAPTURE | Self::PLAYOUT | Self::MIXER | Self::GROUP_EPOCH;
