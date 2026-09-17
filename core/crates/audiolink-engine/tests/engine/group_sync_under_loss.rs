@@ -315,3 +315,97 @@ async fn group_sync_survives_link_loss() {
     receiver_a.shutdown().await;
     receiver_b.shutdown().await;
 }
+
+/// 更狠的一档：每 10 个音频数据报成串丢 3 个（约 30%）。
+///
+/// 上一轮（第 67 轮）只做到 4% 并把「更狠的丢包档」记为未做。这一档会真正触发**自适应降码率**
+/// 与丢包隐藏（PLC），所以它要回答一个更尖锐的问题：修正机制在极限下会不会把**播放时刻**也拖歪？
+/// —— 组内同步关心的正是时刻，不是「有没有丢音」。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn group_sync_survives_heavy_loss() {
+    let dir = tempfile::TempDir::new().expect("临时目录");
+    let frame_ms = 20_u32;
+    let lead_ms = 120_u32;
+
+    let mut send_config = EngineConfig::new("sender", dir.path().join("sender"));
+    send_config.listen = "127.0.0.1:0".parse().unwrap();
+    send_config.codec.frame_ms = frame_ms;
+    send_config.capture = Some(Arc::new(move || {
+        Ok(Box::new(SyntheticCapture::new(frame_ms, 440.0)?))
+    }));
+    let sender = Engine::start(send_config).await.expect("发送引擎");
+    let sender_id = sender.info().id;
+
+    let stamps_a = Arc::new(Mutex::new(Vec::new()));
+    let stamps_b = Arc::new(Mutex::new(Vec::new()));
+    let (receiver_a, accept_a) =
+        start_receiver(dir.path(), 0, Arc::clone(&stamps_a), frame_ms).await;
+    let (receiver_b, accept_b) =
+        start_receiver(dir.path(), 1, Arc::clone(&stamps_b), frame_ms).await;
+
+    // 每 10 个音频数据报成串丢 3 个 ≈ 30%，两条链路各自独立注入。
+    let relay_a = LossRelay::start(receiver_a.local_addr(), 512, 10, 3).await;
+    let relay_b = LossRelay::start(receiver_b.local_addr(), 512, 10, 3).await;
+
+    let mut events_a = receiver_a.subscribe();
+    let mut events_b = receiver_b.subscribe();
+
+    let outcome = tokio::time::timeout(Duration::from_secs(90), async {
+        let id_a = connect_and_pair(&sender, &receiver_a, relay_a.addr).await;
+        let id_b = connect_and_pair(&sender, &receiver_b, relay_b.addr).await;
+        wait_streaming(&sender, id_a).await;
+        wait_streaming(&sender, id_b).await;
+
+        let _group_id = sender
+            .create_group(&[id_a, id_b], lead_ms)
+            .await
+            .expect("建组");
+        sender
+            .start_send_many(&[id_a, id_b])
+            .await
+            .expect("两台一起开流");
+
+        tokio::time::sleep(Duration::from_secs(8)).await;
+    })
+    .await;
+    outcome.expect("90 s 内必须完成配对、建组与开流");
+
+    let a: Vec<Instant> = stamps_a
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|stamp| stamp.at)
+        .collect();
+    let b: Vec<Instant> = stamps_b
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|stamp| stamp.at)
+        .collect();
+    let (samples, absolute_p50, absolute_p95) = deviation_ms(&a, &b);
+    let scheduled_a = drain_scheduled(&mut events_a);
+    let scheduled_b = drain_scheduled(&mut events_b);
+    let dropped = relay_a.dropped() + relay_b.dropped();
+    let stats = receiver_a.telemetry(sender_id);
+    println!(
+        "[group-sync-loss] 重丢包：注入丢弃 {dropped} 个包；排播事件 {scheduled_a}/{scheduled_b}；样本 {samples} · 绝对偏差 P50 {absolute_p50:.2} ms · P95 {absolute_p95:.2} ms；接收侧遥测 {:?}",
+        stats.map(|s| (s.nack_count, s.plc_count, s.underruns))
+    );
+
+    assert!(dropped > 0, "中继一个音频包都没丢 —— 这条测试失去意义");
+    assert!(
+        scheduled_a > 0 && scheduled_b > 0,
+        "重丢包下两端都必须仍然进入排播（A={scheduled_a} · B={scheduled_b}）"
+    );
+    // 决定性断言（与 4% 档同一条线）：M3 的验收线不因链路恶劣而失守。
+    assert!(
+        absolute_p95 <= 10.0,
+        "重丢包时组内偏差 P95 = {absolute_p95:.2} ms，超过 M3 的 ±10 ms 验收线"
+    );
+
+    accept_a.abort();
+    accept_b.abort();
+    sender.shutdown().await;
+    receiver_a.shutdown().await;
+    receiver_b.shutdown().await;
+}
