@@ -351,3 +351,274 @@ fn receiver_bitrate(
         .find(|(receiver, _)| receiver.info().id == id)
         .and_then(|(receiver, _)| receiver.telemetry(sender_id).map(|stats| stats.bitrate_bps))
 }
+
+/// 各台「非静音样本累计数」的快照。
+///
+/// `Counters.audible` 累计的是**样本数**（交织的双声道各算一个样本）：20 ms 帧 @48 kHz = 960 帧，
+/// 双声道即 1920 样本/帧、50 帧/s ⇒ 满速 ≈ 96000 样本/s，4 s 窗口的满额 = **384000**
+/// （本机实测四台都精确落在满额上，见打印的 `[isolation]` 行）—— 绝对下限就建立在这个换算上。
+fn audible_snapshot(counters: &[Arc<Mutex<Counters>>]) -> Vec<usize> {
+    counters
+        .iter()
+        .map(|counters| counters.lock().unwrap().audible)
+        .collect()
+}
+
+/// 一段窗口内的增量（累计计数单调递增，`saturating_sub` 只是防御）。
+fn delta_since(now: &[usize], before: &[usize]) -> Vec<usize> {
+    now.iter()
+        .zip(before.iter())
+        .map(|(now, before)| now.saturating_sub(*before))
+        .collect()
+}
+
+/// **M3 并发验收的另一半：`互不影响`（故障隔离）。**
+///
+/// `docs/05-roadmap.md` §M3 的并发原文是「3 台接收端同时推流，**互不影响**」，而
+/// `one_capture_feeds_three_receivers` 只钉住了前半句（三台各自在收帧、对端表干净）——
+/// 后半句「一台出问题，其余不受影响」此前**没有任何测试在守**：它被声称，却没被测。
+///
+/// 场景与判据（每一条都是量级判据）：
+///
+/// 1. 1 发 + 4 收并发推流，先量**断开前 4 s** 各台的非静音样本增量（对照组）；
+/// 2. 把 1 号接收端**整个引擎 shutdown** —— 等价于那台设备掉线/进程死掉；
+/// 3. 再量**断开后 4 s** 的各台增量。幸存的三台必须仍在满量级出声，三条一起卡：
+///    与自己的对照组比**不跌超四分之一**、绝对下限 **96000 样本/4 s**（满额 384000 的四分之一）、
+///    幸存台之间**同量级**（最小不低于最大的一半）。
+///    第 61 轮那个 `join_group` 缺陷正是靠量级对比才现形的（4 s 窗口里 A/B 各 384000、C 只有 30720）——
+///    「几乎不出声」和「完全不出声」在 `> 0` 眼里一模一样，所以这里一条 `> 0` 都没有。
+/// 4. 发送侧会话数必须**恰好少一个**：全掉说明一台拖垮了发送端，不变说明断开根本没被感知；
+///    少掉的那台还必须**正是受害台**（否则「数目对了」也可能是别的会话被误摘）。
+/// 5. 受害台自己必须真的哑了 —— 这只是「断开这个动作生效了」的健全性检查，
+///    **不是**隔离判据（后者显然是），放在最后是为了不喧宾夺主。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_receiver_failure_does_not_stall_the_others() {
+    const COUNT: usize = 4;
+    /// 被断开的接收端：取中间那台，避开「首台/末台」在配对与批量开流里的特殊位置。
+    const VICTIM: usize = 1;
+    const WINDOW: Duration = Duration::from_secs(4);
+    /// 4 s 窗口的绝对下限：满额 384000 的四分之一（= 96000）。
+    /// 留四倍余量是为了不被后台负载带偏，同时仍然挡得住「只剩零头」：
+    /// 某台要是只写出满额的零头（比如 10%），这条直接判红。
+    const MIN_SAMPLES_PER_WINDOW: usize = 96_000;
+
+    let dir = tempfile::TempDir::new().expect("临时目录");
+    let frame_ms = 20_u32;
+
+    let mut send_config = EngineConfig::new("sender", dir.path().join("sender"));
+    send_config.listen = "127.0.0.1:0".parse().unwrap();
+    send_config.codec.frame_ms = frame_ms;
+    send_config.capture = Some(Arc::new(move || {
+        Ok(Box::new(SyntheticCapture::new(frame_ms, 440.0)?))
+    }));
+    let sender = Engine::start(send_config).await.expect("发送引擎");
+
+    let mut receivers: Vec<(Arc<Engine>, tokio::task::JoinHandle<()>)> = Vec::new();
+    let mut counters: Vec<Arc<Mutex<Counters>>> = Vec::new();
+    for index in 0..COUNT {
+        let sink_counters = Arc::new(Mutex::new(Counters::default()));
+        let mut recv_config = EngineConfig::new(
+            format!("receiver-{index}"),
+            dir.path().join(format!("receiver-{index}")),
+        );
+        recv_config.listen = "127.0.0.1:0".parse().unwrap();
+        recv_config.codec.frame_ms = frame_ms;
+        let moved = Arc::clone(&sink_counters);
+        recv_config.playout = Some(Arc::new(move || {
+            Ok(Box::new(CountingSink {
+                inner: NullPlayout::new(60),
+                counters: Arc::clone(&moved),
+            }) as Box<dyn PlayoutSink>)
+        }));
+        let receiver = Engine::start(recv_config).await.expect("接收引擎");
+        let accept = receiver.spawn_accept_loop();
+        counters.push(sink_counters);
+        receivers.push((receiver, accept));
+    }
+
+    let mut events: Vec<_> = receivers
+        .iter()
+        .map(|(receiver, _)| receiver.subscribe())
+        .collect();
+
+    // 配对 + 批量开流 + 两段采样。整体包一个总超时，避免任何一步挂死把测试变成吊死。
+    let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+        let mut ids = Vec::new();
+        for ((receiver, _), event_rx) in receivers.iter().zip(events.iter_mut()) {
+            let receiver_id = receiver.info().id;
+            let error = sender.connect(receiver.local_addr()).await.unwrap_err();
+            assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
+            let pin = loop {
+                if let EngineEvent::DisplayPin { pin, .. } = event_rx.recv().await.unwrap() {
+                    break pin;
+                }
+            };
+            sender
+                .submit_pin(receiver_id, &pin)
+                .await
+                .expect("PIN 配对");
+            ids.push(receiver_id);
+        }
+
+        for id in &ids {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !sender
+                .peers()
+                .iter()
+                .any(|peer| peer.id == *id && peer.state == SessionState::Streaming)
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "{id:?} 没有在 30 s 内进入 streaming"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+
+        let results = sender.start_send_many(&ids).await.expect("批量开流");
+        assert_eq!(results.len(), COUNT, "每台都要有各自的结论");
+        for (id, result) in &results {
+            assert!(result.is_ok(), "{id:?} 开流失败：{result:?}");
+        }
+
+        // 预热：等四台都冒出第一段非静音，再走 1 s，让排播与抖动缓冲进入稳态。
+        // 不等就采样，会把启动爬坡记进对照组。
+        let warmup_deadline = Instant::now() + Duration::from_secs(20);
+        while counters
+            .iter()
+            .any(|counters| counters.lock().unwrap().first_audio.is_none())
+        {
+            assert!(
+                Instant::now() < warmup_deadline,
+                "20 s 内并非四台都出了声，预热不成立"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        // ① 对照组：断开前 4 s。
+        let before_window = audible_snapshot(&counters);
+        tokio::time::sleep(WINDOW).await;
+        let first_window = delta_since(&audible_snapshot(&counters), &before_window);
+
+        // ② 断开 1 号接收端：整个引擎关掉 —— 那台设备就当作死了。
+        //    发送侧会看到连接被关，随后摘表并按 FR-27 重拨；重拨必然失败（对端端口已释放），
+        //    这段「重连折腾」正是本测试要压的负载：它不许把其余三台一起拖哑。
+        receivers[VICTIM].0.shutdown().await;
+        let cut_at = Instant::now();
+
+        // 等发送侧摘掉受害会话（不在这里 panic：超时留给下面的断言去判，好让读数先落到输出里）。
+        let peer_wait_deadline = Instant::now() + Duration::from_secs(25);
+        while sender.peers().len() >= COUNT {
+            if Instant::now() >= peer_wait_deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let peers_settle_ms = cut_at.elapsed().as_millis();
+
+        // ③ 断开后 4 s（从发送侧摘掉受害会话之后起算，窗口干净）。
+        let before_window = audible_snapshot(&counters);
+        tokio::time::sleep(WINDOW).await;
+        let second_window = delta_since(&audible_snapshot(&counters), &before_window);
+
+        let sender_peers = sender.peers();
+        let sender_peer_ids: Vec<_> = sender_peers.iter().map(|peer| peer.id).collect();
+        let survivor_states: Vec<Option<SessionState>> = ids
+            .iter()
+            .map(|id| {
+                sender_peers
+                    .iter()
+                    .find(|peer| peer.id == *id)
+                    .map(|peer| peer.state)
+            })
+            .collect();
+        (
+            ids,
+            first_window,
+            second_window,
+            sender_peer_ids,
+            survivor_states,
+            peers_settle_ms,
+        )
+    })
+    .await
+    .expect("120 s 内必须跑完四台配对、开流与两段采样");
+
+    let (ids, first_window, second_window, sender_peer_ids, survivor_states, peers_settle_ms) =
+        outcome;
+
+    let survivors: Vec<usize> = (0..COUNT).filter(|index| *index != VICTIM).collect();
+    let survivor_deltas: Vec<usize> = survivors
+        .iter()
+        .map(|index| second_window[*index])
+        .collect();
+    println!(
+        "[isolation] 断开 1 号前后各 {WINDOW:?} 的非静音样本增量：断开前 {first_window:?} → 断开后 {second_window:?}（下标 {VICTIM} 是被 shutdown 的那台；幸存台 {survivors:?} 增量为 {survivor_deltas:?}）；发送侧会话数 {COUNT} → {}（感知耗时 {peers_settle_ms} ms）；发送侧对端状态 {survivor_states:?}",
+        sender_peer_ids.len(),
+    );
+
+    // ① 对照组自身必须达标：断开前四台都在满量级出声，否则后面的比例没有意义。
+    for (index, delta) in first_window.iter().enumerate() {
+        assert!(
+            *delta >= MIN_SAMPLES_PER_WINDOW,
+            "断开前 4 s 第 {index} 台只有 {delta} 个非静音样本（下限 {MIN_SAMPLES_PER_WINDOW}）：对照组就没在正常出声，这条测试失去意义"
+        );
+    }
+
+    // ② 隔离的主判据：幸存三台仍按满量级出声（绝对下限 + 不比自己跌超四分之一）。
+    for index in &survivors {
+        assert!(
+            second_window[*index] >= MIN_SAMPLES_PER_WINDOW,
+            "断开 1 号之后，第 {index} 台 4 s 只写出 {} 个非静音样本（下限 {MIN_SAMPLES_PER_WINDOW}，断开前它是 {}）—— 一台出问题把别的台拖哑了",
+            second_window[*index],
+            first_window[*index]
+        );
+        assert!(
+            second_window[*index] * 4 >= first_window[*index] * 3,
+            "断开 1 号之后，第 {index} 台的样本增量从 {} 掉到 {}（跌超四分之一）—— 故障没有被隔离",
+            first_window[*index],
+            second_window[*index]
+        );
+    }
+
+    // ③ 幸存台彼此仍要同量级：抓「某台被饿着」而不是「全都哑了」这种更隐蔽的隔离失败。
+    let weakest = *survivor_deltas.iter().min().expect("幸存台非空");
+    let strongest = *survivor_deltas.iter().max().expect("幸存台非空");
+    assert!(
+        weakest * 2 >= strongest,
+        "幸存台的样本增量 {survivor_deltas:?} 差了一整个档位（最小 {weakest} vs 最大 {strongest}）—— 断开一台之后幸存台之间出现了饿死"
+    );
+
+    // ④ 发送侧少掉的必须**恰好是受害台那一条**（不是 0 台，也不是 4 台）。
+    assert_eq!(
+        sender_peer_ids.len(),
+        COUNT - 1,
+        "断开一台之后发送侧应当还剩 {} 条会话，实际 {} 条（0 = 被一台拖垮，{COUNT} = 断开根本没被感知）",
+        COUNT - 1,
+        sender_peer_ids.len()
+    );
+    assert!(
+        !sender_peer_ids.contains(&ids[VICTIM]),
+        "受害台的会话仍挂在发送侧表里 —— 断开没被感知"
+    );
+
+    // ⑤ 健全性检查（不是隔离判据）：受害台自己确实哑了，否则「断开」这个动作没生效。
+    assert!(
+        second_window[VICTIM] * 2 < first_window[VICTIM],
+        "被 shutdown 的那台 4 s 仍写出 {} 个非静音样本（断开前 {}）—— 断开动作没生效，上面的隔离结论无效",
+        second_window[VICTIM],
+        first_window[VICTIM]
+    );
+
+    for (_receiver, accept) in receivers.iter() {
+        accept.abort();
+    }
+    sender.shutdown().await;
+    for (index, (receiver, _accept)) in receivers.iter().enumerate() {
+        if index == VICTIM {
+            continue;
+        }
+        receiver.shutdown().await;
+    }
+}
