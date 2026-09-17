@@ -28,6 +28,16 @@
 
     <!-- 可选发送源：麦克风（运行时按需申请，FR-07）；系统内录走 MediaProjection 授权，无需额外声明 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 采集所需的前台服务类型权限（Android 14 / API 34 起，FGS 类型必须与对应权限成对声明）：
+         * FOREGROUND_SERVICE_MICROPHONE —— 麦克风采集（FR-07）；
+         * FOREGROUND_SERVICE_MEDIA_PROJECTION —— 系统内录（FR-06）；系统还要求**先进入该类型前台服务再取投影**。
+         ⚠️ [M5] 上架合规待办（本清单不自行裁定，列出待 Lead 记账）：
+           1) Play 控制台对 microphone 前台服务要求填写用途声明与审核说明；
+           2) mediaProjection 前台服务需说明录制范围与用户可见提示；
+           3) microphone 类型不允许在无用户可见提示的情况下长期后台采集。
+         本轮只加这两个「采集真的必需」的权限，未新增其它任何权限。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <application
         android:name=".AudioLinkApp"
@@ -56,11 +66,17 @@
 
         <!-- 核心前台服务：接收播放 + 发送采集。
              mediaPlayback|connectedDevice 两个类型均无时长上限，且 media3 MediaSessionService
-             的媒体通知可豁免 POST_NOTIFICATIONS 拒绝（用户拒绝通知权限时仍能显示播放通知）。 -->
+             的媒体通知可豁免 POST_NOTIFICATIONS 拒绝（用户拒绝通知权限时仍能显示播放通知）。
+
+             microphone|mediaProjection 是 FR-06/07 的采集两条路（本轮补）：
+             * microphone —— 麦克风采集期间必须处于该类型前台服务（Android 14+ 强制）；
+             * mediaProjection —— 系统内录**取投影之前**就必须已经进入该类型前台服务，
+               所以顺序是 startForeground(含 mediaProjection) → getMediaProjection → 采集。
+             服务始终是前台服务，这两个类型只在采集时用得上，不增加常驻开销。 -->
         <service
             android:name=".service.AudioLinkService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback|connectedDevice" />
+            android:foregroundServiceType="mediaPlayback|connectedDevice|microphone|mediaProjection" />
     </application>
 </manifest>
