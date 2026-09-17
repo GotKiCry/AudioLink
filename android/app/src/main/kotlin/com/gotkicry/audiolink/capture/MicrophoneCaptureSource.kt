@@ -35,6 +35,14 @@ class MicrophoneCaptureSource(
                 AudioRecordSupport.encodingOf(format.encoding),
                 bufferBytes,
             )
+        } catch (denied: SecurityException) {
+            // 显式接住「没有录音授权」这条路径。为什么写成独立分支而不是靠下面的
+            // `catch (Throwable)` 兜：权限请求的运行时流程在上层（见 [CaptureController.startMicrophone]
+            // 的调用方），这里只做**收敛**；而 lint 的 MissingPermission 只认
+            // `checkSelfPermission` 或**显式**的 `catch (SecurityException)` —— 宽 catch 在它眼里
+            // 等于「没处理」。写出来既让结论可见，也不必用 @SuppressLint 把 lint 关掉。
+            // 真正抛 SecurityException 的地方其实是 startRecording()（见 [AudioRecordSupport.startOrFail]）。
+            throw CaptureFailure.fromException(denied)
         } catch (error: Throwable) {
             throw CaptureFailure.fromException(error)
         }

@@ -82,6 +82,13 @@ internal object AudioRecordSupport {
         }
         try {
             record.startRecording()
+        } catch (denied: SecurityException) {
+            // **这里才是没有 RECORD_AUDIO 时真正抛出的地方** —— AudioRecord 的构造不校验权限
+            // （lint 报的两处构造点保守地标了 @RequiresPermission，我们按同一形状对齐表达）。
+            // 与那两处一致：显式接住 → 收敛成 CaptureFailure(PermissionDenied) → 界面提示去授权，
+            // 且不自动重试（见 CaptureErrorKind.needsUserAction / isRetryable）。
+            releaseQuietly(record)
+            throw CaptureFailure.fromException(denied)
         } catch (error: Throwable) {
             releaseQuietly(record)
             throw CaptureFailure.fromException(error)

@@ -55,6 +55,11 @@ class SystemLoopbackCaptureSource(
                 .setBufferSizeInBytes(bufferBytes)
                 .setAudioPlaybackCaptureConfig(captureConfig)
                 .build()
+        } catch (denied: SecurityException) {
+            // 与麦克风那条路同一个形状：内录同样要 RECORD_AUDIO（外加 MediaProjection 授权，
+            // 后者由上层负责）。显式 catch 让「权限被拒」在代码里可见，且不必 @SuppressLint
+            // —— 收敛目标仍是 CaptureFailure(PermissionDenied)，见 [AudioRecordSupport.startOrFail]。
+            throw CaptureFailure.fromException(denied)
         } catch (error: Throwable) {
             throw CaptureFailure.fromException(error)
         }
