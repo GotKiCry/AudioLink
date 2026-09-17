@@ -23,6 +23,7 @@ mod group_join;
 mod group_management;
 mod group_multi;
 mod group_sync;
+mod group_sync_under_loss;
 mod handshake_deadline;
 mod latency_budget;
 mod mixer_alignment;
