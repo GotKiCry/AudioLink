@@ -89,6 +89,64 @@ jobs:
       - name: Test (heavy kernel crates)
         run: cargo nextest run --workspace --exclude audiolink-desktop --exclude audiolink-types --exclude audiolink-proto --exclude audiolink-identity --lib --tests
 
+  # ---------- 长跑门禁：弱网档（M2 弱网验收的迷你版）----------
+  # 跑什么档、为什么是这个档、**严格档为什么不进 CI**：见 `docs/22-m2-soak-runner.md` §14（附实测证据）。
+  # 一句话：严格档（late_drop / underrun 全零）量的是「本机调度与回环争用」，在 CI runner 上不可控 ——
+  # 接进来等于加一个随机变红的门禁，比没有门禁更糟（团队会开始忽略它）。
+  # 这里接的是「弱网档 + 120 s」：入口注入由种子固定（netem seed 1）、判据是
+  #「会话不断 + 掩盖帧 ≤ 总帧数 1%」，两者都不随机器负载漂。
+  soak-gate:
+    name: soak-gate (weak network, 120 s)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4          # TODO: pin to SHA
+      - uses: dtolnay/rust-toolchain@stable # TODO: pin to SHA
+      - uses: Swatinem/rust-cache@v2        # TODO: pin to SHA
+      - name: Build soak-runner
+        run: cargo build -p audiolink-tools --bin soak-runner
+      # 验收口径的注入参数（docs/22 §12：「30 ms 抖动」= ±15 ms），种子固定 → 注入序列可复现。
+      # --max-underrun-pct 0：静音占比**记录但不判** —— 它由 underrun 派生，对机器负载敏感
+      # （docs/22 §11.6：同一条命令，机器安静 0.20%、有负载 9.33%），当 CI 门禁会变成随机红。
+      - name: Weak-network soak (120 s)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $report = 'target/evidence/soak/ci-weak-120s.json'
+          cargo run -q -p audiolink-tools --bin soak-runner -- run `
+            --seconds 120 `
+            --netem-loss-pct 2 --netem-delay-ms 15 --netem-jitter-ms 15 --netem-bandwidth-kbps 5000 `
+            --netem-seed 1 `
+            --tolerant --max-underrun-pct 0 `
+            --report $report
+          # 退出码语义：0 = 无异常；1 = 有异常；2 = 用法 / 初始化失败。
+          # **两个非零都必须让 job 红** —— 所以先把它存下来（后面的 cmdlet 会把它覆盖成 0），
+          # 也不写成「跑完再判断一下」那种把 2 当通过的形式。
+          $code = $LASTEXITCODE
+          if (-not (Test-Path $report)) {
+            Write-Host "::error::soak 报告缺失（$report），退出码 $code"
+            if ($code -eq 0) { exit 2 } else { exit $code }
+          }
+          $summary = (Get-Content $report -Raw | ConvertFrom-Json).summary
+          $kinds = ($summary.violations_by_kind.PSObject.Properties |
+            Where-Object { $_.Value -gt 0 } |
+            ForEach-Object { "$($_.Name)x$($_.Value)" }) -join ', '
+          Write-Host ("soak verdict={0} samples={1} violations_total={2} plc={3} 静音占比={4}（×0.01%，只记录不判）" -f
+            $summary.verdict, $summary.samples, $summary.violations_total,
+            $summary.violations_by_kind.playout_concealment, $summary.underrun_pct_x100)
+          Write-Host "violations_by_kind（非零）: $kinds"
+          # 有违规先按 1 透传（信息量最大的那个码）；采样兜底只对「判定 ok」生效 ——
+          # 判定 ok 而采样少得离谱 = 这一步没真跑，那不是通过。
+          if ($code -ne 0) { exit $code }
+          if ([int]$summary.samples -lt 100) {
+            Write-Host "::error::判定 ok 但采样只有 $($summary.samples) 次（120 s 计划约 117 次），疑似没真跑"
+            exit 3
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak-ci-weak-120s
+          path: target/evidence/soak/ci-weak-120s.json
+
   # ---------- Android：Rust 交叉编译 + 组装 debug APK ----------
   android:
     name: android (ndk + assembleDebug)
