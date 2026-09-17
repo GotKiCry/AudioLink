@@ -102,6 +102,18 @@ struct OutageRelay {
     open: Arc<AtomicBool>,
     dropped: Arc<AtomicU64>,
     forwarded: Arc<AtomicU64>,
+    /// 客户端 → 服务端方向通过的包数（发送侧还在不在按期发，看它）。
+    fwd_up: Arc<AtomicU64>,
+    /// 服务端 → 客户端方向通过的包数（**对端真的回了包**才增长，所以它是「链路已打通」的直接证据）。
+    fwd_down: Arc<AtomicU64>,
+    /// 上行方向**长度 ≥ 512 B** 且**通过了闸门**的包数，也就是音频数据报（保活与控制帧都是小包）。
+    /// 它回答「发送侧在恢复后到底还把不把音频往外发」—— 与「链路通没通」是两件事。
+    fwd_big_up: Arc<AtomicU64>,
+    /// 上行音频数据报**到达中继**的数量，**掐在闸门判断之前**统计。
+    ///
+    /// 与 fwd_big_up 配对使用：拔网期间它若还在涨，说明发送侧照旧在推音频、丢的只是网络；
+    /// 若它停了，说明发送侧真的停了 —— 这是「谁的锅」最干净的切分线。
+    big_arrived: Arc<AtomicU64>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -115,8 +127,15 @@ impl OutageRelay {
         let open = Arc::new(AtomicBool::new(true));
         let dropped = Arc::new(AtomicU64::new(0));
         let forwarded = Arc::new(AtomicU64::new(0));
+        let fwd_up = Arc::new(AtomicU64::new(0));
+        let fwd_down = Arc::new(AtomicU64::new(0));
         let (open_flag, dropped_counter, forwarded_counter) =
             (open.clone(), dropped.clone(), forwarded.clone());
+        let fwd_big_up = Arc::new(AtomicU64::new(0));
+        let (up_counter, down_counter) = (fwd_up.clone(), fwd_down.clone());
+        let big_up_counter = fwd_big_up.clone();
+        let big_arrived = Arc::new(AtomicU64::new(0));
+        let arrived_counter = big_arrived.clone();
 
         let task = tokio::spawn(async move {
             let mut buf = vec![0u8; 4096];
@@ -132,11 +151,22 @@ impl OutageRelay {
                         None => continue, // 还不知道客户端是谁：丢掉（握手前的噪声）
                     }
                 };
+                if client_to_server && len >= 512 {
+                    arrived_counter.fetch_add(1, Ordering::Relaxed);
+                }
                 if !open_flag.load(Ordering::SeqCst) {
                     dropped_counter.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
                 forwarded_counter.fetch_add(1, Ordering::Relaxed);
+                if client_to_server {
+                    up_counter.fetch_add(1, Ordering::Relaxed);
+                    if len >= 512 {
+                        big_up_counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                } else {
+                    down_counter.fetch_add(1, Ordering::Relaxed);
+                }
                 let _ = socket.send_to(&buf[..len], to).await;
             }
         });
@@ -146,6 +176,10 @@ impl OutageRelay {
             open,
             dropped,
             forwarded,
+            fwd_up,
+            fwd_down,
+            fwd_big_up,
+            big_arrived,
             task,
         }
     }
@@ -166,6 +200,21 @@ impl OutageRelay {
 
     fn forwarded(&self) -> u64 {
         self.forwarded.load(Ordering::Relaxed)
+    }
+
+    /// 回程（服务端 → 客户端）通过的包数。拔网期间它应停止增长 —— 接收端收不到包就不会回包。
+    fn fwd_down(&self) -> u64 {
+        self.fwd_down.load(Ordering::Relaxed)
+    }
+
+    /// 上行音频数据报（长度 ≥ 512 B）通过的包数。
+    fn fwd_big_up(&self) -> u64 {
+        self.fwd_big_up.load(Ordering::Relaxed)
+    }
+
+    /// 上行音频数据报**到达**中继的包数（闸门之前统计）。
+    fn big_arrived(&self) -> u64 {
+        self.big_arrived.load(Ordering::Relaxed)
     }
 }
 
@@ -227,6 +276,43 @@ async fn count_sound_until(
             }
             Ok(None) | Err(_) => return hits,
         }
+    }
+}
+
+/// 等**回程**（服务端 → 客户端）第一个通过的包，返回它相对调用时刻的延迟。
+///
+/// 为什么盯回程而不是上行：拔网期间发送侧的保活包照样往闸门里灌（闸门只是把它们丢掉），
+/// 所以上行计数一插回就会涨、反映不出「链路是否真的通了」；而接收端收不到包就不会回包，
+/// 回程计数**必须等包真的过去并换来对端响应**才会涨。
+async fn wait_down_packet(relay: &OutageRelay, before: u64, budget: Duration) -> Option<u128> {
+    let start = Instant::now();
+    let deadline = start + budget;
+    loop {
+        if relay.fwd_down() > before {
+            return Some(start.elapsed().as_millis());
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// 等一个计数器越过 before，返回延迟。用来量「某类包多久重新开始通过」。
+async fn wait_count<G>(read: G, before: u64, budget: Duration) -> Option<u128>
+where
+    G: Fn() -> u64,
+{
+    let start = Instant::now();
+    let deadline = start + budget;
+    loop {
+        if read() > before {
+            return Some(start.elapsed().as_millis());
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
@@ -332,12 +418,15 @@ async fn run_outage(
 
     // ② 拔网。
     let dropped_before = relay.dropped();
+    let arrived_before_cut = relay.big_arrived();
     relay.cut();
     let cut_at = Instant::now();
     drain(writes);
 
     // ③ 证明「网真的断了」：播放缓冲 60 ms，给到 400 ms 余量后，不该再有新的非静音回调。
     tokio::time::sleep(Duration::from_millis(1000)).await;
+    // 拔网 1 s 后：发送侧还在推音频吗？（到达中继即为「在推」，闸门丢弃不影响这个计数）
+    let arrived_after_1s = relay.big_arrived();
     let noise_start = cut_at + Duration::from_millis(400);
     let noise_while_cut = count_sound_until(writes, noise_start, Instant::now()).await;
     assert!(
@@ -347,8 +436,36 @@ async fn run_outage(
 
     // ④ 把剩下的断网时间走完。
     tokio::time::sleep(outage.saturating_sub(Duration::from_millis(1000))).await;
+    // 插回前记下回程包数。**这个读数是为了把「4.5 s 是谁的锅」分开**：
+    // 如果回程包很快就通（几百毫秒），而声音要等 4 s 多，那慢的不是链路、是应用层；
+    // 如果回程包自己就要等 4 s，那才是 QUIC 的 PTO 退避在定节奏。
+    let arrived_after_outage = relay.big_arrived();
+    let down_before_restore = relay.fwd_down();
+    let big_before_restore = relay.fwd_big_up();
+    // 插回之后立刻开始逐格采样**上行包速率**（每 500 ms 一格，共 12 格 = 6 s）。
+    // 为什么不用「包长 ≥ 512 B」当音频判据：自适应降码率会把包压小，于是「大包回来了」
+    // 会晚于「音频回来了」，读数被码率策略带偏。速率不会 —— 音频是 ~50 pps 的密集流，
+    // 控制帧只有个位数/秒，两者差一个数量级，一眼可分。
+    let up_handle = Arc::clone(&relay.fwd_up);
+    let sampler = tokio::spawn(async move {
+        let mut rows = Vec::with_capacity(12);
+        for _ in 0..12 {
+            let before = up_handle.load(Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            rows.push(up_handle.load(Ordering::Relaxed).saturating_sub(before));
+        }
+        rows
+    });
+
     let restore_at = Instant::now();
     relay.restore();
+    let link_up_ms = wait_down_packet(relay, down_before_restore, Duration::from_secs(15)).await;
+    let audio_up_ms = wait_count(
+        || relay.fwd_big_up(),
+        big_before_restore,
+        Duration::from_secs(15),
+    )
+    .await;
 
     // ⑤ 恢复：必须由**晚于插回时刻**的非静音回调证明。
     //
@@ -357,6 +474,28 @@ async fn run_outage(
     // 不是「不恢复」。窗口太短会把环境噪声记成产品缺陷（本轮 20 轮采样里就踩到过一次）。
     let recovered_at = next_sound_after(writes, restore_at, Duration::from_secs(15)).await;
     let recovery_ms = recovered_at.map(|stamp| stamp.duration_since(restore_at).as_millis());
+    let up_rates = sampler.await.unwrap_or_default();
+
+    println!(
+        "[outage-diag] 拔网 {} ms：到达中继的上行音频包 拔网前 {} → 1 s 后 {} → 拔网结束 {} · 插回后回程首个包 {} · 上行音频数据报 {} · 声音恢复 {}",
+        outage.as_millis(),
+        arrived_before_cut,
+        arrived_after_1s,
+        arrived_after_outage,
+        match link_up_ms {
+            Some(ms) => format!("{ms} ms"),
+            None => String::from("15 s 窗口内未出现"),
+        },
+        match audio_up_ms {
+            Some(ms) => format!("{ms} ms"),
+            None => String::from("15 s 窗口内未出现"),
+        },
+        match recovery_ms {
+            Some(ms) => format!("{ms} ms"),
+            None => String::from("未恢复"),
+        }
+    );
+    println!("[outage-diag] 插回后每 500 ms 的上行包数：{up_rates:?}");
 
     // ⑥ 持续性：从**恢复那一刻**起再观察 2 s，仍应持续有音频，而不是吐完积压就哑。
     //（第一版这里从 restore_at 起算，而恢复本身可能晚于它 —— 于是窗口早就过期，
