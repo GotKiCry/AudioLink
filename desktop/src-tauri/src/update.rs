@@ -166,11 +166,11 @@ pub async fn install(app: &AppHandle, expected: &str) -> Result<String, CommandE
     // 到这里包已经验签通过、马上要启动安装器 —— 先让引擎体面收尾（给对方发 `BYE`），
     // 与托盘「退出」同一条纪律。因为下一步在 Windows 上会 `exit(0)`，
     // 不走 on_window_event / quit_app 那条路，没有人会替它收尾。
-    if let Some(bridge) = app.try_state::<EngineBridge>() {
-        if let Err(error) = bridge.shutdown_engine().await {
-            // 收尾失败不阻断升级：用户明确的意图是装上这个新版本。
-            tracing::warn!(%error, "更新前收尾未完成，仍然继续安装");
-        }
+    if let Some(bridge) = app.try_state::<EngineBridge>()
+        && let Err(error) = bridge.shutdown_engine().await
+    {
+        // 收尾失败不阻断升级：用户明确的意图是装上这个新版本。
+        tracing::warn!(%error, "更新前收尾未完成，仍然继续安装");
     }
 
     // Windows（本仓 `bundle.targets = ["nsis"]`）：这一行成功 = 安装器已拉起 + 进程 `exit(0)`，
@@ -292,7 +292,10 @@ mod tests {
                 "windows-x86_64",
             ),
             (UpdaterError::Network("HTTP 503".into()), "下载更新包失败"),
-            (UpdaterError::SignatureUtf8("not base64".into()), "已拒绝安装"),
+            (
+                UpdaterError::SignatureUtf8("not base64".into()),
+                "已拒绝安装",
+            ),
             (UpdaterError::UnsupportedArch, "没有可用的更新包"),
             (UpdaterError::InsecureTransportProtocol, "https"),
             (
@@ -324,7 +327,10 @@ mod tests {
     #[test]
     fn error_codes_split_retryable_from_data_problems() {
         assert_eq!(code_of(&UpdaterError::Network("x".into())), ErrorCode::Busy);
-        assert_eq!(code_of(&UpdaterError::EmptyEndpoints), ErrorCode::BadRequest);
+        assert_eq!(
+            code_of(&UpdaterError::EmptyEndpoints),
+            ErrorCode::BadRequest
+        );
         assert_eq!(
             code_of(&UpdaterError::SignatureUtf8("x".into())),
             ErrorCode::BadRequest
