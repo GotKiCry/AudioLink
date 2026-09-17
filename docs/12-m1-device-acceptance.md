@@ -20,8 +20,8 @@ Opus 20 ms/160 kbps → 手机 AudioTrack 低延迟输出，60 s 连续推流零
 | 出声 | ✅ 推流中手机 AudioTrack 活跃（`FrmRdy 3844/3844`、`Underruns 0`），且对端 1 Hz 遥测报「播放环水位 80 ms」——即 PCM 已进到待播队列 | `acceptance/flinger-run3.txt`（推流中）· `run3.log` 逐秒行 |
 | PIN 配对（人类节奏） | ✅ 提交 PIN 后配对通过、双方写入信任库（落盘证据可证 **≥25 s** 延迟；终端另打印 27 s） | `acceptance/run5-pin-delay.log`（+ `pin-delay-test.ps1`） |
 | 断流/丢包 | ✅ 四轮 60/60/90/75 s 连续推流全程保持 streaming、`late_drops 0`、`plc 0`；丢包末值 0.00%（**run5 有 1 个 1 s 窗口出现 2.00%**，见 §2.2 注） | run1c/run3/run4/run5 的 JSON |
-| **e2e P50 ≤ 110 ms** | ❌ **当前不满足**：实测下限 ≥ 115 ms（不含设备侧输出缓冲）；见 §3 | `acceptance/run3.log` |
-| 30 min 无断流 | ✅ **1800 s 全程 `streaming`、无断连**（但水位顶到 320 ms 上限、迟到丢弃 53、欠载 7→69） | §5.1 · `acceptance/soak30.log` |
+| **e2e P50 ≤ 110 ms** | ❌ **当前不满足**：实测下限 ≥ 115 ms —— **口径**：这是**修复前** run3 的实测下限，**已含**对端播放环水位 80 ms、**不含**设备侧输出缓冲（§3）；修复后按队列模型重算 ≈ 73 ms（`docs/16`，不含设备输出）+ 设备输出 80 ms ≈ **153 ms**，仍超 110 ms 线 | `acceptance/run3.log` |
+| 30 min 无断流 | ⚠️ **修复前版本**（待播队列缺陷与 PCM 长度缺陷都还在时跑的）：✅ **1800 s 全程 `streaming`、无断连**（但水位顶到 320 ms 上限、迟到丢弃 53、欠载 7→69）。**修复后未再跑 30 min** —— 与看板 [M1] 真机验收「仍缺修复后 30 min 长跑」一致，复测入口见 §9.2 | §5.1 · `acceptance/soak30.log` |
 
 **一句话**：链路与设备侧两项硬指标（低延迟模式、零重采样）达标；**延迟账本当前超预算**，
 超出的部分已定位到两个可拧的旋钮（设备输出缓冲 80–101 ms、接收侧播放环水位 80 ms），处置见 §5。
@@ -183,6 +183,11 @@ Opus 20 ms/160 kbps → 手机 AudioTrack 低延迟输出，60 s 连续推流零
 5. ffi 写域：`apply_event()` 补 `PeerDisconnected` / 失败分支的 PIN 清空（缺陷 #2 根治）；顺带把设备侧 `queuedFrames` 补进对端遥测（现在设备侧省下的那 50 ms 在账本上看不见）。
 
 ### 5.1 30 min soak（真机 · 最终固件 · synth 采集）
+
+> ⚠️ **本节记录的是「修复前」版本** —— 这次 soak 跑的时候，待播队列缺陷（水位顶到 320 ms 上限、
+> 迟到丢弃与欠载增长）与 PCM 长度缺陷（`receive_audio` 每包多出 20 ms 静音供给）**都还在**。
+> 前者修在 `docs/16` 的队列修复，后者修在 §9；**修复后没有再跑过 30 min**（看板 [M1] 真机验收
+> 同样写着「仍缺修复后 30 min」）。复测入口见 §9.2。
 
 命令：`pwsh target/evidence/acceptance/soak-30min.ps1 -Seconds 1800 -Dir target/device-link-3 -Tag soak30`（exit 0）
 

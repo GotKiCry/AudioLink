@@ -140,8 +140,11 @@ PHK110 使用新双 ABI Release 包复测 180 s，包安装后回拉 SHA-256 一
 手机播放环在同一推流内约 105 s 的两次采样均为 480/2880 帧；溢出、读空、系统欠载、设备丢弃和写错均无新增，
 音频写入持续增长。新计数明确反映“错过播放拍后丢弃过期帧”，而不是继续把旧帧变成延迟；
 它证明增长缺陷已消除，但不代表弱网听感已经完成。减少这 143 次欠载/迟到由 M2 自适应抖动缓冲与 PLC 继续处理。
-仅按本轮已有段建模，队列修复后的 e2e 下限为约 73 ms；对端解码与 AudioTrack 输出仍未纳入上限，
-所以不能据此把 M1 P50/P95 验收标为完成。
+仅按本轮已有段建模，队列修复后的 e2e 下限为约 73 ms —— **口径要说准**：这是**待播队列修复后**的**模型**下限，
+**不含**设备侧 AudioTrack 输出（真机实测 3844 帧 = 80.08 ms，`docs/12` §2.1 与 §3）；对端解码与 AudioTrack
+输出仍未纳入上限，所以不能据此把 M1 P50/P95 验收标为完成。
+（对照：`docs/12` §0 的「≥ 115 ms」是**修复前** run3 的**实测**下限，且**已含**播放环水位 80 ms ——
+两个数字都叫「e2e 下限」但口径不同，不可直接比较。）
 
 证据：`target/evidence/playout-recovery/before.log`、`repeated-after.log`、`after-180.json/log`、
 `playout-after-start-stats.xml/png`、`playout-after-mid-stats.xml/png`、`apk-verification.json`。

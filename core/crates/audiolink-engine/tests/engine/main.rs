@@ -37,6 +37,7 @@ mod nack_retransmit;
 mod network_outage;
 mod pcm_delivery;
 mod playout_recovery;
+mod playout_watermark;
 mod receiver_epoch;
 mod reconnect_receipt;
 mod sink_watchdog;
