@@ -522,6 +522,26 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   门禁：fmt ✓ / clippy 零告警 ✓ / engine **37 passed 1 skipped** ✓。产出：队友的 `docs/50`（340 行、含行号锚点）、
   提交 `009bad4`。
 
+- **第 82 轮：把 soak 判据读清楚（并更正自己上一轮的错判），同时派队友把 updater 接进应用**。
+  ① **更正**：第 81 轮我在看板上写「弱网档等于不判、中间没有档位」是错的 —— 读 `soak.rs:71-82` 可见
+  `SoakThresholds::weak_network()` 把 `max_plc` 钉在**总帧数的 1%**，文档承诺的「掩盖比例 ≤ 1%」是真的实现了；
+  41 项违规的真因是**我用严格档（全零阈值、为干净回环设计）去跑注入了 2% 丢包的链路**，属档位错配的用法错误。
+  真正的缺口更窄：弱网档只判 PLC ≤ 1%，欠载/迟到/NACK/丢包率在弱网档下完全不判。
+  ② **干净回环 + 严格档 900s 是本轮少见的强正面证据**：`欠载 0 / 掩盖 0 / 丢包 0 / NACK 0 / not_streaming 0 /
+  stalled 0 / late_drop 1`，唯一一类违规是 `bitrate_out_of_range: 878` —— 因为 soak-runner 的
+  `expected_bitrate_bps=320000` 是弱网口径，而干净链路上自适应把编码器推到 640800 bps（正好 2 倍），
+  超出 30% 容忍 ⇒ 每个采样桶记一次。**是参数错配，不是质量问题**。
+  ③ 队友 `updater-wire` 完成 updater 接线（`tauri-plugin-updater` 产品依赖 + `update.rs` 333 行 + 两个命令 + 前端
+  `UpdatePanel` + 中英 15 键），刻意做成「手动检查 + 两段式确认安装」，并把 **capabilities 里不加任何 updater ACL**
+  这个偏差写清理由（给 ACL 等于凭空开出「从 webview 下载并安装」入口，与不静默安装的边界冲突）。Lead 独立复跑
+  四项门禁全绿后提交 `c2409a6`。
+  ④ **本轮的一个操作失误（要记）**：我在队友仍在同一工作区作业时用了 `git add -A`，把它的**在制半成品**
+  （`update.rs` +333 行、`Cargo.toml`、`capabilities`、`lib.rs`）连同一次看板更新一起提交进了 `3a698a4`，
+  **提交信息与内容不符**。已 push 的历史不改（不 force push），处置是等队友完成后用准确信息补一笔 `c2409a6`
+  并在信息里写明边界。**教训：共享工作区里禁止 `git add -A`/`git add .` —— 必须显式列出文件**；
+  这也和「formatters/脚本不受文件版本守卫保护」是同一类问题的两面：版本守卫防的是我改坏别人正在读的文件，
+  防不住我把别人正在写的文件提交出去。
+
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
 Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本数**，`receive_audio()` 又乘了声道数，
