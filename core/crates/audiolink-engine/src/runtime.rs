@@ -82,6 +82,7 @@ use crate::runtime::jitter::{
 use crate::runtime::nack::{
     MissingTracker, NACK_MAX_RTT_US, NACK_RETRANSMIT_GRACE, RetransmitBuffer,
 };
+use crate::runtime::sink_watchdog::SinkWatchdog;
 use crate::session::{SessionEvent, SessionMachine, SessionState};
 use crate::telemetry::TelemetryAggregator;
 
@@ -4095,6 +4096,21 @@ fn acquire_playout_mixer(
     })
 }
 
+/// 一拍的提交结果。
+///
+/// 三态而不是 `bool`，是因为「设备写失败」与「结构性错误」要分开：
+/// 前者是 FR-28 的看门狗要接手的现场（**不终止**播放线程，否则一次异常就永久静音），
+/// 后者（混音器锁中毒 / 推入失败）说明别处已经不对了，继续跑没有意义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameWrite {
+    /// 成功（含非 owner：只混进引擎级混音器）。
+    Ok,
+    /// 设备侧写失败：由看门狗计时，到点重建 sink。
+    SinkFailed,
+    /// 结构性失败：调用方终止播放循环。
+    Fatal,
+}
+
 /// 写出一帧。
 ///
 /// 没接混音器时就是直通 sink（M1 起的行为）；接上之后本路先把样本混进去，
@@ -4105,21 +4121,61 @@ fn write_frame(
     mix_source: Option<u32>,
     samples: &[f32],
     mixed: &mut Vec<f32>,
-) -> bool {
+) -> FrameWrite {
     let (Some(mixer), Some(source)) = (mixer.as_ref(), mix_source) else {
-        return sink.as_mut().is_none_or(|open| open.write(samples).is_ok());
+        return match sink.as_mut() {
+            None => FrameWrite::Ok, // 非 owner：本路不持有设备
+            Some(open) => write_into(open, samples),
+        };
     };
     let Ok(mut guard) = mixer.lock() else {
-        return false;
+        return FrameWrite::Fatal;
     };
     if guard.push(source, samples).is_err() {
-        return false;
+        return FrameWrite::Fatal;
     }
     let Some(open) = sink.as_mut() else {
-        return true; // 非 owner：混进去就完事
+        return FrameWrite::Ok; // 非 owner：混进去就完事
     };
     guard.mix_frame(mixed);
-    open.write(mixed).is_ok()
+    write_into(open, mixed)
+}
+
+/// sink 账本里的累计提交帧数（本路不持有设备时为 0）。
+///
+/// FR-28 的「有没有真的输出」就看它的增量：`PlayoutSink::write` 成功但账本不长的 sink
+/// 与写失败的 sink 在这里是同一种事实。
+fn sink_written_frames(sink: &Option<Box<dyn PlayoutSink>>) -> u64 {
+    sink.as_ref().map_or(0, |open| open.stats().frames_written)
+}
+
+/// FR-28：把坏掉的播放 sink 换掉 —— 停掉旧的（幂等），再向工厂要一个新的。
+///
+/// 失败时**保留**旧 sink 并返回错误：看门狗会退避后再来；放弃等于把「一次异常永久静音」
+/// 换成「一次异常永久不看门」，那正是这条需求要根治的东西。
+fn reopen_playout_sink(
+    factory: &(dyn Fn() -> Result<Box<dyn PlayoutSink>, AudioError> + Send + Sync),
+    sink: &mut Option<Box<dyn PlayoutSink>>,
+) -> Result<(), AudioError> {
+    if let Some(open) = sink.as_mut() {
+        open.stop();
+    }
+    let next = factory()?;
+    *sink = Some(next);
+    Ok(())
+}
+
+/// 提交给设备，并把失败区分为「设备写失败」而不是结构性错误。
+fn write_into(open: &mut Box<dyn PlayoutSink>, samples: &[f32]) -> FrameWrite {
+    match open.write(samples) {
+        Ok(()) => FrameWrite::Ok,
+        Err(error) => {
+            // 不在这里刷日志：2 s 的判定窗口里会连续失败 100 次，刷日志只会把真正的原因埋掉。
+            // 需要留痕的是「看门狗决定重建」那一次（见 rebuild_playout_sink）。
+            tracing::debug!(%error, "播放 sink 写入失败（FR-28 看门狗开始计时）");
+            FrameWrite::SinkFailed
+        }
+    }
 }
 
 fn spawn_playout_thread(
@@ -4274,6 +4330,9 @@ fn playout_main(
     let mut refill_after_underrun = false;
     let mut scheduled_reported = false;
     let mut mixed: Vec<f32> = Vec::new();
+    // FR-28：只对**真的持有设备**的那一路（owner）启用看门狗 —— 非 owner 不建 sink，
+    // 「没有输出」是它的正常状态。
+    let mut watchdog = sink.is_some().then(|| SinkWatchdog::new(Instant::now()));
 
     'playout: while !stop.load(Ordering::Relaxed) {
         // 睡到下一个提交时刻。节奏必须由**本地时钟**决定，数据到没到只影响
@@ -4339,6 +4398,60 @@ fn playout_main(
             }
         }
 
+        // FR-28：链路还在给音频、设备却连续 2 s 一帧都没接走 → 换一个 sink。
+        //
+        // 为什么在这里判（而不是在写失败的那一拍直接重建）：一次写失败很常见（设备忙、缓冲瞬时满），
+        // 直接重建等于抖动一下就把设备重开一遍；需求要的是「持续 2 s 没有输出」，
+        // 所以计时器只认「真实音频这一拍有没有真的进到 sink 账本里」。
+        if let Some(watchdog) = watchdog.as_mut()
+            && let Some(stall) = watchdog.poll(now)
+        {
+            let attempt = watchdog.attempts().saturating_add(1);
+            let reopened = factory.map(|factory| reopen_playout_sink(factory, &mut sink));
+            let rebuilt = matches!(reopened, Some(Ok(())));
+            watchdog.note_rebuild_attempt(Instant::now(), rebuilt);
+
+            // 2002 SINK_REBUILD：这是「自愈动作真的发生过」的唯一可见证据
+            // （UI 的错误横幅、日志、验收测试都看它）。
+            let _ = events.send(EngineEvent::Error {
+                code: ErrorCode::SinkRebuild.as_u16(),
+                context: match reopened {
+                    Some(Ok(())) => format!(
+                        "播放器 {} ms 没有接走任何一帧音频但链路正常，已重建（第 {attempt} 次尝试，累计成功 {} 次）",
+                        stall.silent_for.as_millis(),
+                        watchdog.rebuilds()
+                    ),
+                    Some(Err(error)) => format!(
+                        "播放器 {} ms 没有输出且重建失败（第 {attempt} 次尝试，累计成功 {} 次）：{}",
+                        stall.silent_for.as_millis(),
+                        watchdog.rebuilds(),
+                        error.context()
+                    ),
+                    None => "非 owner 会话不应进入看门狗".to_owned(),
+                },
+            });
+
+            if rebuilt {
+                // 【时序状态处置】停摆这几秒的音频**已经过期**：清积压、把时间轴从「下一个到达的帧」重启。
+                //
+                // 为什么不按旧游标继续播：那些帧的播放时刻已经过去，追播只会把永久延迟钉进链路
+                // （与 §7 第 1 条「宁可丢一帧，也不延迟出声」、以及本函数开头「被抢占后不追赶」同一口径）。
+                // 也不把这些积压记成 `late_drops` —— 它们是自愈动作主动作废的，不是网络迟到，
+                // 严格档的零容忍只该给真迟到。
+                //
+                // §7 排播不受影响：`expected_seq` 只决定「跳过哪些旧帧」，目标时刻由 epoch 换算
+                // （`PlayoutSync::sample_index_of` 走首帧基准），重建不会破坏组内对齐。
+                while frames.try_recv().is_ok() {}
+                pending = None;
+                expected_seq = None;
+                // 新 sink 的队列是空的：按当前抖动目标重新攒出余量，否则刚重建就连着欠载。
+                refill_after_underrun = true;
+                // 重建本身耗时（打开设备通常几十毫秒）：把节奏拉回「现在 + 一拍」，
+                // 免得刚自愈就被算成一串「错过的播放拍」而记一堆欠载。
+                next_write = Instant::now() + period;
+            }
+        }
+
         // 升档必须真的建立出额外余量。若队列还没攒到新目标，这一拍写静音但不推进序号；
         // 最多从 20/40 ms 升到 60 ms，因此重缓冲有严格上界，不会恢复成永久增长。
         let requested_target = jitter_depth
@@ -4367,8 +4480,10 @@ fn playout_main(
                         wait_us,
                         &mut scheduled_reported,
                     );
-                    if !write_frame(&mut sink, &mixer, mix_source, &silence, &mut mixed) {
-                        break;
+                    if write_frame(&mut sink, &mixer, mix_source, &silence, &mut mixed)
+                        == FrameWrite::Fatal
+                    {
+                        break 'playout;
                     }
                     continue;
                 }
@@ -4382,8 +4497,10 @@ fn playout_main(
                         telemetry.record_late_drop();
                     }
                     tracing::debug!(late_us, "§7 预约播放：过期帧已丢弃");
-                    if !write_frame(&mut sink, &mixer, mix_source, &silence, &mut mixed) {
-                        break;
+                    if write_frame(&mut sink, &mixer, mix_source, &silence, &mut mixed)
+                        == FrameWrite::Fatal
+                    {
+                        break 'playout;
                     }
                     continue;
                 }
@@ -4411,8 +4528,10 @@ fn playout_main(
                 if let Ok(mut telemetry) = telemetry.lock() {
                     telemetry.record_underrun();
                 }
-                if !write_frame(&mut sink, &mixer, mix_source, &silence, &mut mixed) {
-                    break;
+                if write_frame(&mut sink, &mixer, mix_source, &silence, &mut mixed)
+                    == FrameWrite::Fatal
+                {
+                    break 'playout;
                 }
                 continue;
             }
@@ -4442,8 +4561,22 @@ fn playout_main(
                         *sample *= gain;
                     }
                 }
-                if !write_frame(&mut sink, &mixer, mix_source, &frame.samples, &mut mixed) {
-                    break;
+                if let Some(watchdog) = watchdog.as_mut() {
+                    watchdog.note_ready_frame(Instant::now());
+                }
+                let frames_before = sink_written_frames(&sink);
+                let outcome =
+                    write_frame(&mut sink, &mixer, mix_source, &frame.samples, &mut mixed);
+                if let Some(watchdog) = watchdog.as_mut() {
+                    // 「成功输出」= sink 账本这一拍真的长了一帧。写失败与「收下却不记账」
+                    // 在这个口径下是同一种事实（见 sink_watchdog 模块文档）。
+                    watchdog.note_audible_submit(
+                        Instant::now(),
+                        sink_written_frames(&sink).saturating_sub(frames_before),
+                    );
+                }
+                if outcome == FrameWrite::Fatal {
+                    break 'playout;
                 }
                 if let Some(tap) = tap.as_ref() {
                     tap.record_played(frame.seq, Instant::now());
@@ -4463,8 +4596,10 @@ fn playout_main(
                         });
                     refill_after_underrun = true;
                 }
-                if !write_frame(&mut sink, &mixer, mix_source, &silence, &mut mixed) {
-                    break;
+                if write_frame(&mut sink, &mixer, mix_source, &silence, &mut mixed)
+                    == FrameWrite::Fatal
+                {
+                    break 'playout;
                 }
             }
             DueFrame::Disconnected => break,
@@ -4671,3 +4806,4 @@ mod nack;
 mod pairing_tests;
 #[cfg(test)]
 mod playout_tests;
+mod sink_watchdog;
