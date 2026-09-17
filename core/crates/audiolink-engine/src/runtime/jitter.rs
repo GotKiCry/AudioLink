@@ -1,9 +1,36 @@
 //! M2 接收抖动控制：20--60 ms 目标深度与有界包重排。
+//!
+//! # 两个「帧数」不再共用一个常量（第 114 轮拆分）
+//!
+//! 这里有两个语义不同的量，曾经共用一个 `DEFAULT_TARGET_FRAMES`，于是「想调起步延迟」就得
+//! 连带改「中等抖动该用几帧」：
+//!
+//! * [`INITIAL_TARGET_FRAMES`] = **起步档**：会话刚起播时攒几帧才出声（= `MIN_TARGET_FRAMES`，
+//!   20 ms @20 ms 帧）。它是**出声延迟**的直接来源 —— 多攒一帧就多一帧的延迟。
+//! * [`DEFAULT_TARGET_FRAMES`] = **中等抖动档**：`observe()` 在「抖动 ≤ 一帧」时选用的深度
+//!   （40 ms）。它是**抗抖动保护**的一部分，由 M2 的口径决定，不该被起步延迟的需求牵动。
+//!
+//! 实测（本机）：起步档 2 帧 → 1 帧后，回环 P50 53 872 → 25 965 / 27 259 µs（两次）、
+//! 接收侧水位 40 000 → 20 000 µs。
+//!
+//! ⚠️ **弱网代价在本机这个口径上判不出来，别把噪声当结论**：`soak-runner --tolerant` +
+//! netem 2% / 15±15 ms 下 —— 300 s 档改前 20 拍 / 改后 23 拍；25 s 档两次重复分别是
+//! 2 & 7 拍（改前）与 7 & 7 拍（改后）⇒ **区间重叠**，25 s 档自身的噪声就有 2~7 拍。
+//! 要判「起步少攒一帧是否更易欠载」，得用更长档 + 多次重复，或者在真机弱网上量
+//! （本机回环零丢包零抖动，本来就不覆盖这条路径）。
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 pub(super) const MIN_TARGET_FRAMES: usize = 1;
+/// **起步档**：会话起播时攒够这么多帧才出声（20 ms @20 ms 帧）。
+///
+/// 与 [`DEFAULT_TARGET_FRAMES`] 分开：起步帧数是**延迟**，中等抖动档是**抗抖动保护**。
+/// 详见模块文档。
+pub(super) const INITIAL_TARGET_FRAMES: usize = MIN_TARGET_FRAMES;
+/// **中等抖动档**：`observe()` 在「抖动 ≤ 一帧」时选用的深度（40 ms @20 ms 帧）。
+///
+/// 由 M2 的抗抖动口径决定 —— 不要拿起步延迟的需求去改它（那正是第 114 轮拆分的理由）。
 pub(super) const DEFAULT_TARGET_FRAMES: usize = 2;
 pub(super) const MAX_TARGET_FRAMES: usize = 3;
 const STABLE_WINDOWS_TO_SHRINK: u32 = 30;
@@ -22,7 +49,8 @@ pub(super) struct AdaptiveJitterDepth {
 impl AdaptiveJitterDepth {
     pub(super) const fn new() -> Self {
         Self {
-            target_frames: DEFAULT_TARGET_FRAMES,
+            // 起步 = 最小档：出声延迟从这里开始（第 114 轮：与中等抖动档拆开）。
+            target_frames: INITIAL_TARGET_FRAMES,
             stable_windows: 0,
         }
     }
@@ -219,7 +247,10 @@ impl PacketReorderBuffer {
             pending: Vec::with_capacity(REORDER_CAPACITY + 1),
             recent_delivered: Vec::with_capacity(REORDER_CAPACITY * 2),
             frame_period,
-            target_frames: DEFAULT_TARGET_FRAMES,
+            // 同样取起步档：`reorder_wait()` 只在 `>= MAX_TARGET_FRAMES` 时才等一帧，
+            // 所以 1 与 2 的行为完全一致 —— 改它只是为了不再有第二个「初值」来源（它会
+            // 每秒被运行时写入的共享目标覆盖）。
+            target_frames: INITIAL_TARGET_FRAMES,
             retransmit_grace: Duration::ZERO,
             gap_since: None,
         }
@@ -487,7 +518,10 @@ mod tests {
 
     #[test]
     fn depth_rises_immediately_and_shrinks_only_after_stable_hysteresis() {
+        // 起步档与中等抖动档已拆成两个常量（第 114 轮）：这条测的是**升降档迟滞**，
+        // 所以显式把起点抬到中等抖动档，不依赖 new() 的起步值 —— 否则一调起步延迟就会连带改这里。
         let mut depth = AdaptiveJitterDepth::new();
+        depth.raise_to(DEFAULT_TARGET_FRAMES);
         assert_eq!(depth.observe(Some(2_000), 1, 20_000), 3);
         for _ in 0..STABLE_WINDOWS_TO_SHRINK - 1 {
             assert_eq!(depth.observe(Some(2_000), 0, 20_000), 3);
@@ -497,6 +531,21 @@ mod tests {
             depth.observe(Some(2_000), 0, 20_000);
         }
         assert_eq!(depth.target_frames, 1);
+    }
+
+    #[test]
+    fn a_fresh_controller_starts_at_the_minimum_depth() {
+        // 起步档 = 最小档 = 20 ms：它是**出声延迟**的直接来源。这条断言防止有人把起步值
+        // 悄悄抬回中等抖动档 —— 那会白送一帧延迟（第 114 轮实测：回环 P50 +27.9 ms）。
+        let mut depth = AdaptiveJitterDepth::new();
+        assert_eq!(depth.target_frames, INITIAL_TARGET_FRAMES);
+        assert_eq!(INITIAL_TARGET_FRAMES, MIN_TARGET_FRAMES);
+        assert_eq!(
+            MIN_TARGET_FRAMES, 1,
+            "起步档就是一帧（20 ms 帧长下 = 20 ms）"
+        );
+        // 还没有抖动测量时保持起步档，不得自己往上爬。
+        assert_eq!(depth.observe(None, 0, 20_000), MIN_TARGET_FRAMES);
     }
 
     #[test]

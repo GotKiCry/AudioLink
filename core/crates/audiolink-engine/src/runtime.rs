@@ -75,7 +75,7 @@ use crate::payload::{
     GroupLeavePayload, OpenStreamAckPayload, OpenStreamPayload, SetGainPayload, SourceKind,
 };
 use crate::runtime::jitter::{
-    AdaptiveJitterDepth, DEFAULT_TARGET_FRAMES, EncodedAudioPacket, MAX_TARGET_FRAMES,
+    AdaptiveJitterDepth, EncodedAudioPacket, INITIAL_TARGET_FRAMES, MAX_TARGET_FRAMES,
     MIN_TARGET_FRAMES, PacketReorderBuffer, PlayoutDepthAction, PlayoutDepthState, ReorderBatch,
     publish_target,
 };
@@ -1921,7 +1921,8 @@ async fn run_session(
     let mut last_datagram_at: Option<Instant> = None;
     let frame_period = Duration::from_millis(u64::from(codec.frame_ms.max(1)));
     let frame_us = codec.frame_ms.max(1).saturating_mul(1_000);
-    let jitter_depth = Arc::new(AtomicUsize::new(DEFAULT_TARGET_FRAMES));
+    // 共享抖动目标的**起步**值 = 起步档（见 jitter.rs 的 INITIAL_TARGET_FRAMES）。
+    let jitter_depth = Arc::new(AtomicUsize::new(INITIAL_TARGET_FRAMES));
     let mut adaptive_jitter = AdaptiveJitterDepth::new();
     let mut arrival_jitter = SampleStats::new(256);
     let mut packet_reorder = PacketReorderBuffer::new(frame_period);
