@@ -15,10 +15,13 @@ import org.junit.Test
 /**
  * 采集 → 服务接线的规则测试。
  *
- * 这里钉的是三类「写错了要真机才发现」的判定：
+ * 这里钉的是四类「写错了要真机才发现」的判定：
  * 1. **发送源关闭时不得把采集接进引擎**（否则等于无条件打开麦克风）；
  * 2. **只有「关闭 ⇄ 非关闭」才重启引擎**（内录 ⇄ 麦克风共享同一个 pull，重启会白掐断接收流）；
- * 3. **失败要分清「要用户动手」与「我们自己重试」**（两种提示不能混成一句）。
+ * 3. **失败要分清「要用户动手」与「我们自己重试」**（两种提示不能混成一句）；
+ * 4. **§13 能力位按平台真实能力给**：内录要 API 29、麦克风要 manifest 声明了 RECORD_AUDIO ——
+ *    声明了做不到的事，对端会据此以为「这台设备能内录」，而运行期根本推不出来。
+ *    它们与**当前发送源无关**（能力位说的是「能」而不是「正在」，与 CAPTURE/PLAYOUT 同口径）。
  */
 class CaptureWiringTest {
 
@@ -115,6 +118,70 @@ class CaptureWiringTest {
         assertTrue(
             CaptureWiring.captureNote(CaptureSourceKind.Microphone, snapshot(CaptureState.Running))!!
                 .contains("麦克风"),
+        )
+    }
+
+    // ---- §13 能力位：按平台真实能力给（task-28） ----
+
+    @Test
+    fun declaredCapabilitiesGatesLoopbackOnTheApi29Threshold() {
+        // API 号写**字面量**，不要用 `SYSTEM_LOOPBACK_MIN_SDK ± 1`：那样测试与实现共享同一个
+        // 假设，常量本身写错时两边一起错、测试永远绿。这条是实测踩出来的 —— 把门槛临时改成 28，
+        // 用相对常量的版本照旧全绿；换成字面量 28/29 才抓得住。
+        val below = CaptureWiring.declaredCapabilities(sdkInt = 28, declaresRecordAudio = true)
+        assertEquals(
+            "Android 9（API 28）没有 MediaProjection/AudioPlaybackCapture，不能声明内录位：$below",
+            0u,
+            below and CapabilityBits.SYSTEM_LOOPBACK,
+        )
+
+        val atThreshold = CaptureWiring.declaredCapabilities(sdkInt = 29, declaresRecordAudio = true)
+        assertEquals(
+            "Android 10（API 29）正是内录的门槛，必须声明：$atThreshold",
+            CapabilityBits.SYSTEM_LOOPBACK,
+            atThreshold and CapabilityBits.SYSTEM_LOOPBACK,
+        )
+    }
+
+    @Test
+    fun declaredCapabilitiesGatesMicrophoneOnTheManifestDeclaration() {
+        val without = CaptureWiring.declaredCapabilities(sdkInt = 34, declaresRecordAudio = false)
+        assertEquals(
+            "manifest 没声明 RECORD_AUDIO 就不能声称能采麦克风：$without",
+            0u,
+            without and CapabilityBits.MICROPHONE,
+        )
+        // 内录位**不受** RECORD_AUDIO 影响：它俩是两个独立的平台前提。
+        assertEquals(
+            "没声明麦克风不影响内录位：$without",
+            CapabilityBits.SYSTEM_LOOPBACK,
+            without and CapabilityBits.SYSTEM_LOOPBACK,
+        )
+
+        val with = CaptureWiring.declaredCapabilities(sdkInt = 34, declaresRecordAudio = true)
+        assertEquals(
+            "声明了 RECORD_AUDIO 就要带上麦克风位：$with",
+            CapabilityBits.MICROPHONE,
+            with and CapabilityBits.MICROPHONE,
+        )
+    }
+
+    @Test
+    fun declaredCapabilitiesCombineTheTwoPlatformPremises() {
+        assertEquals(
+            "新设备 + 已声明麦克风：两位都在",
+            CapabilityBits.SYSTEM_LOOPBACK or CapabilityBits.MICROPHONE,
+            CaptureWiring.declaredCapabilities(sdkInt = 34, declaresRecordAudio = true),
+        )
+        assertEquals(
+            "老设备（API 26）只有麦克风位",
+            CapabilityBits.MICROPHONE,
+            CaptureWiring.declaredCapabilities(sdkInt = 26, declaresRecordAudio = true),
+        )
+        assertEquals(
+            "新设备但没声明麦克风：只有内录位",
+            CapabilityBits.SYSTEM_LOOPBACK,
+            CaptureWiring.declaredCapabilities(sdkInt = 29, declaresRecordAudio = false),
         )
     }
 }
