@@ -18,6 +18,7 @@ import type {
   LocalStatus,
   PairRequiredPayload,
   PeerView,
+  RevokeTrustResult,
   StartSendResult,
   SubmitPinResult,
   TelemetryRow,
@@ -64,6 +65,14 @@ export const api = {
     invoke<string>("export_telemetry", { rows }),
   setPeerGain: (idShort: string, gain: number, rampMs: number): Promise<null> =>
     invoke<null>("set_peer_gain", { id_short: idShort, gain, ramp_ms: rampMs }),
+  /**
+   * `revoke_trust` —— 移除设备（FR-18）：断开该对端 + 撤销信任 + 清掉指向它的「上次设备」记录。
+   *
+   * 这是隐私说明里「你可以取消配对」的兑现口：此前只能手动删 `trust.json` 或清应用数据。
+   * 断会话与撤信任的**顺序**由内核保证（先断后撤），这里只负责把结果如实带给界面。
+   */
+  revokeTrust: (idShort: string): Promise<RevokeTrustResult> =>
+    invoke<RevokeTrustResult>("revoke_trust", { id_short: idShort }),
   listGroups: (): Promise<GroupView[]> => invoke<GroupView[]>("list_groups"),
   /**
    * `alignment` —— M4 多源对齐快照（各路样本编号 + 当前跨度）。

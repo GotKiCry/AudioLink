@@ -35,7 +35,7 @@ use error::CommandError;
 use update::UpdateCheckView;
 use view::{
     AlignmentView, CaptureDeviceView, GroupView, LocalStatus, NoticesView, PeerView,
-    StartSendResult, SubmitPinResult, TelemetryRow, TelemetryView,
+    RevokeTrustResult, StartSendResult, SubmitPinResult, TelemetryRow, TelemetryView,
 };
 
 #[tauri::command]
@@ -176,6 +176,18 @@ async fn set_peer_gain(
     bridge.set_peer_gain(&id_short, gain, ramp_ms).await
 }
 
+/// 移除设备（FR-18）：断开该对端 + 撤销信任 + 清掉指向它的「上次设备」记录。
+///
+/// 这是隐私说明里「你可以取消配对」的**兑现口**：此前用户只能手动删 `trust.json`、
+/// 清应用数据或卸载。返回结构说明做了什么（见 `RevokeTrustResult`），UI 必须给出可见反馈。
+#[tauri::command(rename_all = "snake_case")]
+async fn revoke_trust(
+    bridge: State<'_, EngineBridge>,
+    id_short: String,
+) -> Result<RevokeTrustResult, CommandError> {
+    bridge.revoke_trust(&id_short).await
+}
+
 /// M4：多源对齐快照（各路样本编号 + 当前跨度）。
 #[tauri::command]
 async fn alignment(bridge: State<'_, EngineBridge>) -> Result<AlignmentView, CommandError> {
@@ -312,6 +324,7 @@ pub fn run() {
             join_group,
             leave_group,
             set_peer_gain,
+            revoke_trust,
             alignment,
             broadcast_epoch,
             third_party_notices,

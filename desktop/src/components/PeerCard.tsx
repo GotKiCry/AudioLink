@@ -7,6 +7,8 @@
  * 断开后卡片**不消失**（UI 规格 §2.2 微交互）：M1 里t("state.failed")由 `state: failed` 表达。
  */
 
+import { useState } from "react";
+
 import type { PeerView } from "../types";
 import { PEER_STATE_STYLE, peerStateLabel } from "../types";
 import { t } from "../i18n";
@@ -26,6 +28,13 @@ interface PeerCardProps {
   onBeginPair: (idShort: string) => void;
   /** §4.1：调这台对端的音量（0.0–2.0），由外壳带 200 ms 渐变下发。 */
   onGain: (gain: number) => void;
+  /**
+   * FR-18：移除这台设备（断开会话 + 从信任库撤销 + 清掉指向它的「上次设备」记录）。
+   *
+   * 这是**不可逆**的隐私操作，所以界面上是两段式（先点「移除设备」、再点「确认移除」）：
+   * 一次误点就断掉正在用的链路、还得重新配对才能回来，代价不对称。
+   */
+  onRevoke: (idShort: string) => Promise<void>;
 }
 
 export function PeerCard({
@@ -37,9 +46,12 @@ export function PeerCard({
   onStop,
   onBeginPair,
   onGain,
+  onRevoke,
 }: PeerCardProps) {
   const style = PEER_STATE_STYLE[peer.state];
   const streaming = peer.state === "streaming" || peer.state === "degraded";
+  /** 两段式确认（见 `onRevoke`）：默认收起，避免误点这个不可逆动作。 */
+  const [confirmingRevoke, setConfirmingRevoke] = useState(false);
 
   return (
     <article
@@ -161,6 +173,48 @@ export function PeerCard({
           </button>
         )}
       </div>
+
+      {/*
+        FR-18「移除设备」：只对**已在信任库里**的对端出现 —— 未配对的对端没有信任记录可撤，
+        给它一个「移除」入口只会让人以为能撤销什么（真正该做的是不去配对）。
+        这是隐私说明里「你可以取消配对」的兑现口，此前只能手动删 trust.json / 清应用数据。
+      */}
+      {peer.trusted ? (
+        <div className="mt-2 flex gap-2 pl-1">
+          {confirmingRevoke ? (
+            <>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setConfirmingRevoke(false);
+                  void onRevoke(peer.idShort);
+                }}
+                className="h-8 flex-1 rounded-lg bg-red-600 text-xs font-medium text-white disabled:opacity-50"
+              >
+                {busy ? t("peer.revoking") : t("peer.revoke_confirm")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmingRevoke(false)}
+                className="h-8 rounded-lg border border-slate-300 px-3 text-xs dark:border-slate-600"
+              >
+                {t("peer.revoke_cancel")}
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              disabled={busy}
+              title={t("peer.revoke_hint")}
+              onClick={() => setConfirmingRevoke(true)}
+              className="h-8 flex-1 rounded-lg border border-red-200 text-xs font-medium text-red-600 disabled:opacity-50 dark:border-red-900 dark:text-red-400"
+            >
+              {t("peer.revoke")}
+            </button>
+          )}
+        </div>
+      ) : null}
     </article>
   );
 }

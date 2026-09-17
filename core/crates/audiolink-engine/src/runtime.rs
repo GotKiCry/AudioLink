@@ -1472,6 +1472,49 @@ impl Engine {
         .await
     }
 
+    /// 移除设备（FR-18）：**先断会话、再撤信任** —— 顺序不能反。
+    ///
+    /// # 为什么是这个顺序（两条都不是口味问题）
+    ///
+    /// 1. **信任只在握手期判定一次**（`is_trusted`）：撤信任不会让任何已建立的会话自行结束。
+    ///    若只撤信任不断会话，用户看到的是「已移除」而音频还在流 —— 隐私说明里那句
+    ///    「你可以取消配对」的行为没有兑现。
+    /// 2. 更要紧的是**写回**：握手成功时引擎会 `remember_peer` 并把会话标为受信，也就是把记录
+    ///    重新写进白名单。先撤信任、后断会话的话，那条活会话下一次成功握手就会**撤销这次移除**
+    ///    —— 用户以为移除了，其实它自己回来了。
+    ///
+    /// 因此顺序固定为：断该对端会话（`SessionCommand::Shutdown` + 摘表，由 `drop_session` 广播
+    /// `PeerDisconnected` 让 UI 立刻刷新）→ 撤销内存信任并落盘。
+    ///
+    /// 返回「是否真的从信任库里删掉了」：本来就不在 → `Ok(false)`，与
+    /// `audiolink_identity::TrustStore::revoke` 的幂等语义一致（**照样会断会话**）。
+    ///
+    /// 只影响这一个对端：其它会话与它们的信任记录都不动。
+    pub async fn revoke_trust(&self, peer: NodeId) -> Result<bool, AudioLinkError> {
+        // ① 先断开这条会话（若有）。**不能**挪到撤信任之后：见函数文档第 2 条。
+        let existing = self
+            .inner
+            .peers
+            .lock()
+            .ok()
+            .and_then(|peers| peers.get(&peer).cloned());
+        if let Some(session) = existing.as_ref() {
+            let _ = session.commands.send(SessionCommand::Shutdown).await;
+            drop_session(&self.inner, session, "trust revoked");
+        }
+
+        // ② 撤内存信任并落盘（`TrustStore::revoke` 自己就是「有变化才原子写」）。
+        let revoked = {
+            let mut trust = self
+                .inner
+                .trust
+                .lock()
+                .map_err(|_| AudioLinkError::bad_request("trust store poisoned"))?;
+            trust.revoke(peer).map_err(|error| identity_error(&error))?
+        };
+        Ok(revoked)
+    }
+
     /// 提交对端显示的 PIN（本机是发起端时）。
     pub async fn submit_pin(&self, peer: NodeId, pin: &str) -> Result<(), AudioLinkError> {
         self.send_command(peer, SessionCommand::SubmitPin(pin.to_string()))
@@ -5016,4 +5059,6 @@ mod nack;
 mod pairing_tests;
 #[cfg(test)]
 mod playout_tests;
+#[cfg(test)]
+mod revoke_tests;
 mod sink_watchdog;

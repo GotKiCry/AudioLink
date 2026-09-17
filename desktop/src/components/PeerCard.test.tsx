@@ -29,6 +29,7 @@ function card(over: Partial<PeerView> = {}, props: Partial<Parameters<typeof Pee
     onStop: vi.fn(async () => undefined),
     onBeginPair: vi.fn(),
     onGain: vi.fn(),
+    onRevoke: vi.fn(async () => undefined),
     ...props,
   };
   render(
@@ -138,5 +139,55 @@ describe("能力协商的展示（§13）", () => {
     expect(
       screen.getAllByText(t("peer.caps_agreed", { list: "Opus 编码" })).length,
     ).toBeGreaterThan(0);
+  });
+});
+
+describe("移除设备（FR-18：隐私说明里「你可以取消配对」的兑现口）", () => {
+  it("未配对的对端没有移除入口（没有信任记录可撤）", () => {
+    // 改坏：不看 trusted 就渲染 → 未配对对端出现一个「移除设备」，
+    // 用户以为能撤销什么，其实什么也没撤（真正该做的是别去配对）。
+    card({ trusted: false });
+
+    expect(screen.queryByRole("button", { name: t("peer.revoke") })).toBeNull();
+  });
+
+  it("已配对的对端：第一次点击只展开确认，**不**立刻移除", () => {
+    // 改坏：把 onRevoke 直接挂在第一个按钮上 → 一次误点就断掉正在用的链路、
+    // 还得重新配对才能回来（代价不对称）。
+    const handlers = card({ trusted: true, state: "streaming" });
+
+    fireEvent.click(screen.getByRole("button", { name: t("peer.revoke") }));
+
+    expect(handlers.onRevoke).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: t("peer.revoke_confirm") })).toBeTruthy();
+  });
+
+  it("确认后才把**这台**对端的短码交上去", () => {
+    // 多台对端都在列表里：短码传错 = 移除另一台设备（不可逆）。
+    const handlers = card({ trusted: true, idShort: "bbbb2222", state: "idle" });
+
+    fireEvent.click(screen.getByRole("button", { name: t("peer.revoke") }));
+    fireEvent.click(screen.getByRole("button", { name: t("peer.revoke_confirm") }));
+
+    expect(handlers.onRevoke).toHaveBeenCalledWith("bbbb2222");
+  });
+
+  it("取消后收起确认，且不发起移除", () => {
+    const handlers = card({ trusted: true, state: "idle" });
+
+    fireEvent.click(screen.getByRole("button", { name: t("peer.revoke") }));
+    fireEvent.click(screen.getByRole("button", { name: t("peer.revoke_cancel") }));
+
+    expect(handlers.onRevoke).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: t("peer.revoke") })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: t("peer.revoke_confirm") })).toBeNull();
+  });
+
+  it("正在忙（busy）时移除入口禁用（防连点重复撤销）", () => {
+    // busy 期间连入口都点不动：这条不可逆动作不该在另一个操作还没落地时并发提交。
+    card({ trusted: true, state: "idle" }, { busy: true });
+
+    const entry = screen.getByRole("button", { name: t("peer.revoke") });
+    expect((entry as HTMLButtonElement).disabled).toBe(true);
   });
 });

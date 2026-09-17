@@ -248,6 +248,20 @@ export interface AutoConnectPolicy {
 }
 
 /**
+ * 移除设备（`revoke_trust`，FR-18）的结果。
+ *
+ * 为什么不是 `null`：这是一次**不可逆**的隐私操作，界面必须能如实说出「做了什么」——
+ * 尤其「本来就不在信任库里」与「顺手清掉了上次设备记录」是两件不同的事，
+ * 返回空值等于让用户无法判断是否生效。
+ */
+export interface RevokeTrustResult {
+  /** 是否真的从信任库里删掉了（`false` = 本来就不在，幂等）。 */
+  removed: boolean;
+  /** 是否顺手清掉了「上次设备」记录（它原本指向这台设备）。 */
+  forgotLastPeer: boolean;
+}
+
+/**
  * `check_update` 的返回（M5 自动更新）。
  *
  * 只有两种**正常**结果：`version === null` = 已是最新；有版本号 = 发现新版本。

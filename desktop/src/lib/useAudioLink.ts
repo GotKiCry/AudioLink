@@ -45,6 +45,13 @@ export interface AudioLinkController {
   groupBusy: boolean;
   /** §4.1：调某台对端的音量（0.0–2.0）。 */
   setPeerGain: (idShort: string, gain: number) => Promise<void>;
+  /**
+   * FR-18：移除设备 —— 断开会话 + 撤销信任 + （若它正是「上次设备」）清掉那条记录。
+   *
+   * 不可逆的隐私操作，所以界面上是两段式确认；成功后用 `notice` 如实报出做了什么
+   * （「本来就不在信任库里」与「已从信任库移除」是两件事）。
+   */
+  revokeTrust: (idShort: string) => Promise<void>;
   refreshGroups: () => Promise<void>;
   /** M4 多源对齐快照（1 Hz 轮询；没有对端时为 null）。 */
   alignment: AlignmentView | null;
@@ -418,6 +425,29 @@ export function useAudioLink(): AudioLinkController {
     }
   }, []);
 
+  /**
+   * 移除设备（FR-18）：断开该对端、撤销信任，并（若它正是「上次设备」）清掉那条记录。
+   *
+   * 为什么必须给可见反馈：这是**不可逆的隐私操作** —— 静默成功等于用户无法判断是否生效；
+   * 而且「本来就不在信任库里」（removed=false，只断了会话）与「已从信任库移除」是两件事，
+   * 如实分开说，用户才知道下次要不要重新配对。
+   */
+  const revokeTrust = useCallback(async (idShort: string): Promise<void> => {
+    try {
+      const result = await api.revokeTrust(idShort);
+      const base = result.removed
+        ? t("toast.revoked", { peer: idShort })
+        : t("toast.revoked_not_trusted", { peer: idShort });
+      setNotice(
+        result.forgotLastPeer ? `${base} ${t("toast.revoked_forgot_last_peer")}` : base,
+      );
+      // 会话表已经变了（内核先断了会话）：立刻拉一次，别等下一拍事件。
+      setPeers(await api.listPeers());
+    } catch (raw) {
+      setError(toCommandError(raw));
+    }
+  }, []);
+
   /** 刷新同步组列表（M3）：操作后由调用方刷新，UI 不自己缓存真相。 */
   const refreshGroups = useCallback(async (): Promise<void> => {
     try {
@@ -515,6 +545,7 @@ export function useAudioLink(): AudioLinkController {
     alignmentBusy,
     broadcastEpoch,
     setPeerGain,
+    revokeTrust,
     refreshGroups,
     createGroup,
     joinGroup,

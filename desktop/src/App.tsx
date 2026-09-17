@@ -97,6 +97,7 @@ export default function App() {
               onStop={al.stopSend}
               onBeginPair={al.beginPairing}
               onGain={(gain) => void al.setPeerGain(peer.idShort, gain)}
+              onRevoke={al.revokeTrust}
             />
           ))}
         </div>

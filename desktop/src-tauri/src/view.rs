@@ -98,6 +98,20 @@ pub struct PeerView {
     pub reconnects: u64,
 }
 
+/// 移除设备（`revoke_trust`）的结果。
+///
+/// 为什么不返回 `null`：这是一次**不可逆**的隐私操作，界面必须能如实说出「做了什么」——
+/// 尤其 `removed = false`（本来就不在信任库里）与 `forgotLastPeer = true`（顺手清掉了
+/// 「上次设备」记录）是两件用户会关心的事，静默返回等于让人无法判断是否生效。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeTrustResult {
+    /// 是否真的从信任库里删掉了（`false` = 本来就不在，幂等）。
+    pub removed: bool,
+    /// 是否顺手清掉了「上次设备」记录（它原本指向这台被移除的设备）。
+    pub forgot_last_peer: bool,
+}
+
 /// §13 能力协商结果（给界面看的形式）。
 ///
 /// 为什么在这里把位图**翻成人话**：位图是协议用的，界面要回答的是「这台对端能做什么、缺什么」。
@@ -608,6 +622,17 @@ mod notices_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+
+    /// 移除设备的结果是**前端契约**：字段名错了界面就永远读不到真实值（静默谎报）。
+    #[test]
+    fn revoke_result_json_shape_matches_contract() {
+        let json = serde_json::to_string(&RevokeTrustResult {
+            removed: true,
+            forgot_last_peer: false,
+        })
+        .expect("序列化移除结果");
+        assert_eq!(json, r#"{"removed":true,"forgotLastPeer":false}"#);
+    }
 
     #[test]
     fn found_notices_report_source_and_size() {

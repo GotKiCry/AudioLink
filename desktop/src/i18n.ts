@@ -71,6 +71,11 @@ const zh = {
   "peer.stop": "停止推流",
   "peer.starting": "启动中…",
   "peer.start": "开始推流",
+  "peer.revoke": "移除设备",
+  "peer.revoke_hint": "断开这台设备并把它从信任库移除；下次连接需要重新配对",
+  "peer.revoke_confirm": "确认移除",
+  "peer.revoking": "移除中…",
+  "peer.revoke_cancel": "取消",
   "set.title": "设置（M5）",
   "set.tray_hint": "关掉窗口不会退出程序：AudioLink 常驻托盘（右键托盘图标可退出）。",
   "set.autostart": "开机自动启动",
@@ -174,6 +179,9 @@ const zh = {
   "toast.group_joined": "已把 {peer} 加入组 #{id}",
   "toast.epoch_sent": "已向 {count} 条会话广播共同基准（提前量 {lead} ms）",
   "toast.group_left": "已让 {peer} 退出组 #{id}",
+  "toast.revoked": "已移除 {peer}：会话已断开、信任已撤销，下次连接需要重新配对",
+  "toast.revoked_not_trusted": "{peer} 本来就不在信任库里；已断开它的会话",
+  "toast.revoked_forgot_last_peer": "并已清掉「上次设备」记录。",
 
   // M5 · 软件更新（AudioLink 不自动更新：检查与安装都必须由用户发起，理由见 src/update.rs）
   "upd.title": "软件更新",
@@ -239,6 +247,11 @@ const en: Record<MessageKey, string> = {
   "peer.stop": "Stop streaming",
   "peer.starting": "Starting…",
   "peer.start": "Start streaming",
+  "peer.revoke": "Remove device",
+  "peer.revoke_hint": "Disconnect this device and remove it from the trusted list; pairing will be required next time",
+  "peer.revoke_confirm": "Confirm removal",
+  "peer.revoking": "Removing…",
+  "peer.revoke_cancel": "Cancel",
   "set.title": "Settings (M5)",
   "set.tray_hint": "Closing the window does not quit: AudioLink stays in the tray (right-click the tray icon to quit).",
   "set.autostart": "Start on sign-in",
@@ -342,6 +355,9 @@ const en: Record<MessageKey, string> = {
   "toast.group_joined": "Added {peer} to group #{id}",
   "toast.epoch_sent": "Broadcast the common epoch to {count} session(s) (lead {lead} ms)",
   "toast.group_left": "Removed {peer} from group #{id}",
+  "toast.revoked": "Removed {peer}: session closed and trust revoked - pairing will be required next time",
+  "toast.revoked_not_trusted": "{peer} was not in the trusted list; its session has been closed",
+  "toast.revoked_forgot_last_peer": "The 'last device' record was cleared as well.",
 
   // M5 · software update (no auto-update: the user triggers both check and install, see src/update.rs)
   "upd.title": "Software update",

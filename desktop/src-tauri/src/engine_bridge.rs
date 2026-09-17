@@ -58,8 +58,8 @@ use crate::error::CommandError;
 use crate::settings::AutoConnectPolicy;
 use crate::view::{
     AlignmentView, CaptureDeviceView, GroupMemberView, GroupView, LocalStatus, NoticesView,
-    PairRequiredPayload, PeerCapabilitiesView, PeerState, PeerView, StartSendResult,
-    SubmitPinResult, TelemetryRow, TelemetryView, alignment_view, notices_view,
+    PairRequiredPayload, PeerCapabilitiesView, PeerState, PeerView, RevokeTrustResult,
+    StartSendResult, SubmitPinResult, TelemetryRow, TelemetryView, alignment_view, notices_view,
     render_telemetry_csv,
 };
 
@@ -453,6 +453,52 @@ impl EngineBridge {
             .set_peer_gain(peer, gain, ramp_ms)
             .await
             .map_err(|error| engine_error("set_peer_gain", &error))
+    }
+
+    /// 移除设备（FR-18）：断开该对端会话 + 撤销信任 + 清掉指向它的「上次设备」记录。
+    ///
+    /// 三件事必须一起做，理由各不相同：
+    /// * **断会话 + 撤信任的顺序**由内核保证（`Engine::revoke_trust` 里有完整说明：先断后撤，
+    ///   否则那条活会话下一次成功握手会把记录写回白名单，「移除」被静默撤销）；
+    /// * **清 `last_peer`**：它指向刚被移除的设备时，开机自动重连会去连一台用户刚移除的设备；
+    /// * 地址必须**在撤之前**取 —— 撤完之后那条会话就不在 `peers()` 里了。
+    pub async fn revoke_trust(&self, id_short: &str) -> Result<RevokeTrustResult, CommandError> {
+        let engine = self.engine().await?;
+        let peer = resolve_peer(&engine, id_short)?;
+        let addr = engine
+            .peers()
+            .iter()
+            .find(|status| status.id == peer)
+            .map(|status| status.addr.to_string());
+
+        let removed = engine
+            .revoke_trust(peer)
+            .await
+            .map_err(|error| engine_error("revoke_trust", &error))?;
+
+        // 只有「上次设备」确实指向它时才清：指向别的设备时不该被顺手删掉。
+        let forgot_last_peer =
+            should_forget_last_peer(self.policy().last_peer.as_deref(), addr.as_deref());
+        if forgot_last_peer {
+            self.forget_last_peer();
+        }
+
+        Ok(RevokeTrustResult {
+            removed,
+            forgot_last_peer,
+        })
+    }
+
+    /// 清掉「上次设备」记录。
+    ///
+    /// 写 `null` 而不是删键：读侧（`policy`）本来就按 `as_str()` 取值，`null` 与「键不存在」
+    /// 在语义上完全一样，而 `set` 是本文件已经在用的 API（少一处版本面）。
+    fn forget_last_peer(&self) {
+        let Ok(store) = self.app.store(SETTINGS_FILE) else {
+            return;
+        };
+        store.set(KEY_LAST_PEER, serde_json::Value::Null);
+        let _ = store.save();
     }
 
     /// M4：多源对齐快照 —— 各路「最近一帧编号 ↔ 到达时刻」与当前跨度。
@@ -1209,6 +1255,14 @@ fn quality_name(quality: ClockQuality) -> &'static str {
     }
 }
 
+/// 移除设备时该不该顺手清掉「上次设备」记录：**只有它确实指向这台被移除的设备时**。
+///
+/// 抽成纯函数是为了能钉住这条判断：指向**别的**设备时顺手删掉，等于把用户另一台设备的
+/// 便利性（开机自动重连它）当成本次移除的代价 —— 而用户点的是「移除这一台」。
+fn should_forget_last_peer(last_peer: Option<&str>, revoked_addr: Option<&str>) -> bool {
+    matches!((last_peer, revoked_addr), (Some(last), Some(addr)) if last == addr)
+}
+
 fn resolve_peer(engine: &Engine, id_short: &str) -> Result<NodeId, CommandError> {
     let trimmed = id_short.trim();
     if trimmed.is_empty() {
@@ -1347,6 +1401,23 @@ fn unix_millis() -> u128 {
 mod tests {
     use super::*;
     use audiolink_engine::GroupMember;
+
+    /// 移除设备时「要不要清上次设备记录」这条判断：只有指向被移除的那一台才清。
+    ///
+    /// 改坏：写成「有 last_peer 就清」→ 用户移除 A 时，B（另一台设备的便利性）被顺手删掉，
+    /// 而用户从没要求动 B。
+    #[test]
+    fn forgetting_last_peer_only_when_it_points_at_the_removed_device() {
+        let removed = "192.168.1.23:58290";
+        assert!(should_forget_last_peer(Some(removed), Some(removed)));
+        assert!(!should_forget_last_peer(
+            Some("192.168.1.99:58290"),
+            Some(removed)
+        ));
+        assert!(!should_forget_last_peer(None, Some(removed)));
+        // 会话已经摘表时地址查不到：此时宁可不动记录，也不误删别人的。
+        assert!(!should_forget_last_peer(Some(removed), None));
+    }
 
     #[test]
     fn group_view_keeps_the_epoch_as_a_string_and_shortens_members() {
