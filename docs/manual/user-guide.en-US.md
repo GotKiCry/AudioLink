@@ -161,7 +161,7 @@ on Android it is the "Open source licences" page.
 
 ## 13. Not built yet (so you do not go looking)
 
-- Android **system audio capture** and microphone input: not implemented yet (Android currently receives and plays);
-- Android start-on-boot and battery-optimisation guidance: not implemented yet;
+- Android **system audio capture** and microphone input: **implemented** (loopback needs Android 10+, via MediaProjection + AudioPlaybackCapture; microphone via AudioRecord); **on-device acceptance is still outstanding**;
+- Android **battery-optimisation guidance**: **implemented** (detection + actionable prompt; only opens the system allowlist, requests no sensitive permission). Android **start-on-boot is deliberately not implemented** — Android 15+ forbids starting a mediaPlayback foreground service from BOOT_COMPLETED (see docs/53-m5-audit.md);
 - The Windows installer is **not code-signed**: SmartScreen warns on first run, choose "Run anyway";
 - Across the public internet, iOS and a web client: explicitly out of scope.
