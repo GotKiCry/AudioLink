@@ -503,6 +503,25 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   过程中修了两处自查问题：参数位置上误用 `///`（Rust 不允许 doc comment 出现在参数位）→ 改普通注释；
   `run_outage` 参数到 9 个触发 `too_many_arguments` → 显式放行并写明理由（测试 helper 摊开参数比再包一层更好读）。
 
+- **第 75 轮：用 AgentTeam 把 FR-27 重连做到 444 ms，又按纪律回退（并拿到更准的根因）**。新目标要求用 AgentTeam，
+  于是立 3 条共享任务、派两位队友（`reconnect-test` 写验收测试、`reconnect-design` 写 `docs/50-m2-reconnect.md`），
+  Lead 自己做实现。**实现三件**：① `Inner` 加 `reconnect_tx` + 重连监督任务（持 `Weak<Engine>` 避免自我引用环）；
+  ② `reconnect_once` 摘旧会话 → 退避重拨（单次 1.5 s 超时、退避 200→1000 ms、预算 20 s）→ 成功后 `start_send`；
+  重拨走完整的 `connect_inner`，它内部的 `is_trusted` 决定是否要 PIN —— **重连不绕过信任库**；
+  ③ **静默看门狗（关键）**：拔网时 QUIC 不报错（`idle_timeout` 30 s 才判死），`report_peer_gone` 压根没被调用，
+  所以要自己数「多久没听到对端」（`PeerSession.last_rx_us` + `ticker`，阈值 1 s）。**实测 4783 → 444 ms**，
+  上行静默消失，验收测试的 3000 ms 断言转绿。**但引入回归**：接收侧 `peers()` 变成空表（`[Streaming] / []`），
+  而声音仍在响（响的是旧连接自愈）。**两位队友独立给出更准的根因，比我自己的猜测对**：我当初用
+  `stream_id.is_some()` 判「谁该拨号」，但**接收侧也会置 `stream_id`** → 变成**双向拨号**，接收侧去连一个
+  **没在监听**的发送端（`Engine::start` 不自动监听），拨号失败后把**自己的表项**摘掉了。
+  正确判据是 `Role::Initiator`。队友还抓到两个附带问题：裸 `tokio::spawn` 绕过了 `TaskTracker`、
+  重连后 `start_send` 的错误被 `let _ =` 吞掉；以及**参数要按 3 s 反推**——1.5 s 单次尝试 + 1.0 s 退避
+  最坏 ≈3.4 s 已经越线，应压到 ≤800 ms / ≤500 ms。**按质量纪律回退了产品代码**（主干不留已知回归），
+  验收测试保留但标 `#[ignore]` 并写明理由（`--run-ignored` 可复现 444 ms）。**本轮价值**：把模糊的「接重连」
+  拆成三件具体的事（静默看门狗 / 退避重拨 / 谁该拨号），前两件已被实测证明有效，第三件有了确切判据。
+  门禁：fmt ✓ / clippy 零告警 ✓ / engine **37 passed 1 skipped** ✓。产出：队友的 `docs/50`（340 行、含行号锚点）、
+  提交 `009bad4`。
+
 ### 4.1 定量验收待补：**PCM 长度修复后的真机链路**
 
 Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本数**，`receive_audio()` 又乘了声道数，
