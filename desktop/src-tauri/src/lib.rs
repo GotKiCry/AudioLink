@@ -23,6 +23,7 @@ mod capture;
 mod engine_bridge;
 mod error;
 mod settings;
+mod update;
 mod view;
 
 use tauri::menu::{Menu, MenuItem};
@@ -31,6 +32,7 @@ use tauri::{Manager, State};
 
 use engine_bridge::EngineBridge;
 use error::CommandError;
+use update::UpdateCheckView;
 use view::{
     AlignmentView, CaptureDeviceView, GroupView, LocalStatus, NoticesView, PeerView,
     StartSendResult, SubmitPinResult, TelemetryRow, TelemetryView,
@@ -245,6 +247,24 @@ async fn third_party_notices(bridge: State<'_, EngineBridge>) -> Result<NoticesV
     bridge.third_party_notices().await
 }
 
+/// M5：检查更新（**只由用户主动触发**）。
+///
+/// 为什么没有「启动后自动检查」：这是个音频工具，用户可能在推流/录音 —— 静默的更新流程
+/// （检查、下载、安装、重启）会把正在进行的会话打断。边界与理由写在 `src/update.rs` 顶部。
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<UpdateCheckView, CommandError> {
+    update::check(&app).await
+}
+
+/// M5：下载并安装更新（**必须由用户确认**）。
+///
+/// `version` 是用户在上一步界面上看到并确认的那个版本号：安装前会再查一次更新源，
+/// 对不上就报错让他重新确认 —— 用户授权的是「升级到 X」，不是「随便装个新的」。
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle, version: String) -> Result<String, CommandError> {
+    update::install(&app, &version).await
+}
+
 /// M4：广播共同时间基准（接收端 → 各发送端），返回发出的会话数。
 #[tauri::command(rename_all = "snake_case")]
 async fn broadcast_epoch(
@@ -267,6 +287,13 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::Builder::default().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        // 自动更新（M5）：插件在这里装配，调用只走 src/update.rs 的 check_update / install_update。
+        //
+        // 注意 capabilities/default.json **没有**给任何 updater 权限：webview 侧不直接调
+        // `plugin:updater|*`（前端只调外壳命令），所以「静默下载安装」在权限层就没有入口。
+        // 而 `update.rs` 里的 `app.updater()` 会去读本插件登记的状态 —— 插件没装配会直接
+        // panic 而不是静默失效，因此「注册了没有」这件事是硬的。
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_log::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             version,
@@ -288,6 +315,8 @@ pub fn run() {
             alignment,
             broadcast_epoch,
             third_party_notices,
+            check_update,
+            install_update,
             autostart_enabled,
             set_autostart,
             auto_connect_state,

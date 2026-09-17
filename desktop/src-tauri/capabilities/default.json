@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "M1 最小 UI 的权限集：只给主窗口「订阅后端事件」的能力（core:event 的 default 含 listen/unlisten/emit）。外壳自身的命令不经过 ACL（build.rs 未声明 app ACL manifest，见 tauri-2.11 src/webview/mod.rs 的 has_app_acl_manifest 分支），因此这里不列任何 app 权限 —— 最小权限原则。",
+  "description": "M1 最小 UI 的权限集：只给主窗口「订阅后端事件」的能力（core:event 的 default 含 listen/unlisten/emit）。外壳自身的命令不经过 ACL（build.rs 未声明 app ACL manifest，见 tauri-2.11 src/webview/mod.rs 的 has_app_acl_manifest 分支），因此这里不列任何 app 权限 —— 最小权限原则。M5 的自动更新同理：前端只调外壳自己的 check_update / install_update（见 src/update.rs），**不**直接调 plugin:updater|*，所以一条 updater 权限都不给。插件的四个权限名（allow-check / allow-download / allow-install / allow-download-and-install，合起来才是 updater:default）在这里没有调用方：给了就等于白送一条「从 webview 静默下载并安装」的入口，而本产品的更新必须是用户显式发起 + 显式确认的。将来若真的改成前端直接用 @tauri-apps/plugin-updater 的 JS API，才按最小集补 updater:allow-check + updater:allow-download-and-install（不要整套 updater:default）。",
   "windows": ["main"],
   "permissions": ["core:event:default"]
 }

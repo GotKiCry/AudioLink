@@ -22,6 +22,7 @@ import type {
   SubmitPinResult,
   TelemetryRow,
   TelemetryView,
+  UpdateCheckView,
 } from "../types";
 
 // --- 事件名（契约 §6 冻结；Rust 侧同名常量在 engine_bridge.rs） ---
@@ -105,6 +106,23 @@ export const api = {
   /** `set_autostart` —— M5：开关开机自启。 */
   setAutostart: (enabled: boolean): Promise<null> =>
     invoke<null>("set_autostart", { enabled }),
+  /**
+   * `check_update` —— M5：检查更新（**只由用户主动触发**；后端不做启动期自动检查）。
+   *
+   * 为什么不直接用 `@tauri-apps/plugin-updater` 的 JS API：① 失败原因要在 Rust 侧翻译成
+   * 人话（插件自己的错误是英文机器话，界面不该显示它）；② webview 侧就不必持有
+   * `plugin:updater|*` 权限。两条理由详见 `desktop/src-tauri/src/update.rs`。
+   */
+  checkUpdate: (): Promise<UpdateCheckView> => invoke<UpdateCheckView>("check_update"),
+  /**
+   * `install_update` —— M5：下载并安装**用户确认过的**那个版本，返回装上的版本号。
+   *
+   * `version` 必须是上一步界面上显示的版本号：后端会再查一次更新源，对不上就报错 ——
+   * 用户授权的是「升级到 X」，不是「随便装个新的」。
+   * Windows 上这条命令会让应用退出、安装器接管，所以正常路径多半等到不 resolve。
+   */
+  installUpdate: (version: string): Promise<string> =>
+    invoke<string>("install_update", { version }),
   createGroup: (idShorts: string[], leadMs: number): Promise<number> =>
     invoke<number>("create_group", { id_shorts: idShorts, lead_ms: leadMs }),
   joinGroup: (idShort: string, groupId: number): Promise<null> =>

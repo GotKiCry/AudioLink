@@ -171,6 +171,22 @@ const zh = {
   "toast.group_joined": "已把 {peer} 加入组 #{id}",
   "toast.epoch_sent": "已向 {count} 条会话广播共同基准（提前量 {lead} ms）",
   "toast.group_left": "已让 {peer} 退出组 #{id}",
+
+  // M5 · 软件更新（AudioLink 不自动更新：检查与安装都必须由用户发起，理由见 src/update.rs）
+  "upd.title": "软件更新",
+  "upd.hint": "更新由你手动检查：AudioLink 不会在后台自动下载或安装 —— 正在推流或录音时被静默重启是不能接受的。",
+  "upd.check": "检查更新",
+  "upd.checking": "检查中…",
+  "upd.up_to_date": "已是最新版本（{version}）",
+  "upd.available": "发现新版本 {version}（当前 {current}）",
+  "upd.published": "发布于 {date}",
+  "upd.notes": "更新说明",
+  "upd.install": "下载并安装 {version}",
+  "upd.confirm_hint": "安装会先与对端优雅收尾，然后关闭 AudioLink 并启动安装器（装完自动重新打开）。正在推流的会话会中断 —— 现在安装吗？",
+  "upd.confirm": "确认安装",
+  "upd.cancel": "取消",
+  "upd.installing": "下载中…（验签通过后才会启动安装器）",
+  "upd.done": "已安装 {version}：重启 AudioLink 后生效。",
 } as const;
 
 /** 键集合由中文表定义；英文表必须一条不漏（漏了 tsc 直接报错）。 */
@@ -320,6 +336,22 @@ const en: Record<MessageKey, string> = {
   "toast.group_joined": "Added {peer} to group #{id}",
   "toast.epoch_sent": "Broadcast the common epoch to {count} session(s) (lead {lead} ms)",
   "toast.group_left": "Removed {peer} from group #{id}",
+
+  // M5 · software update (no auto-update: the user triggers both check and install, see src/update.rs)
+  "upd.title": "Software update",
+  "upd.hint": "Updates are checked only when you ask: AudioLink never downloads or installs in the background - being restarted silently while streaming or recording is not acceptable.",
+  "upd.check": "Check for updates",
+  "upd.checking": "Checking…",
+  "upd.up_to_date": "You have the latest version ({version})",
+  "upd.available": "Version {version} is available (you have {current})",
+  "upd.published": "Published {date}",
+  "upd.notes": "What is new",
+  "upd.install": "Download and install {version}",
+  "upd.confirm_hint": "Installing ends your sessions gracefully, then closes AudioLink and starts the installer (the app reopens when it finishes). Any active stream will drop - install now?",
+  "upd.confirm": "Install now",
+  "upd.cancel": "Cancel",
+  "upd.installing": "Downloading… (the installer starts only after the signature checks out)",
+  "upd.done": "Installed {version}: restart AudioLink to use it.",
 };
 
 const TABLES: Record<Locale, Record<MessageKey, string>> = {

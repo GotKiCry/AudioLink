@@ -25,6 +25,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { StatusStrip } from "./components/StatusStrip";
 import { TelemetryPanel } from "./components/TelemetryPanel";
 import { TopBar } from "./components/TopBar";
+import { UpdatePanel } from "./components/UpdatePanel";
 import { api } from "./lib/ipc";
 import { useAudioLink } from "./lib/useAudioLink";
 import { detectLocale, setLocale, t, useLocale, type Locale } from "./i18n";
@@ -109,6 +110,8 @@ export default function App() {
         />
 
         <SettingsPanel />
+
+        <UpdatePanel />
 
         <AboutPanel />
 

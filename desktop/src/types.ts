@@ -244,6 +244,24 @@ export interface AutoConnectPolicy {
   lastPeer: string | null;
 }
 
+/**
+ * `check_update` 的返回（M5 自动更新）。
+ *
+ * 只有两种**正常**结果：`version === null` = 已是最新；有版本号 = 发现新版本。
+ * 第三种「出错」不走这里 —— 它是 `CommandError` rejection（与其它命令同一条路），
+ * 失败原因由后端错误层翻译成人话，前端只负责显示，不拼文案。
+ */
+export interface UpdateCheckView {
+  /** 当前运行版本（与 `version` 命令同源）。 */
+  currentVersion: string;
+  /** 新版本号；null = 已是最新。 */
+  version: string | null;
+  /** 新版本的发布说明（可能多行）；没有就是 null。 */
+  notes: string | null;
+  /** 新版本发布日期（YYYY-MM-DD）；没有就是 null。 */
+  pubDate: string | null;
+}
+
 export interface TelemetryRow {
   /** 采样时刻（Unix 毫秒）。 */
   atUnixMs: number;
