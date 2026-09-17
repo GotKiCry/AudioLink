@@ -36,5 +36,12 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+# 「篡改过的更新包必须被验签拒绝」的自动化证据（tests/updater_signature.rs）。
+# 与 tauri-plugin-updater 2.11.0 同源的验签实现：该插件的 Cargo.toml 同样依赖
+# minisign-verify = "0.2" 与 base64 = "0.22"；这里只用于测试，不进产品依赖、不改产品代码。
+minisign-verify = "0.2"
+base64 = "0.22"
+
 [lints]
 workspace = true
