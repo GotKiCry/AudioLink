@@ -38,14 +38,14 @@ object PowerWhitelistProbe {
     /**
      * 本应用是否已在省电白名单里。
      *
-     * `PowerManager.isIgnoringBatteryOptimizations` 是 API 23 起才有的 API，所以低版本直接返回
-     * `false` —— 但低版本的"该怎么办"由 [PowerWhitelistMapper] 判（那里给的是"本机不支持检测"），
-     * 这里只负责"读不出来就别瞎猜"。
+     * **这里刻意不判版本**：低版本该怎么办由 [PowerWhitelistMapper] 判（它给的是"本机不支持检测"），
+     * 而本应用 minSdk = 26，已经高于该 API 的引入版本（API 23）—— 在这里再判一次是**不可达代码**
+     * （lint 的 ObsoleteSdkInt 提示说的正是这件事）。
+     *
+     * 版本矩阵并没有因此丢掉：它以窄输入 `sdkInt` 的形式进了 [PowerWhitelistMapper]，
+     * 那一侧在纯 JVM 上被单测逐条钉住（含 API 22 这个本机到不了的值）。
      */
     private fun isIgnoringBatteryOptimizations(context: Context): Boolean {
-        if (Build.VERSION.SDK_INT < PowerWhitelistMapper.DETECTION_MIN_API) {
-            return false
-        }
         val power = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return false
         return power.isIgnoringBatteryOptimizations(context.packageName)
     }
