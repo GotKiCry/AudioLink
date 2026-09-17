@@ -521,3 +521,114 @@ async fn late_joiner_aligns_under_loss() {
     receiver_b.shutdown().await;
     receiver_c.shutdown().await;
 }
+
+/// 丢包 × 多组共存：一个发送端同时服务两个组，**两条链路都在丢包**时两组还能各自守住吗？
+///
+/// 这是 `docs/33` §10.2 组合边界清单里的最后一条。`group_multi.rs` 已经在干净链路上证明
+/// 「组基准按组存、两组互不干扰」；这里要问的是丢包会不会把这个性质搅乱 —— 比如让某一组的两台
+/// 因为各自的丢包修复节奏不同而错开。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_groups_hold_under_loss() {
+    let dir = tempfile::TempDir::new().expect("临时目录");
+    let frame_ms = 20_u32;
+    let lead_ms = 120_u32;
+
+    let mut send_config = EngineConfig::new("sender", dir.path().join("sender"));
+    send_config.listen = "127.0.0.1:0".parse().unwrap();
+    send_config.codec.frame_ms = frame_ms;
+    send_config.capture = Some(Arc::new(move || {
+        Ok(Box::new(SyntheticCapture::new(frame_ms, 440.0)?))
+    }));
+    let sender = Engine::start(send_config).await.expect("发送引擎");
+
+    let stamps: Vec<Arc<Mutex<Vec<Stamp>>>> =
+        (0..4).map(|_| Arc::new(Mutex::new(Vec::new()))).collect();
+    let mut receivers = Vec::new();
+    for (index, entry) in stamps.iter().enumerate() {
+        let (receiver, accept) =
+            start_receiver(dir.path(), index, Arc::clone(entry), frame_ms).await;
+        receivers.push((receiver, accept));
+    }
+
+    // 四条链路各自注入：每 50 个音频数据报成串丢 2 个（约 4%）。
+    let mut relays = Vec::new();
+    for (receiver, _) in &receivers {
+        relays.push(LossRelay::start(receiver.local_addr(), 512, 50, 2).await);
+    }
+
+    let mut events: Vec<_> = receivers
+        .iter()
+        .map(|(receiver, _)| receiver.subscribe())
+        .collect();
+
+    let outcome = tokio::time::timeout(Duration::from_secs(120), async {
+        let mut ids = Vec::new();
+        for ((receiver, _), relay) in receivers.iter().zip(relays.iter()) {
+            let id = connect_and_pair(&sender, receiver, relay.addr).await;
+            wait_streaming(&sender, id).await;
+            ids.push(id);
+        }
+
+        // 前两台一组、后两台一组，各自一个 epoch。
+        let _group_one = sender
+            .create_group(&[ids[0], ids[1]], lead_ms)
+            .await
+            .expect("建组 1");
+        let _group_two = sender
+            .create_group(&[ids[2], ids[3]], lead_ms)
+            .await
+            .expect("建组 2");
+
+        let results = sender.start_send_many(&ids).await.expect("四台一起开流");
+        assert_eq!(results.len(), 4);
+        for (id, result) in &results {
+            assert!(result.is_ok(), "{id:?} 开流失败：{result:?}");
+        }
+
+        tokio::time::sleep(Duration::from_secs(6)).await;
+    })
+    .await;
+    outcome.expect("120 s 内必须完成四台配对、两个组与批量开流");
+
+    let mut audible = Vec::new();
+    let mut times: Vec<Vec<Instant>> = Vec::new();
+    for entry in &stamps {
+        let guard = entry.lock().unwrap();
+        audible.push(guard.iter().filter(|stamp| !stamp.silence).count());
+        times.push(guard.iter().map(|stamp| stamp.at).collect());
+    }
+    let scheduled: Vec<usize> = events.iter_mut().map(drain_scheduled).collect();
+    let dropped: u64 = relays.iter().map(|relay| relay.dropped()).sum();
+    let (samples_one, p50_one, p95_one) = deviation_ms(&times[0], &times[1]);
+    let (samples_two, p50_two, p95_two) = deviation_ms(&times[2], &times[3]);
+    println!(
+        "[group-multi-loss] 注入丢弃 {dropped} 个包；四台排播 {scheduled:?} · 非静音写出 {audible:?}；组 1 P50 {p50_one:.2}/P95 {p95_one:.2} ms（{samples_one}）· 组 2 P50 {p50_two:.2}/P95 {p95_two:.2} ms（{samples_two}）"
+    );
+
+    assert!(dropped > 0, "中继一个包都没丢 —— 这条测试失去意义");
+    assert!(
+        scheduled.iter().all(|count| *count > 0),
+        "四台都必须排播：{scheduled:?}"
+    );
+    assert!(
+        audible.iter().all(|count| *count > 0),
+        "四台都必须出声：{audible:?}"
+    );
+    // 两个组**各自**都要守住 M3 验收线 —— 丢包不该把某一组搅散。
+    assert!(
+        p95_one <= 10.0,
+        "丢包下组 1 的 P95 = {p95_one:.2} ms，超过 M3 验收线"
+    );
+    assert!(
+        p95_two <= 10.0,
+        "丢包下组 2 的 P95 = {p95_two:.2} ms，超过 M3 验收线"
+    );
+
+    for (_receiver, accept) in receivers.iter() {
+        accept.abort();
+    }
+    sender.shutdown().await;
+    for (receiver, _accept) in &receivers {
+        receiver.shutdown().await;
+    }
+}
