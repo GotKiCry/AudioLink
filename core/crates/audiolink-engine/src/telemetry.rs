@@ -161,15 +161,10 @@ impl TelemetryAggregator {
         self.window_bytes = self.window_bytes.saturating_add(payload_len as u64);
     }
 
-    /// 记录一次**主动丢帧**（`PlayoutDepthAction::DropOldest`）。
+    /// 记录一次抖动深度**降档**的主动丢帧（`PlayoutDepthAction::DropOldest`）。
     ///
-    /// ⚠️ 自 2026-09-18 起它有**两个来源**，速率**不再等于「降档频率」**：
-    /// ① 抖动深度降档（控制器决策）；② **水位护栏** —— 引擎播放环积压超过
-    /// 「目标 + `PLAYOUT_DEPTH_GUARD_FRAMES`」时，播放线程每拍丢最旧一帧（真机 30 min
-    /// 水位 43 → 276 ms 的直接治理；排播模式下护栏不生效，不会动组内时间轴）。
-    ///
-    /// 与 [`Self::record_late_drop`] 是两个口径：那条是「帧到得太晚」，这条是「主动用
-    /// 丢弃换低延迟」。详见本结构体 `depth_drops` 字段的说明。
+    /// 与 [`Self::record_late_drop`] 是两个口径：那条是「帧到得太晚」，这条是「控制器主动
+    /// 用丢弃换低延迟」。详见本结构体 `depth_drops` 字段的说明。
     pub fn record_depth_drop(&mut self) {
         self.record_depth_drops(1);
     }

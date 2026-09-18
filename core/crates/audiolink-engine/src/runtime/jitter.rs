@@ -33,38 +33,6 @@ pub(super) const INITIAL_TARGET_FRAMES: usize = MIN_TARGET_FRAMES;
 /// 由 M2 的抗抖动口径决定 —— 不要拿起步延迟的需求去改它（那正是第 114 轮拆分的理由）。
 pub(super) const DEFAULT_TARGET_FRAMES: usize = 2;
 pub(super) const MAX_TARGET_FRAMES: usize = 3;
-
-/// **水位护栏的容忍量**：引擎播放环深度超过「目标 + 本值」时，播放线程丢最旧帧把水位拉回。
-///
-/// 为什么需要它（2026-09-18 真机长跑，`docs/12` §11）：[`AdaptiveJitterDepth`] 只决定
-/// 「何时开始播」，对**已经堆起来**的积压没有任何作用 —— [`PlayoutDepthState::action`]
-/// 在 `requested == active` 时一律返回 `Play`。真机实测水位稳定在 **~9 帧（180 ms）**，
-/// 并在 30 min 内缓慢上移到 **14 帧（276 ms）**（上限 `PLAYBACK_QUEUE_FRAMES = 16` 帧），
-/// 远超 1–3 帧的目标档。也就是说：只要上游供帧速率比播放线程的取帧速率高出 ppm 级，
-/// 这点残差就**没有任何回落路径**，只会一路顶到容量上限；本护栏给它一个闭环上界。
-///
-/// 取值 2 帧（40 ms）：水位上界 = 目标 + 2 = 3–5 帧（60–100 ms）。既不与目标档语义打架，
-/// 也给网络抖动留余量（真机 §6 探针 RTT P95 实测 47 ms，仍在余量之内）。
-pub(super) const PLAYOUT_DEPTH_GUARD_FRAMES: usize = 2;
-
-/// **水位护栏总开关**。当前默认 **false（关闭）** —— 2026-09-18 真机实测（`docs/12` §11.12）：
-///
-/// | 指标 | 无护栏（waterA 600 s） | 有护栏（guardA 600 s） |
-/// |---|---|---|
-/// | 水位峰值 | 185.3 ms | **43.0 ms**（0/10 桶超 100 ms） |
-/// | 引擎环读空（underruns） | 0.217 次/s | **1.497 次/s（6.9×）** |
-/// | 迟到丢弃（late_drops） | 0.203 次/s | **1.390 次/s（6.8×）** |
-///
-/// 也就是说：护栏**确实**把水位压下去一个数量级（主判据达成），但代价判据不通过 ——
-/// 引擎播放环被抽到目标以下后，网络抖动一来环先空，读空与迟到各涨约 7 倍
-/// （设备侧 PCM 环全程仍有数据、静音填充 ≈0 ⇒ 问题在引擎环这一层）。
-///
-/// **为什么先关掉而不是调大 `SLACK`**：这个缺口不是「缓冲区大小」的参数问题，而是
-/// 「护栏按 target（1–3 帧 = 20–60 ms）设上界，而链路实际需要的抗抖动余量由网络抖动决定
-/// （真机 §6 探针 RTT P95 = 47 ms）」这个**判据口径**问题。合理的修法是让上界跟随
-/// 实测抖动分位，而不是再拍一个常数。留成可切常量、默认保持既有行为，等下一轮用
-/// 抖动分位重做判据后再启用（与 Android 侧「档位留 UI chip、默认保持满灌」同一处置办法）。
-pub(super) const PLAYOUT_DEPTH_GUARD_ENABLED: bool = false;
 const STABLE_WINDOWS_TO_SHRINK: u32 = 30;
 const REORDER_CAPACITY: usize = 3;
 const DISCONTINUITY_FRAMES: u32 = 1_000;
@@ -158,13 +126,6 @@ pub(super) struct PlayoutDepthState {
     active_frames: usize,
     planned_frames: usize,
     holds_remaining: usize,
-    /// 排播模式（组内同步）：**水位护栏不生效** —— `DropOldest` 会把本端整条时间轴
-    /// **前移**一帧，与 `Hold` 在排播下被豁免的理由完全对称（见 `runtime.rs` 里
-    /// `PlayoutDepthAction::Hold if scheduled_mode` 那段注释；实测差一整帧会让组内偏差
-    /// 从 0.03 ms 变成 20.38 ms）。由播放线程每拍同步。
-    scheduled_mode: bool,
-    /// 水位护栏是否生效（初值取 [`PLAYOUT_DEPTH_GUARD_ENABLED`]，真机实测代价见该常量）。
-    guard_enabled: bool,
 }
 
 impl PlayoutDepthState {
@@ -174,19 +135,7 @@ impl PlayoutDepthState {
             active_frames: initial_frames,
             planned_frames: initial_frames,
             holds_remaining: 0,
-            scheduled_mode: false,
-            guard_enabled: PLAYOUT_DEPTH_GUARD_ENABLED,
         }
-    }
-
-    /// 播放线程每拍同步一次排播状态；排播下跳过水位护栏（见字段注释）。
-    pub(super) fn set_scheduled_mode(&mut self, scheduled_mode: bool) {
-        self.scheduled_mode = scheduled_mode;
-    }
-
-    /// 播放线程每拍同步一次护栏开关（初值来自 [`PLAYOUT_DEPTH_GUARD_ENABLED`]）。
-    pub(super) fn set_depth_guard(&mut self, enabled: bool) {
-        self.guard_enabled = enabled;
     }
 
     #[cfg(test)]
@@ -203,10 +152,6 @@ impl PlayoutDepthState {
     }
 
     /// 升档用有界静音建立余量；降档只在确有积压时丢最旧帧，让目标深度真实下降。
-    ///
-    /// 第三件事（2026-09-18）：**稳态水位护栏** —— 目标档不变、但积压超过
-    /// 「目标 + [`PLAYOUT_DEPTH_GUARD_FRAMES`]」时，每拍丢最旧一帧把上界钉住；
-    /// 排播模式（组内同步）下让路，见字段 `scheduled_mode`。
     pub(super) fn action(
         &mut self,
         requested_frames: usize,
@@ -228,21 +173,6 @@ impl PlayoutDepthState {
             };
         }
         if requested_frames == self.active_frames {
-            // 水位护栏：积压超过「目标 + 容忍量」时丢最旧帧，让 ppm 级速率残差不再单向累积
-            // （见 `PLAYOUT_DEPTH_GUARD_FRAMES` 的说明；真机 30 min 实测水位 43 → 276 ms）。
-            let guard = requested_frames.saturating_add(PLAYOUT_DEPTH_GUARD_FRAMES);
-            if self.guard_enabled && buffered_frames > guard {
-                self.holds_remaining = 0;
-                if self.scheduled_mode {
-                    // 排播模式：丢帧 = 整条时间轴前移，会直接打在「组内 ±10 ms」的验收上。
-                    return PlayoutDepthAction::Play;
-                }
-                // **每拍最多丢 1 帧**：`DropOldest` 返回后同一拍还会正常取一帧播放，
-                // 一次丢到 guard 会让拍末水位落到 guard − 1，下一拍又判成积压不足 ⇒ 变成
-                // 「丢一帧、补一拍静音」的来回抖。渐进丢则 14 帧降到 4 帧只需 200 ms，
-                // 既快又不产生突发空档。
-                return PlayoutDepthAction::DropOldest(1);
-            }
             if buffered_frames >= requested_frames {
                 self.holds_remaining = 0;
                 return PlayoutDepthAction::Play;
@@ -677,56 +607,6 @@ mod tests {
         let mut already_shallow = PlayoutDepthState::new(3);
         assert_eq!(already_shallow.action(2, 2), PlayoutDepthAction::Play);
         assert_eq!(already_shallow.active_frames(), 2);
-    }
-
-    #[test]
-    fn playout_depth_guard_drops_backlog_beyond_target_plus_guard() {
-        // 真机形态（`docs/12` §11）：目标 1 帧（起步档），队列却堆到 14 帧（容量上限 16）
-        // ⇒ 护栏必须把它拉回「目标 + 容忍量」= 3 帧，而不是让它继续堆。
-        // 护栏默认关闭（见 `PLAYOUT_DEPTH_GUARD_ENABLED` 的真机实测代价），测试里显式打开。
-        let mut backlogged = PlayoutDepthState::new(1);
-        backlogged.set_depth_guard(true);
-        assert_eq!(backlogged.action(1, 14), PlayoutDepthAction::DropOldest(1));
-        assert_eq!(backlogged.active_frames(), 1);
-
-        // 恰好落在护栏上（目标 + 容忍量）不丢 —— 护栏是上界，不是目标。
-        let mut on_guard = PlayoutDepthState::new(1);
-        on_guard.set_depth_guard(true);
-        assert_eq!(on_guard.action(1, 3), PlayoutDepthAction::Play);
-
-        // 护栏之内的正常积压不丢（中档目标 2 帧 + 容忍 2 帧 = 4）。
-        let mut inside = PlayoutDepthState::new(2);
-        inside.set_depth_guard(true);
-        assert_eq!(inside.action(2, 4), PlayoutDepthAction::Play);
-
-        // 开关关掉时同样的积压不丢（默认行为一字未改）。
-        let mut off = PlayoutDepthState::new(1);
-        off.set_depth_guard(false);
-        assert_eq!(off.action(1, 14), PlayoutDepthAction::Play);
-
-        // 升档路径不启用护栏：攒帧期间深度超出「目标 + 容忍量」是预期行为，丢帧会与 Hold 语义打架。
-        let mut raising = PlayoutDepthState::new(1);
-        assert_eq!(raising.action(3, 5), PlayoutDepthAction::Play);
-        assert_eq!(raising.active_frames(), 3);
-    }
-
-    #[test]
-    fn playout_depth_guard_is_skipped_in_scheduled_mode() {
-        // 排播模式（组内同步）下丢帧会把整条时间轴前移一帧 ⇒ 护栏必须让路，
-        // 与 Hold 在排播下被豁免的理由对称。
-        let mut scheduled = PlayoutDepthState::new(1);
-        scheduled.set_scheduled_mode(true);
-        scheduled.set_depth_guard(true);
-        assert_eq!(scheduled.action(1, 14), PlayoutDepthAction::Play);
-
-        // 关掉排播后同样的积压要丢。
-        scheduled.set_scheduled_mode(false);
-        assert_eq!(scheduled.action(1, 14), PlayoutDepthAction::DropOldest(1));
-
-        // 降档路径不受排播开关影响（它原本就不豁免，语义未变）。
-        let mut downshift = PlayoutDepthState::new(3);
-        downshift.set_scheduled_mode(true);
-        assert_eq!(downshift.action(2, 3), PlayoutDepthAction::DropOldest(1));
     }
 
     #[test]
