@@ -17,6 +17,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.gotkicry.audiolink.ui.theme.AudioLinkType
+import com.gotkicry.audiolink.ui.theme.textColors
 
 /**
  * 一栏读数：上面丝印标签、下面等宽数字。
@@ -67,7 +68,13 @@ fun ReadoutFlow(
     }
 }
 
-/** 诊断区里的一行「标签 : 值」。值用等宽、右对齐 —— 竖着扫下来是一列整齐的数字。 */
+/**
+ * 诊断区里的一行「标签 : 值」。值用等宽、右对齐 —— 竖着扫下来是一列整齐的数字。
+ *
+ * 标签（指纹 / 地址 / 状态 / 信任 这类字段名）用 `textColors.text3`：
+ * DESIGN.md 把 text-3 定给「指纹、时间戳」这类三级文字，而 M3 的 `colorScheme` **没有**
+ * 这个角色 —— 原本这里用的是 `onSurfaceVariant`（那是 text-2 的值）。详见 [TextColors]。
+ */
 @Composable
 fun KeyValueRow(
     label: String,
@@ -83,7 +90,7 @@ fun KeyValueRow(
         Text(
             text = label,
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = MaterialTheme.textColors.text3,
             // 标签列给得比数值列宽：像 getPerformanceMode() 这种技术标识在中文字体下很占地方，
             // 给窄了会被迫按字符断行（真机上看到过 "getPerformanceM / ode()" 那种难看的样子）。
             modifier = Modifier.weight(1.4f),

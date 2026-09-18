@@ -3,9 +3,12 @@ package com.gotkicry.audiolink
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -19,6 +22,8 @@ import com.gotkicry.audiolink.capture.CaptureSourceKind
 import com.gotkicry.audiolink.capture.MediaProjectionRequestActivity
 import com.gotkicry.audiolink.service.AudioLinkService
 import com.gotkicry.audiolink.ui.screens.AudioLinkRoot
+import com.gotkicry.audiolink.ui.theme.ThemeMode
+import com.gotkicry.audiolink.ui.theme.ThemePreference
 
 /**
  * 单页信息架构（docs/08-ui-spec.md §3.1）：M1 落地「本机状态」这一半 ——
@@ -34,9 +39,49 @@ import com.gotkicry.audiolink.ui.screens.AudioLinkRoot
  * 共享控件在 `ui/components`，文案在 `ui/i18n`。这里只剩"把用户动作转成服务请求"。
  */
 class MainActivity : ComponentActivity() {
+
+    /** 主题偏好 → 是否深色（`System` 时读系统 `uiMode`）。 */
+    private fun resolveDark(mode: ThemeMode): Boolean = when (mode) {
+        ThemeMode.Dark -> true
+        ThemeMode.Light -> false
+        ThemeMode.System ->
+            (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                Configuration.UI_MODE_NIGHT_YES
+    }
+
+    /**
+     * 系统栏：**透明 + 不加 scrim + 图标深浅跟随 App 主题**。
+     *
+     * 为什么不再用无参 `enableEdgeToEdge()`（2026-09-18）：
+     * 1. 无参调用给导航栏传的是 `SystemBarStyle.auto(DefaultLightScrim, DefaultDarkScrim)`
+     *    ——两个 scrim 都**不透明为 0**（浅色 `#E6FFFFFF`、深色 `#801B1B1B`），
+     *    会在导航栏区域叠一层不属于本设计语言的颜色。这里显式给 `TRANSPARENT`：
+     *    App 自己画到边，边缘的颜色只该来自界面本身（配 `res/values/themes.xml` 的同名声明）。
+     * 2. 无参调用判断深浅读的是**系统** `uiMode`，而本 App 允许在界面里强制浅/深
+     *    （[ThemePreference]）。系统浅色 + App 深色时，系统栏图标会按浅色画成深色图标，
+     *    压在深色界面上等于看不见。这里按 **App 的实际主题**决定图标深浅。
+     *
+     * `ThemeMode.System` 是唯一还读系统的地方 —— 那正是"跟随系统"的定义。
+     */
+    private fun applySystemBars(dark: Boolean) {
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { dark },
+            navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT) { dark },
+        )
+    }
+
+    /**
+     * Manifest 声明了 `uiMode` 由本 Activity 自己处理（不重建），
+     * 所以系统切换深浅时不会走 `onCreate`：系统栏必须在这里重算一次。
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applySystemBars(resolveDark(ThemePreference.read(this)))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        applySystemBars(resolveDark(ThemePreference.read(this)))
         setContent {
             val state by AudioLinkService.state.collectAsStateWithLifecycle()
 
@@ -104,6 +149,8 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 },
+                // 界面里换了主题 → 系统栏图标的深浅要跟着换（Activity 不重建，onCreate 不会再跑）。
+                onThemeModeChanged = { mode -> applySystemBars(resolveDark(mode)) },
             )
         }
     }

@@ -5,10 +5,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -27,6 +25,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.gotkicry.audiolink.service.PowerWhitelistMapper
 import com.gotkicry.audiolink.service.PowerWhitelistProbe
 import com.gotkicry.audiolink.service.PowerWhitelistVariant
+import com.gotkicry.audiolink.ui.components.AlButton
+import com.gotkicry.audiolink.ui.components.AlTextButton
 import com.gotkicry.audiolink.ui.components.PanelCard
 import com.gotkicry.audiolink.ui.components.SilkLabel
 
@@ -94,7 +94,7 @@ fun PowerWhitelistDeck(modifier: Modifier = Modifier) {
             Text(state.detail, style = MaterialTheme.typography.bodySmall)
             state.runtimeNote?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             state.actionLabel?.let { label ->
-                TextButton(
+                AlTextButton(
                     onClick = openSettings,
                     modifier = Modifier.heightIn(min = 48.dp),
                 ) { Text(label) }
@@ -126,12 +126,12 @@ fun PowerWhitelistDeck(modifier: Modifier = Modifier) {
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                 }
-                Button(
+                AlButton(
                     onClick = openSettings,
                     modifier = Modifier.heightIn(min = 48.dp),
                 ) { Text(prompt.actionLabel) }
                 prompt.dismissLabel?.let { label ->
-                    TextButton(
+                    AlTextButton(
                         onClick = dismissPrompt,
                         modifier = Modifier.heightIn(min = 48.dp),
                     ) { Text(label) }

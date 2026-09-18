@@ -18,7 +18,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -30,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.gotkicry.audiolink.capture.CaptureSourceKind
 import com.gotkicry.audiolink.service.PlaybackUiState
+import com.gotkicry.audiolink.ui.components.AlTextButton
 import com.gotkicry.audiolink.ui.components.AppIcons
 import com.gotkicry.audiolink.ui.components.LampTone
 import com.gotkicry.audiolink.ui.components.NoticePanel
@@ -181,7 +181,7 @@ private fun ConsoleTopBar(
         },
         actions = {
             Box {
-                TextButton(
+                AlTextButton(
                     onClick = { menuExpanded = true },
                     modifier = Modifier.heightIn(min = 48.dp),
                 ) {
@@ -213,7 +213,7 @@ private fun ConsoleTopBar(
                     }
                 }
             }
-            TextButton(
+            AlTextButton(
                 onClick = onOpenLicenses,
                 modifier = Modifier.heightIn(min = 48.dp),
             ) {

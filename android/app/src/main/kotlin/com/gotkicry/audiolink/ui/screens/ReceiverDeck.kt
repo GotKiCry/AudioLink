@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -20,6 +19,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.gotkicry.audiolink.service.PeerUi
 import com.gotkicry.audiolink.service.PlaybackUiState
+import com.gotkicry.audiolink.ui.components.AlButton
 import com.gotkicry.audiolink.ui.components.DeckHeader
 import com.gotkicry.audiolink.ui.components.LampTone
 import com.gotkicry.audiolink.ui.components.MediaVolumeController
@@ -145,7 +145,7 @@ fun ReceiverDeck(
         }
         VolumeFader(controller = volume, contentDescription = strings.volume)
 
-        Button(
+        AlButton(
             onClick = { onTogglePlayback(!state.serviceRunning) },
             modifier = Modifier
                 .fillMaxWidth()

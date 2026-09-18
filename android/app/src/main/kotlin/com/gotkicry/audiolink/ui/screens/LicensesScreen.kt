@@ -13,7 +13,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -21,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.gotkicry.audiolink.compliance.NoticesLoader
+import com.gotkicry.audiolink.ui.components.AlTextButton
 import com.gotkicry.audiolink.ui.components.SilkLabel
 import com.gotkicry.audiolink.ui.i18n.LocalStrings
 
@@ -58,7 +58,7 @@ fun LicensesScreen(
             TopAppBar(
                 title = { Text(strings.licensesTitle) },
                 navigationIcon = {
-                    TextButton(
+                    AlTextButton(
                         onClick = onBack,
                         modifier = Modifier.heightIn(min = 48.dp),
                     ) { Text(strings.actionBack) }

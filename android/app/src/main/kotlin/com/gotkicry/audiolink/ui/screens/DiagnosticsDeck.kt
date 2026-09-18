@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -29,6 +28,7 @@ import com.gotkicry.audiolink.diagnostics.ProtocolSelfTest
 import com.gotkicry.audiolink.diagnostics.SelfTestResult
 import com.gotkicry.audiolink.service.AudioLinkService
 import com.gotkicry.audiolink.service.PlaybackUiState
+import com.gotkicry.audiolink.ui.components.AlButton
 import com.gotkicry.audiolink.ui.components.AppIcons
 import com.gotkicry.audiolink.ui.components.Choice
 import com.gotkicry.audiolink.ui.components.ChoiceGroup
@@ -115,7 +115,7 @@ fun DiagnosticsDeck(
                     )
                 }
             }
-            Button(
+            AlButton(
                 onClick = {
                     if (!selfTestRunning) {
                         selfTestRunning = true
@@ -217,7 +217,7 @@ fun DiagnosticsDeck(
             KeyValueRow(strings.diagRingUnderrunTotal, state.ringUnderruns.toString())
             KeyValueRow(strings.diagRingUnderrunWindow, "+${state.ringUnderrunsSinceReset}")
             KeyValueRow(strings.diagRingWindowSeconds, "${state.ringWindowSeconds} s")
-            Button(
+            AlButton(
                 onClick = { AudioLinkService.resetRingWindow() },
                 modifier = Modifier.heightIn(min = 48.dp),
             ) {

@@ -10,12 +10,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import com.gotkicry.audiolink.capture.CaptureSourceKind
 import com.gotkicry.audiolink.service.PlaybackUiState
 import com.gotkicry.audiolink.ui.i18n.AudioLinkStrings
 import com.gotkicry.audiolink.ui.i18n.LocalStrings
 import com.gotkicry.audiolink.ui.theme.AudioLinkTheme
+import com.gotkicry.audiolink.ui.theme.ThemeMode
 import com.gotkicry.audiolink.ui.theme.ThemePreference
 
 /**
@@ -39,9 +41,16 @@ fun AudioLinkRoot(
     onStopSend: () -> Unit,
     onSelectCapture: (CaptureSourceKind?) -> Unit,
     modifier: Modifier = Modifier,
+    /** 主题模式变化时的回调（宿主用它同步系统栏图标的深浅）。 */
+    onThemeModeChanged: (ThemeMode) -> Unit = {},
 ) {
     val context = LocalContext.current
-    val language = context.resources.configuration.locales[0].language
+    // 用 LocalConfiguration（configuration-aware）而不是 context.resources.configuration：
+    // Manifest 声明了 uiMode/screenSize 等由本 Activity 自己处理，换语言、换深浅时
+    // Activity **不重建** —— 走 context.resources 读到的是那一份没被更新过的 Configuration，
+    // 语言切换后界面会停在旧文案。这条是 lint 的 LocalContextConfigurationRead（预先存在的告警，
+    // 不是本轮形状改造引入的），因为这轮把「配置变化不让 Activity 重建」这条路径用实了，顺手修掉。
+    val language = LocalConfiguration.current.locales[0].language
     val strings = remember(language) { AudioLinkStrings.forLanguage(language) }
     var themeMode by remember { mutableStateOf(ThemePreference.read(context)) }
     var showLicenses by rememberSaveable { mutableStateOf(false) }
@@ -70,6 +79,7 @@ fun AudioLinkRoot(
                     onThemeModeChange = { mode ->
                         themeMode = mode
                         ThemePreference.write(context, mode)
+                        onThemeModeChanged(mode)
                     },
                     onOpenLicenses = { showLicenses = true },
                     scrollState = consoleScroll,

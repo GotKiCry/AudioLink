@@ -8,11 +8,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,6 +31,8 @@ import com.gotkicry.audiolink.capture.CaptureState
 import com.gotkicry.audiolink.service.SendGate
 import com.gotkicry.audiolink.service.SenderStateMapper
 import com.gotkicry.audiolink.service.SenderUiState
+import com.gotkicry.audiolink.ui.components.AlButton
+import com.gotkicry.audiolink.ui.components.AlOutlinedButton
 import com.gotkicry.audiolink.ui.components.AppIcons
 import com.gotkicry.audiolink.ui.components.Choice
 import com.gotkicry.audiolink.ui.components.ChoiceGroup
@@ -157,7 +157,7 @@ fun SenderDeck(
             )
         }
 
-        Button(
+        AlButton(
             onClick = { onConnect(addr) },
             enabled = connectGate == SendGate.Allowed,
             modifier = Modifier
@@ -193,7 +193,7 @@ fun SenderDeck(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                 modifier = Modifier.fillMaxWidth(),
             )
-            Button(
+            AlButton(
                 onClick = { onSubmitPin(pin) },
                 enabled = pin.length == 6,
                 modifier = Modifier
@@ -208,7 +208,7 @@ fun SenderDeck(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Button(
+            AlButton(
                 onClick = onStartSend,
                 enabled = startGate == SendGate.Allowed,
                 modifier = Modifier
@@ -217,7 +217,7 @@ fun SenderDeck(
             ) {
                 Text(strings.actionStartSend, style = MaterialTheme.typography.titleSmall)
             }
-            OutlinedButton(
+            AlOutlinedButton(
                 onClick = onStopSend,
                 enabled = stopGate == SendGate.Allowed,
                 modifier = Modifier

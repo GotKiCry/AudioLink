@@ -72,7 +72,8 @@ fun DeckHeader(
  * 面板卡：**阳极氧化铝面板**。
  *
  * 层次靠 1 px 边框 + 面色差表达，**不用投影**（elevation 恒为 0）—— 投影是"浮在页面上"，
- * 而这里要的是"嵌在机箱里"。圆角取 [MaterialTheme.shapes.medium]（4 dp），方到不像卡片。
+ * 而这里要的是"嵌在机箱里"。圆角取 [MaterialTheme.shapes.large]（8 dp）—— 卡片档，
+ * 与 DESIGN.md §Shapes 的 `large` 档一致（M3 默认 12 dp 太大）。
  */
 @Composable
 fun PanelCard(
@@ -83,7 +84,7 @@ fun PanelCard(
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
+        shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = containerColor),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         border = BorderStroke(1.dp, borderColor),

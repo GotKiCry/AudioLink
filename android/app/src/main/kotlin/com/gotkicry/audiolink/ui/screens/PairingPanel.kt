@@ -11,14 +11,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.ui.unit.dp
+import com.gotkicry.audiolink.ui.components.PanelCard
 import com.gotkicry.audiolink.ui.i18n.LocalStrings
 
 /**
@@ -31,6 +25,9 @@ import com.gotkicry.audiolink.ui.i18n.LocalStrings
  * 56 sp 在系统字体 1.3× 下会变成 72.8 sp，六位数字加字距直接顶出卡片（旧版真机裁切的原因）。
  * 换成"固定的物理字号"后，无论 fontScale 多大，PIN 都是 56 dp 高、永远放得下 ——
  * 而 56 dp 本身就远大于任何正文，可读性不依赖放大。
+ *
+ * 外壳走 [PanelCard]：卡片形状（8 dp）与内边距（16 dp）在那一处定义，
+ * 这里只给"这一张卡特有的两件衣服"（容器色 + 描边色）。
  */
 @Composable
 fun PairingPanel(
@@ -48,70 +45,50 @@ fun PairingPanel(
         fontWeight = FontWeight.Bold,
         fontFamily = FontFamily.Monospace,
     )
+    // PIN 未过期时正文用 onPrimaryContainer（已按「配对法则」重取 4.94:1）；过期后整卡降为中性。
+    val ink = if (stale) {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    } else {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    }
 
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(
-            containerColor = if (stale) {
-                MaterialTheme.colorScheme.surfaceContainerHigh
-            } else {
-                MaterialTheme.colorScheme.primaryContainer
-            },
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (stale) {
-                MaterialTheme.colorScheme.outlineVariant
-            } else {
-                MaterialTheme.colorScheme.primary
-            },
-        ),
+    PanelCard(
+        modifier = modifier,
+        containerColor = if (stale) {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        } else {
+            MaterialTheme.colorScheme.primaryContainer
+        },
+        borderColor = if (stale) {
+            MaterialTheme.colorScheme.outlineVariant
+        } else {
+            MaterialTheme.colorScheme.primary
+        },
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        Text(
+            text = if (stale) strings.pairingTitleStale else strings.pairingTitle,
+            style = MaterialTheme.typography.titleMedium,
+            color = ink,
+        )
+        Text(
+            text = pin,
+            style = pinStyle,
+            color = ink,
+            maxLines = 1,
+            softWrap = false,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+        )
+        Text(
+            text = if (stale) strings.pairingStaleNote else strings.pairingNote,
+            style = MaterialTheme.typography.bodySmall,
+            color = ink,
+        )
+        if (note != null) {
             Text(
-                text = if (stale) strings.pairingTitleStale else strings.pairingTitle,
-                style = MaterialTheme.typography.titleMedium,
-                color = if (stale) {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.onPrimaryContainer
-                },
-            )
-            Text(
-                text = pin,
-                style = pinStyle,
-                color = if (stale) {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.onPrimaryContainer
-                },
-                maxLines = 1,
-                softWrap = false,
-                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-            )
-            Text(
-                text = if (stale) strings.pairingStaleNote else strings.pairingNote,
+                text = note,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (stale) {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.onPrimaryContainer
-                },
+                color = MaterialTheme.colorScheme.error,
             )
-            if (note != null) {
-                Text(
-                    text = note,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
         }
     }
 }
