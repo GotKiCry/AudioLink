@@ -30,6 +30,19 @@ data class PeerUi(
     val state: String,
     val stateLabel: String,
     val trusted: Boolean,
+    /**
+     * 估算端到端延迟（us）；0 = 还没有遥测（未推流）。
+     *
+     * 为什么在 UiState 上补这三个字段（本次唯一的 service 侧改动，只加字段、不改任何行为）：
+     * 产品真相要求首屏回答“在推什么、给谁、质量如何”，其中“质量如何”就是这三个读数 ——
+     * 它们本来就在 FFI 的 PeerView.telemetry 里，但旧的 PeerSnapshot 映射把它们剥掉了，
+     * UI 拿不到（UI 不许碰 FFI 类型，那是 PairingUiState 类注释里定下的分层）。
+     */
+    val e2eLatencyUs: Long = 0L,
+    /** 实际编码码率（bps）；0 = 还没有遥测。 */
+    val bitrateBps: Long = 0L,
+    /** 丢包率（百分比，0.0-100.0）。 */
+    val lossPct: Double = 0.0,
 )
 
 /**
@@ -44,6 +57,12 @@ data class PeerSnapshot(
     val addr: String,
     val state: String,
     val trusted: Boolean,
+    /** 估算端到端延迟（us）；0 = 无遥测。理由见 [PeerUi.e2eLatencyUs]。 */
+    val e2eLatencyUs: Long = 0L,
+    /** 实际编码码率（bps）；0 = 无遥测。 */
+    val bitrateBps: Long = 0L,
+    /** 丢包率（百分比 0.0-100.0）。 */
+    val lossPct: Double = 0.0,
 )
 
 /**
@@ -131,6 +150,9 @@ object PairingStateMapper {
             state = snapshot.state,
             stateLabel = stateLabel(snapshot.state),
             trusted = snapshot.trusted,
+            e2eLatencyUs = snapshot.e2eLatencyUs,
+            bitrateBps = snapshot.bitrateBps,
+            lossPct = snapshot.lossPct,
         )
     }
 

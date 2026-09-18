@@ -1272,6 +1272,11 @@ class AudioLinkService : Service() {
                             addr = peer.addr,
                             state = peer.state,
                             trusted = peer.trusted,
+                            // 遥测：首屏「延迟 / 码率 / 丢包」三个读数的唯一来源（字段说明见 PeerUi）。
+                            // UInt -> Long：内核给的是无符号，转宽比截断安全。
+                            e2eLatencyUs = peer.telemetry.e2eLatencyUs.toLong(),
+                            bitrateBps = peer.telemetry.bitrateBps.toLong(),
+                            lossPct = peer.telemetry.lossPct,
                         )
                     }
                 } catch (e: CancellationException) {
