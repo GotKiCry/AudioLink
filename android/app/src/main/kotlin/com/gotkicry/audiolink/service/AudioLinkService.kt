@@ -958,7 +958,26 @@ class AudioLinkService : Service() {
      * 那会儿把状态清零会让用户看到一条假断开。
      */
     private fun syncSenderWithPeers() {
-        val expected = senderState.peerIdShort ?: return
+        val expected = senderState.peerIdShort
+        if (expected == null) {
+            // 还没有登记会话：**PIN 配对成功后的登记就发生在这里**。
+            // 为什么必须补这一段（2026-09-18 真机定位的真缺陷）：需要 PIN 时 `connect()` 返回的是
+            // `1002 NOT_PAIRED`（不是成功），所以 `peerIdShort` 一直是 null；而旧版这里
+            // `?: return` 直接放行 ⇒ 会话**永远登记不进来**：界面停在「未连接」，`startSender()` 的
+            // `sessionGate` 又按 `PeerMismatch` 把「开始发送」禁用 —— 而桌面端此刻明明已经显示
+            // 「已配对（白名单命中）」且对端数 = 1，链路是通的。
+            // 只登记**唯一的那一个**对端：单对端 UI 语义（契约 §8），多个会话时不猜（宁可让用户重新连接，
+            // 也不能把声音发到错误的设备上）。
+            if (senderState.awaitingPin || senderState.error != null) return
+            val only = pairingState.peers.singleOrNull() ?: return
+            senderState = senderState.copy(
+                peerIdShort = only.idShort,
+                peerState = only.state,
+                peerStateLabel = only.stateLabel,
+                note = null,
+            )
+            return
+        }
         if (pairingState.peers.isEmpty()) return
         val peer = pairingState.peers.firstOrNull { it.idShort.equals(expected, ignoreCase = true) }
         senderState = if (peer == null) {

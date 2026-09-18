@@ -1367,44 +1367,66 @@ impl Engine {
     }
 
     /// 启动入站接受循环。
+    ///
+    /// **启动失败必须可见**（2026-09-18 真机定位）：上一版把 `Inner::spawn` 的错误用
+    /// `.unwrap_or_else(|_| tokio::spawn(async {}))` 静默换成一个**空任务** —— 一旦引擎的
+    /// `shutdown` 标志已置真（或别的原因让 spawn 失败），接受循环就永久空转，
+    /// 而症状是「端口在监听、TLS 握手能完成、却永远没有人 accept」，日志里**一行都不留**。
+    /// 现在失败会打 `error!`，并让调用方看到它仍然拿到了一个（空的）句柄。
     pub fn spawn_accept_loop(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let inner = Arc::clone(&self.inner);
-        self.inner
-            .spawn(async move {
-                while !inner.shutdown.load(Ordering::Relaxed) {
-                    match inner.endpoint.accept().await {
-                        Ok(connection) => {
-                            let inner = Arc::clone(&inner);
-                            let addr = connection.remote_addr();
-                            let peer_id = match connection.peer_id() {
-                                Ok(peer_id) => peer_id,
-                                Err(error) => {
-                                    tracing::warn!("inbound without cert: {}", error.context());
-                                    continue;
-                                }
-                            };
-                            let trusted = is_trusted(&inner, peer_id);
-                            let (session, commands) =
-                                create_session(&inner, peer_id, addr, trusted);
-                            let _ = inner.spawn(run_session(
-                                Arc::clone(&inner),
-                                connection,
-                                session,
-                                commands,
-                                Role::Responder,
-                                None,
-                            ));
-                        }
-                        Err(error) => {
-                            if inner.shutdown.load(Ordering::Relaxed) {
-                                return;
+        let spawned = self.inner.spawn(async move {
+            while !inner.shutdown.load(Ordering::Relaxed) {
+                match inner.endpoint.accept().await {
+                    Ok(connection) => {
+                        let inner = Arc::clone(&inner);
+                        let addr = connection.remote_addr();
+                        let peer_id = match connection.peer_id() {
+                            Ok(peer_id) => peer_id,
+                            Err(error) => {
+                                tracing::warn!("inbound without cert: {}", error.context());
+                                continue;
                             }
-                            tracing::warn!("accept failed: {}", error.context());
+                        };
+                        let trusted = is_trusted(&inner, peer_id);
+                        // 可观测性（2026-09-18 真机定位的真缺陷）：这一行之前**不存在**，
+                        // 于是「入站连接到底有没有被受理」在日志里无法区分 —— 空转的接受循环
+                        // 与正常工作的接受循环长得一模一样。任何入站会话问题的排查都要先看它。
+                        tracing::info!(
+                            addr = %addr,
+                            peer = %peer_id.short(),
+                            trusted,
+                            "受理入站连接（Responder 会话即将建立）"
+                        );
+                        let (session, commands) = create_session(&inner, peer_id, addr, trusted);
+                        let _ = inner.spawn(run_session(
+                            Arc::clone(&inner),
+                            connection,
+                            session,
+                            commands,
+                            Role::Responder,
+                            None,
+                        ));
+                    }
+                    Err(error) => {
+                        if inner.shutdown.load(Ordering::Relaxed) {
+                            return;
                         }
+                        tracing::warn!("accept failed: {}", error.context());
                     }
                 }
-            })
-            .unwrap_or_else(|_| tokio::spawn(async {}))
+            }
+        });
+        match spawned {
+            Ok(handle) => handle,
+            Err(error) => {
+                tracing::error!(
+                    context = error.context(),
+                    "入站接受循环未能启动：本机不会受理任何入站连接"
+                );
+                tokio::spawn(async {})
+            }
+        }
     }
 
     /// 主动连接（`docs/03-protocol.md` §5）：QUIC + 握手 + （必要时）PIN 配对。

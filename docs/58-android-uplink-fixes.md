@@ -155,3 +155,51 @@ UI 原先把发送卡排在发送源卡之前 ⇒ 用户按自然顺序「先连
 而 targetSdk 36 + Android 15+ 强制 edge-to-edge ⇒ Manifest 的 `adjustResize` 失效。
 **这一条同时解释了人工操作时的「输入地址后按钮点不动」**，也与 autotest 侧「adb 点不动输入框」是两件事
 （后者已由 §1.5 的 `connecting` 收敛修复解决 —— 修复后 adb 输入实测可用）。
+
+## 7. 追加修复（同日续轮）：桌面端二进制过期 + 键盘遮挡 + PIN 后不登记会话
+
+### 7.1 更正 §5：桌面端接收路径的根因是**二进制过期**，不是代码缺陷
+
+§5 把「桌面接收端不接受入站 §5 会话」归因于 `spawn_accept_loop` 的静默吞噬 —— **这个推断是错的**。
+它是基于「日志里没有 accept 记录」作出的，而**那行日志当时根本不存在**（本轮才加上）。把桌面端
+**重新编译**（`cargo build -p audiolink-desktop`，产物在 `target/x86_64-pc-windows-msvc/debug/`）之后，
+入站会话**立即正常**：
+
+- 桌面端日志出现 `受理入站连接（Responder 会话即将建立） addr=192.168.3.75:58290 peer=393faa0fe3f495f5 trusted=false`；
+- 手机侧由 `1008 handshake timed out` 变为**进入 PIN 配对**，提交后配对成功；
+- 桌面端 UI 显示「PHK110 · **已配对（白名单命中）**」、**对端数 = 1**。
+
+⇒ **纪律（本轮新增）**：便携包里的桌面 exe 是 09-17 02:44 构建的，**落后于当时的内核**。
+**跨端联调前必须先确认两端二进制同源**，否则会把「版本错配」误判成「代码缺陷」——
+本轮为此白跑了一轮定位。同时把 accept 路径的可观测性补上（见 §7.4）。
+
+### 7.2 键盘遮挡「连接电脑」/「开始发送」（真机可见性，已修）
+
+真机截图证据：填入地址后软键盘弹起，按钮**整块被挤出屏幕**。根因是 `PlaybackScreen` 的 Column 只有
+`fillMaxSize() + padding + verticalScroll()`，缺 `imePadding()`；而 targetSdk 36 + Android 15 起强制
+edge-to-edge，Manifest 的 `adjustResize` 不再生效。已加 `.imePadding()`。
+修后实测：键盘弹起时按钮仍可见，adb 成功点到 `连接电脑 @ 285,1910`。
+
+**这正是用户报告的「输入地址后按钮点不动」的真身**（与 §1.5 的 `connecting` 收敛是**两件**独立的事）。
+
+### 7.3 PIN 配对成功后不登记会话（已修）
+
+`AudioLinkService.syncSenderWithPeers()` 的开头是 `val expected = senderState.peerIdShort ?: return`，
+而需要 PIN 时 `connect()` 返回的是 `1002 NOT_PAIRED`（不是成功）⇒ `peerIdShort` 一直是 null
+⇒ 会话**永远登记不进来**：界面停在「未连接」，`startSender()` 的 `sessionGate` 又按 `PeerMismatch`
+把「开始发送」禁用 —— 而桌面端此刻明明已显示「已配对（白名单命中）」、对端数 = 1。
+已补「唯一对端时登记」分支（单对端 UI 语义，多会话时不猜）。
+
+### 7.4 accept 路径可观测性（引擎侧，本轮新增）
+
+- `spawn_accept_loop` 受理连接时打 `tracing::info!("受理入站连接（Responder 会话即将建立）")`
+  （这行之前**不存在**，导致"到底有没有受理"在日志里无法区分）；
+- `Inner::spawn` 失败不再被 `.unwrap_or_else(|_| tokio::spawn(async {}))` 静默吞掉，
+  改为 `tracing::error!("入站接受循环未能启动：本机不会受理任何入站连接")`。
+
+### 7.5 当前状态（截至本轮结束）
+
+手机端：服务运行中、发送源=麦克风（正在采集）、地址已填、按钮可见可点、桌面端已配对。
+**仍缺一次完整的「连接 → 开始发送 → PC 侧出声」闭环**：本轮的自动化脚本在「启动服务」那一步没点中
+（发送源卡前置后按钮位置变化），随后连点两次也因状态未就绪而未生效 —— 属于**流程编排问题**，
+不是新缺陷。下一步：从「服务已在运行」的干净状态重跑一次三步流程，并用 loopback 采集确认 PC 出声。

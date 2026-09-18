@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -101,6 +102,11 @@ fun PlaybackScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                // 键盘 insets（2026-09-18 真机定位）：targetSdk 36 + Android 15 起强制 edge-to-edge，
+                // Manifest 的 adjustResize 不再生效 —— 不加这一行，软键盘会**整块盖住**
+                // 「连接电脑」/「开始发送」：真机截图里填完地址后按钮被挤出屏幕，人工点不到、
+                // adb 注入也点空（打在键盘上）。这就是「输入地址后按钮点不动」的真身。
+                .imePadding()
                 .padding(padding)
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState()),
