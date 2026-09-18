@@ -1307,11 +1307,16 @@ impl Engine {
         Some(telemetry.snapshot())
     }
 
-    /// **降档主动丢帧**的累计拍数（本机视角，按 `peer` 隔离）；对端不存在 → `None`。
+    /// **主动丢帧**的累计拍数（本机视角，按 `peer` 隔离）；对端不存在 → `None`。
     ///
     /// 与 [`Self::telemetry`] 快照里的 `late_drops` 是两个口径（第 85 轮拆分）：
-    /// `late_drops` = 帧到得太晚、来不及播（网络 / 调度质量问题）；本计数 = 抖动深度降档那一拍
-    /// 控制器主动丢最旧帧换更低延迟（`PlayoutDepthAction::DropOldest`，设计上每次降档必现）。
+    /// `late_drops` = 帧到得太晚、来不及播（网络 / 调度质量问题）；本计数 = 主动丢最旧帧
+    /// 换更低的延迟（`PlayoutDepthAction::DropOldest`）。
+    ///
+    /// ⚠️ **自 2026-09-18 起本计数有两个来源**：① 抖动深度**降档**那一拍（设计上每次降档
+    /// 必现）；② **水位护栏** —— 积压超过「目标 + `PLAYOUT_DEPTH_GUARD_FRAMES`」时每拍丢
+    /// 最旧一帧（真机 30 min 水位 43 → 276 ms 的治理；排播模式下护栏不生效）。读它的速率时
+    /// **不要再当成「降档频率」**。
     ///
     /// **为什么不在 `StreamStats` 里**：那是 1 Hz `STREAM_STATS` 的 postcard 载荷，字段顺序即
     /// wire 顺序，解码端拒绝尾随字节 —— 追加字段会打断旧版本节点（§13 兼容）。所以它是
@@ -4879,6 +4884,8 @@ fn playout_main(
         // 只要一端触发、另一端没触发，就出现「组内偏差不是 0 就是整整一帧」的失败样本
         // （实测 P50 20.03 ms、P95 20.38 ms，扣帧后 0.00 / 0.03 ms）。排播模式下时间轴由 epoch 说了算，
         // 余量该由协议 §7 的 lead_ms 提供，不该靠插入静音。
+        // 排播状态先同步给护栏：排播下水位护栏不生效（丢帧会把本端时间轴前移一帧）。
+        depth_state.set_scheduled_mode(scheduled_mode);
         let depth_action = depth_state.action(requested_target, buffered_frames);
         match depth_action {
             PlayoutDepthAction::Hold if scheduled_mode => {} // 排播模式：不 Hold，落到下面的正常取帧
