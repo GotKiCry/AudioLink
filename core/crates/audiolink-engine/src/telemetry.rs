@@ -14,6 +14,8 @@
 use audiolink_audio::{SampleStats, Summary};
 use audiolink_types::{CodecStats, StreamStats};
 
+use crate::silence::{SilenceSegment, SilenceSnapshot, SilenceTracker};
+
 /// 端到端延迟样本窗口的默认容量。
 ///
 /// 1 Hz 汇总、每帧一个样本（20 ms 帧 = 50 样本/秒）→ 1200 样本 ≈ 24 秒。
@@ -62,6 +64,17 @@ pub struct TelemetryAggregator {
     plc_count: u32,
     nack_count: u32,
 
+    /// **连续静音**（「长断音」）统计 —— M2 待决口径第 ④ 条。
+    ///
+    /// **刻意不进 [`StreamStats`]**：与 `depth_drops` 同理，那是冻结的 wire schema（追加字段
+    /// 会让旧版本节点解码报错）。进程内消费方用 [`Self::silence`] 读；跨机 / 上 UI 走
+    /// [`crate::EngineEvent::SilenceDetected`] 事件。
+    ///
+    /// 为什么不能从既有计数推出来：`underruns` / `late_drops` / `plc_count` 都是**累计计数**，
+    /// 而「静音总占比 1%」与「一次 600 ms 的连续静音」是两件事 —— 前者用户听不出、后者听得出，
+    /// 累计计数对二者给同一个数字（`docs/22-m2-soak-runner.md` §11.5）。
+    silence: SilenceTracker,
+
     // ---- 外部注入的瞬时值 ----
     rtt_us: u32,
     clock_offset_us: i32,
@@ -100,6 +113,7 @@ impl TelemetryAggregator {
             depth_drops: 0,
             plc_count: 0,
             nack_count: 0,
+            silence: SilenceTracker::default(),
             rtt_us: 0,
             clock_offset_us: 0,
             drift_ppm: 0,
@@ -201,6 +215,32 @@ impl TelemetryAggregator {
     /// 记录一次重传请求（M2 起启用；M1 恒为 0）。
     pub fn record_nack(&mut self) {
         self.nack_count = self.nack_count.saturating_add(1);
+    }
+
+    /// 记录一拍播放输出：`peak` 是这一拍**写出去**的 PCM 峰值，`synthetic` = 这一拍是引擎补的
+    /// 静音（而非真实帧内容）。
+    ///
+    /// 返回**刚结算**的连续静音段（没有 → `None`）：播放线程据此发
+    /// [`crate::EngineEvent::SilenceDetected`]。统计器本身不碰事件总线，因此可以单测。
+    ///
+    /// 实时路径：内部只做比较与饱和算术，不分配；锁由调用方（播放线程）持有。
+    pub fn record_playout_beat(
+        &mut self,
+        peak: f32,
+        frame_ms: u32,
+        synthetic: bool,
+    ) -> Option<SilenceSegment> {
+        self.silence.observe(peak, frame_ms, synthetic)
+    }
+
+    /// 结算进行中的静音段（关流 / 会话结束时调用）：不结算就会漏掉「关流时正在静音」那一段。
+    pub fn finish_silence(&mut self) -> Option<SilenceSegment> {
+        self.silence.finish()
+    }
+
+    /// 连续静音快照（本机视角；**不在 [`StreamStats`] 里**，理由见 `silence` 字段说明）。
+    pub fn silence(&self) -> SilenceSnapshot {
+        self.silence.snapshot()
     }
 
     // -----------------------------------------------------------------
@@ -321,6 +361,7 @@ impl TelemetryAggregator {
         self.depth_drops = 0;
         self.plc_count = 0;
         self.nack_count = 0;
+        self.silence.reset();
         self.loss_pct_x100 = 0;
         self.bitrate_bps = 0;
     }
@@ -540,6 +581,48 @@ mod tests {
         assert_eq!(stats.bitrate_bps, 0);
         assert_eq!(aggregator.packets_received(), 0);
         assert!(aggregator.e2e_summary().is_none());
+    }
+
+    #[test]
+    fn playout_beats_feed_the_silence_tracker() {
+        // 「有流但内容是静音」这一半是现有遥测的盲区：链路一切正常、计数器全 0，
+        // 而用户听到的是长时间的静音。这条路径就是为它准备的。
+        let mut aggregator = TelemetryAggregator::with_windows(1, codec(), 8, 8);
+
+        for _ in 0..50 {
+            assert!(
+                aggregator.record_playout_beat(0.0, 20, false).is_none(),
+                "进行中的段不发事件"
+            );
+        }
+        assert_eq!(aggregator.silence().current_ms, 1_000);
+        assert_eq!(aggregator.silence().longest_ms, 1_000);
+
+        let segment = aggregator
+            .record_playout_beat(0.5, 20, false)
+            .expect("回到有声时应当结算这一段");
+        assert_eq!(segment.duration_ms, 1_000);
+        assert_eq!(segment.content_ms, 1_000);
+        assert_eq!(segment.synthetic_ms, 0);
+        assert_eq!(aggregator.silence().segments, 1);
+
+        // 分母是「观察过的总拍时长」——静音占比靠它算，与欠载占比同一口径。
+        assert_eq!(aggregator.silence().planned_ms, 51 * 20);
+        assert_eq!(aggregator.silence().silent_ms, 1_000);
+    }
+
+    #[test]
+    fn reset_clears_the_silence_ledger_too() {
+        let mut aggregator = TelemetryAggregator::with_windows(1, codec(), 8, 8);
+        for _ in 0..50 {
+            aggregator.record_playout_beat(0.0, 20, true);
+        }
+        aggregator.reset();
+        let snapshot = aggregator.silence();
+        assert_eq!(snapshot.longest_ms, 0, "会话重建必须清零静音账");
+        assert_eq!(snapshot.current_ms, 0);
+        assert_eq!(snapshot.segments, 0);
+        assert_eq!(snapshot.planned_ms, 0);
     }
 
     #[test]

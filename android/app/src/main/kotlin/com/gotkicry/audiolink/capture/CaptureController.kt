@@ -126,7 +126,14 @@ class CaptureController(
         // 已经在跑（或正在重试）就先收干净：同一个控制器同时只服务一个采集源。
         stop()
         val id = synchronized(guard) {
+            // `Request` 只表示「用户要这个源」，状态机会先落到 `AwaitingPermission`；而走到本行时
+            // **授权已经到手**（麦克风：调用方已持 RECORD_AUDIO；内录：调用方已拿到投影），
+            // 所以紧接着补一发 `PermissionGranted`。
+            // 不补的后果（2026-09-18 真机定位，静态读到）：状态永远停在「等待授权」；
+            // 而 `StartFailed` 只在 `Starting`/`Running`/`Failed` 被接受 ⇒ 采集失败**完全静默**，
+            // 退避重试也形同不存在（`nextRetryAtMs` 恒为 null）。
             machine.onEvent(CaptureEvent.Request(kind), clock())
+            machine.onEvent(CaptureEvent.PermissionGranted, clock())
             running = true
             sessionId += 1
             sessionId

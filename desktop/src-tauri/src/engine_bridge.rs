@@ -897,6 +897,18 @@ async fn run_event_loop(app: AppHandle, engine: Arc<Engine>, cache: Arc<Mutex<Ca
                         "§7 预约播放：接收端已按 epoch 排播"
                     );
                 }
+                // M2：「长断音」（一段连续静音）刚结束。事件总线是广播式的、有容量上限，
+                // 所以引擎只在段结束时发一次；进行中的静音由遥测快照的 current_ms 回答。
+                // 面板上的可视化属于后续，这里先留时间线（与 CodecAdapted / PlayoutScheduled 同处置）。
+                EngineEvent::SilenceDetected { peer, segment } => {
+                    tracing::warn!(
+                        peer = %peer.short(),
+                        duration_ms = segment.duration_ms,
+                        content_ms = segment.content_ms,
+                        synthetic_ms = segment.synthetic_ms,
+                        "播放输出出现连续静音（长断音）"
+                    );
+                }
                 // 契约 §6 只冻结了三个前端事件，没有"错误"事件；
                 // 命令路径的错误已由返回值承载，这里记录即可（架构 §11：要么处理要么上报）。
                 EngineEvent::Error { code, context } => {

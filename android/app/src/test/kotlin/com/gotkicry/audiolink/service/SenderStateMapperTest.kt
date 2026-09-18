@@ -64,22 +64,46 @@ class SenderStateMapperTest {
 
     @Test
     fun connectBlockedUntilEngineRuns() {
-        assertEquals(SendGate.EngineDown, SenderStateMapper.canConnect(sender(), engineRunning = false))
+        assertEquals(
+            SendGate.EngineDown,
+            SenderStateMapper.canConnect(sender(), engineRunning = false, targetAddr = "192.168.1.5"),
+        )
     }
 
     @Test
     fun connectBlockedWhileConnectingAndWhenAddressBad() {
         assertEquals(
             SendGate.Connecting,
-            SenderStateMapper.canConnect(sender(connecting = true), engineRunning = true),
+            SenderStateMapper.canConnect(sender(connecting = true), engineRunning = true, targetAddr = "192.168.1.5"),
         )
         assertEquals(
             SendGate.AddressEmpty,
-            SenderStateMapper.canConnect(sender(addr = ""), engineRunning = true),
+            SenderStateMapper.canConnect(sender(), engineRunning = true, targetAddr = ""),
         )
         assertEquals(
             SendGate.Allowed,
-            SenderStateMapper.canConnect(sender(), engineRunning = true),
+            SenderStateMapper.canConnect(sender(), engineRunning = true, targetAddr = "192.168.1.5"),
+        )
+    }
+
+    /**
+     * 真机回归（2026-09-18）：门禁曾经读 `sender.targetAddr`（**服务侧**那份副本），而它只在
+     * `connect()` 被触发之后才由服务回填 —— 于是形成死锁：地址进了输入框但没进服务 → 按钮禁用 →
+     * 连接触发不了 → 服务侧永远是空 → 按钮永远点不动。
+     * 真机现象：用户填好地址后按钮点不动，界面还挂着「先填电脑的地址（例如 192.168.1.5）」。
+     */
+    @Test
+    fun connectGateReadsTheTextFieldNotTheServiceCopy() {
+        val fresh = sender(addr = "")
+        // 注意 assertEquals 的三参形式是 (message, expected, actual) —— message 在**第一位**。
+        assertEquals(
+            "输入框里有合法地址就必须放行 —— 不能等服务的副本先知道",
+            SendGate.Allowed,
+            SenderStateMapper.canConnect(fresh, engineRunning = true, targetAddr = "192.168.3.200"),
+        )
+        assertEquals(
+            SendGate.AddressEmpty,
+            SenderStateMapper.canConnect(fresh, engineRunning = true, targetAddr = "   "),
         )
     }
 

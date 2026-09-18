@@ -100,11 +100,19 @@ internal object SenderStateMapper {
         return SendGate.Allowed
     }
 
-    /** 能否发起连接。 */
-    fun canConnect(sender: SenderUiState, engineRunning: Boolean): SendGate {
+    /**
+     * 能否发起连接。
+     *
+     * `targetAddr` 必须是**输入框里的当前值**，不是 `sender.targetAddr`。
+     * 为什么（2026-09-18 真机踩到）：`sender.targetAddr` 是**服务侧**的回填副本，只在 `connect()`
+     * 被触发之后才有值。用它判门禁会形成**死锁** —— 地址还没进服务 → 按钮禁用 → 连接触发不了 →
+     * 服务侧永远是空 → 按钮永远点不动，而界面还挂着「先填电脑的地址」。
+     * 门禁判的是「用户现在能不能按」，输入框就是唯一的事实来源。
+     */
+    fun canConnect(sender: SenderUiState, engineRunning: Boolean, targetAddr: String): SendGate {
         if (!engineRunning) return SendGate.EngineDown
         if (sender.connecting) return SendGate.Connecting
-        return addressGate(sender.targetAddr)
+        return addressGate(targetAddr)
     }
 
     /**

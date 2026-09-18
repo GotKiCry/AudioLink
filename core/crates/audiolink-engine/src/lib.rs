@@ -23,6 +23,7 @@
 //! | [`payload`] | §4 控制帧载荷结构体（postcard），字段顺序即 wire 顺序 |
 //! | [`dispatch`] | L2 分发层：不透明载荷 → 有类型命令，并落实 §1.1 的忽略/计数纪律 |
 //! | [`session`] | 会话状态机（§11 的迁移图落成数据表） |
+//! | [`silence`] | 连续静音（「长断音」）统计：M2 待决口径第 ④ 条的实现缺口 |
 //! | [`telemetry`] | 1 Hz 遥测聚合（§10 的 `StreamStats`） |
 
 #![deny(unsafe_code)] // 必须使用 unsafe 的 crate（如 FFI 绑定）在文件顶部显式 #[allow] 并注明理由
@@ -39,6 +40,7 @@ pub mod measure;
 pub mod payload;
 pub mod runtime;
 pub mod session;
+pub mod silence;
 pub mod telemetry;
 
 pub use adaptive::{AdaptiveBitrate, BitrateChange, BitrateReason, LinkSeverity};
@@ -62,6 +64,10 @@ pub use runtime::{
     PeerCapabilities, PeerStatus, PlayoutFactory, StreamAxis,
 };
 pub use session::{SessionEvent, SessionMachine, SessionState, SessionTransition, next_state};
+pub use silence::{
+    MIN_SILENCE_MS, SILENCE_PEAK_THRESHOLD, SilenceSegment, SilenceSnapshot, SilenceTracker,
+    frame_peak,
+};
 // 信任库条目的 re-export：外壳（桌面 / FFI）要读 [runtime::Engine::trusted_peers] 的返回值，
 // 而它们不一定依赖 `audiolink-identity` —— 从内核这一层转出去，省掉一条依赖边。
 pub use audiolink_identity::TrustEntry;

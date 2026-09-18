@@ -87,6 +87,7 @@ use crate::runtime::nack::{
 };
 use crate::runtime::sink_watchdog::SinkWatchdog;
 use crate::session::{SessionEvent, SessionMachine, SessionState};
+use crate::silence::{SilenceSegment, SilenceSnapshot, frame_peak};
 use crate::telemetry::TelemetryAggregator;
 
 /// 采集源工厂：**在采集线程内**调用；返回值全程不跨线程（`CaptureSource` 是 `!Send`）。
@@ -433,6 +434,17 @@ pub enum EngineEvent {
         target_local_us: i64,
         /// 触发时的等待量（µs；0 = 正好赶上）。
         wait_us: u64,
+    },
+    /// M2：「长断音」—— 一段**连续静音**刚刚结束。
+    ///
+    /// 为什么只在段结束时发（而不是每拍 / 每秒一次）：事件总线是广播式的、有容量上限，一段持续
+    /// 数分钟的静音会把 UI 真正关心的事件挤掉。「现在正在静音」由
+    /// [`Engine::silence_report`] 的 `current_ms` 回答（外壳每 500 ms 轮询一次遥测）。
+    SilenceDetected {
+        /// 对端身份（**带 id**：`Telemetry` 不带对端 id 是多对端下的已知缺陷，新事件不重复它）。
+        peer: NodeId,
+        /// 这一段的完整账（长度、内容 / 补静音拆分、段内峰值）。
+        segment: SilenceSegment,
     },
     /// 会话级错误（不致命；致命路径走 `PeerDisconnected`）。
     Error {
@@ -1308,6 +1320,19 @@ impl Engine {
         let peers = self.inner.peers.lock().ok()?;
         let telemetry = peers.get(&peer)?.telemetry.lock().ok()?;
         Some(telemetry.depth_drops())
+    }
+
+    /// **连续静音**（「长断音」）统计快照（本机视角，按 `peer` 隔离）；对端不存在 → `None`。
+    ///
+    /// 回答的是「最长连续静音多久、此刻是否正在静音」—— 累计计数（`underruns` / `plc_count`）
+    /// 推不出这个量：静音总占比 1% 可能是一次 600 ms 的断音，也可能是 30 个听不出来的散拍
+    /// （`docs/22-m2-soak-runner.md` §11.5 的遗留）。
+    ///
+    /// **为什么不在 `StreamStats` 里**：同 [`Self::depth_drops`]，那是冻结的 wire 载荷。
+    pub fn silence_report(&self, peer: NodeId) -> Option<SilenceSnapshot> {
+        let peers = self.inner.peers.lock().ok()?;
+        let telemetry = peers.get(&peer)?.telemetry.lock().ok()?;
+        Some(telemetry.silence())
     }
 
     /// §6 的当前时钟估计；`None` = 对端不存在，或**有效样本 < 8 尚未收敛**。
@@ -4390,6 +4415,29 @@ fn sink_written_frames(sink: &Option<Box<dyn PlayoutSink>>) -> u64 {
     sink.as_ref().map_or(0, |open| open.stats().frames_written)
 }
 
+/// 把「这一拍写出去的 PCM」喂给连续静音统计，并在**一段连续静音结束**时发事件。
+///
+/// `synthetic = true` 表示这一拍是引擎补的静音（排播等待 / 过期丢弃 / 升档 Hold / 欠载），
+/// `false` 表示这是真实帧内容 —— 后者才是「有流但没声音」，也是现有遥测看不到的那一半。
+fn note_playout_beat(
+    telemetry: &Arc<Mutex<TelemetryAggregator>>,
+    events: &broadcast::Sender<EngineEvent>,
+    peer: NodeId,
+    samples: &[f32],
+    frame_ms: u32,
+    synthetic: bool,
+) {
+    let peak = frame_peak(samples);
+    let segment = match telemetry.lock() {
+        Ok(mut telemetry) => telemetry.record_playout_beat(peak, frame_ms, synthetic),
+        // 锁中毒（某处 panic）不该让播放线程跟着倒下：丢一段静音账，比整条链路哑掉强。
+        Err(_) => None,
+    };
+    if let Some(segment) = segment {
+        let _ = events.send(EngineEvent::SilenceDetected { peer, segment });
+    }
+}
+
 /// FR-28：把坏掉的播放 sink 换掉 —— 停掉旧的（幂等），再向工厂要一个新的。
 ///
 /// 失败时**保留**旧 sink 并返回错误：看门狗会退避后再来；放弃等于把「一次异常永久静音」
@@ -4442,6 +4490,8 @@ fn spawn_playout_thread(
     let gain: Arc<Mutex<GainState>> = Arc::new(Mutex::new(GainState::new(1_000)));
     let thread_gain = Arc::clone(&gain);
     let events = inner.events.clone();
+    // M2：静音账与事件都要挂对端 id（`EngineEvent::Telemetry` 的已知缺陷不再重演）。
+    let peer = session.id;
 
     let telemetry = Arc::clone(&session.telemetry);
     let tap = inner.config.measurement.clone();
@@ -4484,6 +4534,7 @@ fn spawn_playout_thread(
                 jitter_depth,
                 thread_sync,
                 events,
+                peer,
                 thread_gain,
                 thread_mixer.clone(),
                 mix_source,
@@ -4531,6 +4582,8 @@ fn playout_main(
     jitter_depth: Arc<AtomicUsize>,
     sync: PlayoutSyncHandle,
     events: broadcast::Sender<EngineEvent>,
+    // M2：这一段静音账挂在哪个对端名下（事件带 id，多对端下不串流）。
+    peer: NodeId,
     gain_state: Arc<Mutex<GainState>>,
     mixer: Option<PlayoutMix>,
     mix_source: u32,
@@ -4565,6 +4618,9 @@ fn playout_main(
     let _ = ready_tx.send(Ok(()));
 
     let period = Duration::from_millis(frame_ms);
+    // 帧长在协议里是 u32（10 / 20 / 40 / 60 ms）；配置路径已经保证它非 0，这里的兜底只为
+    // 「不可能发生的 0」不 panic（静音账宁愿记 20 ms，也不愿整条播放线程倒下）。
+    let frame_ms_u32 = u32::try_from(frame_ms).unwrap_or(20);
     let silence = vec![0f32; pcm_len];
     let mut primed = false;
     let mut depth_state = PlayoutDepthState::new(jitter_depth.load(Ordering::Relaxed));
@@ -4763,6 +4819,7 @@ fn playout_main(
                     {
                         break 'playout;
                     }
+                    note_playout_beat(&telemetry, &events, peer, &silence, frame_ms_u32, true);
                     continue;
                 }
                 PlayoutAction::Drop { late_us } => {
@@ -4780,6 +4837,7 @@ fn playout_main(
                     {
                         break 'playout;
                     }
+                    note_playout_beat(&telemetry, &events, peer, &silence, frame_ms_u32, true);
                     continue;
                 }
                 PlayoutAction::Play => report_playout_scheduled(
@@ -4811,6 +4869,7 @@ fn playout_main(
                 {
                     break 'playout;
                 }
+                note_playout_beat(&telemetry, &events, peer, &silence, frame_ms_u32, true);
                 continue;
             }
             PlayoutDepthAction::DropOldest(count) => {
@@ -4842,6 +4901,16 @@ fn playout_main(
                 if let Some(watchdog) = watchdog.as_mut() {
                     watchdog.note_ready_frame(Instant::now());
                 }
+                // 真实帧：这一拍的内容是静音还是有声，正由它决定 ——「有流但内容是静音」
+                // 是现有遥测的盲区（累计计数对它无话可说，见 docs/22 §11.5）。
+                note_playout_beat(
+                    &telemetry,
+                    &events,
+                    peer,
+                    &frame.samples,
+                    frame_ms_u32,
+                    false,
+                );
                 let frames_before = sink_written_frames(&sink);
                 let outcome =
                     write_frame(&mut sink, &mixer, mix_source, &frame.samples, &mut mixed);
@@ -4879,9 +4948,20 @@ fn playout_main(
                 {
                     break 'playout;
                 }
+                note_playout_beat(&telemetry, &events, peer, &silence, frame_ms_u32, true);
             }
             DueFrame::Disconnected => break,
         }
+    }
+
+    // 关流 / 会话结束：把进行中的静音段结算掉。不结算就会漏掉「关流那一刻正在静音」这一段 ——
+    // 长跑里最典型的漏报形态（段还没结束，账本该写却没有机会写）。
+    let closing = match telemetry.lock() {
+        Ok(mut telemetry) => telemetry.finish_silence(),
+        Err(_) => None,
+    };
+    if let Some(segment) = closing {
+        let _ = events.send(EngineEvent::SilenceDetected { peer, segment });
     }
 
     if let Some(open) = sink.as_mut() {

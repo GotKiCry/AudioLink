@@ -293,6 +293,17 @@ class AudioLinkService : Service() {
     private var pendingProjection: MediaProjection? = null
 
     /**
+     * 内录授权是否已到手（**用户点过「允许」**）。
+     *
+     * 它是 mediaProjection 类型位**唯一**的开关，理由是 Android 16 的硬校验（2026-09-18 真机崩过）：
+     * `startForeground(type=mediaProjection)` 要求 `project_media` AppOp，而该 AppOp 只在用户在
+     * MediaProjection 授权页点「允许」**之后**才由系统授予。授权之前带上这个类型位 →
+     * `SecurityException: Starting FGS with type mediaProjection ...` → **整个服务进程崩溃**，
+     * 真机症状是「选了系统内录，服务就没了」。
+     */
+    private var loopbackAuthorized: Boolean = false
+
+    /**
      * 一次性采集提示（拒绝授权 / 取投影失败）：留给用户看，直到下一次源切换。
      *
      * 与「常规采集状态」分开的原因：常规状态由 [CaptureWiring.captureNote] 每拍重算（发送源关闭时为 null），
@@ -430,12 +441,16 @@ class AudioLinkService : Service() {
                 // 为什么这条走 Intent 而不是只在 [refreshState] 里消费标量：
                 // 播放刷新循环只在**播放器存在**时续期（见 [refreshTask]），
                 // 于是「没在播放时切换发送源」会卡住 —— 而那恰恰是内录最常见的用法（先把声音推出去）。
-                startForegroundWithTypes()
                 val raw = intent?.getStringExtra(EXTRA_CAPTURE_SOURCE)
                 val requested = raw?.let { name ->
                     CaptureSourceKind.entries.firstOrNull { it.name == name }
                 }
+                // 顺序（2026-09-18 真机崩溃后定的）：**先把新选择落下去，再刷前台**。
+                // 反过来会出现「用户从系统内录切到麦克风，这一拍却仍带着旧的 mediaProjection 类型位
+                // 去 startForeground」—— 而那个位此刻已不该出现（投影尚未授权 / 已失效），
+                // 系统直接 SecurityException 把服务进程带走。`applyCaptureSource` 末尾自己会刷一次前台。
                 applyCaptureSource(requested)
+                startForegroundWithTypes()
                 refreshState()
                 return START_STICKY
             }
@@ -637,9 +652,23 @@ class AudioLinkService : Service() {
         }
 
         when (next) {
-            null -> captureController.stop()
+            null -> {
+                // 关掉发送源 = 这条内录会话结束：类型位也必须跟着撤（否则会一直以 mediaProjection 名义挂着，
+                // 而投影其实已经不需要了）。
+                loopbackAuthorized = false
+                captureController.stop()
+            }
 
-            CaptureSourceKind.Microphone -> captureController.startMicrophone()
+            CaptureSourceKind.Microphone -> {
+                // 切到麦克风 = 内录这条会话结束：把授权标志与旧投影一起收干净。
+                // 不收的后果（Android 14+ 每会话都要重新授权）：日后切回内录会**立刻**带着
+                // mediaProjection 类型位去 startForeground、并使用一个已经失效的投影 ——
+                // 要么再崩一次，要么静默抓不到声音（`pendingProjection` 非空但已停）。
+                loopbackAuthorized = false
+                pendingProjection?.stop()
+                pendingProjection = null
+                captureController.startMicrophone()
+            }
 
             CaptureSourceKind.SystemLoopback -> {
                 val projection = pendingProjection
@@ -686,6 +715,12 @@ class AudioLinkService : Service() {
             refreshState()
             return
         }
+        // 顺序不能反（Android 14+ 的硬要求；2026-09-18 在 Android 16 上按错误顺序崩过一次）：
+        //   ① 回执到达 ⇒ 用户点过「允许」⇒ project_media AppOp 已授予 ⇒ **现在**才允许进 mediaProjection 前台；
+        //   ② 进入该类型前台**之后**才允许 getMediaProjection()（14+ 的校验就在这一步）；
+        //   ③ 拿到投影再启动采集。
+        loopbackAuthorized = true
+        startForegroundWithTypes()
         val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val projection = try {
             manager.getMediaProjection(resultCode, data)
@@ -720,6 +755,7 @@ class AudioLinkService : Service() {
      */
     private fun handleCaptureDenied() {
         pendingProjection = null
+        loopbackAuthorized = false
         captureNotice = "系统内录：未获授权，发送源保持关闭"
         lastError = captureNotice
         applyCaptureSource(null)
@@ -749,7 +785,16 @@ class AudioLinkService : Service() {
                     Result.failure(t)
                 }
             }
-            if (destroyed || !engineLifecycle.isCurrent(generation)) return@launch
+            // 早退也必须**收敛 connecting**：这条早退的含义是「引擎代次变了」= 本次连接请求已经作废
+            // （切发送源、启停服务都会 ++generation，见 EngineLifecycle）。不收敛的话 `connecting` 永远是
+            // true，而界面上输入框受 `enabled = !sender.connecting` 控制、按钮恒显示「连接中…」，
+            // 用户从此既改不了地址也点不动按钮 —— 只能重启服务（2026-09-18 真机定位：握手超时后再操作即锁死）。
+            if (destroyed) return@launch
+            if (!engineLifecycle.isCurrent(generation)) {
+                senderState = senderState.copy(connecting = false)
+                refreshState()
+                return@launch
+            }
             outcome.fold(
                 onSuccess = { peer ->
                     senderState = senderState.copy(
@@ -981,11 +1026,20 @@ class AudioLinkService : Service() {
         when (CaptureWiring.extraForegroundServiceType(captureSelection)) {
             CaptureServiceType.None -> Unit
 
-            CaptureServiceType.Microphone -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // 麦克风：与内录同一条纪律 —— 只有**运行时权限真的在手里**才带这个位。
+            // Android 14+ 的 microphone 前台服务除 manifest 权限外还要求 RECORD_AUDIO 已授予；
+            // 用户撤权（或「仅这一次」失效）后仍以该位 startForeground → SecurityException 带走服务进程。
+            CaptureServiceType.Microphone -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            ) {
                 types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             }
 
-            CaptureServiceType.MediaProjection -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // 内录：**只有授权到手之后**才带这个类型位（理由见 [loopbackAuthorized]）；
+            // 授权之前带上它，`startForeground` 会直接抛 SecurityException 并把服务进程带走。
+            CaptureServiceType.MediaProjection -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                loopbackAuthorized
+            ) {
                 types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             }
         }

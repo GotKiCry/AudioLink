@@ -68,6 +68,10 @@ fun PlaybackScreen(
     onSubmitPin: (String) -> Unit = {},
     onStartSend: () -> Unit = {},
     onStopSend: () -> Unit = {},
+    // 发送源（FR-06/07）：三态「关闭 / 麦克风 / 系统内录」。UI 只回传选择 ——
+    // 麦克风的运行时权限与内录的 MediaProjection 授权由 Activity 处理（见 MainActivity），
+    // 采集的启停由服务落地（AudioLinkService.setCaptureSource → CaptureController）。
+    onSelectCapture: (CaptureSourceKind?) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // 自检状态刻意放在 UI 本地：它**不依赖服务**（验的是协议层），
@@ -108,7 +112,17 @@ fun PlaybackScreen(
             state.pairingPin?.let { pin ->
                 PairingCard(pin = pin, stale = state.pinIsStale, note = state.pairingNote)
             }
-            // 发送入口：连接是发送的前提，所以紧随配对卡（PIN 卡在最前，见上）。
+            // 发送源**必须排在发送卡之前**（2026-09-18 真机审查结论）：
+            // 「关闭 ⇄ 非关闭」的切换要重启引擎（capture 是引擎启动参数，见 CaptureWiring.requiresEngineRestart），
+            // 而引擎 shutdown 会关掉全部会话。若用户按「先连接、后选源」的自然顺序操作，刚配对好的连接
+            // 会被这次重启掐断，界面还会停在「已连接」上（另一处待修的口径）。先选源、再连接就没有这个问题。
+            CaptureSourceCard(
+                selection = state.captureSelection,
+                state = state.captureState,
+                note = state.captureNote,
+                onSelect = onSelectCapture,
+            )
+            // 发送入口：连接是发送的前提，紧随发送源卡（PIN 卡永远在最前，见上）。
             SendCard(
                 sender = state.sender,
                 captureSelection = state.captureSelection,
@@ -194,6 +208,72 @@ fun PlaybackScreen(
  * （`PlaybackUiState.sender`）。UI 再判一遍门禁，迟早会与 service 漂移（第 107 轮那条教训：
  * 「与被测实现共享推导」的断言会在阈值写错时永远为真）。
  */
+/**
+ * 发送源（FR-06/07）：三态单选「关闭 / 麦克风 / 系统内录」。
+ *
+ * 为什么单独立卡而不是塞进 [SendCard]：采集源是**发送的前提**（没有源时「开始发送」会被
+ * [SenderStateMapper.canStartSend] 判成 `CaptureOff` 并置灰），而它的状态机（等待授权 / 运行中 /
+ * 失败退避）与连接状态**正交** —— 混进发送卡会让两类提示互相遮盖，也让「下一步该做什么」变得难找。
+ *
+ * 授权口径（与 capture/ 模块的注释同一套）：
+ * * **麦克风**：先要 `RECORD_AUDIO` 运行时权限（Android 6+），拿到才切源；
+ * * **系统内录**：每次会话都要过一遍系统授权页（Android 14+ 的硬行为），而且目标应用可以声明
+ *   `allowAudioPlaybackCapture=false`、DRM 内容永远录不到 —— 这些是**预期**，不是缺陷。
+ */
+@Composable
+private fun CaptureSourceCard(
+    selection: CaptureSourceKind?,
+    state: CaptureState,
+    note: String?,
+    onSelect: (CaptureSourceKind?) -> Unit,
+) {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Card {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("发送源（推流时采集什么）", style = MaterialTheme.typography.titleMedium)
+            Text(
+                selection?.let(::sourceLabel) ?: "关闭",
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SourceButton("关闭", selection == null) { onSelect(null) }
+                SourceButton("麦克风", selection == CaptureSourceKind.Microphone) {
+                    onSelect(CaptureSourceKind.Microphone)
+                }
+                SourceButton("系统内录", selection == CaptureSourceKind.SystemLoopback) {
+                    onSelect(CaptureSourceKind.SystemLoopback)
+                }
+            }
+            SenderStateMapper.captureNote(selection, state)?.let { hint ->
+                Text(hint, style = MaterialTheme.typography.bodySmall, color = muted)
+            }
+            note?.let { hint -> Text(hint, color = MaterialTheme.colorScheme.primary) }
+            Text(
+                "系统内录每次会话都要重新授权（系统行为，绕不过）；麦克风要录音权限。" +
+                    "被声明为不可捕获的应用与 DRM 内容录不到。",
+                style = MaterialTheme.typography.bodySmall,
+                color = muted,
+            )
+        }
+    }
+}
+
+/** 三态里的一个按钮：选中用实心、未选中用描边（不引入新组件类型，语义靠文案承载）。 */
+@Composable
+private fun SourceButton(label: String, selected: Boolean, onClick: () -> Unit) {
+    if (selected) {
+        Button(onClick = onClick) { Text(label) }
+    } else {
+        OutlinedButton(onClick = onClick) { Text(label) }
+    }
+}
+
+/** 发送源中文名（与 `CaptureWiring.sourceLabel` 同一套文案：通知与面板说的是同一件事）。 */
+private fun sourceLabel(selection: CaptureSourceKind): String = when (selection) {
+    CaptureSourceKind.Microphone -> "麦克风"
+    CaptureSourceKind.SystemLoopback -> "系统内录"
+}
+
 @Composable
 private fun SendCard(
     sender: SenderUiState,
@@ -213,7 +293,8 @@ private fun SendCard(
         if (sender.targetAddr.isNotEmpty()) addr = sender.targetAddr
     }
 
-    val connectGate = SenderStateMapper.canConnect(sender, engineRunning)
+    // 门禁读**输入框**（`addr`），不是服务侧的回填副本 —— 否则按钮会死在"地址没进服务"这个死锁里。
+    val connectGate = SenderStateMapper.canConnect(sender, engineRunning, addr)
     val startGate = SenderStateMapper.canStartSend(sender, engineRunning, captureSelection, captureState)
     val stopGate = SenderStateMapper.canStopSend(sender, engineRunning)
     val muted = MaterialTheme.colorScheme.onSurfaceVariant

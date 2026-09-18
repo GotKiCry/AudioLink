@@ -1,6 +1,7 @@
 package com.gotkicry.audiolink
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -10,7 +11,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.gotkicry.audiolink.capture.CaptureSourceKind
+import com.gotkicry.audiolink.capture.MediaProjectionRequestActivity
 import com.gotkicry.audiolink.service.AudioLinkService
 import com.gotkicry.audiolink.ui.AudioLinkTheme
 import com.gotkicry.audiolink.ui.PlaybackScreen
@@ -41,6 +47,18 @@ class MainActivity : ComponentActivity() {
                     contract = ActivityResultContracts.RequestPermission(),
                 ) { _: Boolean -> }
 
+                // 麦克风权限：**拿到之后才切源**。用户拒绝时什么都不做 —— 服务的发送源保持原值，
+                // 不制造「选了麦克风却没有权限、界面还显示正在采集」这种假状态。
+                var microphonePending by remember { mutableStateOf(false) }
+                val audioPermissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestPermission(),
+                ) { granted: Boolean ->
+                    if (granted && microphonePending) {
+                        AudioLinkService.setCaptureSource(this, CaptureSourceKind.Microphone)
+                    }
+                    microphonePending = false
+                }
+
                 PlaybackScreen(
                     state = state,
                     onTogglePlayback = { enable ->
@@ -62,6 +80,31 @@ class MainActivity : ComponentActivity() {
                     onSubmitPin = { pin -> AudioLinkService.submitPin(this, pin) },
                     onStartSend = { AudioLinkService.startSend(this) },
                     onStopSend = { AudioLinkService.stopSend(this) },
+                    // 发送源（FR-06/07）：三个分支各自把「还差什么前置」补齐再交给服务。
+                    onSelectCapture = { source ->
+                        when (source) {
+                            null -> AudioLinkService.setCaptureSource(this, null)
+
+                            CaptureSourceKind.Microphone -> {
+                                val granted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                                    PackageManager.PERMISSION_GRANTED
+                                if (granted) {
+                                    AudioLinkService.setCaptureSource(this, CaptureSourceKind.Microphone)
+                                } else {
+                                    microphonePending = true
+                                    audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            }
+
+                            CaptureSourceKind.SystemLoopback -> {
+                                // 顺序不能反：先让服务登记「用户想要内录」并补上 mediaProjection 前台类型位
+                                // （Android 14+ 要求应用已处于该类型的**前台服务**中才拿得到投影），
+                                // 再拉起系统授权页；授权回执由 MediaProjectionRequestActivity 送回服务。
+                                AudioLinkService.setCaptureSource(this, CaptureSourceKind.SystemLoopback)
+                                startActivity(Intent(this, MediaProjectionRequestActivity::class.java))
+                            }
+                        }
+                    },
                 )
             }
         }
