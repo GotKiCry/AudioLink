@@ -4,8 +4,35 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AudioLink</title>
+    <script>
+      // 主题偏好属于纯前端偏好，存 localStorage（不惊动内核设置文件）。
+      // 首帧之前就定下 data-theme，避免亮底闪一下再变黑。
+      (function () {
+        try {
+          var mode = localStorage.getItem("audiolink.theme");
+          if (mode === "light" || mode === "dark") {
+            document.documentElement.setAttribute("data-theme", mode);
+          }
+        } catch (e) {
+          /* 无 localStorage 时跟随系统即可 */
+        }
+      })();
+    </script>
   </head>
-  <body class="bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+  <body>
+    <!--
+      AudioLink 桌面端 · 播出调音台（On-Air Console）—— 方向契约，构建产物里必须能 grep 到 seed key。
+      THESIS: 把声音交给谁，就是把哪条推子推上去 —— 设备是通道条、音量是推子、「正在播出」是一枚更大的灯；
+        这个界面拒绝本品类默认的「卡片网格 + 状态圆点 + 蓝色主按钮」。
+      OWN-WORLD: 阳极氧化铝面板 + 丝印：台面 #1A1614、面板 #241E1B、1px 刻线 #3A302B、丝印奶油白 #E8DCCF；
+        全屏只有三盏灯（绿=通、铜金=注意、橙红=ON AIR/失败）加一盏熄灯，圆角 2–3px，没有投影、没有玻璃、没有左侧色条。
+      STORY: 使用者一眼看出「哪条通道在走、给谁走、走得好不好」，然后只动该动的那个推子；离开时他确信这台机器还在值守。
+      FIRST VIEWPORT: 顶部 44px 台头（机名 · 指纹 · 会话汇总 · 主题/语言）；其下横向铺开的通道条（每台设备一条：
+        丝印通道名 → 状态柱 → 垂直推子 → 按键），末尾留一个「＋ 手动连接」槽位；最右侧固定本机总线（采集源 + 真实遥测 + 全部停止）；
+        底部 56px 总控条托着 ON AIR 灯与全局动作。
+      FORM: 广播播出调音台 / 家用 Hi-Fi 前级（我这份候选清单的第 1 位）；seed key 9a82f91a。
+      FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+    -->
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

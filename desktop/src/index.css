@@ -1,1 +1,545 @@
+/**
+ * AudioLink 桌面端 · 外观层
+ *
+ * 两条正交的轴：
+ *   data-style = "fluent" | "macos"   语言（材质、圆角、阴影、字体、强调色、控件形状）
+ *   data-theme = "light"  | "dark"     光照
+ * 两者组合成 4 套完整外观，**没有一套是把另一套反转出来的**：
+ * Fluent 靠填充与层叠分层次（Windows 11 的 Mica / Layer / Card 三级），
+ * macOS 靠材质与柔和阴影浮起（半透明侧边栏 + vibrancy）。
+ *
+ * 颜色只在这里出现一次；组件只消费语义 token。
+ */
+
 @import "tailwindcss";
+
+/* ── 字体 ──────────────────────────────────────────────────────────
+ * macOS 风格用 Inter（SF Pro 最接近的开源替代，Windows 上没有 SF Pro）；
+ * Fluent 风格用系统自带的 Segoe UI Variable；数字一律本机等宽。      */
+@font-face { font-family: "Inter var"; font-style: normal; font-weight: 100 900; font-display: swap; src: url("/fonts/inter-latin-wght-normal.woff2") format("woff2-variations"); }
+@font-face { font-family: "Inter var"; font-style: italic; font-weight: 100 900; font-display: swap; src: url("/fonts/inter-latin-wght-italic.woff2") format("woff2-variations"); }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("/fonts/ibm-plex-mono-latin-500-normal.woff2") format("woff2"); }
+
+@theme {
+  /* 语义面 */
+  --color-window:    var(--t-window);
+  --color-chrome:    var(--t-chrome);
+  --color-surface:   var(--t-surface);
+  --color-surface-2: var(--t-surface-2);
+  --color-sunken:    var(--t-sunken);
+  --color-line:      var(--t-line);
+  --color-line-2:    var(--t-line-2);
+  /* 语义字 */
+  --color-text:      var(--t-text);
+  --color-text-2:    var(--t-text-2);
+  --color-text-3:    var(--t-text-3);
+  /* 强调与状态 */
+  --color-accent:       var(--t-accent);
+  --color-accent-on:    var(--t-accent-on);
+  --color-ok:           var(--t-ok);
+  --color-ok-text:      var(--t-ok-text);
+  --color-warn:         var(--t-warn);
+  --color-warn-text:    var(--t-warn-text);
+  --color-danger:       var(--t-danger);
+  --color-danger-text:  var(--t-danger-text);
+
+  /* 兼容别名：第一版「调音台」世界的类名仍在旧组件里，值统一指向上面的语义 token。
+     新写的组件请直接用语义名，这些别名会随组件重写逐步消失。 */
+  --color-panel:     var(--t-surface);
+  --color-panel-hi:  var(--t-surface-2);
+  --color-bench:     var(--t-chrome);
+  --color-chassis:   var(--t-sunken);
+  --color-line-hi:   var(--t-line-2);
+  --color-silk:      var(--t-text);
+  --color-silk-2:    var(--t-text-2);
+  --color-silk-3:    var(--t-text-3);
+  --color-lamp-on:   var(--t-ok);
+  --color-lamp-warn: var(--t-warn);
+  --color-lamp-live: var(--t-danger);
+  --color-lamp-idle: var(--t-text-3);
+  --color-ink-on:    var(--t-ok-text);
+  --color-ink-warn:  var(--t-warn-text);
+  --color-ink-live:  var(--t-danger-text);
+  --color-ink-idle:  var(--t-text-3);
+
+  --radius-panel: var(--r-panel);
+  --radius-card: var(--r-card);
+  --radius-chip: var(--r-control);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   一、Fluent（Windows 11）：Mica 底 → Layer → Card 三级填充 + 小圆角
+   ══════════════════════════════════════════════════════════════════ */
+:root,
+:root[data-style="fluent"][data-theme="dark"] {
+  color-scheme: dark;
+  --t-window: #202020;
+  --t-chrome: #272727;
+  --t-surface: #2B2B2B;
+  --t-surface-2: #323232;
+  --t-sunken: #1A1A1A;
+  --t-line: rgba(255, 255, 255, 0.08);
+  --t-line-2: rgba(255, 255, 255, 0.14);
+  --t-text: #FFFFFF;
+  --t-text-2: #C5C5C5;
+  --t-text-3: #8A8A8A;
+  --t-accent: #4CC2FF;
+  --t-accent-on: #003A5C;
+  --t-ok: #6CCB5F;      --t-ok-text: #6CCB5F;
+  --t-warn: #FCE100;    --t-warn-text: #FCE100;
+  --t-danger: #FF99A4;  --t-danger-text: #FF99A4;
+  --r-control: 4px; --r-card: 8px; --r-panel: 8px;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --shadow-overlay: 0 8px 16px rgba(0, 0, 0, 0.44);
+  /* Mica 只"带一点"壁纸色调：再过一点就成了彩色玻璃，那就不是 Windows 了 */
+  --t-ambient-1: 7%; --t-ambient-2: 4%;
+  /* 官方 LayerFillColorDefault（Dark）：内容层是低不透明度纯色，让底下的 Mica 透出来 */
+  --t-layer: rgba(58, 58, 58, 0.298);
+  /* 官方焦点视觉：外圈 + 内圈两层描边（Dark 下外白内黑） */
+  --t-focus-outer: #FFFFFF; --t-focus-inner: rgba(0, 0, 0, 0.702);
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, "Microsoft YaHei UI", sans-serif;
+  --font-label: var(--font-ui);
+  --font-num: "Cascadia Mono", "Cascadia Code", Consolas, "IBM Plex Mono", monospace;
+  --t-select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238A8A8A' stroke-width='1.5'/%3E%3C/svg%3E");
+}
+
+:root[data-style="fluent"][data-theme="light"] {
+  color-scheme: light;
+  --t-window: #F3F3F3;
+  --t-chrome: #F9F9F9;
+  --t-surface: #FBFBFB;
+  --t-surface-2: #F5F5F5;
+  --t-sunken: #EDEDED;
+  --t-line: rgba(0, 0, 0, 0.06);
+  --t-line-2: rgba(0, 0, 0, 0.14);
+  --t-text: #1B1B1B;
+  --t-text-2: #616161;
+  --t-text-3: #8A8A8A;
+  --t-accent: #0F6CBD;
+  --t-accent-on: #FFFFFF;
+  --t-ok: #0F7B0F;      --t-ok-text: #0F7B0F;
+  --t-warn: #9D5D00;    --t-warn-text: #9D5D00;
+  --t-danger: #C42B1C;  --t-danger-text: #C42B1C;
+  --r-control: 4px; --r-card: 8px; --r-panel: 8px;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-overlay: 0 8px 16px rgba(0, 0, 0, 0.14);
+  --t-ambient-1: 7%; --t-ambient-2: 4%;
+  --t-layer: rgba(255, 255, 255, 0.502);
+  --t-focus-outer: rgba(0, 0, 0, 0.894); --t-focus-inner: rgba(255, 255, 255, 0.702);
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, "Microsoft YaHei UI", sans-serif;
+  --font-label: var(--font-ui);
+  --font-num: "Cascadia Mono", "Cascadia Code", Consolas, "IBM Plex Mono", monospace;
+  --t-select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23616161' stroke-width='1.5'/%3E%3C/svg%3E");
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   二、macOS：半透明 vibrancy 侧边栏 + 浮起的内容面 + 大圆角
+   ══════════════════════════════════════════════════════════════════ */
+:root[data-style="macos"][data-theme="dark"] {
+  color-scheme: dark;
+  --t-window: #1E1E1E;
+  --t-chrome: rgba(38, 38, 40, 0.62);
+  --t-surface: #2C2C2E;
+  --t-surface-2: #3A3A3C;
+  --t-sunken: #1C1C1E;
+  --t-line: rgba(255, 255, 255, 0.09);
+  --t-line-2: rgba(255, 255, 255, 0.16);
+  --t-text: #F5F5F7;
+  --t-text-2: #98989D;
+  --t-text-3: #6E6E73;
+  --t-accent: #0A84FF;
+  --t-accent-on: #FFFFFF;
+  --t-ok: #32D74B;     --t-ok-text: #32D74B;
+  --t-warn: #FF9F0A;   --t-warn-text: #FF9F0A;
+  --t-danger: #FF453A; --t-danger-text: #FF453A;
+  --r-control: 6px; --r-card: 10px; --r-panel: 12px;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.24), 0 6px 18px rgba(0, 0, 0, 0.22);
+  --shadow-overlay: 0 12px 40px rgba(0, 0, 0, 0.48);
+  /* vibrancy 要有东西可透：桌面壁纸的彩色光斑必须真的能看见 */
+  --t-ambient-1: 22%; --t-ambient-2: 16%;
+  --t-layer: transparent;
+  --t-focus-outer: color-mix(in oklab, var(--t-accent) 60%, transparent); --t-focus-inner: transparent;
+  --font-ui: "Inter var", "Inter", "SF Pro Text", system-ui, "Microsoft YaHei UI", sans-serif;
+  --font-label: var(--font-ui);
+  --font-num: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "IBM Plex Mono", monospace;
+  --t-select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238A8A8A' stroke-width='1.5'/%3E%3C/svg%3E");
+}
+
+:root[data-style="macos"][data-theme="light"] {
+  color-scheme: light;
+  --t-window: #ECECEC;
+  --t-chrome: rgba(246, 246, 248, 0.72);
+  --t-surface: #FFFFFF;
+  --t-surface-2: #F5F5F7;
+  --t-sunken: #E8E8ED;
+  --t-line: rgba(0, 0, 0, 0.07);
+  --t-line-2: rgba(0, 0, 0, 0.16);
+  --t-text: #1D1D1F;
+  --t-text-2: #6E6E73;
+  --t-text-3: #8E8E93;
+  --t-accent: #007AFF;
+  --t-accent-on: #FFFFFF;
+  --t-ok: #34C759;     --t-ok-text: #248A3D;
+  --t-warn: #FF9500;   --t-warn-text: #C93400;
+  --t-danger: #FF3B30; --t-danger-text: #D70015;
+  --r-control: 6px; --r-card: 10px; --r-panel: 12px;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.05), 0 4px 12px rgba(0, 0, 0, 0.06);
+  --shadow-overlay: 0 12px 40px rgba(0, 0, 0, 0.18);
+  --t-ambient-1: 20%; --t-ambient-2: 14%;
+  --t-layer: transparent;
+  --t-focus-outer: color-mix(in oklab, var(--t-accent) 60%, transparent); --t-focus-inner: transparent;
+  --font-ui: "Inter var", "Inter", "SF Pro Text", system-ui, "Microsoft YaHei UI", sans-serif;
+  --font-label: var(--font-ui);
+  --font-num: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "IBM Plex Mono", monospace;
+  --t-select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23616161' stroke-width='1.5'/%3E%3C/svg%3E");
+}
+
+/* ── 基础层 ──────────────────────────────────────────────────────── */
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    margin: 0;
+    /* 环境光：Mica 要"透着壁纸的色调"、vibrancy 要"模糊身后的东西" —— 纯色底会让两种材质都失去依据。
+       两层极淡的强调色光斑足矣，亮度低到永远不该被注意到，只在侧面栏的模糊里露一点出来。 */
+    background:
+      radial-gradient(110% 70% at 8% -12%, color-mix(in oklab, var(--t-accent) var(--t-ambient-1, 8%), transparent), transparent 62%),
+      radial-gradient(80% 60% at 104% 112%, color-mix(in oklab, var(--t-accent) var(--t-ambient-2, 5%), transparent), transparent 58%),
+      var(--t-window);
+    background-attachment: fixed;
+    color: var(--t-text);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  ::selection { background: color-mix(in oklab, var(--t-accent) 34%, transparent); }
+  input, textarea { caret-color: var(--t-accent); }
+
+  /* 焦点：Fluent 用 2px 实线方框（含内衬），macOS 用 3px 强调色光晕 */
+  :focus-visible { outline: 2px solid var(--t-accent); outline-offset: 1px; border-radius: var(--r-control); }
+  :root[data-style="macos"] :focus-visible {
+    outline: 3px solid color-mix(in oklab, var(--t-accent) 55%, transparent);
+    outline-offset: 1px;
+  }
+
+  * { scrollbar-width: thin; scrollbar-color: var(--t-line-2) transparent; }
+  ::-webkit-scrollbar { width: 12px; height: 12px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--t-line-2); border: 3px solid transparent; background-clip: content-box; border-radius: 9999px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--t-text-3); background-clip: content-box; }
+
+  select, input[type="text"], input[type="search"], input[type="number"], input[type="url"], textarea {
+    appearance: none; -webkit-appearance: none;
+    background-color: var(--t-sunken);
+    color: var(--t-text);
+    border-radius: var(--r-control);
+  }
+  select {
+    padding-right: 26px;
+    background-image: var(--t-select-arrow);
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 10px 6px;
+  }
+  select option { background: var(--t-surface); color: var(--t-text); }
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button { appearance: none; -webkit-appearance: none; margin: 0; }
+  input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none;
+    width: 15px; height: 15px; flex: none;
+    border: 1px solid var(--t-line-2);
+    border-radius: 3px;
+    background: var(--t-sunken);
+    position: relative;
+  }
+  input[type="checkbox"]:checked { background: var(--t-accent); border-color: var(--t-accent); }
+  input[type="checkbox"]:checked::after {
+    content: ""; position: absolute; left: 4px; top: 1px;
+    width: 4px; height: 8px;
+    border: solid var(--t-accent-on); border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+  input::placeholder { color: var(--t-text-3); }
+
+  h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+  button { font: inherit; color: inherit; }
+
+  /* 读数、指纹、地址：等宽 + 定宽数字，刷新时不跳 */
+  .num { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+}
+
+/* ── 组件层 ──────────────────────────────────────────────────────── */
+@layer components {
+  /* 内容面：Fluent 是 Card 填充并带底部强调线；macOS 是浮起的面（柔和阴影、无底部线） */
+  .plate {
+    background: var(--t-surface);
+    border: 1px solid var(--t-line);
+    border-radius: var(--r-card);
+    box-shadow: var(--shadow-card);
+  }
+  /* ── Fluent 精修：对官方「识别特征清单」逐条落位 ──────────────────
+     特征 2 · 内容层是低不透明度的纯色 Layer（让 Mica 透出来），不是实色卡片
+     特征 4/12 · 层级靠 1px 描边表达，Windows 不用阴影堆叠卡片（官方反模式）——
+                 所以 Fluent 下的卡片必须把 shadow 去掉，底边比其余三边深一档 */
+  :root[data-style="fluent"] .plate {
+    background: var(--t-layer);
+    border: 1px solid var(--t-line);
+    border-bottom-color: var(--t-line-2);
+    box-shadow: none;
+  }
+  /* 特征 8 · 焦点是两层描边（外圈 + 内圈），不是浏览器 outline，也不用颜色变化表示焦点 */
+  :root[data-style="fluent"] :focus-visible {
+    outline: 2px solid var(--t-focus-outer);
+    outline-offset: 1px;
+    box-shadow: 0 0 0 1px var(--t-focus-inner);
+  }
+  /* 特征 7 · 模态背后的遮罩是 Smoke（两个主题同值），不做模糊 —— 模糊是 macOS 的做法 */
+  :root[data-style="fluent"] .scrim {
+    background: rgba(0, 0, 0, 0.302);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  /* 特征 9 · Windows 口径：交互越深越"亮"，控件在 hover/pressed 时整体抬一档填充 */
+  :root[data-style="fluent"] .key:hover:not(:disabled) { background: var(--t-surface-2); }
+  :root[data-style="fluent"] .key:active:not(:disabled) { background: var(--t-surface); }
+  :root[data-style="macos"] .plate { border-color: var(--t-line); }
+
+  /* 下沉槽（输入框、机箱内部、列表底） */
+  .well {
+    background: var(--t-sunken);
+    border: 1px solid var(--t-line);
+    border-radius: var(--r-control);
+  }
+
+  /* ── 字号阶梯 ────────────────────────────────────────────────────────
+     两套语言的 type ramp 本来就不同，所以同一组语义档位在各自的世界里解析成各自的字号：
+     Fluent 官方只用 12 / 14 / 20（Caption / Body / Subtitle），且**不用 italic、不用全大写**；
+     macOS 是 SF Pro 的 Caption 11 / Body 13 / Subheadline 15，标题更重（700）。 */
+  .t-cap   { font-size: 12px; line-height: 16px; }
+  .t-body  { font-size: 14px; line-height: 20px; }
+  .t-lead  { font-size: 14px; line-height: 20px; }
+  .t-title { font-size: 20px; line-height: 28px; font-weight: 600; }
+  :root[data-style="macos"] .t-cap   { font-size: 11px; line-height: 14px; letter-spacing: 0.01em; }
+  :root[data-style="macos"] .t-body  { font-size: 13px; line-height: 18px; }
+  :root[data-style="macos"] .t-lead  { font-size: 15px; line-height: 20px; }
+  :root[data-style="macos"] .t-title { font-size: 20px; line-height: 25px; font-weight: 700; }
+
+  /* ── 排版节奏（这是两套语言最容易被眼睛抓住的差别）────────────────────
+     macOS：Large Title 26/700 压住页面，内容留白给到 24px —— 呼吸大、层级少而重。
+     Fluent：Subtitle 20/Semibold + 紧凑留白 16px，标题下面压一条分隔线 —— 信息更密、结构更硬。 */
+  .page-title { font-size: 20px; line-height: 28px; font-weight: 600; color: var(--t-text); }
+  :root[data-style="macos"] .page-title {
+    font-size: 26px; line-height: 32px; font-weight: 700; letter-spacing: -0.022em;
+  }
+  .app-content-inner { display: flex; flex-direction: column; padding: 16px; gap: 16px; }
+  :root[data-style="macos"] .app-content-inner { padding: 24px; gap: 20px; }
+  /* Fluent 的标题带分隔线（并且它不用大标题压层级） */
+  :root[data-style="fluent"] .page-title {
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--t-line);
+  }
+
+  /* 分组标签：macOS 是小号大写字距宽；Fluent 是普通大小写的正文标签 */
+  .silk {
+    font-family: var(--font-label);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--t-text-2);
+  }
+  :root[data-style="macos"] .silk {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--t-text-3);
+  }
+  .silk-sm {
+    font-family: var(--font-label);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--t-text-2);
+  }
+  :root[data-style="macos"] .silk-sm {
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--t-text-3);
+  }
+
+  /* 状态点：Fluent 是平的实心点；macOS 带一圈柔光 */
+  .lamp {
+    display: inline-block;
+    border-radius: 9999px;
+    background: var(--t-text-3);
+    flex: none;
+  }
+  .lamp[data-on="on"]    { background: var(--t-ok); }
+  .lamp[data-on="warn"]  { background: var(--t-warn); }
+  .lamp[data-on="live"]  { background: var(--t-danger); }
+  .lamp[data-on="busy"]  { background: var(--t-text-2); animation: lamp-breathe 1.6s ease-in-out infinite; }
+  :root[data-style="macos"] .lamp[data-on="on"]   { box-shadow: 0 0 0 3px color-mix(in oklab, var(--t-ok) 22%, transparent); }
+  :root[data-style="macos"] .lamp[data-on="warn"] { box-shadow: 0 0 0 3px color-mix(in oklab, var(--t-warn) 22%, transparent); }
+  :root[data-style="macos"] .lamp[data-on="live"] { box-shadow: 0 0 0 3px color-mix(in oklab, var(--t-danger) 22%, transparent); }
+  @keyframes lamp-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  /* 按钮：Fluent 无边框、靠填充；macOS 靠形状与极淡填充 */
+  .key {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    border-radius: var(--r-control);
+    background: color-mix(in oklab, var(--t-text) 6%, transparent);
+    border: 1px solid transparent;
+    color: var(--t-text);
+    transition: background-color 120ms ease-out, border-color 120ms ease-out;
+  }
+  .key:hover:not(:disabled) { background: color-mix(in oklab, var(--t-text) 10%, transparent); }
+  .key:active:not(:disabled) { background: color-mix(in oklab, var(--t-text) 4%, transparent); }
+  .key:disabled { opacity: 0.4; }
+  :root[data-style="fluent"] .key {
+    background: color-mix(in oklab, var(--t-surface-2) 100%, transparent);
+    border-color: var(--t-line);
+  }
+  :root[data-style="fluent"] .key:hover:not(:disabled) { background: color-mix(in oklab, var(--t-text) 7%, var(--t-surface-2)); }
+  :root[data-style="macos"] .key { background: color-mix(in oklab, var(--t-text) 7%, transparent); }
+  :root[data-style="macos"] .key:hover:not(:disabled) { background: color-mix(in oklab, var(--t-text) 12%, transparent); }
+
+  /* 主按钮：两套都是强调色填充（Fluent 的 AccentButton / macOS 的 default button）。
+     注意选择器里的 `:root[data-style]` 不是装饰：上面两条风格化的 `.key` 规则特异性更高，
+     光写 `.key-primary` 会被它们压住，主按钮就会掉成普通灰键（这正是它先前一直"点不亮"的原因）。 */
+  .key,
+  :root[data-style] .key-primary,
+  :root[data-style] .key-danger {
+    /* 占位：真正的声明在下面各条，这里只是把两者放在同一特异性阶梯上 */;
+  }
+  :root[data-style] .key-primary,
+  .key-primary {
+    background: var(--t-accent);
+    color: var(--t-accent-on);
+    border-color: transparent;
+    font-weight: 600;
+  }
+  :root[data-style] .key-primary:hover:not(:disabled),
+  .key-primary:hover:not(:disabled) { background: color-mix(in oklab, var(--t-accent) 88%, var(--t-text)); }
+  :root[data-style="macos"] .key-primary { box-shadow: 0 1px 2px color-mix(in oklab, var(--t-accent) 40%, transparent); }
+
+  /* 危险键 */
+  .key-danger { color: var(--t-danger-text); }
+  .key-danger:hover:not(:disabled) { background: color-mix(in oklab, var(--t-danger) 14%, transparent); }
+
+  /* 滑块：两套平台的音量控件都是水平的 */
+  .fader { position: relative; display: flex; align-items: center; }
+  .fader input[type="range"] {
+    appearance: none; -webkit-appearance: none;
+    width: 100%; height: 20px; margin: 0; background: transparent;
+    cursor: pointer;
+  }
+  .fader input[type="range"]::-webkit-slider-runnable-track {
+    height: 4px; border-radius: 9999px;
+    background: color-mix(in oklab, var(--t-text) 18%, transparent);
+  }
+  :root[data-style="fluent"] .fader input[type="range"]::-webkit-slider-runnable-track { height: 3px; border-radius: 2px; }
+  .fader input[type="range"]::-webkit-slider-thumb {
+    appearance: none; -webkit-appearance: none;
+    width: 16px; height: 16px; margin-top: -6px;
+    border-radius: 9999px;
+    background: var(--t-surface);
+    border: 1px solid var(--t-line-2);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
+  :root[data-style="fluent"] .fader input[type="range"]::-webkit-slider-thumb {
+    width: 20px; height: 20px; margin-top: -9px;
+    border-radius: 9999px;
+    background: var(--t-text);
+    border: 4px solid var(--t-accent-on);
+    outline: 1px solid var(--t-line-2);
+  }
+  .fader-ticks { display: none; }
+
+  /* Fluent 的招牌细节：输入类控件有一条更深的底边，聚焦时才转成强调色 */
+  :root[data-style="fluent"] input:not([type="range"]):not([type="checkbox"]),
+  :root[data-style="fluent"] select {
+    border-bottom-color: var(--t-text-3);
+  }
+  :root[data-style="fluent"] input:not([type="range"]):not([type="checkbox"]):focus,
+  :root[data-style="fluent"] select:focus {
+    border-bottom: 2px solid var(--t-accent);
+    padding-bottom: calc(0.5rem - 1px);
+  }
+
+  /* ── 结构差异（这一条比任何配色都更能说明"我是谁"）─────────────────
+     Fluent：窗口底是 Mica，内容直接铺在上面；每一块自己是一条 Layer / Card（实色 + 1px 边框 + 更深的底边）。
+     macOS：窗口底被侧边栏和内容面板分掉 —— 内容区是**一整块浮起的不透明面板**，
+            面板内部的分组只是更浅的灰块（System Settings 的 inset grouped 风格），没有边框。 */
+  :root[data-style="macos"] .app-content {
+    margin: 10px 10px 10px 0;
+    border: 1px solid var(--t-line);
+    border-radius: var(--r-panel);
+    background: var(--t-surface);
+    box-shadow: var(--shadow-overlay);
+  }
+  :root[data-style="macos"] .plate {
+    background: var(--t-surface-2);
+    border-color: transparent;
+    box-shadow: none;
+  }
+  /* macOS 的分段控制器是胶囊（Fluent 是方角小圆角） */
+  :root[data-style="macos"] .segmented {
+    border-radius: 9999px;
+    border-color: transparent;
+    background: color-mix(in oklab, var(--t-text) 8%, transparent);
+    padding: 2px;
+  }
+  :root[data-style="macos"] .segmented button { border-radius: 9999px; }
+  /* 选中项是一枚凸起的胶囊：浅色下像白色小片浮起来，深色下是中灰 #636366 —— 这是 macOS 分段控制器最认得出来的一处 */
+  :root[data-style="macos"] .segmented button[aria-pressed="true"] {
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  }
+  :root[data-style="macos"][data-theme="light"] .segmented button[aria-pressed="true"] {
+    background: #FFFFFF;
+    color: #1D1D1F;
+  }
+  :root[data-style="macos"][data-theme="dark"] .segmented button[aria-pressed="true"] {
+    background: #636366;
+    color: #FFFFFF;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.42);
+  }
+  /* ── macOS 的密度特征（官方识别特征 11）：控件高 22–24pt，比 Fluent 的 32px 紧凑一档 ──
+     组件的 Tailwind 高度类在 utilities 层，这里用更高的特异性覆盖，而不是去改几十处 className。 */
+  :root[data-style="macos"] .key.h-7,
+  :root[data-style="macos"] .key.h-8,
+  :root[data-style="macos"] .key.h-9 { height: 24px; }
+  :root[data-style="macos"] .key.h-10,
+  :root[data-style="macos"] .key.h-11 { height: 28px; }
+  :root[data-style="macos"] input.h-9,
+  :root[data-style="macos"] input.h-10,
+  :root[data-style="macos"] select.h-9,
+  :root[data-style="macos"] select.h-10 { height: 24px; }
+  /* 官方反模式：一屏只留一个实心填充按钮；危险操作永远用红字而不是红底 */
+  :root[data-style="macos"] .key-danger { background: transparent; border-color: var(--t-line); }
+  :root[data-style="macos"] .key-danger:hover:not(:disabled) { background: color-mix(in oklab, var(--t-danger) 12%, transparent); }
+
+  /* push button 的浮起感：macOS 的普通按钮有 1px 边框 + 一道极浅的外阴影 */
+  :root[data-style="macos"] .key:not(.key-primary):not(.key-danger) {
+    background: color-mix(in oklab, var(--t-text) 9%, var(--t-surface));
+    border: 1px solid var(--t-line);
+    box-shadow: 0 0.5px 1px rgba(0, 0, 0, 0.14);
+  }
+  :root[data-style="macos"] .key-primary { border-radius: 8px; }
+
+  /* 侧边栏材质：macOS 是 vibrancy（半透明 + 背景模糊），Fluent 是实色 Layer */
+  .chrome-material { background: var(--t-chrome); }
+  :root[data-style="macos"] .chrome-material {
+    backdrop-filter: saturate(180%) blur(24px);
+    -webkit-backdrop-filter: saturate(180%) blur(24px);
+  }
+  /* 覆盖层（对话框） */
+  .scrim { background: color-mix(in oklab, var(--t-window) 62%, transparent); }
+  :root[data-style="macos"] .scrim { backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lamp[data-on="busy"] { animation: none; opacity: 0.6; }
+  *, *::before, *::after { transition-duration: 1ms !important; animation-duration: 1ms !important; }
+}

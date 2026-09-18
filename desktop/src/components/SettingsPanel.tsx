@@ -6,6 +6,9 @@
  *
  * 两个开关的状态都来自**系统/存储**（`autostart_enabled` / `auto_connect_state`），
  * 不是本地记住的布尔：用户在系统设置里改过之后，这里显示的必须仍然是真实状态。
+ *
+ * 视觉（On-Air Console）：开关行是背板上的一排拨杆位；危险动作（移除信任）平时保持中性按键，
+ * 只有 hover 与"确认移除"这一瞬才上 `ink-live` —— 红色不该在面板上常驻。
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -13,6 +16,9 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/ipc";
 import { toCommandError, type AutoConnectPolicy, type TrustedPeerView } from "../types";
 import { LOCALES, setLocale, t, useLocale, type Locale } from "../i18n";
+
+/** 读数缺失时的占位（与其它诊断面板同一条约定）。 */
+const DASH = "—";
 
 export function SettingsPanel() {
   const locale = useLocale();
@@ -105,21 +111,25 @@ export function SettingsPanel() {
   };
 
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-      <header>
-        <h2 className="text-sm font-semibold">{t("set.title")}</h2>
-        <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-          {t("set.tray_hint")}
-        </p>
+    <section aria-labelledby="set-heading" className="plate p-3">
+      <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h2 id="set-heading" className="silk t-body">
+          {t("set.title")}
+        </h2>
+        <span className="flex items-baseline gap-1.5">
+          <span className="silk-sm !text-silk-2">{t("set.trusted_title")}</span>
+          <span className="num t-cap text-silk-2">{trusted === null ? DASH : trusted.length}</span>
+        </span>
       </header>
+      <p className="mt-0.5 t-cap leading-4 text-silk-3">{t("set.tray_hint")}</p>
 
-      <div className="mt-3 space-y-2">
-        <label className="flex items-center justify-between gap-2 text-xs text-slate-700 dark:text-slate-300">
-          <span>{t("set.language")}</span>
+      <div className="mt-2 space-y-2 t-cap text-silk-2">
+        <label className="flex items-center justify-between gap-2">
+          <span className="silk-sm !text-silk-2">{t("set.language")}</span>
           <select
             value={locale}
             onChange={(event) => changeLocale(event.target.value as Locale)}
-            className="rounded border border-slate-300 bg-white px-2 py-0.5 text-xs dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+            className="well rounded-chip px-2 py-0.5 t-cap text-silk"
           >
             {LOCALES.map((item) => (
               <option key={item.value} value={item.value}>
@@ -129,28 +139,30 @@ export function SettingsPanel() {
           </select>
         </label>
 
-        <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+        <label className="flex items-center gap-2">
           <input
             type="checkbox"
             checked={autostart === true}
             disabled={busy || autostart === null}
             onChange={(event) => toggleAutostart(event.target.checked)}
+            className="accent-lamp-warn disabled:cursor-not-allowed"
           />
           {t("set.autostart")}
-          {autostart === null ? <span className="text-slate-400">{t("set.loading")}</span> : null}
+          {autostart === null ? <span className="t-cap text-silk-3">{t("set.loading")}</span> : null}
         </label>
 
-        <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+        <label className="flex items-center gap-2">
           <input
             type="checkbox"
             checked={policy?.enabled === true}
             disabled={busy || policy === null}
             onChange={(event) => toggleAutoConnect(event.target.checked)}
+            className="accent-lamp-warn disabled:cursor-not-allowed"
           />
           {t("set.autoconnect")}
-          {policy === null ? <span className="text-slate-400">{t("set.loading")}</span> : null}
+          {policy === null ? <span className="t-cap text-silk-3">{t("set.loading")}</span> : null}
         </label>
-        <p className="pl-5 text-xs text-slate-500 dark:text-slate-400">
+        <p className="pl-5 t-cap text-silk-3">
           {policy?.lastPeer == null
             ? t("set.no_history")
             : t("set.last_peer", { peer: policy.lastPeer })}
@@ -162,23 +174,19 @@ export function SettingsPanel() {
         （换机后残留的旧记录就是这一类）。没有它，那些设备只能靠手删 trust.json 才能清掉 ——
         「你可以取消配对」这句话对它们不成立。
       */}
-      <div className="mt-4 border-t border-slate-200 pt-3 dark:border-slate-700">
-        <h3 className="text-xs font-semibold">{t("set.trusted_title")}</h3>
-        <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-          {t("set.trusted_hint")}
-        </p>
+      <div className="mt-3 border-t border-line pt-2">
+        <h3 className="silk-sm">{t("set.trusted_title")}</h3>
+        <p className="mt-0.5 t-cap leading-4 text-silk-3">{t("set.trusted_hint")}</p>
         {trusted === null ? (
-          <p className="mt-1 text-xs text-slate-400">{t("set.loading")}</p>
+          <p className="mt-1 t-cap text-silk-3">{t("set.loading")}</p>
         ) : trusted.length === 0 ? (
-          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            {t("set.trusted_empty")}
-          </p>
+          <p className="mt-1 t-cap text-silk-3">{t("set.trusted_empty")}</p>
         ) : (
-          <ul className="mt-2 space-y-1">
+          <ul className="mt-1.5 divide-y divide-line border-t border-line t-cap">
             {trusted.map((item) => (
-              <li key={item.idShort} className="flex items-center gap-2 text-xs">
-                <span className="truncate text-slate-700 dark:text-slate-300">{item.name}</span>
-                <span className="shrink-0 font-mono text-slate-400">{item.idShort}</span>
+              <li key={item.idShort} className="flex items-center gap-2 py-1">
+                <span className="truncate text-silk-2">{item.name}</span>
+                <span className="num shrink-0 text-silk-3">{item.idShort}</span>
                 <span className="ml-auto flex shrink-0 gap-1">
                   {confirmingId === item.idShort ? (
                     <>
@@ -186,14 +194,14 @@ export function SettingsPanel() {
                         type="button"
                         disabled={busy}
                         onClick={() => revokeTrusted(item.idShort)}
-                        className="rounded bg-red-600 px-2 py-0.5 font-medium text-white disabled:opacity-50"
+                        className="key key-danger h-6 px-2 t-cap text-ink-live disabled:cursor-not-allowed"
                       >
                         {t("set.trusted_confirm")}
                       </button>
                       <button
                         type="button"
                         onClick={() => setConfirmingId(null)}
-                        className="rounded border border-slate-300 px-2 py-0.5 dark:border-slate-600"
+                        className="key h-6 px-2 t-cap text-silk-2"
                       >
                         {t("set.trusted_cancel")}
                       </button>
@@ -203,7 +211,7 @@ export function SettingsPanel() {
                       type="button"
                       disabled={busy}
                       onClick={() => setConfirmingId(item.idShort)}
-                      className="rounded border border-red-200 px-2 py-0.5 font-medium text-red-600 disabled:opacity-50 dark:border-red-900 dark:text-red-400"
+                      className="key key-danger h-6 px-2 t-cap text-silk-2 disabled:cursor-not-allowed"
                     >
                       {t("set.trusted_revoke")}
                     </button>
@@ -216,7 +224,7 @@ export function SettingsPanel() {
       </div>
 
       {error === null ? null : (
-        <p className="mt-2 text-xs text-rose-600 dark:text-rose-400">{error}</p>
+        <p role="alert" className="mt-2 t-cap text-ink-live">{error}</p>
       )}
     </section>
   );

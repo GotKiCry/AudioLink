@@ -11,6 +11,9 @@
  *    版本号是不是用户看到的那个（见 src-tauri/src/update.rs 的 install_update）。
  * ③ **错误不拼**：失败原因一律来自后端 `CommandError.message`（错误层已翻译成人话），
  *    这里只用 `toCommandError` 兜底归一化，不拼字符串。
+ *
+ * 视觉（On-Air Console）：进行中由一盏呼吸灯表达（`.lamp[data-on="busy"]`），
+ * 有新版时整块内容是机器内部的一个下沉窗口 + 琥珀边框（注意，不是危险 —— 危险才用 `live`）。
  */
 
 import { useState } from "react";
@@ -18,6 +21,9 @@ import { useState } from "react";
 import { api } from "../lib/ipc";
 import { toCommandError, type UpdateCheckView } from "../types";
 import { t } from "../i18n";
+
+/** 读数缺失时的占位（与其它诊断面板同一条约定）。 */
+const DASH = "—";
 
 export function UpdatePanel() {
   const [checking, setChecking] = useState(false);
@@ -62,69 +68,77 @@ export function UpdatePanel() {
   };
 
   const pending = view !== null && view.version !== null ? view.version : null;
+  const working = checking || installing;
 
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-700 dark:bg-slate-800">
-      <header className="flex items-start justify-between gap-2">
-        <div>
-          <h2 className="text-sm font-semibold">{t("upd.title")}</h2>
-          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{t("upd.hint")}</p>
+    <section aria-labelledby="upd-heading" className="plate p-3">
+      <header className="flex flex-wrap items-start gap-x-3 gap-y-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <h2 id="upd-heading" className="silk t-body">
+              {t("upd.title")}
+            </h2>
+            <span className="num t-cap text-silk-3">
+              {view === null ? DASH : view.currentVersion}
+            </span>
+          </div>
+          <p className="mt-0.5 t-cap leading-4 text-silk-3">{t("upd.hint")}</p>
         </div>
-        <button
-          type="button"
-          onClick={check}
-          disabled={checking || installing}
-          className="shrink-0 rounded border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:hover:bg-slate-700"
-        >
-          {checking ? t("upd.checking") : t("upd.check")}
-        </button>
+        <span className="ml-auto flex shrink-0 items-center gap-2">
+          {working ? <span className="lamp h-2 w-2" data-on="busy" /> : null}
+          <button
+            type="button"
+            onClick={check}
+            disabled={working}
+            className="key h-7 px-2.5 t-cap text-silk disabled:cursor-not-allowed"
+          >
+            {checking ? t("upd.checking") : t("upd.check")}
+          </button>
+        </span>
       </header>
 
-      <div className="mt-3 space-y-2 text-xs">
+      <div className="mt-2 space-y-2 t-cap">
         {error === null ? null : (
-          <p className="text-rose-600 dark:text-rose-400">{error}</p>
+          <p role="alert" className="text-ink-live">{error}</p>
         )}
 
         {installed === null ? null : (
-          <p className="text-emerald-600 dark:text-emerald-400">
-            {t("upd.done", { version: installed })}
-          </p>
+          <p className="text-ink-on">{t("upd.done", { version: installed })}</p>
         )}
 
         {view === null ? null : pending === null ? (
-          <p className="text-slate-600 dark:text-slate-300">
-            {t("upd.up_to_date", { version: view.currentVersion })}
-          </p>
+          <p className="text-silk-2">{t("upd.up_to_date", { version: view.currentVersion })}</p>
         ) : (
-          <div className="space-y-2 rounded border border-amber-300 bg-amber-50 p-3 dark:border-amber-700 dark:bg-amber-900/20">
-            <p className="font-medium text-amber-800 dark:text-amber-200">
+          <div className="well border-lamp-warn p-2.5">
+            <p className="flex items-center gap-1.5 font-medium text-ink-warn">
+              <span className="lamp h-2 w-2 shrink-0" data-on="warn" />
               {t("upd.available", { version: pending, current: view.currentVersion })}
             </p>
 
             {view.pubDate === null ? null : (
-              <p className="text-slate-500 dark:text-slate-400">
+              <p className="mt-1.5 text-silk-3">
                 {t("upd.published", { date: view.pubDate })}
               </p>
             )}
 
             {view.notes === null ? null : (
-              <div>
-                <p className="text-slate-500 dark:text-slate-400">{t("upd.notes")}</p>
-                <pre className="mt-1 max-h-40 overflow-auto rounded bg-white/70 p-2 text-[11px] leading-relaxed whitespace-pre-wrap text-slate-700 dark:bg-slate-900/60 dark:text-slate-300">
+              <div className="mt-1.5">
+                <p className="silk-sm">{t("upd.notes")}</p>
+                <pre className="mt-1 max-h-40 overflow-auto border border-line bg-panel p-2 t-cap leading-relaxed whitespace-pre-wrap text-silk-2">
                   {view.notes}
                 </pre>
               </div>
             )}
 
             {confirming ? (
-              <div className="space-y-2">
-                <p className="text-amber-800 dark:text-amber-200">{t("upd.confirm_hint")}</p>
-                <div className="flex gap-2">
+              <div className="mt-2 space-y-2 border-t border-line pt-2">
+                <p className="text-ink-warn">{t("upd.confirm_hint")}</p>
+                <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
                     disabled={installing}
                     onClick={() => install(pending)}
-                    className="rounded bg-amber-600 px-2 py-1 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                    className="key key-primary h-7 px-2.5 t-cap disabled:cursor-not-allowed"
                   >
                     {installing ? t("upd.installing") : t("upd.confirm")}
                   </button>
@@ -132,7 +146,7 @@ export function UpdatePanel() {
                     type="button"
                     disabled={installing}
                     onClick={() => setConfirming(false)}
-                    className="rounded border border-slate-300 px-2 py-1 text-xs font-medium hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:hover:bg-slate-700"
+                    className="key h-7 px-2.5 t-cap text-silk-2 disabled:cursor-not-allowed"
                   >
                     {t("upd.cancel")}
                   </button>
@@ -142,7 +156,7 @@ export function UpdatePanel() {
               <button
                 type="button"
                 onClick={() => setConfirming(true)}
-                className="rounded border border-amber-500 px-2 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-900/40"
+                className="key mt-2 h-7 px-2.5 t-cap text-ink-warn"
               >
                 {t("upd.install", { version: pending })}
               </button>

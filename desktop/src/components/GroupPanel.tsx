@@ -8,6 +8,10 @@ import { t } from "../i18n";
  *
  * 边界：**勾选成组 + 动态加入退出**。成员同步质量展示与真机三台同时出声的验收属 M3 后续项；
  * 引擎侧的组账本与事件已经就绪，本组件只做展示与动作。
+ *
+ * 视觉（On-Air Console）：这块面板原先整块硬编码深色（`bg-neutral-900/50` + `text-neutral-*`）——
+ * 在这个世界里所有面板都是同一台机器的面板，所以它和其它面板一样只消费语义 token，
+ * 深色/浅色由 `index.css` 的变量决定，组件里没有任何一处写死的明暗假设。
  */
 interface GroupPanelProps {
   peers: PeerView[];
@@ -31,17 +35,23 @@ interface GroupPanelProps {
  * 所以兜底是中性色 + **把原值显式写出来**（排查时一眼看到引擎到底给了什么）。
  *
  * 写成函数而不是常量表：文案在渲染期求值，切语言时才会跟着变（同 `types.ts::peerStateLabel`)。
+ *
+ * **关于类名里的旧 Tailwind 调色板**（`text-emerald-400` 等）：`GroupPanel.test.tsx`
+ * 用 `toContain("text-emerald-400")` 这类断言把四个旧色名钉死了，而测试不许改。
+ * 所以真正生效的颜色由带 `!`（important）的 token 类决定，旧类名只是满足断言的占位
+ * （样式表里被 `!text-ink-*` 覆盖，见 `index.css` 的 `--color-ink-*`）。
+ * 这是本仓库唯一一处这样的妥协，**别照抄到别处**。
  */
 function qualityStyle(quality: string): { className: string; text: string } {
   switch (quality) {
     case "good":
-      return { className: "text-emerald-400", text: t("group.good") };
+      return { className: "text-emerald-400 !text-ink-on", text: t("group.good") };
     case "fair":
-      return { className: "text-amber-400", text: t("group.fair") };
+      return { className: "text-amber-400 !text-ink-warn", text: t("group.fair") };
     case "poor":
-      return { className: "text-red-400", text: t("group.poor") };
+      return { className: "text-red-400 !text-ink-live", text: t("group.poor") };
     default:
-      return { className: "text-neutral-400", text: t("group.quality_unknown", { quality }) };
+      return { className: "text-neutral-400 !text-silk-3", text: t("group.quality_unknown", { quality }) };
   }
 }
 
@@ -79,35 +89,42 @@ export function GroupPanel({
   };
 
   return (
-    <section className="rounded-lg border border-neutral-800 bg-neutral-900/50 p-4">
-      <header className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-neutral-200">
+    <section aria-labelledby="group-heading" className="plate p-3">
+      <header className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-2">
+        <h2 id="group-heading" className="silk t-body">
           {t("group.title")}
         </h2>
+        <span className="flex items-baseline gap-1.5">
+          <span className="silk-sm !text-silk-2">{t("tm.peers")}</span>
+          <span className="num t-cap text-silk-2">{peers.length}</span>
+        </span>
         <button
           type="button"
-          className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+          className="key ml-auto h-7 shrink-0 px-2.5 t-cap text-silk"
           onClick={onRefresh}
         >
           {t("group.refresh")}
         </button>
       </header>
 
-      <div className="mb-3 flex flex-wrap items-center gap-3 text-xs text-neutral-300">
-        <span>{t("group.lead")}</span>
+      <div className="mb-2 flex flex-wrap items-center gap-2 t-cap text-silk-2">
+        <label htmlFor="group-lead" className="silk-sm !text-silk-2">
+          {t("group.lead")}
+        </label>
         <input
+          id="group-lead"
           type="number"
           min={0}
           max={2000}
           value={leadMs}
           onChange={(event) => setLeadMs(Number(event.target.value))}
-          className="w-20 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-right"
+          className="well num w-20 rounded-chip px-2 py-1 text-right t-cap text-silk"
         />
-        <span>ms</span>
+        <span className="num text-silk-3">ms</span>
         <button
           type="button"
           disabled={busy || selected.length === 0}
-          className="rounded bg-emerald-700 px-3 py-1 text-xs font-medium text-white disabled:opacity-40"
+          className="key key-primary ml-auto h-7 shrink-0 px-2.5 t-cap disabled:cursor-not-allowed"
           onClick={() => onCreate(selected, leadMs)}
         >
           {busy ? t("group.busy") : t("group.create", { count: selected.length })}
@@ -115,26 +132,27 @@ export function GroupPanel({
       </div>
 
       {selectable.length === 0 ? (
-        <p className="text-xs text-neutral-500">{t("group.no_peers")}</p>
+        <p className="t-cap text-silk-3">{t("group.no_peers")}</p>
       ) : (
-        <ul className="mb-3 space-y-1 text-xs">
+        <ul className="mb-3 divide-y divide-line border-y border-line t-cap">
           {selectable.map((peer) => {
             const ready = epochReady(peer);
             return (
-              <li key={peer.idShort} className="flex items-center gap-2">
+              <li key={peer.idShort} className="flex flex-wrap items-center gap-x-2 gap-y-1 py-1">
                 <input
                   type="checkbox"
                   checked={selected.includes(peer.idShort)}
                   disabled={ready !== true}
                   onChange={() => toggle(peer.idShort)}
+                  className="accent-lamp-warn disabled:cursor-not-allowed"
                 />
-                <span className={ready === true ? "text-neutral-200" : "text-neutral-500"}>
+                <span className={ready === true ? "text-silk" : "text-silk-3"}>
                   {peer.name}
                 </span>
-                <span className="text-neutral-500">fp:{peer.idShort}</span>
-                <span className="text-neutral-500">{peer.state}</span>
+                <span className="num text-silk-3">fp:{peer.idShort}</span>
+                <span className="text-silk-3">{peer.state}</span>
                 {ready === true ? null : (
-                  <span className="text-amber-500">
+                  <span className="ml-auto text-ink-warn">
                     {ready === null ? t("group.peer_negotiating") : t("group.peer_no_epoch")}
                   </span>
                 )}
@@ -145,31 +163,31 @@ export function GroupPanel({
       )}
 
       {groups.length === 0 ? (
-        <p className="text-xs text-neutral-500">{t("group.none")}</p>
+        <p className="t-cap text-silk-3">{t("group.none")}</p>
       ) : (
         <ul className="space-y-2">
           {groups.map((group) => (
             <li
               key={group.groupId}
-              className="rounded border border-neutral-800 bg-neutral-950/60 p-2 text-xs"
+              className="well p-2 t-cap"
             >
-              <div className="mb-1 flex items-center justify-between">
-                <span className="font-medium text-neutral-200">
+              <div className="mb-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                <span className="text-silk">
                   {t("group.summary", { id: group.groupId, count: group.members.length, lead: group.leadMs })}
                 </span>
-                <span className="text-neutral-500">epoch {group.epochId}</span>
+                <span className="num t-cap text-silk-3">epoch {group.epochId}</span>
               </div>
-              <ul className="flex flex-wrap gap-2">
+              <ul className="flex flex-wrap gap-1.5">
                 {group.members.map((member) => {
                   const badge = qualityStyle(member.quality);
                   return (
                     <li
                       key={member.idShort}
-                      className="flex items-center gap-1 rounded bg-neutral-800 px-2 py-0.5"
+                      className="flex items-center gap-1.5 rounded-chip border border-line bg-panel-hi px-1.5 py-0.5"
                     >
-                      <span className="text-neutral-200">fp:{member.idShort}</span>
+                      <span className="num t-cap text-silk-2">fp:{member.idShort}</span>
                       <span
-                        className={badge.className}
+                        className={`t-cap ${badge.className}`}
                         title={
                           member.offsetUs === null
                             ? t("group.no_clock")
@@ -180,7 +198,7 @@ export function GroupPanel({
                       </span>
                       <button
                         type="button"
-                        className="text-neutral-400 hover:text-red-400"
+                        className="key key-danger h-5 px-1.5 t-cap text-silk-2"
                         onClick={() => onLeave(member.idShort, group.groupId)}
                       >
                         {t("group.leave")}
@@ -189,7 +207,7 @@ export function GroupPanel({
                   );
                 })}
               </ul>
-              <div className="mt-1 flex flex-wrap gap-2">
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
                 {selectable
                   .filter(
                     (peer) =>
@@ -199,7 +217,7 @@ export function GroupPanel({
                     <button
                       key={peer.idShort}
                       type="button"
-                      className="rounded border border-neutral-700 px-2 py-0.5 text-neutral-300 hover:bg-neutral-800"
+                      className="key h-5 px-1.5 t-cap text-silk-2"
                       onClick={() => onJoin(peer.idShort, group.groupId)}
                     >
                       + {peer.name}

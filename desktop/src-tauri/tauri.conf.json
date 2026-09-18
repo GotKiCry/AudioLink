@@ -15,11 +15,13 @@
         "title": "AudioLink",
         "width": 1100,
         "height": 720,
-        "minWidth": 880,
-        "minHeight": 560,
+        "minWidth": 1024,
+        "minHeight": 640,
         "resizable": true,
         "visible": false,
-        "center": true
+        "center": true,
+        "theme": "Dark",
+        "backgroundColor": "#1C1C1C"
       }
     ],
     "security": {

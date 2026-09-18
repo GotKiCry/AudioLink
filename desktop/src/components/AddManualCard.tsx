@@ -1,12 +1,14 @@
 /**
- * 手工添加设备（UI 规格 §2.1 的 `AddManualCard`，需求 FR-17）。
+ * 空槽位：手工添加设备（UI 规格 §2.1 的 `AddManualCard`，需求 FR-17）。
  *
+ * 世界语汇：机架上还没有插卡的槽位 —— 虚线边框、下沉的机箱底、外加一条等宽地址输入。
  * 为什么 M1 只有这一个入口：设备自动发现（mDNS/广播）属 M2 —— 契约 §6「不做」清单里
  * 明确排除"设备列表"。发现被 AP 隔离时的手工 IP 兜底，恰好也是本轮唯一能端到端跑通的路。
  */
 
 import { useState } from "react";
 import { t } from "../i18n";
+import { IconLink } from "./icons";
 
 interface AddManualCardProps {
   connecting: boolean;
@@ -19,18 +21,16 @@ export function AddManualCard({ connecting, onConnect }: AddManualCardProps) {
 
   return (
     <form
-      className="rounded-xl border border-dashed border-slate-300 p-4 dark:border-slate-700"
+      className="flex h-full w-full flex-col border border-dashed border-line bg-chassis/70 p-3"
       onSubmit={(event) => {
         event.preventDefault();
         void onConnect(addr);
       }}
     >
-      <div className="text-sm font-medium">{t("manual.title")}</div>
-      <p className="mt-1 text-xs text-slate-500">
-        {t("manual.hint")}
-      </p>
+      <div className="silk t-cap">{t("manual.title")}</div>
+      <p className="mt-2 t-cap leading-relaxed text-silk-3">{t("manual.hint")}</p>
 
-      <label className="mt-3 block text-xs text-slate-500" htmlFor="peer-addr">
+      <label className="silk-sm mt-4" htmlFor="peer-addr">
         {t("manual.address")}
       </label>
       <input
@@ -42,15 +42,16 @@ export function AddManualCard({ connecting, onConnect }: AddManualCardProps) {
         inputMode="url"
         autoComplete="off"
         spellCheck={false}
-        className="mt-1 h-9 w-full rounded-lg border border-slate-200 bg-transparent px-2 font-mono text-sm dark:border-slate-700"
+        className="num mt-1.5 h-10 w-full border border-line bg-panel px-2 t-body text-silk placeholder:text-silk-3"
       />
 
       <button
         type="submit"
         // 空输入不发请求：让内核少一次必然失败的往返（原因可见性由返回错误保证）
         disabled={connecting || addr.trim() === ""}
-        className="mt-3 h-9 w-full rounded-lg bg-indigo-600 text-sm font-medium text-white disabled:opacity-50"
+        className="key key-primary mt-auto h-11 w-full gap-2 t-body"
       >
+        <IconLink className="h-4 w-4" />
         {connecting ? t("manual.connecting") : t("manual.connect")}
       </button>
     </form>

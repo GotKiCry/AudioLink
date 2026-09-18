@@ -204,6 +204,33 @@ const zh = {
   "upd.cancel": "取消",
   "upd.installing": "下载中…（验签通过后才会启动安装器）",
   "upd.done": "已安装 {version}：重启 AudioLink 后生效。",
+
+  // M5+ · 播出调音台（On-Air Console）：面板切换、总控条、总线侧栏、诊断抽屉
+  "topbar.theme": "面板：{mode}",
+  "topbar.theme_system": "跟随系统",
+  "topbar.theme_light": "银面机",
+  "topbar.theme_dark": "黑面板",
+  "console.on_air": "播出中",
+  "console.off_air": "未播出",
+  "console.channels": "{count} 路通道",
+  "console.stop_all": "全部停止",
+  "console.diagnostics": "诊断",
+  "bus.title": "本机总线",
+  "diag.title": "诊断",
+  "diag.hint": "内核真值不参与首屏叙事：水位、欠载、丢包掩盖、缓冲帧都收在这里，一个都不删。",
+
+  // 外观：风格（设计语言）与主题（光照）是两条独立的轴
+  "appearance.style": "界面风格",
+  "appearance.theme": "外观：{mode}",
+  "side.local": "本机",
+  "side.broadcast": "开始广播",
+  "side.stop_broadcast": "停止广播",
+  "host.address": "本机地址",
+  "host.hint": "在对方设备（手机）上输入这个地址即可接入",
+  "host.copy": "复制地址",
+  "host.copied": "已复制",
+  "devices.title": "正在收听本机的设备",
+  "devices.empty": "还没有设备接入。把上面的地址填进对方设备，或手动连接一台。",
 } as const;
 
 /** 键集合由中文表定义；英文表必须一条不漏（漏了 tsc 直接报错）。 */
@@ -386,7 +413,34 @@ const en: Record<MessageKey, string> = {
   "upd.cancel": "Cancel",
   "upd.installing": "Downloading… (the installer starts only after the signature checks out)",
   "upd.done": "Installed {version}: restart AudioLink to use it.",
-};
+
+  // M5+ · On-Air Console: panel switch, control bar, local bus, diagnostics drawer
+  "topbar.theme": "Panel: {mode}",
+  "topbar.theme_system": "Follow system",
+  "topbar.theme_light": "Silver face",
+  "topbar.theme_dark": "Black face",
+  "console.on_air": "On air",
+  "console.off_air": "Off air",
+  "console.channels": "{count} channels",
+  "console.stop_all": "Stop all",
+  "console.diagnostics": "Diagnostics",
+  "bus.title": "Local bus",
+  "diag.title": "Diagnostics",
+  "diag.hint": "Engine truth stays out of the first viewport: water level, underruns, PLC, buffer frames - nothing was deleted.",
+
+  // Appearance: style (design language) and theme (lighting) are two independent axes
+  "appearance.style": "Interface style",
+  "appearance.theme": "Appearance: {mode}",
+  "side.local": "This device",
+  "side.broadcast": "Start broadcast",
+  "side.stop_broadcast": "Stop broadcast",
+  "host.address": "This device's address",
+  "host.hint": "Type this address on the other device (phone) to join",
+  "host.copy": "Copy address",
+  "host.copied": "Copied",
+  "devices.title": "Devices listening to this one",
+  "devices.empty": "No device has joined yet. Type the address above on the other device, or connect to one manually.",
+} as const;
 
 const TABLES: Record<Locale, Record<MessageKey, string>> = {
   "zh-CN": zh,

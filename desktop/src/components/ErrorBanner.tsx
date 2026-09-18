@@ -8,6 +8,7 @@
 
 import type { CommandError } from "../types";
 import { t } from "../i18n";
+import { IconStateFailed } from "./icons";
 
 interface ErrorBannerProps {
   error: CommandError;
@@ -18,14 +19,12 @@ export function ErrorBanner({ error, onDismiss }: ErrorBannerProps) {
   return (
     <div
       role="alert"
-      className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm dark:border-red-900 dark:bg-red-950"
+      className="flex items-start gap-2.5 border border-lamp-live bg-panel px-3 py-2.5 t-cap"
     >
-      <span aria-hidden="true" className="text-red-600">
-        !
-      </span>
+      <IconStateFailed className="mt-0.5 h-4 w-4 shrink-0 text-ink-live" />
       <div className="min-w-0">
-        <div className="font-medium text-red-700 dark:text-red-300">{error.message}</div>
-        <div className="mt-0.5 font-mono text-xs break-all text-red-500/80">
+        <div className="font-medium text-ink-live">{error.message}</div>
+        <div className="num mt-1 break-all t-cap text-silk-3">
           code={error.code}
           {error.context === "" ? "" : ` · ${error.context}`}
         </div>
@@ -34,7 +33,7 @@ export function ErrorBanner({ error, onDismiss }: ErrorBannerProps) {
         type="button"
         onClick={onDismiss}
         aria-label={t("banner.dismiss")}
-        className="ml-auto h-6 shrink-0 rounded px-2 text-xs text-red-600 hover:bg-red-100 dark:hover:bg-red-900"
+        className="key ml-auto h-7 shrink-0 px-2 t-cap"
       >
         {t("banner.close")}
       </button>
