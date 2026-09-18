@@ -24,18 +24,19 @@ export function DiagnosticsDrawer({ open, onClose, children }: DiagnosticsDrawer
     <section
       id="telemetry-panel"
       aria-label={t("diag.title")}
-      className="flex h-[46%] min-h-[240px] shrink-0 flex-col border-t border-line bg-chassis"
+      className="al-chrome al-chrome-t flex h-[46%] min-h-[240px] shrink-0 flex-col"
     >
-      <header className="flex h-10 shrink-0 items-center gap-3 border-b border-line bg-bench px-4">
-        <span className="silk t-cap">{t("diag.title")}</span>
-        <span className="truncate t-cap text-silk-3">{t("diag.hint")}</span>
+      {/* 抽屉是 z2 的一层面（不是 Acrylic）：内部卡片只留填充，不再自建 backdrop（红线 3） */}
+      <header className="al-chrome-b flex h-10 shrink-0 items-center gap-3 px-4">
+        <span className="text-caption font-semibold text-text-secondary">{t("diag.title")}</span>
+        <span className="truncate text-caption text-text-tertiary">{t("diag.hint")}</span>
         <button
           type="button"
           onClick={onClose}
-          className="key ml-auto h-7 gap-1.5 px-2.5 t-cap"
+          className="al-btn ml-auto h-7 gap-1.5 px-2.5 text-caption"
         >
           <IconChevron className="h-3.5 w-3.5 rotate-180" />
-          <span className="silk-sm !text-silk-2">{t("banner.close")}</span>
+          <span className="text-caption font-semibold text-text-secondary">{t("banner.close")}</span>
         </button>
       </header>
 

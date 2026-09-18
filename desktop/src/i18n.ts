@@ -219,8 +219,7 @@ const zh = {
   "diag.title": "诊断",
   "diag.hint": "内核真值不参与首屏叙事：水位、欠载、丢包掩盖、缓冲帧都收在这里，一个都不删。",
 
-  // 外观：风格（设计语言）与主题（光照）是两条独立的轴
-  "appearance.style": "界面风格",
+  // 外观：只保留 Fluent 一套语言，所以唯一的轴是光照（theme）。
   "appearance.theme": "外观：{mode}",
   "side.local": "本机",
   "side.broadcast": "开始广播",
@@ -231,6 +230,41 @@ const zh = {
   "host.copied": "已复制",
   "devices.title": "正在收听本机的设备",
   "devices.empty": "还没有设备接入。把上面的地址填进对方设备，或手动连接一台。",
+
+  // 应用背景（z0 壁纸）：单色 / 双色 / 三色 + 方向。背景只是外观，与音频无关。
+  "bg.button": "背景",
+  "bg.title": "背景",
+  "bg.mode": "模式",
+  "bg.mode_mono": "单色",
+  "bg.mode_duo": "双色",
+  "bg.mode_tri": "三色",
+  "bg.colors": "颜色",
+  "bg.slot": "第 {index} 个颜色",
+  "bg.slot_empty": "留空",
+  "bg.c3_blank": "留空",
+  "bg.c3_restore": "恢复",
+  "bg.c3_blank_hint": "第三个颜色留空（按双色处理）",
+  "bg.c3_restore_hint": "恢复第三个颜色",
+  "bg.dir": "方向",
+  "bg.dir_diag": "对角",
+  "bg.dir_h": "水平",
+  "bg.dir_v": "垂直",
+  "bg.preset": "预设",
+  "bg.reset": "恢复默认",
+  "bg.reset_hint": "恢复本主题的默认背景",
+  "bg.hint": "背景只影响外观，不影响任何连接与音频行为。",
+  "bg.preset.deep_purple": "深蓝紫",
+  "bg.preset.graphite": "石墨",
+  "bg.preset.indigo": "靛青",
+  "bg.preset.deep_teal": "暗青绿",
+  "bg.preset.warm_charcoal": "炭黑暖",
+  "bg.preset.wine": "深酒红",
+  "bg.preset.cream": "米白",
+  "bg.preset.pale_blue": "淡蓝",
+  "bg.preset.warm_grey": "暖灰",
+  "bg.preset.mint": "薄荷",
+  "bg.preset.apricot": "浅杏",
+  "bg.preset.haze_violet": "雾紫",
 } as const;
 
 /** 键集合由中文表定义；英文表必须一条不漏（漏了 tsc 直接报错）。 */
@@ -428,8 +462,7 @@ const en: Record<MessageKey, string> = {
   "diag.title": "Diagnostics",
   "diag.hint": "Engine truth stays out of the first viewport: water level, underruns, PLC, buffer frames - nothing was deleted.",
 
-  // Appearance: style (design language) and theme (lighting) are two independent axes
-  "appearance.style": "Interface style",
+  // Appearance: Fluent is the only design language left, so lighting is the only axis.
   "appearance.theme": "Appearance: {mode}",
   "side.local": "This device",
   "side.broadcast": "Start broadcast",
@@ -440,6 +473,41 @@ const en: Record<MessageKey, string> = {
   "host.copied": "Copied",
   "devices.title": "Devices listening to this one",
   "devices.empty": "No device has joined yet. Type the address above on the other device, or connect to one manually.",
+
+  // App background (z0 wallpaper): solid / two / three colors + direction. Appearance only.
+  "bg.button": "Background",
+  "bg.title": "Background",
+  "bg.mode": "Mode",
+  "bg.mode_mono": "Solid",
+  "bg.mode_duo": "Two colors",
+  "bg.mode_tri": "Three colors",
+  "bg.colors": "Colors",
+  "bg.slot": "Color {index}",
+  "bg.slot_empty": "Blank",
+  "bg.c3_blank": "Blank",
+  "bg.c3_restore": "Restore",
+  "bg.c3_blank_hint": "Leave the third color blank (treated as two colors)",
+  "bg.c3_restore_hint": "Restore the third color",
+  "bg.dir": "Direction",
+  "bg.dir_diag": "Diagonal",
+  "bg.dir_h": "Horizontal",
+  "bg.dir_v": "Vertical",
+  "bg.preset": "Presets",
+  "bg.reset": "Reset to default",
+  "bg.reset_hint": "Reset to this theme's default background",
+  "bg.hint": "The background only affects appearance; it never touches connections or audio.",
+  "bg.preset.deep_purple": "Deep violet",
+  "bg.preset.graphite": "Graphite",
+  "bg.preset.indigo": "Indigo",
+  "bg.preset.deep_teal": "Deep teal",
+  "bg.preset.warm_charcoal": "Warm charcoal",
+  "bg.preset.wine": "Wine",
+  "bg.preset.cream": "Cream",
+  "bg.preset.pale_blue": "Pale blue",
+  "bg.preset.warm_grey": "Warm grey",
+  "bg.preset.mint": "Mint",
+  "bg.preset.apricot": "Apricot",
+  "bg.preset.haze_violet": "Haze violet",
 } as const;
 
 const TABLES: Record<Locale, Record<MessageKey, string>> = {

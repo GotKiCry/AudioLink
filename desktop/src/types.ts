@@ -147,11 +147,11 @@ export function peerStateLabel(state: PeerState): string {
 
 /** 状态样式：颜色 + 图标（**不允许只靠颜色传达信息**，见 UI 规格 §5 视觉验收清单）。 */
 export const PEER_STATE_STYLE: Record<PeerState, { dot: string; text: string; icon: string }> = {
-  idle: { dot: "bg-slate-400", text: "text-slate-500", icon: "○" },
-  handshaking: { dot: "bg-indigo-500 animate-pulse", text: "text-indigo-600", icon: "◌" },
-  streaming: { dot: "bg-emerald-500", text: "text-emerald-600", icon: "▶" },
-  degraded: { dot: "bg-amber-500", text: "text-amber-600", icon: "!" },
-  failed: { dot: "bg-red-500", text: "text-red-600", icon: "×" },
+  idle: { dot: "bg-idle", text: "text-text-tertiary", icon: "○" },
+  handshaking: { dot: "bg-accent animate-pulse", text: "text-text-secondary", icon: "◌" },
+  streaming: { dot: "bg-success", text: "text-success", icon: "▶" },
+  degraded: { dot: "bg-caution", text: "text-caution", icon: "!" },
+  failed: { dot: "bg-critical", text: "text-critical", icon: "×" },
 };
 
 /** µs → ms 显示（1 位小数）。契约里所有时延都是 µs，展示层统一换算。 */
@@ -316,4 +316,24 @@ export interface TelemetryRow {
 /** 按界面快照造一行导出样本。 */
 export function telemetryRowOf(view: TelemetryView, atUnixMs: number): TelemetryRow {
   return { atUnixMs, ...view };
+}
+
+/**
+ * 应用背景（z0 壁纸）—— 与 Rust 侧 `settings.rs::BackgroundConfig` 一字对齐。
+ *
+ * 存在 settings.json 的 `background` 键里（与 locale / autostart 同一条路，不用 localStorage：
+ * 背景和语言的持久化在用户眼里没有区别）。`c3` 允许空串 —— 那是「第三个颜色留空」的明确
+ * 语义（三色按双色处理），不是缺数据。
+ */
+export type BackgroundMode = "mono" | "duo" | "tri";
+export type BackgroundDir = "diag" | "h" | "v";
+
+export interface BackgroundConfig {
+  mode: BackgroundMode;
+  /** 第一个颜色（单色模式下就是唯一的颜色）。 */
+  c1: string;
+  c2: string;
+  /** 第三个颜色；空串 = 留空。 */
+  c3: string;
+  dir: BackgroundDir;
 }

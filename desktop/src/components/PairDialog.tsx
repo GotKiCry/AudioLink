@@ -16,7 +16,7 @@
  *  2. **倒计时有长度**：60 秒的窗口原来只写在一行小字里，现在是刻度会走的进度条。
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { isPinWellFormed, type PairRequiredPayload } from "../types";
 import { t } from "../i18n";
@@ -37,6 +37,8 @@ export function PairDialog({ request, reason, onSubmit, onDismiss }: PairDialogP
   const [pin, setPin] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [remaining, setRemaining] = useState(PIN_TTL_SECONDS);
+  /** 焦点转移的落点（红线 2：任何模态/浮层都必须在打开时把焦点拿进来）。 */
+  const dialogRef = useRef<HTMLDivElement | null>(null);
 
   const displayMode = request.pin !== "";
 
@@ -49,6 +51,12 @@ export function PairDialog({ request, reason, onSubmit, onDismiss }: PairDialogP
     }, 1000);
     return () => window.clearInterval(timer);
   }, [request.idShort, request.pin]);
+
+  // 焦点转移：对话框一出现，焦点就得进来（否则 Tab 会从对话框外面的控件开始绕）。
+  // 展示模式没有输入框，落点是「知道了」按钮；输入模式的落点由 autoFocus 给。
+  useEffect(() => {
+    dialogRef.current?.querySelector<HTMLElement>("button, input")?.focus();
+  }, [displayMode]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -75,41 +83,42 @@ export function PairDialog({ request, reason, onSubmit, onDismiss }: PairDialogP
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-chassis/85 p-4">
+    <div className="al-scrim">
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="pair-title"
-        className="plate w-full max-w-md"
+        className="al-dialog w-full max-w-md"
       >
-        <header className="flex items-center gap-3 border-b border-line bg-bench px-4 py-3">
-          <span className="lamp h-2.5 w-2.5" data-on={displayMode ? "busy" : "warn"} />
-          <h2 id="pair-title" className="min-w-0 truncate t-lead font-semibold text-silk">
+        <header className="al-chrome-b flex items-center gap-3 px-4 py-3">
+          <span className="al-lamp h-2.5 w-2.5" data-on={displayMode ? "busy" : "warn"} />
+          <h2 id="pair-title" className="min-w-0 truncate text-body font-semibold text-text-primary">
             {t("pair.title", { name: request.name })}
           </h2>
-          <span className="num ml-auto shrink-0 t-cap text-silk-3">fp:{request.idShort}</span>
+          <span className="num ml-auto shrink-0 text-caption text-text-tertiary">fp:{request.idShort}</span>
         </header>
 
         <div className="p-4">
           {displayMode ? (
             <>
-              <p className="t-cap leading-relaxed text-silk-3">
+              <p className="text-caption leading-relaxed text-text-tertiary">
                 {t("pair.receive")}
               </p>
               {/* 大号等宽数字：要照着念、照着敲，字号与字距优先 */}
               <output
                 aria-label={t("pair.code")}
-                className="num well mt-3 block py-4 text-center text-[40px] leading-none tracking-[0.26em] text-silk"
+                className="num al-well mt-3 block py-4 text-center text-[40px] leading-none tracking-[0.26em] text-text-primary"
               >
                 {request.pin}
               </output>
             </>
           ) : (
             <>
-              <p className="t-cap leading-relaxed text-silk-3">
+              <p className="text-caption leading-relaxed text-text-tertiary">
                 {t("pair.send")}
               </p>
-              <label className="silk-sm mt-4 block" htmlFor="pair-pin">
+              <label className="text-caption font-semibold text-text-tertiary mt-4 block" htmlFor="pair-pin">
                 {t("pair.input")}
               </label>
               <input
@@ -127,11 +136,11 @@ export function PairDialog({ request, reason, onSubmit, onDismiss }: PairDialogP
                 autoFocus
                 maxLength={6}
                 placeholder="______"
-                className="num mt-1.5 h-14 w-full border border-line bg-chassis px-3 text-center text-[28px] tracking-[0.36em] text-silk placeholder:text-silk-3"
+                className="num mt-1.5 h-14 w-full border border-stroke-control bg-surface-sunken px-3 text-center text-[28px] tracking-[0.36em] text-text-primary placeholder:text-text-tertiary"
               />
 
               {reason === "" ? null : (
-                <p role="alert" className="mt-2 t-cap text-ink-live">
+                <p role="alert" className="mt-2 text-caption text-critical">
                   {reason}
                 </p>
               )}
@@ -139,13 +148,13 @@ export function PairDialog({ request, reason, onSubmit, onDismiss }: PairDialogP
           )}
 
           {/* 60 秒的窗口：刻度会走，快走完时转成播出灯的颜色 */}
-          <div className="mt-4 h-1 w-full bg-line" aria-hidden="true">
+          <div className="mt-4 h-1 w-full bg-stroke-divider" aria-hidden="true">
             <div
-              className={`h-full ${expired ? "bg-lamp-live" : "bg-lamp-warn"}`}
+              className={`h-full ${expired ? "bg-critical" : "bg-caution"}`}
               style={{ width: `${ratio * 100}%` }}
             />
           </div>
-          <p className="num mt-2 t-cap text-silk-3">
+          <p className="num mt-2 text-caption text-text-tertiary">
             {expired
               ? displayMode
                 ? t("pair.expired_receive")
@@ -157,7 +166,7 @@ export function PairDialog({ request, reason, onSubmit, onDismiss }: PairDialogP
             <button
               type="button"
               onClick={onDismiss}
-              className="key key-primary mt-4 h-11 w-full t-body"
+              className="al-btn al-btn-accent mt-4 h-11 w-full text-body"
             >
               {t("pair.got_it")}
             </button>
@@ -166,7 +175,7 @@ export function PairDialog({ request, reason, onSubmit, onDismiss }: PairDialogP
               <button
                 type="button"
                 onClick={onDismiss}
-                className="key h-11 flex-1 t-body"
+                className="al-btn h-11 flex-1 text-body"
               >
                 {t("pair.later")}
               </button>
@@ -174,7 +183,7 @@ export function PairDialog({ request, reason, onSubmit, onDismiss }: PairDialogP
                 type="button"
                 disabled={!canSubmit}
                 onClick={() => void submit()}
-                className="key key-primary h-11 flex-1 t-body"
+                className="al-btn al-btn-accent h-11 flex-1 text-body"
               >
                 {submitting ? t("pair.verifying") : t("pair.confirm")}
               </button>

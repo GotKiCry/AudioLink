@@ -32,21 +32,21 @@ export function StatusStrip({
   const toggleText = t("status.telemetry", { arrow: "" }).trim();
 
   return (
-    <section className="flex min-w-0 flex-1 flex-wrap items-center gap-x-5 gap-y-1 t-cap">
+    <section className="flex min-w-0 flex-1 flex-wrap items-center gap-x-5 gap-y-1 text-caption">
       <span className="flex items-baseline gap-2">
-        <span className="num text-text-3">fp:{local?.idShort ?? "--------"}</span>
-        <span className="num text-text-3">{local?.addr ?? ""}</span>
+        <span className="num text-text-tertiary">fp:{local?.idShort ?? "--------"}</span>
+        <span className="num text-text-tertiary">{local?.addr ?? ""}</span>
       </span>
 
       <span className="inline-flex items-center gap-2">
-        <span className="lamp h-2 w-2" data-on={active ? "on" : "off"} />
-        <span className={active ? "text-text" : "text-text-3"}>
+        <span className="al-lamp h-2 w-2" data-on={active ? "on" : "off"} />
+        <span className={active ? "text-text-primary" : "text-text-tertiary"}>
           {active ? t("status.streaming", { count: streamingCount }) : t("status.idle")}
         </span>
       </span>
 
       {active && telemetry ? (
-        <span className="num text-text-2">
+        <span className="num text-text-secondary">
           {t("status.summary", { e2e: usToMs(telemetry.e2eLatencyUs), rate: bpsToKbps(telemetry.bitrateBps), loss: telemetry.lossPct.toFixed(2) })}
         </span>
       ) : null}
@@ -58,7 +58,7 @@ export function StatusStrip({
         aria-controls="telemetry-panel"
         aria-label={toggleLabel}
         title={toggleLabel}
-        className="key ml-auto h-7 gap-1.5 px-2.5 t-cap"
+        className="al-btn ml-auto h-7 gap-1.5 px-2.5 text-caption"
       >
         {toggleText}
         <IconChevron

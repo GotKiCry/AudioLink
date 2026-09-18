@@ -21,16 +21,16 @@ export function AddManualCard({ connecting, onConnect }: AddManualCardProps) {
 
   return (
     <form
-      className="flex h-full w-full flex-col border border-dashed border-line bg-chassis/70 p-3"
+      className="flex h-full w-full flex-col border border-dashed border-stroke-control bg-surface-sunken/70 p-3"
       onSubmit={(event) => {
         event.preventDefault();
         void onConnect(addr);
       }}
     >
-      <div className="silk t-cap">{t("manual.title")}</div>
-      <p className="mt-2 t-cap leading-relaxed text-silk-3">{t("manual.hint")}</p>
+      <div className="text-caption font-semibold text-text-secondary">{t("manual.title")}</div>
+      <p className="mt-2 text-caption leading-relaxed text-text-tertiary">{t("manual.hint")}</p>
 
-      <label className="silk-sm mt-4" htmlFor="peer-addr">
+      <label className="text-caption font-semibold text-text-tertiary mt-4" htmlFor="peer-addr">
         {t("manual.address")}
       </label>
       <input
@@ -42,14 +42,14 @@ export function AddManualCard({ connecting, onConnect }: AddManualCardProps) {
         inputMode="url"
         autoComplete="off"
         spellCheck={false}
-        className="num mt-1.5 h-10 w-full border border-line bg-panel px-2 t-body text-silk placeholder:text-silk-3"
+        className="num mt-1.5 h-10 w-full border border-stroke-control bg-surface-card-solid px-2 text-body text-text-primary placeholder:text-text-tertiary"
       />
 
       <button
         type="submit"
         // 空输入不发请求：让内核少一次必然失败的往返（原因可见性由返回错误保证）
         disabled={connecting || addr.trim() === ""}
-        className="key key-primary mt-auto h-11 w-full gap-2 t-body"
+        className="al-btn al-btn-accent mt-auto h-11 w-full gap-2 text-body"
       >
         <IconLink className="h-4 w-4" />
         {connecting ? t("manual.connecting") : t("manual.connect")}

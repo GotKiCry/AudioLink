@@ -50,21 +50,21 @@ export function Sidebar({
   return (
     <aside
       aria-label={t("side.local")}
-      className="chrome-material flex w-[280px] shrink-0 flex-col border-r border-line"
+      className="al-chrome flex w-[280px] shrink-0 flex-col border-r border-stroke-control"
     >
       <div className="flex h-11 shrink-0 items-center gap-2 px-4">
-        <span className="t-body font-semibold tracking-tight text-text">AudioLink</span>
-        <span className="num t-cap text-text-3">{version === "" ? "…" : `v${version}`}</span>
+        <span className="text-body font-semibold tracking-tight text-text-primary">AudioLink</span>
+        <span className="num text-caption text-text-tertiary">{version === "" ? "…" : `v${version}`}</span>
       </div>
 
       <div className="shrink-0 px-4 pb-4">
-        <div className="silk">{t("side.local")}</div>
+        <div className="text-caption font-semibold text-text-secondary">{t("side.local")}</div>
         <div className="mt-2 flex items-center gap-2">
-          <span className="lamp h-2.5 w-2.5" data-on={broadcasting ? "live" : "off"} />
-          <span className="truncate t-body text-text">{local?.name ?? "…"}</span>
+          <span className="al-lamp h-2.5 w-2.5" data-on={broadcasting ? "live" : "off"} />
+          <span className="truncate text-body text-text-primary">{local?.name ?? "…"}</span>
         </div>
-        <div className="num mt-1 truncate t-cap text-text-3">fp:{local?.idShort ?? "--------"}</div>
-        <div className="mt-2 t-cap text-text-2">
+        <div className="num mt-1 truncate text-caption text-text-tertiary">fp:{local?.idShort ?? "--------"}</div>
+        <div className="mt-2 text-caption text-text-secondary">
           {broadcasting ? t("console.channels", { count: streamingCount }) : t("console.off_air")}
         </div>
       </div>
@@ -82,12 +82,12 @@ export function Sidebar({
         />
       </div>
 
-      <div className="shrink-0 border-t border-line p-3">
+      <div className="shrink-0 border-t border-stroke-control p-3">
         <button
           type="button"
           disabled={busy}
           onClick={broadcasting ? onStopBroadcast : onBroadcast}
-          className="key key-primary h-10 w-full gap-2 t-body"
+          className="al-btn al-btn-accent h-10 w-full gap-2 text-body"
         >
           {broadcasting ? <IconStop className="h-4 w-4" /> : <IconStart className="h-4 w-4" />}
           {broadcasting ? t("side.stop_broadcast") : t("side.broadcast")}

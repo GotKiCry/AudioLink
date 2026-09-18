@@ -202,7 +202,7 @@ describe("成员同步质量分级的上色（§6.5）", () => {
     panel({ peers: [], groups: [group(7, [member("aaaa0001", "good", 42)])] });
 
     const badge = screen.getByTitle(t("group.offset", { us: 42 }));
-    expect(badge.className).toContain("text-emerald-400");
+    expect(badge.className).toContain("text-success");
     expect(badge.textContent).toBe(t("group.good"));
     expect(badge.textContent).not.toBe("good");
   });
@@ -211,7 +211,7 @@ describe("成员同步质量分级的上色（§6.5）", () => {
     panel({ peers: [], groups: [group(7, [member("aaaa0001", "fair", 900)])] });
 
     const badge = screen.getByTitle(t("group.offset", { us: 900 }));
-    expect(badge.className).toContain("text-amber-400");
+    expect(badge.className).toContain("text-caution");
     expect(badge.textContent).toBe(t("group.fair"));
     expect(badge.textContent).not.toBe("fair");
   });
@@ -225,7 +225,7 @@ describe("成员同步质量分级的上色（§6.5）", () => {
     panel({ peers: [], groups: [group(7, [member("aaaa0001", "poor", null)])] });
 
     const badge = screen.getByTitle(t("group.no_clock"));
-    expect(badge.className).toContain("text-red-400");
+    expect(badge.className).toContain("text-critical");
     expect(badge.textContent).toBe(t("group.poor"));
     expect(badge.textContent).not.toBe("poor");
   });
@@ -240,10 +240,10 @@ describe("成员同步质量分级的上色（§6.5）", () => {
     const fair = screen.getByTitle(t("group.offset", { us: 20 }));
     const poor = screen.getByTitle(t("group.offset", { us: 30 }));
 
-    expect(good.className).not.toContain("text-red-400");
-    expect(good.className).not.toContain("text-amber-400");
-    expect(fair.className).not.toContain("text-emerald-400");
-    expect(poor.className).not.toContain("text-emerald-400");
+    expect(good.className).not.toContain("text-critical");
+    expect(good.className).not.toContain("text-caution");
+    expect(fair.className).not.toContain("text-success");
+    expect(poor.className).not.toContain("text-success");
     // 分级词本身也要能区分（不只靠颜色 —— UI 规格 §5）
     expect([good.textContent, fair.textContent, poor.textContent]).toEqual([
       t("group.good"),
@@ -259,8 +259,8 @@ describe("成员同步质量分级的上色（§6.5）", () => {
     panel({ peers: [], groups: [group(7, [member("aaaa0001", "unknown", 42)])] });
 
     const badge = screen.getByTitle(t("group.offset", { us: 42 }));
-    expect(badge.className).not.toContain("text-emerald-400");
-    expect(badge.className).toContain("text-neutral-400");
+    expect(badge.className).not.toContain("text-success");
+    expect(badge.className).toContain("text-text-tertiary");
     expect(badge.textContent).toBe(t("group.quality_unknown", { quality: "unknown" }));
     expect(badge.textContent).toContain("unknown");
     expect(badge.textContent).not.toBe(t("group.good"));
@@ -270,7 +270,7 @@ describe("成员同步质量分级的上色（§6.5）", () => {
     panel({ peers: [], groups: [group(7, [member("aaaa0001", "excellent", null)])] });
 
     const badge = screen.getByTitle(t("group.no_clock"));
-    expect(badge.className).not.toContain("text-emerald-400");
+    expect(badge.className).not.toContain("text-success");
     expect(badge.textContent).toContain("excellent");
   });
 

@@ -9,7 +9,7 @@
  * 那个按钮不是装饰：**接收端才是基准来源**，所以「广播共同基准」只能在混音方按 ——
  * 它把各发送端的样本编号钉到同一个原点上（`docs/40-m4-alignment-panel.md`）。
  *
- * 视觉：读数表是一张丝印图纸 —— 1px `line` 网格、表头 `.silk-sm`、数字一律 `.num` 右对齐；
+ * 视觉：读数表是一张丝印图纸 —— 1px `line` 网格、表头 `.text-caption font-semibold text-text-tertiary`、数字一律 `.num` 右对齐；
  * 结论不是一个彩色药丸，而是**一盏灯 + 一句人话**（灯用世界里的三盏灯）。
  */
 
@@ -45,9 +45,9 @@ function verdictText(verdict: AlignmentVerdict): string {
  * 而且灯旁边永远跟着人话 —— 分级不靠颜色单独承载（UI 规格 §5）。
  */
 const VERDICT_STYLE: Record<AlignmentVerdict, { lamp: string; text: string }> = {
-  aligned: { lamp: "on", text: "text-ink-on" },
-  drifting: { lamp: "warn", text: "text-ink-warn" },
-  unknown: { lamp: "off", text: "text-ink-idle" },
+  aligned: { lamp: "on", text: "text-success" },
+  drifting: { lamp: "warn", text: "text-caution" },
+  unknown: { lamp: "off", text: "text-text-tertiary" },
 };
 
 /**
@@ -65,25 +65,25 @@ export function AlignmentPanel({ alignment, busy, onBroadcast }: AlignmentPanelP
   const verdictStyle = VERDICT_STYLE[verdict];
 
   return (
-    <section aria-labelledby="align-heading" className="plate p-3">
+    <section aria-labelledby="align-heading" className="al-card p-3">
       <header className="mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h2 id="align-heading" className="silk t-body">
+        <h2 id="align-heading" className="text-caption font-semibold text-text-secondary text-body">
           {t("align.title")}
         </h2>
         <span className="flex items-baseline gap-1.5">
-          <span className="silk-sm !text-silk-2">{t("align.peer")}</span>
-          <span className="num t-cap text-silk-2">
+          <span className="text-caption font-semibold text-text-tertiary text-text-secondary">{t("align.peer")}</span>
+          <span className="num text-caption text-text-secondary">
             {alignment === null ? DASH : alignment.axes.length}
           </span>
         </span>
 
-        <span className="flex items-center gap-1.5 rounded-chip border border-line px-2 py-0.5">
-          <span className="lamp h-1.5 w-1.5 shrink-0" data-on={verdictStyle.lamp} />
-          <span className={`silk-sm ${verdictStyle.text}`}>{verdictText(verdict)}</span>
+        <span className="flex items-center gap-1.5 rounded-control border border-stroke-control px-2 py-0.5">
+          <span className="al-lamp h-1.5 w-1.5 shrink-0" data-on={verdictStyle.lamp} />
+          <span className={`text-caption font-semibold text-text-tertiary ${verdictStyle.text}`}>{verdictText(verdict)}</span>
         </span>
 
-        <label htmlFor="align-lead" className="ml-auto flex items-center gap-1.5 t-cap text-silk-2">
-          <span className="silk-sm !text-silk-2">{t("group.lead")}</span>
+        <label htmlFor="align-lead" className="ml-auto flex items-center gap-1.5 text-caption text-text-secondary">
+          <span className="text-caption font-semibold text-text-tertiary text-text-secondary">{t("group.lead")}</span>
           <input
             id="align-lead"
             type="number"
@@ -92,58 +92,58 @@ export function AlignmentPanel({ alignment, busy, onBroadcast }: AlignmentPanelP
             step={50}
             value={leadMs}
             onChange={(event) => setLeadMs(Number(event.target.value))}
-            className="well num w-16 rounded-chip px-1.5 py-0.5 text-right t-cap text-silk"
+            className="al-well num w-16 rounded-control px-1.5 py-0.5 text-right text-caption text-text-primary"
           />
-          <span className="num text-silk-3">ms</span>
+          <span className="num text-text-tertiary">ms</span>
         </label>
 
         <button
           type="button"
           disabled={busy}
           onClick={() => onBroadcast(leadMs)}
-          className="key key-primary h-7 shrink-0 px-2.5 t-cap disabled:cursor-not-allowed"
+          className="al-btn al-btn-accent h-7 shrink-0 px-2.5 text-caption disabled:cursor-not-allowed"
         >
           {busy ? t("align.busy") : t("align.broadcast")}
         </button>
       </header>
 
-      <p className="mb-2 t-cap leading-4 text-silk-3">{t("align.hint")}</p>
+      <p className="mb-2 text-caption leading-4 text-text-tertiary">{t("align.hint")}</p>
 
       {alignment === null || alignment.axes.length === 0 ? (
-        <p className="t-cap text-silk-3">{t("align.no_session")}</p>
+        <p className="text-caption text-text-tertiary">{t("align.no_session")}</p>
       ) : (
         <>
-          <p className="mb-1.5 t-cap text-silk-2">
+          <p className="mb-1.5 text-caption text-text-secondary">
             {spreadSamples === null
               ? t("align.need_two")
               : spreadMs === null
                 ? t("align.spread", { samples: spreadSamples })
                 : t("align.spread_ms", { samples: spreadSamples, ms: spreadMs })}
           </p>
-          <table className="w-full border-collapse t-cap">
+          <table className="w-full border-collapse text-caption">
             <thead>
               <tr>
-                <th scope="col" className="silk-sm border-b border-line px-2 py-1 text-left">
+                <th scope="col" className="text-caption font-semibold text-text-tertiary border-b border-stroke-control px-2 py-1 text-left">
                   {t("align.peer")}
                 </th>
-                <th scope="col" className="silk-sm border-b border-line px-2 py-1 text-right">
+                <th scope="col" className="text-caption font-semibold text-text-tertiary border-b border-stroke-control px-2 py-1 text-right">
                   {t("align.recent")}
                 </th>
-                <th scope="col" className="silk-sm border-b border-line px-2 py-1 text-right">
+                <th scope="col" className="text-caption font-semibold text-text-tertiary border-b border-stroke-control px-2 py-1 text-right">
                   {t("align.estimated")}
                 </th>
-                <th scope="col" className="silk-sm border-b border-line px-2 py-1 text-right">
+                <th scope="col" className="text-caption font-semibold text-text-tertiary border-b border-stroke-control px-2 py-1 text-right">
                   {t("align.arrival")}
                 </th>
               </tr>
             </thead>
             <tbody>
               {alignment.axes.map((axis) => (
-                <tr key={axis.peerShort} className="border-b border-line">
-                  <td className="num px-2 py-1 text-silk-2">{axis.peerShort}</td>
-                  <td className="num px-2 py-1 text-right text-silk">{axis.sampleIndex ?? DASH}</td>
-                  <td className="num px-2 py-1 text-right text-silk">{axis.indexNow ?? DASH}</td>
-                  <td className="num px-2 py-1 text-right text-silk-2">{axis.atMs}</td>
+                <tr key={axis.peerShort} className="border-b border-stroke-control">
+                  <td className="num px-2 py-1 text-text-secondary">{axis.peerShort}</td>
+                  <td className="num px-2 py-1 text-right text-text-primary">{axis.sampleIndex ?? DASH}</td>
+                  <td className="num px-2 py-1 text-right text-text-primary">{axis.indexNow ?? DASH}</td>
+                  <td className="num px-2 py-1 text-right text-text-secondary">{axis.atMs}</td>
                 </tr>
               ))}
             </tbody>

@@ -30,11 +30,11 @@ export function CaptureSourcePanel({ devices, selectedId, active, loading, locke
       : selected?.unavailableReason ?? (!loading && selected === undefined ? t("cap.no_default") : null));
 
   return (
-    <section aria-labelledby="capture-heading" className="plate p-3">
-      <h2 id="capture-heading" className="silk t-cap">{t("cap.title")}</h2>
-      <p className="mt-1.5 t-cap leading-relaxed text-silk-3">{t("cap.hint")}</p>
+    <section aria-labelledby="capture-heading" className="al-card p-3">
+      <h2 id="capture-heading" className="text-caption font-semibold text-text-secondary">{t("cap.title")}</h2>
+      <p className="mt-1.5 text-caption leading-relaxed text-text-tertiary">{t("cap.hint")}</p>
 
-      <label htmlFor="capture-device" className="silk-sm mt-3 block">{t("cap.device")}</label>
+      <label htmlFor="capture-device" className="text-caption font-semibold text-text-tertiary mt-3 block">{t("cap.device")}</label>
       <div className="mt-1.5 flex gap-2">
         <select
           id="capture-device"
@@ -43,7 +43,7 @@ export function CaptureSourcePanel({ devices, selectedId, active, loading, locke
           onChange={(event) => onSelect(event.target.value)}
           aria-describedby="capture-help capture-status"
           aria-invalid={!locked && problem !== null}
-          className="h-10 min-w-0 flex-1 border border-line bg-panel px-2 t-cap text-silk disabled:cursor-not-allowed disabled:text-silk-3"
+          className="h-10 min-w-0 flex-1 border border-stroke-control bg-surface-card-solid px-2 text-caption text-text-primary disabled:cursor-not-allowed disabled:text-text-tertiary"
         >
           <option value="">{loading && devices.length === 0 ? t("cap.reading") : t("cap.system_default")}</option>
           {missing ? <option value={selectedId}>{t("cap.unavailable")}</option> : null}
@@ -62,19 +62,19 @@ export function CaptureSourcePanel({ devices, selectedId, active, loading, locke
           disabled={loading}
           aria-label={loading ? t("cap.refreshing") : t("cap.refresh")}
           title={loading ? t("cap.refreshing") : t("cap.refresh")}
-          className="key h-10 w-10 shrink-0"
+          className="al-btn h-10 w-10 shrink-0"
         >
           <IconRefresh className="h-4 w-4" />
         </button>
       </div>
 
-      <p id="capture-help" className="mt-2 t-cap leading-relaxed text-silk-3">
+      <p id="capture-help" className="mt-2 text-caption leading-relaxed text-text-tertiary">
         {locked ? t("cap.locked_hint") : t("cap.hint_idle")}
       </p>
-      <div id="capture-status" role="status" aria-live="polite" className="mt-2 border-t border-line pt-2 t-cap leading-relaxed">
-        {active ? <p className="break-words text-ink-on">{t("cap.active", { name: active.name, rate: active.sampleRate / 1000, channels: active.channels })}</p> : null}
-        {(!locked || error !== null) && problem ? <p className="text-ink-warn">{problem}</p> : null}
-        {!locked && !problem && selected ? <p className="break-words text-silk-3">{t("cap.selected", { name: selected.name })}{selected.isVirtual ? t("cap.selected_virtual") : ""}</p> : null}
+      <div id="capture-status" role="status" aria-live="polite" className="mt-2 border-t border-stroke-control pt-2 text-caption leading-relaxed">
+        {active ? <p className="break-words text-success">{t("cap.active", { name: active.name, rate: active.sampleRate / 1000, channels: active.channels })}</p> : null}
+        {(!locked || error !== null) && problem ? <p className="text-caution">{problem}</p> : null}
+        {!locked && !problem && selected ? <p className="break-words text-text-tertiary">{t("cap.selected", { name: selected.name })}{selected.isVirtual ? t("cap.selected_virtual") : ""}</p> : null}
       </div>
     </section>
   );

@@ -28,21 +28,21 @@ export function HostAddressCard({ local }: { local: LocalStatus | null }) {
   };
 
   return (
-    <section className="plate flex flex-wrap items-center gap-x-4 gap-y-3 p-4" aria-labelledby="host-address-heading">
+    <section className="al-card flex flex-wrap items-center gap-x-4 gap-y-3 p-4" aria-labelledby="host-address-heading">
       <div className="min-w-0">
-        <h2 id="host-address-heading" className="silk">{t("host.address")}</h2>
-        <p className="mt-1 t-cap leading-relaxed text-text-2">{t("host.hint")}</p>
+        <h2 id="host-address-heading" className="text-caption font-semibold text-text-secondary">{t("host.address")}</h2>
+        <p className="mt-1 text-caption leading-relaxed text-text-secondary">{t("host.hint")}</p>
       </div>
 
       <div className="ml-auto flex items-center gap-2">
-        <span className="num select-all t-lead tracking-tight text-text">
+        <span className="num select-all text-body tracking-tight text-text-primary">
           {ready ? address : "…"}
         </span>
         <button
           type="button"
           onClick={() => void copy()}
           disabled={!ready}
-          className="key h-8 gap-1.5 px-3 t-cap"
+          className="al-btn h-8 gap-1.5 px-3 text-caption"
         >
           <IconLink className="h-3.5 w-3.5" />
           {copied ? t("host.copied") : t("host.copy")}

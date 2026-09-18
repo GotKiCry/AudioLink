@@ -120,3 +120,9 @@ export const IconRefresh = ({ className }: IconProps) => (
 export const IconChevron = ({ className }: IconProps) => (
   <Base className={className}><path d="M6 8.5 10 12.5 14 8.5" /></Base>
 );
+export const IconBackground = ({ className }: IconProps) => (
+  <Base className={className}>
+    <rect x="3" y="3" width="14" height="14" rx="1" />
+    <path d="M3 13 11 3M3 17.5 17.5 3M8 17.5 17.5 8" />
+  </Base>
+);

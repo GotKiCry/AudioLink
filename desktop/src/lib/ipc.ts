@@ -12,6 +12,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AlignmentView,
   AutoConnectPolicy,
+  BackgroundConfig,
   CaptureDeviceView,
   GroupView,
   NoticesView,
@@ -121,6 +122,16 @@ export const api = {
   locale: (): Promise<string | null> => invoke<string | null>("locale"),
   /** `set_locale` —— M5：保存界面语言偏好（只接受 zh-CN / en-US）。 */
   setLocale: (tag: string): Promise<null> => invoke<null>("set_locale", { tag }),
+  /**
+   * `background` —— 应用背景（z0 壁纸）。
+   *
+   * `null` = 用户还没配过：由前端用本主题的默认值（不要把深色默认硬灌进浅色界面）。
+   * 读坏了（settings.json 被手改成非法形状）后端也返回 `null`，不报错 —— 背景只是外观。
+   */
+  background: (): Promise<BackgroundConfig | null> => invoke<BackgroundConfig | null>("background"),
+  /** `set_background` —— 保存应用背景；后端校验色值，非法一律拒掉。 */
+  setBackground: (config: BackgroundConfig): Promise<null> =>
+    invoke<null>("set_background", { config }),
   /** `set_autostart` —— M5：开关开机自启。 */
   setAutostart: (enabled: boolean): Promise<null> =>
     invoke<null>("set_autostart", { enabled }),

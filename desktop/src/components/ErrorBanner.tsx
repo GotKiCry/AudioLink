@@ -19,12 +19,12 @@ export function ErrorBanner({ error, onDismiss }: ErrorBannerProps) {
   return (
     <div
       role="alert"
-      className="flex items-start gap-2.5 border border-lamp-live bg-panel px-3 py-2.5 t-cap"
+      className="flex items-start gap-2.5 border border-critical bg-surface-card-solid px-3 py-2.5 text-caption"
     >
-      <IconStateFailed className="mt-0.5 h-4 w-4 shrink-0 text-ink-live" />
+      <IconStateFailed className="mt-0.5 h-4 w-4 shrink-0 text-critical" />
       <div className="min-w-0">
-        <div className="font-medium text-ink-live">{error.message}</div>
-        <div className="num mt-1 break-all t-cap text-silk-3">
+        <div className="font-medium text-critical">{error.message}</div>
+        <div className="num mt-1 break-all text-caption text-text-tertiary">
           code={error.code}
           {error.context === "" ? "" : ` · ${error.context}`}
         </div>
@@ -33,7 +33,7 @@ export function ErrorBanner({ error, onDismiss }: ErrorBannerProps) {
         type="button"
         onClick={onDismiss}
         aria-label={t("banner.dismiss")}
-        className="key ml-auto h-7 shrink-0 px-2 t-cap"
+        className="al-btn ml-auto h-7 shrink-0 px-2 text-caption"
       >
         {t("banner.close")}
       </button>

@@ -10,7 +10,7 @@
  */
 
 import { useState } from "react";
-import type { ComponentType } from "react";
+import type { ComponentType, CSSProperties } from "react";
 
 import type { PeerState, PeerView } from "../types";
 import { peerStateLabel } from "../types";
@@ -30,11 +30,11 @@ const STATE_VISUAL: Record<
   PeerState,
   { lamp: string; ink: string; Icon: ComponentType<{ className?: string }> }
 > = {
-  idle: { lamp: "off", ink: "text-text-3", Icon: IconStateIdle },
-  handshaking: { lamp: "busy", ink: "text-text-2", Icon: IconStateConnecting },
-  streaming: { lamp: "on", ink: "text-ok-text", Icon: IconStateStreaming },
-  degraded: { lamp: "warn", ink: "text-warn-text", Icon: IconStateDegraded },
-  failed: { lamp: "live", ink: "text-danger-text", Icon: IconStateFailed },
+  idle: { lamp: "off", ink: "text-text-tertiary", Icon: IconStateIdle },
+  handshaking: { lamp: "busy", ink: "text-text-secondary", Icon: IconStateConnecting },
+  streaming: { lamp: "on", ink: "text-success", Icon: IconStateStreaming },
+  degraded: { lamp: "warn", ink: "text-caution", Icon: IconStateDegraded },
+  failed: { lamp: "live", ink: "text-critical", Icon: IconStateFailed },
 };
 
 interface PeerCardProps {
@@ -70,24 +70,24 @@ export function PeerCard({
   const [gain, setGain] = useState(1);
 
   return (
-    <article className="plate flex flex-col gap-3 p-4">
+    <article className="al-card flex flex-col gap-3 p-4">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div className="flex min-w-0 items-center gap-2.5">
-          <span className="lamp h-2.5 w-2.5" data-on={visual.lamp} />
-          <span className="truncate t-body font-medium text-text">{peer.name}</span>
-          <span className={"inline-flex items-center gap-1.5 t-cap " + visual.ink}>
+          <span className="al-lamp h-2.5 w-2.5" data-on={visual.lamp} />
+          <span className="truncate text-body font-medium text-text-primary">{peer.name}</span>
+          <span className={"inline-flex items-center gap-1.5 text-caption" + visual.ink}>
             <visual.Icon className="h-3.5 w-3.5" />
             {peerStateLabel(peer.state)}
           </span>
         </div>
 
-        <span className={peer.trusted ? "t-cap text-ok-text" : "t-cap text-warn-text"}>
+        <span className={peer.trusted ? "text-caption text-success" : "text-caption text-caution"}>
           {peer.trusted ? t("peer.trusted") : t("peer.untrusted")}
         </span>
 
-        <div className="num min-w-0 t-cap text-text-3">
+        <div className="num min-w-0 text-caption text-text-tertiary">
           {t("peer.fingerprint")} {peer.idShort}
-          <span className="mx-1.5 text-line-2">·</span>
+          <span className="mx-1.5 text-stroke-control-strong">·</span>
           {peer.addr}
         </div>
 
@@ -103,7 +103,7 @@ export function PeerCard({
               onClick={() => setConfirmingRevoke(true)}
               title={t("peer.revoke_hint")}
               aria-label={t("peer.revoke")}
-              className="key key-danger h-8 w-8"
+              className="al-btn al-btn-danger h-8 w-8"
             >
               <IconUnplug className="h-4 w-4" />
             </button>
@@ -115,10 +115,10 @@ export function PeerCard({
 
       {/* §13 能力协商：把「这一对能一起做什么」写在行上，缺什么也一眼看得出来 */}
       {peer.capabilities === null ? null : (
-        <p className="t-cap leading-relaxed text-text-3">
+        <p className="text-caption leading-relaxed text-text-tertiary">
           {t("peer.caps_agreed", { list: peer.capabilities.agreed })}
           {peer.capabilities.missingOnPeer.length === 0 ? null : (
-            <span className="ml-1 text-warn-text">
+            <span className="ml-1 text-caution">
               {t("peer.caps_missing", { list: peer.capabilities.missingOnPeer.join("、") })}
             </span>
           )}
@@ -126,21 +126,24 @@ export function PeerCard({
       )}
 
       {peer.state === "degraded" ? (
-        <p className="t-cap text-warn-text">{t("peer.degraded")}</p>
+        <p className="text-caption text-caution">{t("peer.degraded")}</p>
       ) : null}
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
         {/* §4.1 音量：只在推流中给入口（引擎侧 SET_GAIN 已生效，渐变 200 ms） */}
         {streaming ? (
           <label className="flex min-w-[220px] flex-1 items-center gap-3">
-            <span className="silk-sm shrink-0">{t("peer.volume")}</span>
-            <span className="fader flex-1">
+            <span className="text-caption font-semibold text-text-tertiary shrink-0">{t("peer.volume")}</span>
+            <span className="al-fader flex-1">
               <input
                 type="range"
                 min={0}
                 max={2}
                 step={0.05}
                 value={gain}
+                // 已填充部分由 --fill 驱动（.al-fader 的轨道渐变）：Fluent 的滑块是
+                // 「已填充 accent + 剩余中性」，而不是一根通体中性色的轨道。
+                style={{ "--fill": Math.round((gain / 2) * 100) + "%" } as CSSProperties}
                 aria-label={t("peer.volume_label")}
                 title={t("peer.volume_hint")}
                 onChange={(event) => {
@@ -150,7 +153,7 @@ export function PeerCard({
                 }}
               />
             </span>
-            <span className="num w-10 shrink-0 text-right t-cap text-text-2">
+            <span className="num w-10 shrink-0 text-right text-caption text-text-secondary">
               {Math.round(gain * 100)}%
             </span>
           </label>
@@ -164,7 +167,7 @@ export function PeerCard({
               <button
                 type="button"
                 onClick={() => onBeginPair(peer.idShort)}
-                className="key key-primary h-9 px-4 t-body"
+                className="al-btn al-btn-accent h-9 px-4 text-body"
               >
                 {t("peer.pin_entry")}
               </button>
@@ -173,7 +176,7 @@ export function PeerCard({
                 type="button"
                 disabled
                 title={t("peer.pin_hint")}
-                className="key h-9 px-4 t-body"
+                className="al-btn h-9 px-4 text-body"
               >
                 {t("peer.waiting")}
               </button>
@@ -183,7 +186,7 @@ export function PeerCard({
               type="button"
               disabled={busy}
               onClick={() => void onStop()}
-              className="key h-9 gap-2 px-4 t-body"
+              className="al-btn h-9 gap-2 px-4 text-body"
             >
               <IconStop className="h-4 w-4" />
               {busy ? t("peer.stopping") : t("peer.stop")}
@@ -193,7 +196,7 @@ export function PeerCard({
               type="button"
               disabled={busy || !canStart || peer.state === "failed"}
               onClick={() => void onStart(peer.idShort)}
-              className="key key-primary h-9 gap-2 px-4 t-body"
+              className="al-btn al-btn-accent h-9 gap-2 px-4 text-body"
             >
               <IconStart className="h-4 w-4" />
               {busy ? t("peer.starting") : t("peer.start")}
@@ -203,13 +206,13 @@ export function PeerCard({
       </div>
 
       {confirmingRevoke ? (
-        <div className="flex flex-wrap items-center gap-2 border-t border-line pt-3">
-          <span className="t-cap text-danger-text">{t("peer.revoke_hint")}</span>
+        <div className="flex flex-wrap items-center gap-2 border-t border-stroke-control pt-3">
+          <span className="text-caption text-critical">{t("peer.revoke_hint")}</span>
           <div className="ml-auto flex items-center gap-2">
             <button
               type="button"
               onClick={() => setConfirmingRevoke(false)}
-              className="key h-9 px-3 t-cap"
+              className="al-btn h-9 px-3 text-caption"
             >
               {t("peer.revoke_cancel")}
             </button>
@@ -220,7 +223,7 @@ export function PeerCard({
                 setConfirmingRevoke(false);
                 void onRevoke(peer.idShort);
               }}
-              className="key key-danger h-9 px-4 t-cap"
+              className="al-btn al-btn-danger h-9 px-4 text-caption"
             >
               {busy ? t("peer.revoking") : t("peer.revoke_confirm")}
             </button>

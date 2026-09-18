@@ -20,15 +20,15 @@ interface ConsoleFooterProps {
 export function ConsoleFooter({ streamingCount, channelCount, busy, onStopAll }: ConsoleFooterProps) {
   const onAir = streamingCount > 0;
   return (
-    <footer className="flex h-14 shrink-0 items-center gap-4 border-t border-line bg-bench px-4">
-      <span className="well flex h-9 items-center gap-2.5 px-3">
-        <span className="lamp h-3 w-3" data-on={onAir ? "live" : "off"} />
-        <span className={`t-cap font-semibold uppercase tracking-[0.16em] ${onAir ? "text-ink-live" : "text-silk-3"}`}>
+    <footer className="flex h-14 shrink-0 items-center gap-4 border-t border-stroke-control bg-surface-chrome px-4">
+      <span className="al-well flex h-9 items-center gap-2.5 px-3">
+        <span className="al-lamp h-3 w-3" data-on={onAir ? "live" : "off"} />
+        <span className={`text-caption font-semibold uppercase tracking-[0.16em] ${onAir ? "text-critical" : "text-text-tertiary"}`}>
           {onAir ? t("console.on_air") : t("console.off_air")}
         </span>
       </span>
 
-      <span className="num t-cap text-silk-3">
+      <span className="num text-caption text-text-tertiary">
         {t("console.channels", { count: channelCount })}
       </span>
 
@@ -36,7 +36,7 @@ export function ConsoleFooter({ streamingCount, channelCount, busy, onStopAll }:
         type="button"
         onClick={onStopAll}
         disabled={!onAir || busy}
-        className="key key-danger ml-auto h-9 gap-2 px-4 t-cap"
+        className="al-btn al-btn-danger ml-auto h-9 gap-2 px-4 text-caption"
       >
         <IconStop className="h-3.5 w-3.5" />
         {t("console.stop_all")}

@@ -39,11 +39,11 @@ const DASH = "—";
 function Metric({ label, value, unit }: { label: string; value: string; unit?: string }) {
   const missing = value === DASH;
   return (
-    <div className="border-r border-b border-line bg-chassis px-2.5 py-1.5">
-      <div className="silk-sm">{label}</div>
-      <div className={`num t-lead leading-tight ${missing ? "text-silk-3" : "text-silk"}`}>
+    <div className="border-r border-b border-stroke-control bg-surface-sunken px-2.5 py-1.5">
+      <div className="text-caption font-semibold text-text-tertiary">{label}</div>
+      <div className={`num text-body leading-tight ${missing ? "text-text-tertiary" : "text-text-primary"}`}>
         {value}
-        {unit === undefined ? null : <span className="ml-1 t-cap text-silk-3">{unit}</span>}
+        {unit === undefined ? null : <span className="ml-1 text-caption text-text-tertiary">{unit}</span>}
       </div>
     </div>
   );
@@ -85,18 +85,18 @@ function Sparkline({ label, unit, values, latest }: SparklineProps) {
   const ready = points !== "";
 
   return (
-    <div className="well p-2">
+    <div className="al-well p-2">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="silk-sm">{label}</span>
-        <span className="num t-cap text-silk-2">
+        <span className="text-caption font-semibold text-text-tertiary">{label}</span>
+        <span className="num text-caption text-text-secondary">
           {ready ? latest : DASH}
-          {ready ? <span className="ml-1 text-silk-3">{unit}</span> : null}
+          {ready ? <span className="ml-1 text-text-tertiary">{unit}</span> : null}
         </span>
       </div>
       <svg
         viewBox="0 0 100 32"
         preserveAspectRatio="none"
-        className="mt-1 h-8 w-full text-silk-2"
+        className="mt-1 h-8 w-full text-text-secondary"
         role="img"
         aria-label={t("tm.samples_aria", { label, count: values.length })}
       >
@@ -109,7 +109,7 @@ function Sparkline({ label, unit, values, latest }: SparklineProps) {
             vectorEffect="non-scaling-stroke"
           />
         ) : (
-          <text x="50" y="20" textAnchor="middle" className="fill-silk-3 text-[8px]">
+          <text x="50" y="20" textAnchor="middle" className="fill-text-tertiary text-[8px]">
             {t("tm.waiting")}
           </text>
         )}
@@ -131,29 +131,29 @@ export function TelemetryPanel({ telemetry, history, open, exporting, onExport }
 
   return (
     // id 保留给状态条的 aria-controls（"遥测"方键指向这块面板）
-    <section id="telemetry-readout" aria-labelledby="telemetry-heading" className="plate p-3">
+    <section id="telemetry-readout" aria-labelledby="telemetry-heading" className="al-card p-3">
       <header className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h2 id="telemetry-heading" className="silk t-body">
+        <h2 id="telemetry-heading" className="text-caption font-semibold text-text-secondary text-body">
           {t("tm.title")}
         </h2>
         <span className="flex items-baseline gap-1.5">
-          <span className="silk-sm !text-silk-2">{t("tm.peers")}</span>
-          <span className="num t-cap text-silk-2">{tele === null ? DASH : tele.peers}</span>
+          <span className="text-caption font-semibold text-text-tertiary text-text-secondary">{t("tm.peers")}</span>
+          <span className="num text-caption text-text-secondary">{tele === null ? DASH : tele.peers}</span>
         </span>
         <button
           type="button"
           onClick={onExport}
           disabled={exporting || history.length === 0}
-          className="key ml-auto h-7 shrink-0 px-2.5 t-cap text-silk disabled:cursor-not-allowed"
+          className="al-btn ml-auto h-7 shrink-0 px-2.5 text-caption text-text-primary disabled:cursor-not-allowed"
         >
           {exporting ? t("tm.exporting") : t("tm.export", { count: history.length })}
         </button>
       </header>
 
-      <p className="mt-1 mb-2 t-cap text-silk-3">{t("tm.footer", { count: history.length })}</p>
+      <p className="mt-1 mb-2 text-caption text-text-tertiary">{t("tm.footer", { count: history.length })}</p>
 
       {/* 网格线靠「容器上/左边框 + 每格右/下边框」拼出来：最后一格不满行时不会露出一块底色 */}
-      <div className="grid border-t border-l border-line [grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]">
+      <div className="grid border-t border-l border-stroke-control [grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]">
         <Metric label={t("tm.peers")} value={tele === null ? DASH : String(tele.peers)} />
         <Metric label="RTT" value={tele === null || idle ? DASH : usToMs(tele.rttUs)} unit="ms" />
         <Metric label={t("tm.jitter")} value={tele === null || idle ? DASH : usToMs(tele.jitterUs)} unit="ms" />
@@ -193,7 +193,7 @@ export function TelemetryPanel({ telemetry, history, open, exporting, onExport }
         />
       </div>
 
-      {idle ? <p className="mt-2 t-cap text-silk-3">{t("tm.idle")}</p> : null}
+      {idle ? <p className="mt-2 text-caption text-text-tertiary">{t("tm.idle")}</p> : null}
     </section>
   );
 }

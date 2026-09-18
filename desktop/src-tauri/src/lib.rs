@@ -235,6 +235,25 @@ async fn set_locale(bridge: State<'_, EngineBridge>, tag: String) -> Result<(), 
     bridge.set_locale(tag).await
 }
 
+/// M5：应用背景配置（z0 壁纸）；null = 用户还没配过，前端用主题默认值。
+///
+/// 与 language / autostart 同一条路：写进 settings.json，跨重启活着。
+#[tauri::command]
+async fn background(
+    app: tauri::AppHandle,
+) -> Result<Option<settings::BackgroundConfig>, CommandError> {
+    settings::read_background(&app)
+}
+
+/// M5：保存应用背景配置（先校验：settings.json 可以被手改，非法色值一律拒掉）。
+#[tauri::command(rename_all = "snake_case")]
+async fn set_background(
+    app: tauri::AppHandle,
+    config: settings::BackgroundConfig,
+) -> Result<(), CommandError> {
+    settings::write_background(&app, &config)
+}
+
 /// M5：启动时试一次自动重连（没开 / 没记录 / 连不上都返回 null，不报错）。
 #[tauri::command]
 async fn try_auto_connect(
@@ -349,7 +368,9 @@ pub fn run() {
             set_auto_connect,
             try_auto_connect,
             locale,
-            set_locale
+            set_locale,
+            background,
+            set_background
         ])
         .setup(|app| {
             // 桥接层必须在窗口加载**之前**就位：前端一挂载就会 invoke，拿不到 State 会直接报错。

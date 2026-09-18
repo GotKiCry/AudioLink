@@ -20,15 +20,15 @@ export function NoticeBanner({ message, onDismiss }: NoticeBannerProps) {
   return (
     <div
       role="status"
-      className="flex items-start gap-2.5 border border-lamp-warn bg-panel px-3 py-2.5 t-cap"
+      className="flex items-start gap-2.5 border border-caution bg-surface-card-solid px-3 py-2.5 text-caption"
     >
-      <IconStateConnecting className="mt-0.5 h-4 w-4 shrink-0 text-ink-warn" />
-      <div className="min-w-0 text-ink-warn">{message}</div>
+      <IconStateConnecting className="mt-0.5 h-4 w-4 shrink-0 text-caution" />
+      <div className="min-w-0 text-caution">{message}</div>
       <button
         type="button"
         onClick={onDismiss}
         aria-label={t("banner.dismiss")}
-        className="key ml-auto h-7 shrink-0 px-2 t-cap"
+        className="al-btn ml-auto h-7 shrink-0 px-2 text-caption"
       >
         {t("banner.close")}
       </button>

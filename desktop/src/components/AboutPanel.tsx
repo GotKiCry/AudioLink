@@ -7,7 +7,7 @@
  *
  * 懒加载：声明约 1 MB，只在用户真的点开时才拉。
  *
- * 视觉（On-Air Console）：声明正文是机箱里的一张贴纸 —— 下沉窗口（`.well`）+ 丝印标签，
+ * 视觉（On-Air Console）：声明正文是机箱里的一张贴纸 —— 下沉窗口（`.al-well`）+ 丝印标签，
  * 尺寸读数（KB）用 `.num` 放在标题右侧；读取中用一盏呼吸灯，而不是转圈动画。
  */
 
@@ -43,25 +43,25 @@ export function AboutPanel() {
   };
 
   return (
-    <section aria-labelledby="about-heading" className="plate p-3">
+    <section aria-labelledby="about-heading" className="al-card p-3">
       <header className="flex flex-wrap items-start gap-x-3 gap-y-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <h2 id="about-heading" className="silk t-body">
+            <h2 id="about-heading" className="text-caption font-semibold text-text-secondary text-body">
               {t("about.title")}
             </h2>
-            <span className="num t-cap text-silk-3">
+            <span className="num text-caption text-text-tertiary">
               {view === null || !view.available ? DASH : `${(view.bytes / 1024).toFixed(1)} KB`}
             </span>
           </div>
-          <p className="mt-0.5 t-cap leading-4 text-silk-3">{t("about.body")}</p>
+          <p className="mt-0.5 text-caption leading-4 text-text-tertiary">{t("about.body")}</p>
         </div>
         <span className="ml-auto flex shrink-0 items-center gap-2">
-          {busy ? <span className="lamp h-2 w-2" data-on="busy" /> : null}
+          {busy ? <span className="al-lamp h-2 w-2" data-on="busy" /> : null}
           <button
             type="button"
             onClick={toggle}
-            className="key h-7 px-2.5 t-cap text-silk"
+            className="al-btn h-7 px-2.5 text-caption text-text-primary"
           >
             {open ? t("about.hide") : busy ? t("cap.refreshing") : t("about.show")}
           </button>
@@ -71,18 +71,18 @@ export function AboutPanel() {
       {open ? (
         <div className="mt-2 space-y-2">
           {error === null ? null : (
-            <p role="alert" className="t-cap text-ink-live">{error}</p>
+            <p role="alert" className="text-caption text-critical">{error}</p>
           )}
           {view === null ? (
-            busy ? <p className="t-cap text-silk-3">{t("cap.refreshing")}</p> : null
+            busy ? <p className="text-caption text-text-tertiary">{t("cap.refreshing")}</p> : null
           ) : (
             <>
-              <p className="t-cap text-silk-3">
+              <p className="text-caption text-text-tertiary">
                 {view.available
                   ? `${view.source} · ${(view.bytes / 1024).toFixed(1)} KB`
                   : t("about.missing")}
               </p>
-              <pre className="well max-h-80 overflow-auto p-2 t-cap leading-relaxed whitespace-pre-wrap text-silk-2">
+              <pre className="al-well max-h-80 overflow-auto p-2 text-caption leading-relaxed whitespace-pre-wrap text-text-secondary">
                 {view.text}
               </pre>
             </>

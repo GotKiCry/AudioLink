@@ -23,15 +23,15 @@ export function ConnectToHost({ connecting, onConnect }: ConnectToHostProps) {
   return (
     <form
       aria-labelledby="connect-host-heading"
-      className="plate flex flex-wrap items-end gap-3 p-4"
+      className="al-card flex flex-wrap items-end gap-3 p-4"
       onSubmit={(event) => {
         event.preventDefault();
         void onConnect(addr);
       }}
     >
       <div className="min-w-0">
-        <h2 id="connect-host-heading" className="silk">{t("manual.title")}</h2>
-        <p className="mt-1 t-cap leading-relaxed text-text-2">{t("manual.hint")}</p>
+        <h2 id="connect-host-heading" className="text-caption font-semibold text-text-secondary">{t("manual.title")}</h2>
+        <p className="mt-1 text-caption leading-relaxed text-text-secondary">{t("manual.hint")}</p>
       </div>
 
       <label className="sr-only" htmlFor="peer-addr">{t("manual.address")}</label>
@@ -44,14 +44,14 @@ export function ConnectToHost({ connecting, onConnect }: ConnectToHostProps) {
         inputMode="url"
         autoComplete="off"
         spellCheck={false}
-        className="num ml-auto h-9 w-[248px] border border-line px-3 t-body text-text"
+        className="num ml-auto h-9 w-[248px] border border-stroke-control px-3 text-body text-text-primary"
       />
 
       <button
         type="submit"
         // 空输入不发请求：让内核少一次必然失败的往返（原因可见性由返回错误保证）
         disabled={connecting || addr.trim() === ""}
-        className="key h-9 gap-2 px-4 t-body"
+        className="al-btn h-9 gap-2 px-4 text-body"
       >
         <IconLink className="h-4 w-4" />
         {connecting ? t("manual.connecting") : t("manual.connect")}

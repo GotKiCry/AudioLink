@@ -12,7 +12,7 @@
  * ③ **错误不拼**：失败原因一律来自后端 `CommandError.message`（错误层已翻译成人话），
  *    这里只用 `toCommandError` 兜底归一化，不拼字符串。
  *
- * 视觉（On-Air Console）：进行中由一盏呼吸灯表达（`.lamp[data-on="busy"]`），
+ * 视觉（On-Air Console）：进行中由一盏呼吸灯表达（`.al-lamp[data-on="busy"]`），
  * 有新版时整块内容是机器内部的一个下沉窗口 + 琥珀边框（注意，不是危险 —— 危险才用 `live`）。
  */
 
@@ -71,74 +71,74 @@ export function UpdatePanel() {
   const working = checking || installing;
 
   return (
-    <section aria-labelledby="upd-heading" className="plate p-3">
+    <section aria-labelledby="upd-heading" className="al-card p-3">
       <header className="flex flex-wrap items-start gap-x-3 gap-y-2">
         <div className="min-w-0">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <h2 id="upd-heading" className="silk t-body">
+            <h2 id="upd-heading" className="text-caption font-semibold text-text-secondary text-body">
               {t("upd.title")}
             </h2>
-            <span className="num t-cap text-silk-3">
+            <span className="num text-caption text-text-tertiary">
               {view === null ? DASH : view.currentVersion}
             </span>
           </div>
-          <p className="mt-0.5 t-cap leading-4 text-silk-3">{t("upd.hint")}</p>
+          <p className="mt-0.5 text-caption leading-4 text-text-tertiary">{t("upd.hint")}</p>
         </div>
         <span className="ml-auto flex shrink-0 items-center gap-2">
-          {working ? <span className="lamp h-2 w-2" data-on="busy" /> : null}
+          {working ? <span className="al-lamp h-2 w-2" data-on="busy" /> : null}
           <button
             type="button"
             onClick={check}
             disabled={working}
-            className="key h-7 px-2.5 t-cap text-silk disabled:cursor-not-allowed"
+            className="al-btn h-7 px-2.5 text-caption text-text-primary disabled:cursor-not-allowed"
           >
             {checking ? t("upd.checking") : t("upd.check")}
           </button>
         </span>
       </header>
 
-      <div className="mt-2 space-y-2 t-cap">
+      <div className="mt-2 space-y-2 text-caption">
         {error === null ? null : (
-          <p role="alert" className="text-ink-live">{error}</p>
+          <p role="alert" className="text-critical">{error}</p>
         )}
 
         {installed === null ? null : (
-          <p className="text-ink-on">{t("upd.done", { version: installed })}</p>
+          <p className="text-success">{t("upd.done", { version: installed })}</p>
         )}
 
         {view === null ? null : pending === null ? (
-          <p className="text-silk-2">{t("upd.up_to_date", { version: view.currentVersion })}</p>
+          <p className="text-text-secondary">{t("upd.up_to_date", { version: view.currentVersion })}</p>
         ) : (
-          <div className="well border-lamp-warn p-2.5">
-            <p className="flex items-center gap-1.5 font-medium text-ink-warn">
-              <span className="lamp h-2 w-2 shrink-0" data-on="warn" />
+          <div className="al-well border-caution p-2.5">
+            <p className="flex items-center gap-1.5 font-medium text-caution">
+              <span className="al-lamp h-2 w-2 shrink-0" data-on="warn" />
               {t("upd.available", { version: pending, current: view.currentVersion })}
             </p>
 
             {view.pubDate === null ? null : (
-              <p className="mt-1.5 text-silk-3">
+              <p className="mt-1.5 text-text-tertiary">
                 {t("upd.published", { date: view.pubDate })}
               </p>
             )}
 
             {view.notes === null ? null : (
               <div className="mt-1.5">
-                <p className="silk-sm">{t("upd.notes")}</p>
-                <pre className="mt-1 max-h-40 overflow-auto border border-line bg-panel p-2 t-cap leading-relaxed whitespace-pre-wrap text-silk-2">
+                <p className="text-caption font-semibold text-text-tertiary">{t("upd.notes")}</p>
+                <pre className="mt-1 max-h-40 overflow-auto border border-stroke-control bg-surface-card-solid p-2 text-caption leading-relaxed whitespace-pre-wrap text-text-secondary">
                   {view.notes}
                 </pre>
               </div>
             )}
 
             {confirming ? (
-              <div className="mt-2 space-y-2 border-t border-line pt-2">
-                <p className="text-ink-warn">{t("upd.confirm_hint")}</p>
+              <div className="mt-2 space-y-2 border-t border-stroke-control pt-2">
+                <p className="text-caution">{t("upd.confirm_hint")}</p>
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
                     disabled={installing}
                     onClick={() => install(pending)}
-                    className="key key-primary h-7 px-2.5 t-cap disabled:cursor-not-allowed"
+                    className="al-btn al-btn-accent h-7 px-2.5 text-caption disabled:cursor-not-allowed"
                   >
                     {installing ? t("upd.installing") : t("upd.confirm")}
                   </button>
@@ -146,7 +146,7 @@ export function UpdatePanel() {
                     type="button"
                     disabled={installing}
                     onClick={() => setConfirming(false)}
-                    className="key h-7 px-2.5 t-cap text-silk-2 disabled:cursor-not-allowed"
+                    className="al-btn h-7 px-2.5 text-caption text-text-secondary disabled:cursor-not-allowed"
                   >
                     {t("upd.cancel")}
                   </button>
@@ -156,7 +156,7 @@ export function UpdatePanel() {
               <button
                 type="button"
                 onClick={() => setConfirming(true)}
-                className="key mt-2 h-7 px-2.5 t-cap text-ink-warn"
+                className="al-btn mt-2 h-7 px-2.5 text-caption text-caution"
               >
                 {t("upd.install", { version: pending })}
               </button>
