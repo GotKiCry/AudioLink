@@ -1,0 +1,380 @@
+---
+name: AudioLink
+description: 局域网低延迟音频广播控制台 —— 基准语言为 Microsoft Fluent 2（Windows 11 口径），macOS 为桌面端可选外观，Android 以 Material 3 结构承载同一套令牌与状态语义。
+colors:
+  # ── 基准语言 Fluent 2：深色（默认，夜间听音是主场景） ──
+  window: "#202020"
+  chrome: "#272727"
+  surface: "#2B2B2B"
+  surface-2: "#323232"
+  sunken: "#1A1A1A"
+  line: "rgba(255,255,255,0.08)"
+  line-strong: "rgba(255,255,255,0.14)"
+  text: "#FFFFFF"
+  text-2: "#C5C5C5"
+  text-3: "#8A8A8A"
+  accent: "#4CC2FF"
+  accent-hover: "#6BCDFF"
+  accent-pressed: "#8AD8FF"
+  accent-on: "#003A5C"
+  ok: "#6CCB5F"
+  warn: "#FCE100"
+  idle: "#9A9BA3"
+  danger: "#FF99A4"
+  layer: "rgba(58,58,58,0.298)"
+  # ── 基准语言 Fluent 2：浅色（同一台机器的日间版本，不是深色反转） ──
+  window-light: "#F3F3F3"
+  chrome-light: "#F9F9F9"
+  surface-light: "#FBFBFB"
+  surface-2-light: "#F5F5F5"
+  sunken-light: "#EDEDED"
+  line-light: "rgba(0,0,0,0.06)"
+  line-strong-light: "rgba(0,0,0,0.14)"
+  text-light: "#1B1B1B"
+  text-2-light: "#616161"
+  text-3-light: "#8A8A8A"
+  accent-light: "#0F6CBD"
+  accent-hover-light: "#1C7ECB"
+  accent-on-light: "#FFFFFF"
+  ok-light: "#0F7B0F"
+  warn-light: "#9D5D00"
+  idle-light: "#82838C"
+  danger-light: "#C42B1C"
+  layer-light: "rgba(255,255,255,0.502)"
+typography:
+  caption:
+    fontFamily: "Segoe UI Variable Text, Segoe UI, Microsoft YaHei UI, system-ui, sans-serif"
+    fontSize: "12px"
+    fontWeight: 400
+    lineHeight: 16
+  body:
+    fontFamily: "Segoe UI Variable Text, Segoe UI, Microsoft YaHei UI, system-ui, sans-serif"
+    fontSize: "14px"
+    fontWeight: 400
+    lineHeight: 20
+  subtitle:
+    fontFamily: "Segoe UI Variable Text, Segoe UI, Microsoft YaHei UI, system-ui, sans-serif"
+    fontSize: "20px"
+    fontWeight: 600
+    lineHeight: 28
+  title:
+    fontFamily: "Segoe UI Variable Display, Segoe UI Variable Text, Segoe UI, sans-serif"
+    fontSize: "28px"
+    fontWeight: 600
+    lineHeight: 36
+  numeral:
+    fontFamily: "Cascadia Mono, Cascadia Code, Consolas, IBM Plex Mono, monospace"
+    fontSize: "12px"
+    fontWeight: 400
+    lineHeight: 16
+    letterSpacing: "0.01em"
+rounded:
+  small: "2px"
+  control: "4px"
+  card: "8px"
+  overlay: "8px"
+  pill: "999px"
+  macos-control: "6px"
+  macos-card: "10px"
+  macos-panel: "12px"
+spacing:
+  base: "4px"
+  xs: "4px"
+  sm: "8px"
+  md: "12px"
+  lg: "16px"
+  xl: "20px"
+  xxl: "24px"
+components:
+  button-accent:
+    backgroundColor: "{colors.accent}"
+    textColor: "{colors.accent-on}"
+    rounded: "{rounded.control}"
+    padding: "5px 11px 6px"
+    height: "32px"
+  button-standard:
+    backgroundColor: "{colors.layer}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.control}"
+    padding: "5px 11px 6px"
+    height: "32px"
+  button-subtle:
+    backgroundColor: "transparent"
+    textColor: "{colors.text}"
+    rounded: "{rounded.control}"
+    padding: "5px 11px 6px"
+    height: "32px"
+  card:
+    backgroundColor: "{colors.layer}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.card}"
+    padding: "16px"
+  flyout:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.overlay}"
+    padding: "12px 14px"
+  input:
+    backgroundColor: "{colors.layer}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.control}"
+    padding: "5px 10px 6px"
+    height: "32px"
+  segmented:
+    backgroundColor: "{colors.layer}"
+    textColor: "{colors.text-2}"
+    rounded: "{rounded.control}"
+    height: "32px"
+---
+
+# AudioLink 设计系统（DESIGN.md）
+
+> **本文是项目设计的唯一权威（single source of truth），机读令牌在 YAML frontmatter。**
+> 上游依据（规范调研，只读）：`docs/design/fluent-2.md`（Fluent 2 / Windows 11）、`docs/design/macos-hig.md`（macOS HIG）。
+> 视觉基准（可运行样张）：`docs/design/preview/fluent.html`、`docs/design/preview/macos.html`。
+> 落地目标：`desktop/`（Tauri 2 + React 19 + Tailwind v4）与 `android/`（Kotlin + Compose M3）。
+> 效力顺序：**本文 > 样张 > 规范调研稿 > 既有代码**。界面要变，先改本文。
+
+## Overview
+
+AudioLink 把任意节点的声音低延迟、可同步地推给局域网内的其他节点。界面的职责不是展示功能，而是让「在推什么、给谁、质量如何」在三秒内可读——使用者整晚不看界面，靠余光判断系统是否正常。
+
+**视觉世界**：Microsoft Fluent 2（Windows 11 口径）。桌面端是主场：Mica 窗口底 + 层叠表面 + 系统字体 + 4/8px 小圆角 + 双层焦点描边。macOS HIG 是桌面端的**可选外观**（第二语言，`data-style="macos"`），不是第二套产品。Android 端以 Material 3 的结构与交互惯例承载**同一套令牌与状态语义**。
+
+**两条正交的轴**（桌面端）：`data-style` = `fluent` \| `macos`（语言），`data-theme` = `light` \| `dark`（光照）。四套外观各自完整，**没有一套是另一套反转出来的**。
+
+**允许的平台差异**：控件高度、触控目标（Android ≥48dp）、导航模式（桌面侧栏 / 手机单页）、窗口圆角与系统标题栏（由 OS 提供）、字体族。
+**不允许的差异**：状态色的语义与文案、强调色色相、字号档位、语义色用途、错误文案口径。
+
+## Colors
+
+颜色分三层：**global（原始值）→ alias（语义，界面只准用这层）→ 组件**。界面里不允许出现裸十六进制。
+
+| 语义 | 深色（默认） | 浅色 | 用途 |
+|---|---|---|---|
+| `window` | `#202020` | `#F3F3F3` | 窗口底（Mica 降级时的纯色兜底） |
+| `chrome` | `#272727` | `#F9F9F9` | 侧栏 / 工具栏（自有底色层） |
+| `surface` | `#2B2B2B` | `#FBFBFB` | 卡片 / 面板基底 |
+| `surface-2` | `#323232` | `#F5F5F5` | 悬停 / 次级表面 |
+| `sunken` | `#1A1A1A` | `#EDEDED` | 下沉槽（输入框、下拉、滑轨底座） |
+| `layer` | `rgba(58,58,58,.298)` | `rgba(255,255,255,.502)` | 官方 LayerFillColorDefault 之上的填充层 |
+| `line` / `line-strong` | `rgba(255,255,255,.08)` / `.14` | `rgba(0,0,0,.06)` / `.14` | 描边 / 强调描边 |
+| `text` | `#FFFFFF` | `#1B1B1B` | 正文 |
+| `text-2` | `#C5C5C5` | `#616161` | 次要文字（说明、单位） |
+| `text-3` | `#8A8A8A` | `#8A8A8A` | 三级文字（指纹、时间戳） |
+| `accent` | `#4CC2FF` | `#0F6CBD` | 主操作、选中态、焦点强调 |
+| `accent-on` | `#003A5C` | `#FFFFFF` | accent 之上的文字 |
+| `ok` | `#6CCB5F` | `#0F7B0F` | 推流中 / 接收中 |
+| `warn` | `#FCE100` | `#9D5D00` | 网络不稳 / 重连中 |
+| `danger` | `#FF99A4` | `#C42B1C` | 断开 / 失败 |
+| `idle` | `#9A9BA3` | `#82838C` | 空闲（中性，不抢注意力）；桌面端当前复用 `text-3`，迁移时拆成独立令牌 |
+
+**材质填充**（玻璃层专用，见 Elevation & Depth）：
+
+| 语义 | 深色 | 浅色 |
+|---|---|---|
+| `mica-fill`（z1 窗口底） | `rgba(22,24,32,.68)` | `rgba(242,244,250,.68)` |
+| `chrome-fill`（z2 侧栏/工具栏） | `rgba(15,18,26,.64)` | `rgba(255,255,255,.62)` |
+| `card-fill` + `card-veil`（z3 卡片） | `rgba(58,58,58,.298)` + `rgba(52,56,66,.38)` | `rgba(255,255,255,.502)` + `rgba(255,255,255,.26)` |
+| `pop-fill`（z4 浮层，最实） | `rgba(47,50,60,.84)` | `rgba(253,253,255,.85)` |
+| `card-stroke` | `rgba(255,255,255,.115)` | `rgba(0,0,0,.10)` |
+
+**纪律**：accent 只用于主操作与选中态，**小面积**（一屏实心 accent 按钮 ≤1 枚）；语义色只表达状态，不做装饰、不做分类；状态永远**颜色 + 图标/文案**双通道，禁止只靠颜色。
+
+## Typography
+
+| 档位 | 字号 / 行高 | 字重 | 用途 |
+|---|---|---|---|
+| Caption | 12 / 16 | 400 | 指纹、单位、表头、辅助说明 |
+| Body | 14 / 20 | 400 | 正文、按钮、输入框、列表 |
+| Subtitle | 20 / 28 | 600 | 卡片主标题、数值读数 |
+| Title | 28 / 36 | 600 | 页面标题（替代原 20px page-title 的大标题档） |
+| 等宽数字 | 12 / 16 | 400 | 延迟、码率、丢包、时间码 —— **必须等宽**，避免跳动 |
+
+**字体**：Fluent 用 `Segoe UI Variable Text`（标题档可切 `Display`）；macOS 外观用 Inter（SF Pro 的开源替代）；数字一律 `Cascadia Mono` / `IBM Plex Mono`。Android 用系统字体 + 同一套字号档（12/14/20sp）。
+
+**禁忌**：不用 italic；不用全大写（中文无此形态，英文标签也不做）；标题字重只用 600，不引入 500/700 的新档；字号不取档位之外的中间值。
+
+## Layout
+
+- **窗口**：默认 1100×720，最小 1024×640，最大不设（不破版上限 3840×2160）。
+- **桌面骨架**：左侧栏 280px 固定 + 右侧主区（工具栏 52px + 内容区）。内容区滚动，侧栏独立滚动。
+- **间距节奏**：4 的倍数，常用 4 / 8 / 12 / 16 / 20 / 24。卡片内边距 16，卡片间距 10–16，区块间距 16–24。
+- **栅格**：设备卡片在内容区内单列纵向堆叠（信息密度优先于多列铺排）；窗口 ≥1600px 时可两列，间距 16。
+- **控件高度**：桌面 32px（输入框、按钮、分段控件、下拉），小图标按钮 28–32px；**Android 触控目标 ≥48dp**。
+- **不破版**：桌面 1024 宽起可用；Android 360–840dp；1.3× 大字体下状态卡片不裁切。
+
+## Elevation & Depth
+
+深度用**材质分层**表达，不用阴影堆叠。五层结构（z0 → z4），下层永远为上层提供可采样的背景：
+
+| z | 层 | 配方 |
+|---|---|---|
+| z0 | 应用背景（用户可配单/双/三色） | `--wall-base` 纯色 + `--wall-image` 线性渐变 |
+| z1 | Mica 等效（窗口底） | `mica-fill` + `backdrop-filter: blur(60px) saturate(180%)` |
+| z2 | chrome（侧栏 / 工具栏） | `chrome-fill` + `blur(32px) saturate(150%)` + 1px `line` 分隔 |
+| z3 | 卡片（玻璃片） | `card-fill` + `card-veil`（合计 ≈ .56 深 / .63 浅）+ `blur(16px) saturate(140%)` + 1px 描边 + 顶亮/底暗内边 + 外投影 |
+| z4 | 浮层 Acrylic | `pop-fill` + `blur(40px) saturate(160%)` + 8px 圆角 + 1px 描边 + 内高光 + 外投影 |
+
+**判据**：玻璃要「糊得住 / 透得出 / 读得清」。壁纸色到达某一层的**累计透光率**控制在 **10–15%**（实测四层分别 11.5% / 13.9% / 2.2%，z4 因承载交互而最实）。验收时把背景切成单色——整个 UI 必须被明显染色，否则就是糊成了灰板。
+
+**阴影词汇**（只用于浮起的表面，其余用 1px 描边）：
+
+```css
+--shadow-card:    0 1px 2px rgba(0,0,0,.28);            /* 卡片（深色） */
+--shadow-overlay: 0 8px 16px rgba(0,0,0,.44);           /* 浮层 */
+--shadow-flyout:  0 12px 32px -10px rgba(0,0,0,.62);    /* 浮层（样张口径） */
+```
+
+**降级**（必须实现）：系统关闭透明效果 / 省电模式 / Mica 不可用时，`window` 纯色兜底；玻璃层退化为对应纯色填充；界面不得把「底是 Mica」当作布局前提。
+
+### 四条实测红线（2026-09-18 起生效）
+
+1. **浮层必须脱离玻璃祖先**（React 里 = 必须 `createPortal` 到 `body`）。带 `backdrop-filter` 的元素会成为后代的 **backdrop root**，把后代能采样到的背景限制在自己的盒子内；浮层伸出盒子的部分没有内容可采样 → `blur()` 完全失效，只剩半透明底。
+2. **`fixed` 也救不了**：带 `backdrop-filter` 的祖先同时是 `fixed` 后代的 **containing block**。探针实测：浮层留在玻璃祖先内改 `position: fixed`，写 `left:300px` 实际渲染在 `580px`。**只改定位、不移 DOM 是死路。**
+3. **portal 必须配焦点管理**：浮层挂到 `body` 末尾后，Tab 从触发按钮进浮层会绕到页面底部。打开时程序化聚焦浮层内第一个可聚焦元素，关闭时把焦点归还触发按钮；`Esc` 关闭并同步 `aria-expanded`。
+4. **玻璃不许嵌套**：同一块内容被两层 `backdrop-filter` 叠加 = 模糊两次且语义混乱。Acrylic **只属于浮层**；卡片/面板用填充与描边表达层次，不再自带 backdrop。
+
+## Shapes
+
+| 元素 | Fluent | macOS 外观 |
+|---|---|---|
+| 小元素（≤32px：色块、滑块拇指、开关拇指） | 2px | 4px |
+| 控件（按钮、输入框、分段、下拉） | 4px | 6px |
+| 卡片 / 浮层 | 8px | 10px / 12px |
+| 标签 / 开关轨道 / 滑块轨道 | 999px（pill 白名单仅此四类 + 头像） | 同 |
+
+**描边纪律**：Windows 用 1px 描边代替 key shadow —— 卡片 `card-stroke`，控件 `ctrl-stroke`，输入框底边深一档（`ctrl-stroke-strong`）；聚焦时底边变 2px accent。
+
+**焦点视觉**：双层描边 —— 外 `focus-outer`、内 `focus-inner`（深色：外白内黑；浅色：外黑内白），`outline-offset: 1px`。**禁止**用颜色变化或阴影表达 focus。
+
+## Components
+
+组件只消费语义令牌，不写裸色值；交互态（hover / pressed / disabled / focus）必须四态齐备。
+
+**按钮**（三型，高度 32px，圆角 4px，字号 14，`padding: 5px 11px 6px`）：
+
+| 类型 | 默认 | hover | pressed | disabled |
+|---|---|---|---|---|
+| accent（主操作，一屏 ≤1 枚） | `accent` 填充 + `accent-on` 文字 | `accent-hover` | `accent-pressed` | 填充 30% 不透明 + 文字 `text-disabled` |
+| standard（次操作） | `ctrl-fill` + 1px `ctrl-stroke` | `ctrl-fill-hover` | `ctrl-fill-pressed` | 文字 `text-disabled` |
+| subtle（图标/行内） | 透明 + 透明描边 | `ctrl-fill-subtle-hover` | `ctrl-fill-subtle-pressed` | 文字 `text-disabled` |
+
+**输入框 / 下拉**：`well-fill` 底 + 1px 描边（底边 `well-bottom` 深一档）+ 圆角 4px；聚焦 → 底边 2px accent + 底色转 `input-active`。原生 `<select>` 需不透明选项底色（`option-bg`）。
+
+**开关**：40×20 轨道 + 12px 拇指，轨道 pill；开态 accent 填充 + `accent-on` 拇指。
+
+**分段控件**：外框圆角 4px + 2px 内边距，选中项圆角 2px 且用 accent 填充；**不是 pill**。
+
+**滑块**：轨道 pill（4px 高）+ 16px 拇指（1px 环 + 1px 外描边）；已填充部分 accent，读数等宽右对齐；被对端锁定时显示锁图标与上限刻度。
+
+**卡片**：`card-fill` + `card-veil` 玻璃片 + 1px `card-stroke` + 8px 圆角 + 顶亮/底暗内边（`inset 0 1px 0 rgba(255,255,255,.10)` / `inset 0 -1px 0 rgba(0,0,0,.34)`）+ 外投影；标题 14/600，描述 `text-2`；状态着色只用极淡的 tint + 左侧 2px 状态细线（不整卡染色）。
+
+**浮层（Acrylic）**：`pop-fill` + `blur(40px) saturate(160%)`，8px 圆角，1px 描边，内高光 + 外投影，`min-width: 240px`，内边距 12/14。**必须 portal 到 body**（见红线 1–3），`position: fixed` 由 JS 按触发元素 rect 定位，`resize` / `scroll`（捕获阶段）重算。
+
+**对话框**：遮罩用 Smoke 纯色 `rgba(0,0,0,.302)`（**不用** backdrop blur），主体用浮层材质 + 圆角 8px，进出各 200ms 淡入淡出。
+
+**状态灯与徽标**：灯 8px 圆点 + 同色 halo；标签用 999px pill + `ctrl-fill` 底 + `ctrl-stroke` 描边 + 12px 文字。呼吸动画仅用于「进行中」状态，`prefers-reduced-motion` / Android 动画缩放为 0 时必须真正停住。
+
+**滚动条**：细轨（12px，含 4px 透明内边距），拇指 `ctrl-stroke-strong`，悬停 `text-3`；不画箭头、不做自定义轨道底色。
+
+**空态**：下沉槽（`well`）承载一句 `text-2` 文案 + 一个主操作入口，不画插画。
+
+## Do's and Don'ts
+
+**Do**
+
+- 用语义令牌写样式；颜色只在令牌表里出现一次。
+- 状态用「颜色 + 图标/文案」双通道；灯与数字并列，首屏回答三问。
+- 长驻内容用填充与描边分层；玻璃只给窗口底、chrome、卡片、浮层这四类。
+- 数字用等宽字体并与单位同档；布局不因数字位数变化而跳动。
+- 浮层一律 portal + fixed + 焦点转移；`Esc` 关闭、`aria-expanded` 同步。
+- 桌面与 Android 的状态色、文案、语义保持一致（同一盏灯，两种外壳）。
+- 深色与浅色同时可用，浅色不是深色的反转（各自的对比度与层次单独验收）。
+
+**Don't**
+
+- 不要在带 `backdrop-filter` 的祖先里渲染浮层，也不要指望改成 `fixed` 就能绕开（红线 1–2）。
+- 不要让玻璃嵌套（父子同时带 `backdrop-filter`）。
+- 不要把 pill 用在按钮、卡片、输入框上（白名单：标签、开关轨道、滑块轨道、头像）。
+- 不要在长驻内容上使用 Acrylic；不要在对话框遮罩上用 blur。
+- 不要用 500 以下字重的标题、不要 italic、不要全大写。
+- 不要用语义色做装饰或分类；不要只靠颜色传达状态。
+- 不要出现裸十六进制、裸 px 色值或内联样式里的颜色。
+- 不要写"未知错误"；错误文案必须给成因 + 恢复路径，协议码只出现在诊断区。
+
+## Migration & Gaps
+
+本节记录**现状与本文的差距**，供重构分步执行（按顺序，每步可独立回滚）。
+
+### 桌面端（`desktop/`）
+
+| 差距 | 现状 | 目标 |
+|---|---|---|
+| 材质 | `--t-window/chrome/surface` 是**不透明实色**，玻璃只存在于样张 | 引入 z0–z4 五层结构；Mica 由 Tauri 窗口层提供（`window-vibrancy` 或 `DwmSetWindowAttribute`），CSS 只做应用内层级 |
+| 令牌命名 | `--t-*`（历史名） | 统一为 `--al-*`（见 `docs/design/fluent-2.md` §10.1），`@theme` 暴露 `--color-al-*` |
+| 玻璃嵌套 | 侧栏内卡片曾同时带 backdrop（样张 `sidebar ⊃ collect-card` 已复现该坑） | 卡片不再自带 backdrop，只保留填充 + 描边 |
+| 浮层 | 组件内就地渲染（`PairDialog`、抽屉等） | 一律 `createPortal(document.body)` + 焦点转移 |
+| 页面标题 | `page-title` 为 20px | 提到 28px Title 档（或明确降级为 Subtitle，二选一并统一） |
+| 状态灯 idle | 复用 `--t-text-3`（#8A8A8A） | 独立 `idle` 令牌（#9A9BA3 / #82838C） |
+| 诊断抽屉 | 右侧抽屉 + 内容堆叠 | 保持结构，换成浮层材质 + 8px 圆角 + 描边分层 |
+
+### Android 端（`android/`）
+
+| 差距 | 现状 | 目标 |
+|---|---|---|
+| 调色板 | **On-Air Console** 暖调自研（primary `#C9A227` 铜金 / tertiary+error `#E8542F` 橙红 / surface `#1A1614` 暖黑） | 对齐本文基准：primary = `accent`、error = `danger`、surface 系 = `surface` 阶；暖调色相退役 |
+| 状态色 | `StatusColors(on/warn/live/idle)` 暖调值 | 取本文 `ok` / `warn` / `danger` / `idle`（含 Ink 变体），与桌面同值 |
+| 形状 | M3 默认 | `small = 4dp`（控件）、`medium = 8dp`（卡片/浮层）、小元素 2dp；pill 白名单同桌面 |
+| 字阶 | M3 默认排版 | 12 / 14 / 20sp 三档 + 等宽数字，与桌面同档 |
+| 玻璃 | 无 | Android 不使用 Mica/Acrylic；用 `surface` 阶 + 描边表达层次（平台惯例优先） |
+**M3 角色 → 基准令牌（实施对照，落点是 `ui/theme/Color.kt`）**
+
+| M3 角色 | 深色 | 浅色 | 来源 |
+|---|---|---|---|
+| `background` | `#1A1A1A` | `#F3F3F3` | sunken / window |
+| `surface` | `#202020` | `#FBFBFB` | window / surface |
+| `surfaceContainerLowest` | `#1A1A1A` | `#EDEDED` | sunken |
+| `surfaceContainerLow` | `#202020` | `#F9F9F9` | window / chrome |
+| `surfaceContainer` | `#2B2B2B` | `#FBFBFB` | surface |
+| `surfaceContainerHigh` | `#323232` | `#F5F5F5` | surface-2 |
+| `surfaceContainerHighest` | `#3D3D3D` | `#EDEDED` | Fluent grey-24 |
+| `surfaceVariant` | `#3D3D3D` | `#F5F5F5` | grey-24 / surface-2 |
+| `onSurface` | `#FFFFFF` | `#1B1B1B` | text |
+| `onSurfaceVariant` | `#C5C5C5` | `#616161` | text-2 |
+| `outline` | `#616161` | `#8A8A8A` | grey-38 / text-3 |
+| `outlineVariant` | `#3D3D3D` | `#D1D1D1` | grey-24 / grey-82 |
+| `primary` | `#4CC2FF` | `#0F6CBD` | accent |
+| `onPrimary` | `#003A5C` | `#FFFFFF` | accent-on |
+| `primaryContainer` | `#0F548C` | `#DCE9F7` | brandWeb[60] / 派生（浅色无官方值） |
+| `onPrimaryContainer` | `#62ABF5` | `#0F548C` | brandWeb[110] / brandWeb[80] |
+| `secondary` | `#C5C5C5` | `#616161` | text-2 |
+| `onSecondary` | `#003A5C` | `#FFFFFF` | accent-on |
+| `secondaryContainer` | `#323232` | `#F5F5F5` | surface-2 |
+| `onSecondaryContainer` | `#FFFFFF` | `#1B1B1B` | text |
+| `tertiary` | `#479EF5` | `#115EA3` | brandWeb[100] / brandWeb[70] |
+| `onTertiary` | `#003A5C` | `#FFFFFF` | accent-on |
+| `tertiaryContainer` | `#0C3B5E` | `#DCE9F7` | brandWeb[40] / 派生 |
+| `onTertiaryContainer` | `#77B7F7` | `#0C3B5E` | brandWeb[120] / brandWeb[40] |
+| `error` | `#FF99A4` | `#C42B1C` | danger |
+| `onError` | `#442726` | `#FFFFFF` | critical-bg / accent-on |
+| `errorContainer` | `#442726` | `#FDE7E9` | critical-bg |
+| `onErrorContainer` | `#FF99A4` | `#C42B1C` | danger |
+| `inverseSurface` / `inverseOnSurface` | `#FFFFFF` / `#202020` | `#202020` / `#FFFFFF` | text / window |
+| `inversePrimary` | `#0F6CBD` | `#4CC2FF` | accent（另一主题） |
+| `surfaceTint` | `= primary` | `= primary` | — |
+| `scrim` | `#000000` | `#000000` | Smoke 之外的对话框遮罩 |
+
+**`StatusColors`（`ui/theme/Theme.kt`）**：深色 `on #6CCB5F` / `warn #FCE100` / `live #FF99A4` / `idle #9A9BA3`；浅色 `on #0F7B0F` / `warn #9D5D00` / `live #C42B1C` / `idle #82838C`。`*Ink` 取同值（灯与文字同色，对比度按 §Colors 验收）。
+**语义保持不变**：`live` 仍是「ON AIR / 失败断开」的红，必须与桌面 `--color-lamp-live: var(--t-danger)` 同义，不要改成绿色。
+
+**被实际消费的角色/档位**（改造时必须覆盖；实测于 `android/.../ui/`）：`colorScheme` 的 `background` `surfaceContainer` `surfaceContainerHigh` `onSurface` `onSurfaceVariant` `primary` `primaryContainer` `onPrimaryContainer` `error` `errorContainer` `onErrorContainer` `outline` `outlineVariant`；`typography` 的 `bodySmall` `bodyMedium` `labelSmall` `labelLarge` `titleSmall` `titleMedium` `titleLarge`；`shapes.medium`；`statusColors.*` 四档。
+
+**桌面端 `desktop/src/index.css` 的材质令牌差距**（步骤 B/C 用）：现有 514 行只覆盖 z0–z3 的不透明实色，缺 `mica-fill` / `chrome-fill` / `card-fill` / `card-veil` / `card-stroke` / `pop-fill` / `pop-stroke`；`src-tauri` 中**没有任何** window-vibrancy / DwmSetWindowAttribute / transparent 代码，Mica 未被接上（CSS `backdrop-filter` 拿不到桌面壁纸，必须窗口层实现）。
+
+### 未决（需人工确认）
+
+1. **视觉世界是否为最终选型**：本文按 Fluent 2 基准固化。若决定保留 Android 的 On-Air Console 暖调个性，需要改写 Colors/Components 两节，并把本文改成"双语言并列"结构。
+2. 壁纸饱和度（Fluent 浅色偏甜）是否收敛一档。
+3. `page-title` 最终档位（Title 28 vs Subtitle 20）。
+

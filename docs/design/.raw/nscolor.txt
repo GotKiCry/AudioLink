@@ -1,0 +1,29 @@
+# NSColor> An object that stores color data and sometimes opacity (alpha value).
+swiftclass NSColor
+## OverviewMany methods in AppKit require you to specify color data using an [NSColor] object; when drawing you use them to set the current fill and stroke colors. Color objects are immutable and thread-safe. You can create color objects in many ways:
+- Load colors from an asset catalog. Colors created from assets can adapt automatically to system appearance changes.
+
+- Use the semantic colors for custom UI elements, so that they match the appearance of other AppKit views; see [ui-element-colors].
+
+- Use the adaptable system colors, such as [systemBlue], when you want a specific tint that looks correct in both light and dark environments.
+
+- Create a color object from another object, such as a Core Graphics representation of a color, or a Core Image color.
+
+- Create a color from an [NSImage] object, and paint a repeating pattern instead of using a solid color.
+
+- Create a color by applying a transform to another [NSColor] object. For example, you might perform a blend operation between two colors, or you might create a color that represents the same color, but in a different color space.
+
+- Create custom colors using raw component values, and a variety of color spaces, when you need to represent user-specified colors.
+
+For user-specified colors, you can also display a color panel and let the user specify the color. For information about color panels, see [NSColorPanel].
+
+### Color and color spacesA color object is typically represented internally as a Core Graphics color ([CGColor]) in a Core Graphics color space ([CGColorSpace]). Colors can also be created in extended color spaces:
+- [extendedSRGB]
+
+- [extendedGenericGamma22Gray]
+
+When you need to worry about color spaces, use extended color spaces as working color spaces. When you need to worry about representing that color as closely as possible in a specific color space, convert the color from the extended color space into the target color space.
+When working in an extended color space, color values are not clamped to fit inside the color gamut, meaning that component values may be less than `0.0` or greater than `1.0`. When displayed on an sRGB display, such colors are outside the gamut and won’t render accurately. However, extended color spaces are useful as working color spaces when you want a pixel format and representation that other color spaces can be easily converted into. For example, a color in the Display P3 color space can convert to an extended sRGB format, even if it isn’t within the sRGB color gamut. While some of the converted color’s values are outside of the 0-1.0 range, the color renders correctly when viewed on a device with a P3 display gamut.
+It is a programmer error to access color components of a color space that the `NSColor` object does not support. For example, you cannot access the [redComponent] property and [getRed(_:green:blue:alpha:)] method on a color that uses the CMYK color space. Further, the [getComponents(_:)] method and [numberOfComponents] property work only in color spaces that have individual components. As such, they return the components of color objects as individual floating-point values regardless of whether they’re based on [NSColorSpace] objects or named color spaces. However, older component-fetching methods such as [getRed(_:green:blue:alpha:)] are effective only on color objects based on named color spaces.
+If you have a color object in an unknown color space and you want to extract its components, convert the color object to a known color space and then use the component accessor methods of that color space.
+For design guidance, see Human Interface Guidelines > [].

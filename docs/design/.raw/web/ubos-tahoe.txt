@@ -1,0 +1,118 @@
+[✨ From vibe coding to vibe deployment. UBOS MCP turns ideas into infra with one message. Learn more](https://ubos.tech/mcp-server) [UBOS
+![](https://i0.wp.com/ubos.tech/wp-content/uploads/2023/03/cropped-Group-21015-1.png?fit=1260%2C424&ssl=1)](/) Open main menu Products [Agent Platform](https://ubos.tech/platform/) Build your own enterprise ready Multi Agent System [Web Application](https://ubos.tech/web-app-editor/) Create business web application with Visual Drag&Drop Editor [Agentic Workflows & Integrations](https://ubos.tech/workflow-automation-studio/) Connect to 1000+ API & Automate your workflows with AI [Watch tutorials](https://www.youtube.com/@ubos_tech) Solutions [Startups Drive your startup’s growth with our flexible, AI-focused **open-source development platform**](https://ubos.tech/startups/)
+[SMB Unlocking growth and efficiency for small and medium businesses through **AI and low-code/no-code**](https://ubos.tech/ubos-for-smb/)
+[Enterprise Empowering large-scale innovation with advanced ML orchestration and **Generative AI** custom integration](https://ubos.tech/enterprise-ai-platform/) Solution Gallery
+[![Image Description](https://ubos.tech/wp-content/uploads/2024/02/solution-gallery.webp) Navigate through our gallery of innovative industry solutions across technology, IoT, finance, retail, and education. Browse now](https://ubos.tech/portfolio/) [Asset Marketplace +7](https://ubos.tech/listing/)
+[Pricing](https://ubos.tech/pricing/) AI Agents [Retail & eCommerce AI Agent](https://ubos.tech/retail-ai-agent/) [Marketing AI Agent](https://ubos.tech/marketing-ai-agent/) [Host Clawd.bot](https://ubos.tech/host-clawdbot/) [Generative AI Starter Kit](https://ubos.tech/listing/ai-chatbot/) [AI Audio & Voice](https://ubos.tech/listing/ai-powered-audio-transcription-and-analysis/) [AI Video & Avatars](https://ubos.tech/listing/video-ai-chat-bot/) Resources [Documentation](https://documentation.ubos.tech/docs/intro/) [Blog](https://ubos.tech/blog/) [Community](https://community.ubos.tech/) [Partner Program](https://ubos.tech/partner-program/) [About Us](https://ubos.tech/about-us/) [UBOS Academy](https://www.youtube.com/@ubos_tech) [Github](https://github.com/UBOS-tech) [Discord](https://discord.gg/xj6xnmG7KZ) [Login](https://platform.ubos.tech/) [Create AI Agent](https://platform.ubos.tech/) [UBOS
+![](https://i0.wp.com/ubos.tech/wp-content/uploads/2023/03/cropped-Group-21015-1.png?fit=1260%2C424&ssl=1)](#) Close menu Products [Platform](https://ubos.tech/platform/)
+[Web Applications](https://ubos.tech/web-app-editor/)
+[Workflow Automation](https://ubos.tech/workflow-automation-studio/)
+[Enterprise AI Platform](https://ubos.tech/enterprise-ai-platform/) Solutions [UBOS for Startups](https://ubos.tech/startups/)
+[UBOS for SMB](https://ubos.tech/ubos-for-smb/)
+[UBOS for Enterprise](https://ubos.tech/enterprise-ai-platform/)
+[Solutions Gallery](https://ubos.tech/portfolio/) [Asset Marketplace](https://ubos.tech/listing/) [Pricing](https://ubos.tech/pricing/) AI Agents [Retail AI Agent](https://ubos.tech/retail-ai-agent/)
+[Marketing AI Agent](https://ubos.tech/marketing-ai-agent/)
+[Generative AI Starter Kit](https://ubos.tech/listing/ai-chatbot/)
+[AI Audio & Voice](https://ubos.tech/listing/ai-powered-audio-transcription-and-analysis/)
+[AI Video & Avatars](https://ubos.tech/listing/video-ai-chat-bot/) Resources [Documentation](https://documentation.ubos.tech/docs/intro)
+[Blog](https://ubos.tech/blog/)
+[Community](https://community.ubos.tech/)
+[Partner Program](https://ubos.tech/partner-program/)
+[About us](https://ubos.tech/about-us/) [UBOS Academy](https://www.youtube.com/@ubos_tech) [Github](https://github.com/UBOS-tech) [Discord](https://discord.gg/xj6xnmG7KZ) [Log in](https://platform.ubos.tech/) [Create AI Agent](https://platform.ubos.tech/) ![](https://secure.gravatar.com/avatar/7226b627413611a41adbbecfce0211c2?s=100&d=mm&r=g) Andrii Bidochko * Updated: December 28, 2025
+* 7 min read macOS Tahoe Liquid Glass UI Review: A Critical Look
+=================================================== **macOS Tahoe’s Liquid Glass UI is a bold visual overhaul that blends sleek, glass‑like transparency with heavily rounded corners, but it also introduces usability and accessibility challenges that have divided the Mac community.** Overview of macOS Tahoe’s Liquid Glass Redesign
+----------------------------------------------- Apple unveiled *macOS Tahoe* on September 15, 2025, positioning the new **Liquid Glass UI** as the next evolution of its desktop experience. The redesign replaces the classic rectangular windows with pronounced curvature, introduces a uniform icon silhouette, and leans heavily on translucent layers that mimic liquid glass. Apple markets these changes as a step toward visual consistency across its ecosystem, especially with the Vision Pro and iOS design language. While the aesthetic ambition is clear, early adopters report mixed feelings. The redesign aims to create a “seamless, fluid” feel, yet many power users argue that the trade‑offs outweigh the visual gains. Below we dissect each UI element, assess its impact on productivity, and compare it with previous macOS releases. ![macOS Tahoe Liquid Glass UI](https://ubos.tech/wp-content/uploads/2025/12/ubos-ai-image-2936.png.image_src) Detailed Critique of UI Elements
+-------------------------------- ### Rounded Corners – Aesthetic or Obstacle? The most noticeable change is the dramatic increase in corner radius. Where macOS Sequoia used a subtle 4‑pixel curve, Tahoe pushes this to 12‑pixel arcs across all windows, dialogs, and panels. This shift creates a “soft” visual language but introduces practical issues: * **Content Cropping:** Images, videos, and web pages that rely on exact pixel dimensions are often clipped, especially in Finder’s Gallery view.
+* **Wasted Screen Real Estate:** The larger curvature reduces usable area, forcing users to scroll more in applications that display dense data tables.
+* **Inconsistent Radii:** Even within the same app, SwiftUI‑generated windows sometimes inherit different corner radii, breaking the promised consistency. ### Icon Redesign – Uniformity vs. Distinguishability Apple now mandates that every app icon fits inside a square with the same rounded corners. The result is a homogenized Dock where many icons blend into one another. Notable pain points include: * Loss of brand‑specific shapes (e.g., the distinctive “A” of [UBOS portfolio examples](https://ubos.tech/portfolio/)).
+* Reduced color contrast, making it harder to locate apps quickly, especially in a crowded Dock.
+* Confusion between system apps such as **App Store** and **Developer**, which now appear almost identical. ### Color Palette – “Whiteout” and “Midnight” Modes Apple’s Light Mode now leans toward a bleached white, while Dark Mode adopts an almost pitch‑black background. The lack of intermediate tones creates a “whiteout” effect where UI elements float without clear boundaries. Users report: * Difficulty distinguishing controls from content, especially in text‑heavy applications.
+* Eye strain during prolonged sessions, as the high contrast can be harsh on the retina.
+* Accessibility concerns for users who rely on strong visual cues. ### Transparency Effects – Wet‑on‑Wet Visuals The Liquid Glass UI heavily employs translucency, reminiscent of water‑color “wet‑on‑wet” techniques. While elegant in isolation, the effect becomes problematic when layered: * Background colors bleed through controls, making text unreadable in [UBOS templates for quick start](https://ubos.tech/templates/) that rely on clear contrast.
+* The `Reduce Transparency` toggle in Accessibility no longer diminishes the effect, a regression that hampers users with visual impairments.
+* Performance hits on older Mac models, as the GPU must constantly recompute glass‑like layers. Impact on Usability and Accessibility
+------------------------------------- From a usability standpoint, the UI changes affect three core areas: navigation speed, error prevention, and learnability. ### Navigation Speed Rounded corners shrink clickable regions, especially on smaller screens. Users report more frequent mis‑clicks when trying to select window controls (close, minimize, zoom). The enlarged but overlapping buttons in the [Workflow automation studio](https://ubos.tech/workflow-automation-studio/) exemplify this issue. ### Error Prevention Transparency makes it harder to differentiate active fields from background content. In forms, text entry fields blend into the window backdrop, increasing the likelihood of data entry errors. This is especially concerning for enterprise environments that rely on precise input, such as the [Enterprise AI platform by UBOS](https://ubos.tech/enterprise-ai-platform/). ### Learnability & Accessibility Apple’s accessibility settings have traditionally been a strength, but the regression of the `Reduce Transparency` option undermines that reputation. Users with low vision or color‑blindness now face a steeper learning curve, as the UI no longer offers sufficient contrast or clear delineation of interactive elements. > “Design should never force users to adapt their workflow; it should adapt to them.” – [About UBOS](https://ubos.tech/about-us/) User and Expert Reactions
+------------------------- Since launch, the Mac community has voiced a spectrum of opinions on social platforms, forums, and professional reviews. * **Power Users:** Many long‑time Mac enthusiasts argue that the UI feels “iPhone‑ified” and that the loss of crisp rectangular geometry hampers productivity.
+* **Design Critics:** Some UI/UX experts praise the ambition but note that the execution feels premature, especially given the regression in accessibility controls.
+* **Enterprise Leaders:** CIOs evaluating the [UBOS partner program](https://ubos.tech/partner-program/) for internal tools express concern that the new UI could increase training costs.
+* **Developers:** The [Web app editor on UBOS](https://ubos.tech/web-app-editor/) community reports extra effort to redesign apps for the new corner radius, impacting release timelines. Comparison with Previous macOS Versions
+--------------------------------------- To contextualize Tahoe’s redesign, let’s compare it with three recent macOS releases: | Version | Corner Radius | Icon Style | Transparency | Accessibility |
+| --- | --- | --- | --- | --- |
+| macOS Sequoia (13) | 4 px | Varied, app‑specific | Moderate, optional | Full Reduce Transparency |
+| macOS Ventura (14) | 6 px | Slightly uniform | Increased blur | Reduced but functional |
+| macOS Tahoe (15) | 12 px (forced) | Uniform square with rounded corners | Heavy, pervasive | Reduced Transparency broken | While each iteration has nudged the UI toward a more fluid aesthetic, Tahoe represents a quantum leap that many feel outpaces user readiness. Conclusion and Future Outlook
+----------------------------- macOS Tahoe’s Liquid Glass UI is undeniably daring. It showcases Apple’s willingness to experiment with glass‑like translucency and a unified visual language. However, the design’s practical drawbacks—cropped content, indistinguishable icons, and accessibility regressions—suggest that Apple may need to iterate quickly based on community feedback. Looking ahead, we anticipate the following developments: 1. **Fine‑tuned Corner Radii:** A future update could introduce adaptive radii that shrink for high‑density content.
+2. **Customizable Icon Shapes:** Allowing developers to opt‑out of the uniform square could restore brand identity.
+3. **Improved Transparency Controls:** Restoring a functional `Reduce Transparency` toggle will be essential for accessibility compliance.
+4. **AI‑Driven UI Adaptation:** Leveraging platforms like the [AI marketing agents](https://ubos.tech/ai-marketing-agents/) or the [OpenAI ChatGPT integration](https://ubos.tech/open-ai-chatgpt/) could enable dynamic UI scaling based on user preferences. For developers and enterprises building on macOS, the shift underscores the importance of designing flexible interfaces that can adapt to rapid OS changes. Tools such as the [AI SEO Analyzer](https://ubos.tech/ai-seo-analyzer/) and the [AI Article Copywriter](https://ubos.tech/ai-article-copywriter/) can help generate documentation and support content that stays current with UI revisions. Ultimately, whether Liquid Glass becomes a lasting hallmark or a footnote will depend on Apple’s responsiveness to the very vocal Mac community that has long championed both form and function. Further Reading on UBOS and AI‑Powered Workflows
+------------------------------------------------ Explore how AI platforms can complement macOS workflows: * [UBOS homepage](https://ubos.tech/) – Overview of the ecosystem.
+* [UBOS platform overview](https://ubos.tech/platform/) – Core capabilities for developers.
+* [UBOS for startups](https://ubos.tech/startups/) – Accelerate product launches.
+* [UBOS solutions for SMBs](https://ubos.tech/ubos-for-smb/) – Scalable AI tools.
+* [UBOS pricing plans](https://ubos.tech/pricing/) – Choose a plan that fits your budget.
+* [UBOS partner program](https://ubos.tech/partner-program/) – Collaborate and co‑market.
+* [Web app editor on UBOS](https://ubos.tech/web-app-editor/) – Build responsive interfaces.
+* [Workflow automation studio](https://ubos.tech/workflow-automation-studio/) – Automate repetitive tasks.
+* [ElevenLabs AI voice integration](https://ubos.tech/elevenlabs-ai-voice/) – Add natural‑sounding speech.
+* [Chroma DB integration](https://ubos.tech/chroma-db/) – Vector search for AI apps.
+* [Telegram integration on UBOS](https://ubos.tech/telegram-integration/) – Real‑time notifications.
+* [ChatGPT and Telegram integration](https://ubos.tech/telegram-and-chatgpt/) – Conversational bots.
+* [OpenAI ChatGPT integration](https://ubos.tech/open-ai-chatgpt/) – Leverage large language models.
+* [UBOS templates for quick start](https://ubos.tech/templates/) – Jump‑start your projects.
+* [AI SEO Analyzer](https://ubos.tech/listing/ai-seo-analyzer/) – Optimize content for search.
+* [AI Article Copywriter](https://ubos.tech/listing/ai-article-copywriter/) – Generate high‑quality copy.
+* [AI Video Generator](https://ubos.tech/listing/ai-video-generator/) – Create video assets.
+* [AI Image Generator](https://ubos.tech/listing/ai-image-generator/) – Produce custom graphics.
+* [AI Chatbot template](https://ubos.tech/listing/ai-chatbot-template/) – Deploy conversational agents.
+* [GPT‑Powered Telegram Bot](https://ubos.tech/listing/gpt-powered-telegram-bot/) – Automate messaging. For the original in‑depth analysis that sparked this discussion, see the [original article](https://eclecticlight.co/2025/12/28/last-year-on-my-mac-look-back-in-disbelief/) on Eclectic Light Company. --- ![](https://secure.gravatar.com/avatar/7226b627413611a41adbbecfce0211c2?s=100&d=mm&r=g) ### Andrii Bidochko CTO UBOS Andrii Bidochko is an AI entrepreneur and researcher focused on AI agents, reinforcement learning, and autonomous systems. He writes about the technologies shaping the future of machine intelligence, from frontier models and agent architectures to real-world AI applications. Related articles
+---------------- [Microsoft Makes Agent Runtime Free While Retaining the Control Plane](https://ubos.tech/news/microsoft-makes-agent-runtime-free-while-retaining-the-control-plane/)
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------- Microsoft Makes Agent Runtime Free While Retaining the Control Plane At Build... [Read in 2 min](https://ubos.tech/news/microsoft-makes-agent-runtime-free-while-retaining-the-control-plane/) [OpenAI’s New AI Model, Sora: Converting Text into Video](https://ubos.tech/news/openais-new-ai-model-sora-converting-text-into-video/)
+--------------------------------------------------------------------------------------------------------------------------------------- OpenAI, the leading artificial intelligence research laboratory, has recently unveiled its latest... [Read in 3 min](https://ubos.tech/news/openais-new-ai-model-sora-converting-text-into-video/) [RestGPT: Connecting Large Language Models with Real-World RESTful APIs](https://ubos.tech/news/restgpt-connecting-large-language-models-with-real-world-restful-apis/)
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------- RestGPT is an innovative project that aims to construct a large language... [Read in 3 min](https://ubos.tech/news/restgpt-connecting-large-language-models-with-real-world-restful-apis/) [Introducing Bard Gemini: The Revolutionary AI-Powered App by Google](https://ubos.tech/news/introducing-bard-gemini-the-revolutionary-ai-powered-app-by-google/)
+----------------------------------------------------------------------------------------------------------------------------------------------------------------- Are you ready to experience the future of AI technology? Look no... [Read in 3 min](https://ubos.tech/news/introducing-bard-gemini-the-revolutionary-ai-powered-app-by-google/) ### Featured Templates [View More](https://ubos.tech/listing/) [![](https://ubos.tech/wp-content/uploads/2023/04/Group-21027-380x214.png)](https://ubos.tech/listing/python-bug-fixer/) AI Engineering
+[##### Python Bug Fixer](https://ubos.tech/listing/python-bug-fixer/) 122 1766 FREE
+[Install](https://ubos.tech/listing/python-bug-fixer/) [![](https://ubos.tech/wp-content/uploads/2023/05/Group-20993-380x214.png)](https://ubos.tech/listing/ai-voice-assistant-voice-text-voice/) AI Agents
+[##### AI Voice Assistant (Voice-Text-Voice)](https://ubos.tech/listing/ai-voice-assistant-voice-text-voice/) 176 2087 FREE
+[Install](https://ubos.tech/listing/ai-voice-assistant-voice-text-voice/) [![](https://ubos.tech/wp-content/uploads/2024/05/Screenshot_1-1-380x181.png)](https://ubos.tech/listing/ai-powered-product-list-manager/) Customer service
+[##### AI-Powered Product List Manager](https://ubos.tech/listing/ai-powered-product-list-manager/) 159 1159 FREE
+[Install](https://ubos.tech/listing/ai-powered-product-list-manager/) [![](https://ubos.tech/wp-content/uploads/2024/07/Screenshot_6-380x182.png)](https://ubos.tech/listing/ai-powered-chatbot/) AI Assistants
+[##### AI Chatbot Starter Kit v0.1](https://ubos.tech/listing/ai-powered-chatbot/) 141 1201 FREE
+[Install](https://ubos.tech/listing/ai-powered-chatbot/) [![](https://ubos.tech/wp-content/uploads/2024/01/image_2023-05-15_15-58-26-380x192.png)](https://ubos.tech/listing/ai-powered-audio-transcription-and-analysis/)
+![Verified Icon](https://ubos.tech/wp-content/themes/front/assets/svg/components/top-vendor.svg) AI Assistants
+[##### Speech to Text](https://ubos.tech/listing/ai-powered-audio-transcription-and-analysis/) 139 2195 FREE
+[Install](https://ubos.tech/listing/ai-powered-audio-transcription-and-analysis/) [![](https://ubos.tech/wp-content/uploads/2023/04/Group-21021-380x214.png)](https://ubos.tech/listing/ai-powered-essay-outline-generator/) AI Assistants
+[##### AI-Powered Essay Outline Generator](https://ubos.tech/listing/ai-powered-essay-outline-generator/) 120 2196 FREE
+[Install](https://ubos.tech/listing/ai-powered-essay-outline-generator/) ### Featured MCP Servers [View More](https://ubos.tech/mcp/) ![icon](https://icons.duckduckgo.com/ip3/www.flightradar24.com.ico) [Flightradar24 Server](https://ubos.tech/mcp/flightradar24-mcp-server/) by sunsetcoder Model Context Protocol server for Flight Tracking 🔗 5
+⭐ 23 ⚖️ MIT License [MySQL MCP](https://ubos.tech/mcp/mysql-mcp-2/) by Liu-creators mysql 数据库-MCP 🔗 0
+⭐ 0 ⚖️ Apache 2.0 ![icon](https://icons.duckduckgo.com/ip3/modelcontextprotocol.io.ico) [Puppeteer](https://ubos.tech/mcp/mcp-puppeteer/) by cploujoux 🔗 0
+⭐ 0 ⚖️ Apache 2.0 ![icon](https://icons.duckduckgo.com/ip3/n8n.io.ico) [n8n](https://ubos.tech/mcp/n8n-2/) by passeth Fair-code workflow automation platform with native AI capabilities. Combine visual building with custom code, self-host or cloud, 400+ integrations. 🔗 0
+⭐ 0 ⚖️ Other [Code Merge](https://ubos.tech/mcp/code-merge-mcp/) by yy1588133 🔗 3
+⭐ 11 ⚖️ MIT License ![icon](https://spjawbfpwezjfmicopsl.supabase.co/storage/v1/object/public/server-icons/2f2feb13-cb2d-4d0f-bc1c-c17cc51d452a.png) [nUR MCP Server](https://ubos.tech/mcp/nur-mcp-server/) by nonead nUR\_MCP\_SERVER is an intelligent industrial collaborative robot control middleware system built based on the MCP (Model Control Protocol) interface protocol. It realizes the natural language interactive control of industrial robots… 🔗 1
+⭐ 3 ⚖️ Other ![icon](https://icons.duckduckgo.com/ip3/github.com.ico) [XiYan MCP Server](https://ubos.tech/mcp/xiyan_mcp_server/) by XGenerationLab A Model Context Protocol (MCP) server that enables natural language queries to databases 🔗 14
+⭐ 82 ⚖️ Apache License 2.0 ![icon](https://icons.duckduckgo.com/ip3/nulab.com.ico) [Backlog Server](https://ubos.tech/mcp/backlog-server/) by nulab 🔗 5
+⭐ 40 ⚖️ MIT License Sign up for our newsletter
+-------------------------- Stay up to date with the roadmap progress, announcements and exclusive discounts feel free to sign up with your email. Email address Subscribe We care about the protection of your data. [Read our Privacy Policy](#). ![logo](https://i0.wp.com/ubos.tech/wp-content/uploads/2023/03/cropped-Group-21015-1.png?fit=1260%2C424&ssl=1) Help people build better software 1007 N Orange St. 4th Floor Wilmington, DE 19801 United States [Discord](https://discord.com/invite/dt59QaptH2)
+[GitHub](https://github.com/UBOS-tech)
+[YouTube](https://www.youtube.com/@ubos_tech)
+[LinkedIn](https://linkedin.com/company/ubostech)
+[Facebook](https://www.facebook.com/ubos.tech)
+[Twitter](https://twitter.com/ubos_tech) Product * [Sign In](#user_login_modal)
+* [Asset Marketplace](https://ubos.tech/listing/)
+* [Pricing](https://ubos.tech/pricing/)
+* [Platform](https://ubos.tech/platform/)
+* [Web applications](https://ubos.tech/web-app-editor/)
+* [Workflow Automation](https://ubos.tech/workflow-automation-studio/)
+* [Sign In](#user_login_modal) Solutions * [UBOS for Enterprise](https://ubos.tech/enterprise-ai-platform/)
+* [UBOS for SMB](https://ubos.tech/ubos-for-smb/)
+* [UBOS for Startups](https://ubos.tech/startups/)
+* [Solution Gallery](https://ubos.tech/portfolio/)
+* [Partner Program](https://ubos.tech/partner-program/) AI Agents * [Marketing AI Agent](https://ubos.tech/marketing-ai-agent/)
+* [Generative AI Starter Kit](https://ubos.tech/listing/ai-chatbot/)
+* [AI Audio & Voice](https://ubos.tech/listing/ai-powered-audio-transcription-and-analysis/)
+* [AI Video & Avatars](https://ubos.tech/listing/video-ai-chat-bot/)
+* [Clawd.bot Hosting](https://ubos.tech/host-clawdbot/) Support * [Documentation](https://documentation.ubos.tech/docs/intro)
+* [Tutorials](https://www.youtube.com/@ubos_tech)
+* [Community](https://community.ubos.tech/)
+* [News](https://ubos.tech/news/)
+* [Privacy Policy](https://ubos.tech/privacy-policy/)
+* [Terms & Conditions](https://ubos.tech/terms-conditions/) © 2022 - 2026 UBOS™. All Rights Reserved. ### Sign In Username or Email Password Sign In Don't have an account yet? [Register](#user_register_modal) [Forgot password?](#user_password_request_modal) ### Register Email Password Register Already have an account? [Sign In](#user_login_modal) ### Reset Password Please enter your username or email address, you will receive a link to create a new password via email. Username or Email Send Email

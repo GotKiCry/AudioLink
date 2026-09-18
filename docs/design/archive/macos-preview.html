@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AudioLink v0.1.0 — macOS</title>
+<style>
+/* ==========================================================================
+   AudioLink · macOS 版界面（单文件预览）
+   设计语言：Apple macOS Human Interface Guidelines
+
+   层级（关键）：
+     z0  .desktop   桌面壁纸（柔和彩色光斑）—— 玻璃的“可透之物”
+     z1  .toolbar / .sidebar   导航 / 控制层：半透明 + saturate(180%) blur(24px)
+                               → 桌面色光从这层透上来，这就是 macOS 玻璃的来源
+     z2  .panel     内容面板：一整块**不透明**浮起面板（官方规矩：内容层无玻璃）
+     z3  .card      面板内的无边框浅灰分组块（inset grouped）
+   ========================================================================== */
+
+/* ---------- 1. 设计令牌 ---------- */
+html[data-theme="dark"]{
+  --win:        #090910;                    /* 根兜底色（被桌面层覆盖） */
+  --panel:      #1B1C22;                    /* 内容面板：冷灰，hue≈228 */
+  --elevated:   #26262F;                    /* 分组块：略偏紫，hue≈266（与面板有色相差） */
+  --sunken:     #131319;                    /* 下沉槽（输入框） */
+  --text:       #F2F2F7;
+  --text-2:     #A1A1AB;
+  --text-3:     #75757F;
+  --accent:     #0A84FF;
+  --green:      #32D74B;
+  --orange:     #FF9F0A;
+  --red:        #FF453A;
+
+  --hairline:   rgba(255,255,255,.085);
+  --sb-hairline:rgba(255,255,255,.10);
+
+  --sidebar-bg: rgba(18,18,26,.46);         /* vibrancy 填充（半透明，桌面色光透上来） */
+  --toolbar-bg: rgba(20,20,30,.50);
+  --vib-sheen:  rgba(255,255,255,.055);     /* vibrancy 顶部亮度梯度 */
+  --vib-top:    rgba(255,255,255,.10);      /* 工具栏 / 侧栏上缘内高光 */
+
+  --ctrl-bg:    rgba(255,255,255,.09);
+  --ctrl-bg-hi: rgba(255,255,255,.15);
+  --ctrl-bg-lo: rgba(255,255,255,.05);
+  --ctrl-bd:    rgba(255,255,255,.14);
+  --seg-bg:     rgba(255,255,255,.08);
+  --seg-thumb:  #636366;
+  --track:      rgba(255,255,255,.16);
+  --focus:      rgba(10,132,255,.42);
+
+  --shadow:     0 12px 40px rgba(0,0,0,.55), 0 1px 0 rgba(255,255,255,.03) inset;
+  --shadow-thumb: 0 .5px 2px rgba(0,0,0,.5), 0 0 0 .5px rgba(0,0,0,.25);
+
+  --glow-g:     rgba(50,215,75,.20);
+  --glow-g-hi:  rgba(50,215,75,.60);
+  --glow-o:     rgba(255,159,10,.20);
+  --glow-o-hi:  rgba(255,159,10,.58);
+  --glow-i:     rgba(152,152,157,.16);
+  --glow-i-hi:  rgba(152,152,157,.38);
+
+  --tint-g:     rgba(50,215,75,.13);        /* 状态灯染到卡片边缘的氛围色 */
+  --tint-o:     rgba(255,159,10,.13);
+  --tint-i:     rgba(255,255,255,.05);
+
+  --panel-lo:   #17181E;                    /* 面板向下微沉一档（仍是纯色，不是玻璃） */
+  --panel-ambient: rgba(12,132,255,.17);    /* 面板右上角一丝蓝（唯一环境光） */
+  --accent-halo: rgba(10,132,255,.26);
+  --scroll-thumb: rgba(255,255,255,.20);
+  --row-hover:    rgba(255,255,255,.035);
+}
+html[data-theme="light"]{
+  --win:        #E8ECF6;
+  --panel:      #FFFFFF;                    /* 内容面板：干净的冷白 */
+  --elevated:   #F1F1F6;                    /* 分组块：浅灰略偏冷紫，hue≈240 */
+  --sunken:     #E9E9F0;
+  --text:       #1D1D1F;
+  --text-2:     #6E6E73;
+  --text-3:     #8A8A90;
+  --accent:     #007AFF;
+  --green:      #34C759;
+  --orange:     #FF9500;
+  --red:        #FF3B30;
+
+  --hairline:   rgba(0,0,0,.095);
+  --sb-hairline:rgba(0,0,0,.10);
+
+  --sidebar-bg: rgba(246,246,251,.52);
+  --toolbar-bg: rgba(250,250,253,.52);
+  --vib-sheen:  rgba(255,255,255,.30);
+  --vib-top:    rgba(255,255,255,.55);
+
+  --ctrl-bg:    #FFFFFF;
+  --ctrl-bg-hi: #FBFBFD;
+  --ctrl-bg-lo: #F2F2F5;
+  --ctrl-bd:    rgba(0,0,0,.12);
+  --seg-bg:     rgba(0,0,0,.055);
+  --seg-thumb:  #FFFFFF;
+  --track:      rgba(0,0,0,.14);
+  --focus:      rgba(0,122,255,.38);
+
+  --shadow:     0 12px 40px rgba(20,30,60,.18), 0 1px 0 rgba(255,255,255,.9) inset;
+  --shadow-thumb: 0 .5px 2px rgba(0,0,0,.3), 0 0 0 .5px rgba(0,0,0,.08);
+
+  --glow-g:     rgba(52,199,89,.20);
+  --glow-g-hi:  rgba(52,199,89,.42);
+  --glow-o:     rgba(255,149,0,.20);
+  --glow-o-hi:  rgba(255,149,0,.40);
+  --glow-i:     rgba(142,142,147,.16);
+  --glow-i-hi:  rgba(142,142,147,.26);
+
+  --tint-g:     rgba(52,199,89,.13);
+  --tint-o:     rgba(255,149,0,.13);
+  --tint-i:     rgba(60,60,80,.045);
+
+  --panel-lo:   #FAFAFD;
+  --panel-ambient: rgba(0,122,255,.09);
+  --accent-halo: rgba(0,122,255,.20);
+  --scroll-thumb: rgba(0,0,0,.22);
+  --row-hover:    rgba(0,0,0,.028);
+}
+
+:root{
+  --r-ctl: 6px;      /* 控件圆角（push button / select / input） */
+  --r-card: 10px;    /* 卡片 / 分组块 */
+  --r-panel: 12px;   /* 浮起面板（同心：内层卡片 10 = 面板 12 − 留白一档） */
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+             "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+               "Cascadia Mono", monospace;
+}
+
+/* ---------- 2. 基础 ---------- */
+*,*::before,*::after{ box-sizing:border-box; }
+html,body{ height:100%; }
+body{
+  margin:0;
+  font-family:var(--font-ui);
+  font-size:13px;                       /* macOS Body 13pt */
+  line-height:1.45;
+  color:var(--text);
+  background:transparent;               /* 关键：body 不能盖住桌面层 */
+  font-variant-numeric:tabular-nums;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  overflow:hidden;
+}
+html{ background:var(--win); }
+button{ font-family:inherit; font-size:inherit; color:inherit; }
+h1,h2,p{ margin:0; }
+.mono{ font-family:var(--font-mono); font-variant-numeric:tabular-nums; }
+.hair{ height:1px; background:var(--hairline); border:0; margin:0; }
+
+/* ==========================================================================
+   z0 —— 桌面壁纸：玻璃必须有可透之物
+   深色：深蓝 → 靛紫 → 一点洋红的柔和光斑（典型 macOS 深色壁纸调子）
+   浅色：明亮多彩光斑（macOS 默认壁纸调子）
+   ========================================================================== */
+.desktop{ position:fixed; inset:0; z-index:0; overflow:hidden; }
+html[data-theme="dark"] .desktop{
+  background:
+    radial-gradient(48% 66% at 2% 28%,  rgba(58,126,255,.97) 0%, rgba(58,126,255,0) 68%),
+    radial-gradient(30% 28% at 7% 54%,  rgba(96,196,255,.60) 0%, rgba(96,196,255,0) 72%),
+    radial-gradient(44% 54% at 13% 98%, rgba(126,64,255,.82) 0%, rgba(126,64,255,0) 67%),
+    radial-gradient(54% 48% at 64% -6%, rgba(138,88,255,.82) 0%, rgba(138,88,255,0) 60%),
+    radial-gradient(48% 44% at 103% 52%,rgba(255,72,152,.54) 0%, rgba(255,72,152,0) 63%),
+    radial-gradient(38% 34% at 34% 58%, rgba(0,196,230,.32) 0%, rgba(0,196,230,0) 68%),
+    linear-gradient(162deg, #070D28 0%, #101846 40%, #161138 72%, #0B0920 100%);
+}
+html[data-theme="light"] .desktop{
+  background:
+    radial-gradient(48% 64% at 1% 28%,  rgba(84,152,255,.95) 0%, rgba(84,152,255,0) 68%),
+    radial-gradient(30% 28% at 7% 56%,  rgba(120,214,255,.60) 0%, rgba(120,214,255,0) 72%),
+    radial-gradient(44% 52% at 13% 98%, rgba(146,112,255,.72) 0%, rgba(146,112,255,0) 67%),
+    radial-gradient(52% 46% at 64% -6%, rgba(176,138,255,.84) 0%, rgba(176,138,255,0) 60%),
+    radial-gradient(48% 46% at 103% 54%,rgba(255,130,186,.82) 0%, rgba(255,130,186,0) 63%),
+    radial-gradient(38% 34% at 46% 52%, rgba(255,206,118,.52) 0%, rgba(255,206,118,0) 67%),
+    radial-gradient(46% 42% at 30% 104%,rgba(84,222,192,.64) 0%, rgba(84,222,192,0) 68%),
+    linear-gradient(150deg, #E4EFFF 0%, #F5EFFF 46%, #FFEFF4 100%);
+}
+/* 壁纸的顶高光 / 底部压暗，让桌面有纵深而不是一条平色 */
+.desktop::after{
+  content:""; position:absolute; inset:0;
+  background:
+    radial-gradient(120% 78% at 50% -14%, var(--wall-top), transparent 62%),
+    radial-gradient(130% 92% at 50% 120%, var(--wall-bottom), transparent 68%);
+}
+html[data-theme="dark"]{ --wall-top:rgba(255,255,255,.055); --wall-bottom:rgba(0,0,0,.46); }
+html[data-theme="light"]{ --wall-top:rgba(255,255,255,.45); --wall-bottom:rgba(20,30,60,.14); }
+
+/* ---------- 窗口骨架（z1 玻璃层 + z2 面板都在这层之上） ---------- */
+.window{
+  position:relative; z-index:1;
+  display:flex; flex-direction:column;
+  height:100vh; width:100%;
+}
+
+/* ==========================================================================
+   z1-a —— 工具栏：统一工具栏（vibrancy，玻璃）
+   ========================================================================== */
+.toolbar{
+  flex:0 0 auto;
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  height:52px; padding:0 14px 0 16px;
+  background:var(--toolbar-bg);
+  -webkit-backdrop-filter:saturate(180%) blur(24px);
+  backdrop-filter:saturate(180%) blur(24px);
+  box-shadow:inset 0 1px 0 var(--vib-top), inset 0 -1px 0 var(--sb-hairline);
+  position:relative;
+}
+.tb-left{ display:flex; align-items:center; gap:8px; min-width:0; }
+.tb-tag{ font-size:11px; color:var(--text-2); white-space:nowrap; text-shadow:0 .5px 1px rgba(0,0,0,.12); }
+html[data-theme="light"] .tb-tag{ text-shadow:0 .5px 0 rgba(255,255,255,.6); }
+.tb-sep{ color:var(--text-3); font-size:11px; }
+.tb-right{ display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+
+/* ---------- 主体：侧边栏 + 主区 ---------- */
+.shell{ flex:1 1 auto; display:flex; min-height:0; }
+
+/* ==========================================================================
+   z1-b —— 侧边栏：vibrancy（玻璃），桌面色光从这层透上来
+   ========================================================================== */
+.sidebar{
+  flex:0 0 280px;
+  display:flex; flex-direction:column;
+  min-width:0; position:relative;
+  background:var(--sidebar-bg);
+  -webkit-backdrop-filter:saturate(180%) blur(24px);
+  backdrop-filter:saturate(180%) blur(24px);
+  box-shadow:inset -1px 0 0 var(--sb-hairline), inset 0 1px 0 var(--vib-top);
+}
+/* vibrancy 的亮度梯度：靠近窗口顶部更亮（近似 macOS 的材质衰减） */
+.sidebar::before{
+  content:""; position:absolute; inset:0; pointer-events:none;
+  background:linear-gradient(180deg, var(--vib-sheen) 0%, rgba(255,255,255,0) 42%);
+}
+.sb-head{
+  display:flex; align-items:baseline; gap:6px;
+  padding:16px 16px 12px;
+}
+.wordmark{ font-size:15px; font-weight:600; letter-spacing:-.01em; }
+.version{ font-size:11px; color:var(--text-3); }
+.sb-scroll{ flex:1 1 auto; overflow-y:auto; padding:0 14px 14px; }
+.sb-foot{ padding:12px 14px 14px; }
+
+.section-title{
+  font-size:11px; font-weight:600; color:var(--text-3);
+  letter-spacing:.01em; margin:6px 2px 8px;
+}
+.host-block{ padding:0 2px 14px; }
+.host-line{ display:flex; align-items:center; gap:7px; }
+.host-name{ font-size:13px; font-weight:600; }
+.host-fp{ font-size:11px; color:var(--text-3); margin:3px 0 0 15px; }
+.host-state{ font-size:11px; color:var(--text-2); margin:2px 0 0 15px; }
+
+/* 侧栏内的分组卡片（无边框浅灰块；在玻璃层上再叠一档不透明色，保证文字清晰） */
+.sb-card{
+  background:var(--elevated);
+  border-radius:var(--r-card);
+  padding:12px;
+  box-shadow:0 1px 2px rgba(0,0,0,.14);
+}
+.sb-card + .sb-card{ margin-top:10px; }
+.sb-card-title{ font-size:13px; font-weight:600; }
+.sb-card-desc{ font-size:12px; color:var(--text-2); margin-top:3px; }
+
+.field-label{ display:block; font-size:11px; color:var(--text-2); margin:12px 0 5px; }
+.field-row{ display:flex; align-items:center; gap:6px; }
+.hint{ font-size:11px; color:var(--text-3); margin-top:8px; line-height:1.5; }
+.selected-line{ font-size:11px; color:var(--text-2); margin-top:10px; }
+
+/* ==========================================================================
+   z2 —— 内容区：一整块不透明浮起面板（四周 10px 留缝）
+   ========================================================================== */
+.main-area{ flex:1 1 auto; min-width:0; padding:10px; display:flex; }
+.panel{
+  position:relative;
+  flex:1 1 auto; min-width:0;
+  display:flex; flex-direction:column;
+  background:linear-gradient(180deg, var(--panel) 0%, var(--panel-lo) 100%);  /* 不透明：内容层绝不用玻璃 */
+  border:1px solid var(--hairline);
+  border-radius:var(--r-panel);
+  box-shadow:var(--shadow);
+  overflow:hidden;
+}
+/* 唯一一处强调色环境光：面板右上角一丝蓝（极淡，不构成装饰性色块） */
+.panel::after{
+  content:""; position:absolute; inset:0; pointer-events:none;
+  background:radial-gradient(560px 300px at 100% -8%, var(--panel-ambient), rgba(0,0,0,0) 70%);
+}
+
+.content{ flex:1 1 auto; overflow-y:auto; padding:18px 20px 26px; }
+
+/* ---------- 状态点：带柔光的实心圆点 ---------- */
+.status{ display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--text-2); white-space:nowrap; }
+.dot{
+  width:8px; height:8px; border-radius:50%; flex:0 0 auto;
+  background-image:radial-gradient(circle at 34% 28%, rgba(255,255,255,.5), rgba(255,255,255,0) 62%);
+}
+.dot-live{ background-color:var(--green);  box-shadow:0 0 0 2.5px var(--glow-g), 0 0 9px 1.5px var(--glow-g-hi), 0 0 18px 5px var(--glow-g); }
+.dot-warn{ background-color:var(--orange); box-shadow:0 0 0 2.5px var(--glow-o), 0 0 9px 1.5px var(--glow-o-hi), 0 0 18px 5px var(--glow-o); }
+.dot-idle{ background-color:var(--text-3); box-shadow:0 0 0 2.5px var(--glow-i), 0 0 7px 1px var(--glow-i-hi); }
+.status.is-live{ color:var(--text); }
+
+/* ---------- 控件 ---------- */
+.btn{
+  display:inline-flex; align-items:center; justify-content:center; gap:5px;
+  height:24px; padding:0 10px;
+  font-size:12px; line-height:1;
+  background:var(--ctrl-bg);
+  border:1px solid var(--ctrl-bd);
+  border-radius:var(--r-ctl);
+  box-shadow:0 .5px 1px rgba(0,0,0,.16);
+  cursor:pointer; white-space:nowrap;
+  transition:background .12s ease, border-color .12s ease;
+  -webkit-user-select:none; user-select:none;
+}
+.btn:hover{ background:var(--ctrl-bg-hi); }
+.btn:active{ background:var(--ctrl-bg-lo); box-shadow:none; }
+.btn:disabled{ color:var(--text-3); background:var(--ctrl-bg-lo); border-color:var(--hairline); box-shadow:none; cursor:default; }
+.btn-icon{ width:24px; padding:0; }
+.btn-icon svg, .btn svg{ display:block; }
+.btn-caret svg{ opacity:.7; margin-right:-2px; }
+
+/* 焦点态：强调色 3px 半透明光晕（不是方框 outline） */
+:focus{ outline:none; }
+:focus-visible{
+  outline:none;
+  box-shadow:0 0 0 3px var(--focus), 0 .5px 1px rgba(0,0,0,.16);
+}
+
+/* 主按钮：全屏唯一实心填充，28px */
+.btn-primary{
+  width:100%; height:28px; padding:0 14px;
+  font-size:13px; font-weight:600;
+  color:#fff;
+  background:var(--accent);
+  border:1px solid transparent;
+  border-radius:var(--r-ctl);
+  box-shadow:0 .5px 1.5px rgba(0,0,0,.24), 0 0 0 1px rgba(10,132,255,.30), 0 3px 14px var(--accent-halo);
+}
+.btn-primary:hover{ filter:brightness(1.08); }
+.btn-primary:active{ filter:brightness(.9); box-shadow:0 .5px 1.5px rgba(0,0,0,.22); }
+.btn-primary:focus-visible{ box-shadow:0 0 0 3px var(--focus); }
+
+/* 分段控制器：胶囊 + 凸起选中胶囊 */
+.segmented{
+  display:inline-flex; align-items:center; gap:2px;
+  height:24px; padding:2px;
+  background:var(--seg-bg);
+  border-radius:999px;
+}
+.seg-item{
+  height:20px; padding:0 12px;
+  font-size:12px; line-height:1;
+  color:var(--text-2);
+  background:transparent; border:0; border-radius:999px;
+  cursor:pointer; white-space:nowrap;
+  transition:color .12s ease, background .12s ease;
+}
+.seg-item:hover{ color:var(--text); }
+.seg-item[aria-checked="true"]{
+  color:var(--text);
+  background:var(--seg-thumb);
+  box-shadow:0 .5px 1.5px rgba(0,0,0,.3), 0 0 0 .5px rgba(0,0,0,.06);
+}
+
+/* 下拉框 */
+.select-wrap{ position:relative; flex:1 1 auto; min-width:0; }
+.select-wrap::after{
+  content:""; position:absolute; right:10px; top:50%;
+  width:5px; height:5px; margin-top:-4px;
+  border-right:1.4px solid var(--text-2);
+  border-bottom:1.4px solid var(--text-2);
+  transform:rotate(45deg); pointer-events:none;
+}
+.select{
+  -webkit-appearance:none; appearance:none;
+  width:100%; height:24px; padding:0 26px 0 9px;
+  font-family:inherit; font-size:12px; color:var(--text);
+  background:var(--ctrl-bg);
+  border:1px solid var(--ctrl-bd);
+  border-radius:var(--r-ctl);
+  box-shadow:0 .5px 1px rgba(0,0,0,.14);
+  cursor:pointer;
+}
+.select:hover{ background:var(--ctrl-bg-hi); }
+
+/* 输入框：下沉槽 */
+.input{
+  flex:1 1 auto; min-width:0;
+  height:24px; padding:0 9px;
+  font-size:12px; color:var(--text);
+  background:var(--sunken);
+  border:1px solid var(--ctrl-bd);
+  border-radius:var(--r-ctl);
+}
+.input::placeholder{ color:var(--text-3); }
+.input:focus-visible{ box-shadow:0 0 0 3px var(--focus); border-color:var(--accent); }
+
+/* 滑块：4px 轨道，已填充段 = accent，16px 圆形手柄 */
+.vol{ display:inline-flex; align-items:center; gap:8px; flex:0 0 auto; }
+.vol input[type="range"]{
+  -webkit-appearance:none; appearance:none;
+  width:104px; height:16px; margin:0; padding:0;
+  background:transparent; cursor:pointer;
+}
+.vol input[type="range"]::-webkit-slider-runnable-track{
+  height:4px; border-radius:999px;
+  background:linear-gradient(90deg, var(--accent) 0 var(--v,50%), var(--track) var(--v,50%) 100%);
+}
+.vol input[type="range"]::-webkit-slider-thumb{
+  -webkit-appearance:none; appearance:none;
+  width:16px; height:16px; margin-top:-6px;
+  border-radius:50%; background:#fff;
+  box-shadow:var(--shadow-thumb);
+}
+.vol input[type="range"]:focus-visible::-webkit-slider-thumb{
+  box-shadow:0 0 0 3px var(--focus), var(--shadow-thumb);
+}
+.vol input[type="range"]::-moz-range-track{ height:4px; border-radius:999px; background:var(--track); }
+.vol input[type="range"]::-moz-range-progress{ height:4px; border-radius:999px; background:var(--accent); }
+.vol input[type="range"]::-moz-range-thumb{
+  width:16px; height:16px; border:0; border-radius:50%; background:#fff;
+  box-shadow:var(--shadow-thumb);
+}
+.vol-num{ font-size:11px; color:var(--text-2); width:32px; text-align:right; }
+
+/* ---------- z3 内容排版与分组块 ---------- */
+.page-title{
+  font-size:26px; font-weight:700; letter-spacing:-.022em;   /* Large Title */
+  line-height:1.15; margin:22px 2px 12px;
+}
+.card{
+  background:var(--elevated);
+  border-radius:var(--r-card);
+  padding:14px;
+}
+.card-title{ font-size:13px; font-weight:600; }
+.card-desc{ font-size:12px; color:var(--text-2); margin-top:4px; line-height:1.5; }
+.addr-row{ display:flex; align-items:center; justify-content:space-between; gap:14px; }
+.addr-value{ font-size:19px; font-weight:600; letter-spacing:-.01em; color:var(--text); }
+.addr-left{ display:flex; align-items:center; gap:12px; min-width:0; }
+.add-form{ display:flex; align-items:center; gap:8px; margin-top:12px; }
+
+/* 设备卡片：无边框浅灰分组块 + 状态氛围色只染左缘 */
+.device-list{ display:flex; flex-direction:column; gap:8px; }
+.device-card{
+  position:relative;
+  background-color:var(--elevated);
+  background-image:radial-gradient(320px 116px at -3% 50%, var(--tint), rgba(0,0,0,0) 76%);
+  border-radius:var(--r-card);
+  padding:11px 14px;
+  display:flex; align-items:center; justify-content:space-between; gap:16px;
+  transition:background-color .12s ease;
+}
+.device-card:hover{ background-color:var(--ctrl-bg-hi); }
+html[data-theme="dark"] .device-card:hover{ background-color:#2E2E38; }
+html[data-theme="light"] .device-card:hover{ background-color:#F7F7FB; }
+.tint-live{ --tint:var(--tint-g); }
+.tint-warn{ --tint:var(--tint-o); }
+.tint-idle{ --tint:var(--tint-i); }
+
+.device-main{ min-width:0; }
+.device-name{ font-size:15px; font-weight:600; letter-spacing:-.01em; }
+.device-meta{
+  display:flex; align-items:center; flex-wrap:wrap; gap:7px;
+  margin-top:3px; font-size:11px; color:var(--text-2);
+}
+.meta-sep{ color:var(--text-3); }
+.device-fp{ font-size:11px; color:var(--text-3); }
+.device-actions{ display:flex; align-items:center; gap:10px; flex:0 0 auto; }
+
+/* ---------- 滚动条（macOS overlay 风格） ---------- */
+.content::-webkit-scrollbar,
+.sb-scroll::-webkit-scrollbar{ width:11px; height:11px; }
+.content::-webkit-scrollbar-track,
+.sb-scroll::-webkit-scrollbar-track{ background:transparent; }
+.content::-webkit-scrollbar-thumb,
+.sb-scroll::-webkit-scrollbar-thumb{
+  background:var(--scroll-thumb);
+  border:3px solid transparent;
+  background-clip:content-box;
+  border-radius:999px;
+}
+.content::-webkit-scrollbar-thumb:hover,
+.sb-scroll::-webkit-scrollbar-thumb:hover{ background:var(--text-3); background-clip:content-box; }
+
+/* ---------- 窄窗口收缩（1024px 不破版） ---------- */
+@media (max-width:1140px){
+  .content{ padding:16px 16px 22px; }
+  .device-card{ gap:12px; padding:11px 12px; }
+  .vol input[type="range"]{ width:84px; }
+  .addr-value{ font-size:17px; }
+  .page-title{ font-size:24px; }
+}
+@media (max-width:960px){
+  .device-card{ flex-direction:column; align-items:flex-start; gap:10px; }
+  .device-actions{ align-self:flex-end; }
+}
+@media (prefers-reduced-motion: reduce){ *{ transition:none !important; } }
+/* 不支持 backdrop-filter 时退化为不透明，避免变成“看不清的板子” */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))){
+  html[data-theme="dark"]{ --sidebar-bg:#16161E; --toolbar-bg:#141420; }
+  html[data-theme="light"]{ --sidebar-bg:#F2F2F7; --toolbar-bg:#F7F7FA; }
+}
+</style>
+</head>
+<body>
+<!-- z0 桌面壁纸：vibrancy 的可透之物 -->
+<div class="desktop" aria-hidden="true"></div>
+
+<div class="window">
+
+  <!-- ============ z1-a 工具栏（统一工具栏 · vibrancy） ============ -->
+  <header class="toolbar">
+    <div class="tb-left">
+      <span class="tb-tag mono">fp:88a402e625794a6f</span>
+      <span class="tb-sep" aria-hidden="true">·</span>
+      <span class="tb-tag mono">0.0.0.0:58290</span>
+      <span class="tb-sep" aria-hidden="true">·</span>
+      <span class="status"><span class="dot dot-idle" aria-hidden="true"></span>未在推流</span>
+    </div>
+    <div class="tb-right">
+      <div class="segmented" role="radiogroup" aria-label="界面风格">
+        <button class="seg-item" type="button" role="radio" aria-checked="false">Fluent</button>
+        <button class="seg-item" type="button" role="radio" aria-checked="true">macOS</button>
+      </div>
+
+      <button class="btn btn-caret" type="button" aria-haspopup="menu" aria-expanded="false">
+        遥测
+        <svg viewBox="0 0 12 12" width="10" height="10" fill="none" stroke="currentColor"
+             stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 4.7 6 7.7l3-3"/>
+        </svg>
+      </button>
+
+      <button class="btn btn-icon" type="button" id="themeToggle" role="switch"
+              aria-checked="false" aria-label="切换为浅色外观" title="切换为浅色外观">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor"
+             stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="8" cy="8" r="3.1"/>
+          <path d="M8 1.3v1.5M8 13.2v1.5M1.3 8h1.5M13.2 8h1.5M3.3 3.3l1.1 1.1M11.6 11.6l1.1 1.1M12.7 3.3l-1.1 1.1M4.4 11.6l-1.1 1.1"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="shell">
+
+    <!-- ============ z1-b 侧边栏（vibrancy · 桌面色光透上来） ============ -->
+    <aside class="sidebar" aria-label="侧边栏">
+      <div class="sb-head">
+        <span class="wordmark">AudioLink</span>
+        <span class="version">v0.1.0</span>
+      </div>
+
+      <div class="sb-scroll">
+        <div class="section-title">本机</div>
+        <div class="host-block">
+          <div class="host-line">
+            <span class="dot dot-idle" aria-hidden="true"></span>
+            <span class="host-name">GOTKICRY_WORK</span>
+          </div>
+          <div class="host-fp mono">fp:88a402e625794a6f</div>
+          <div class="host-state">未播出</div>
+        </div>
+
+        <div class="sb-card">
+          <div class="sb-card-title">采集声音</div>
+          <p class="sb-card-desc">将此输出设备正在播放的声音发送给对方。</p>
+
+          <label class="field-label" for="outDev">输出设备</label>
+          <div class="field-row">
+            <div class="select-wrap">
+              <select class="select" id="outDev">
+                <option>系统默认（开始推流时使用）</option>
+                <option>扬声器 (Realtek(R) Audio)</option>
+              </select>
+            </div>
+            <button class="btn btn-icon" type="button" aria-label="刷新设备列表" title="刷新设备列表">
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor"
+                   stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M13.2 7.1a5.4 5.4 0 1 1-1.7-3.5"/>
+                <path d="M13.4 2.3v3.2H10.2"/>
+              </svg>
+            </button>
+          </div>
+          <p class="hint">让播放器使用同一个输出设备。更换耳机或声卡后，可刷新设备列表。</p>
+          <hr class="hair" style="margin-top:12px">
+          <p class="selected-line">已选择：扬声器 (Realtek(R) Audio)</p>
+        </div>
+      </div>
+
+      <div class="sb-foot">
+        <button class="btn btn-primary" type="button" aria-label="开始广播">
+          <svg viewBox="0 0 12 12" width="11" height="11" fill="currentColor" aria-hidden="true">
+            <path d="M3.4 1.9 9.7 5.6a.5.5 0 0 1 0 .86L3.4 10.1a.5.5 0 0 1-.75-.43V2.33a.5.5 0 0 1 .75-.43Z"/>
+          </svg>
+          开始广播
+        </button>
+      </div>
+    </aside>
+
+    <!-- ============ z2 内容区：不透明浮起面板 ============ -->
+    <div class="main-area">
+      <section class="panel" aria-label="主区">
+        <div class="content">
+
+          <!-- 1. 本机地址 -->
+          <section class="card">
+            <div class="addr-row">
+              <h2 class="card-title">本机地址</h2>
+              <div class="addr-left">
+                <span class="addr-value mono" id="addrText">0.0.0.0:58290</span>
+                <button class="btn" type="button" id="copyAddr" style="min-width:78px">复制地址</button>
+              </div>
+            </div>
+            <p class="card-desc">在对方设备（手机）上输入这个地址即可接入</p>
+          </section>
+
+          <!-- 2. 设备列表 -->
+          <h1 class="page-title">正在收听本机的设备</h1>
+          <div class="device-list" role="list" aria-label="正在收听本机的设备">
+
+            <div class="device-card tint-live" role="listitem">
+              <div class="device-main">
+                <div class="device-name">卧室手机</div>
+                <div class="device-meta">
+                  <span class="status is-live"><span class="dot dot-live" aria-hidden="true"></span>接收中</span>
+                  <span class="meta-sep" aria-hidden="true">｜</span>
+                  <span>已配对</span>
+                  <span class="meta-sep" aria-hidden="true">｜</span>
+                  <span class="device-fp mono">指纹 3f9a1c0b · 192.168.1.23:58290</span>
+                </div>
+              </div>
+              <div class="device-actions">
+                <span class="vol">
+                  <input type="range" min="0" max="100" value="80" style="--v:80%"
+                         aria-label="卧室手机 输出音量" aria-valuetext="80%">
+                  <span class="vol-num mono">80%</span>
+                </span>
+                <button class="btn" type="button">停止推流</button>
+              </div>
+            </div>
+
+            <div class="device-card tint-idle" role="listitem">
+              <div class="device-main">
+                <div class="device-name">客厅音箱</div>
+                <div class="device-meta">
+                  <span class="status"><span class="dot dot-idle" aria-hidden="true"></span>空闲</span>
+                  <span class="meta-sep" aria-hidden="true">｜</span>
+                  <span>未配对</span>
+                  <span class="meta-sep" aria-hidden="true">｜</span>
+                  <span class="device-fp mono">指纹 b21e77aa · 192.168.1.31:58291</span>
+                </div>
+              </div>
+              <div class="device-actions">
+                <button class="btn" type="button">输入配对码</button>
+              </div>
+            </div>
+
+            <div class="device-card tint-warn" role="listitem">
+              <div class="device-main">
+                <div class="device-name">小米平板</div>
+                <div class="device-meta">
+                  <span class="status"><span class="dot dot-warn" aria-hidden="true"></span>网络不稳</span>
+                  <span class="meta-sep" aria-hidden="true">｜</span>
+                  <span>已配对</span>
+                  <span class="meta-sep" aria-hidden="true">｜</span>
+                  <span class="device-fp mono">指纹 c09d4412 · 192.168.1.44:58293</span>
+                </div>
+              </div>
+              <div class="device-actions">
+                <span class="vol">
+                  <input type="range" min="0" max="100" value="96" style="--v:96%"
+                         aria-label="小米平板 输出音量" aria-valuetext="96%">
+                  <span class="vol-num mono">96%</span>
+                </span>
+                <button class="btn" type="button">停止推流</button>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- 3. 手动添加设备 -->
+          <section class="card" style="margin-top:20px">
+            <h2 class="card-title">手动添加设备</h2>
+            <p class="card-desc">两台设备需在同一 Wi-Fi/局域网；若自动发现失效（AP 客户端隔离），用对方「本机状态条」上的地址直连。</p>
+            <form class="add-form" onsubmit="return false">
+              <input class="input mono" type="text" aria-label="设备地址"
+                     placeholder="192.168.1.23 或 192.168.1.23:58290">
+              <button class="btn" type="submit">连接</button>
+            </form>
+          </section>
+
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  /* ---------- 深色 / 浅色外观切换（支持 ?theme=light 便于截图核对） ---------- */
+  var SUN = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<circle cx="8" cy="8" r="3.1"/><path d="M8 1.3v1.5M8 13.2v1.5M1.3 8h1.5M13.2 8h1.5M3.3 3.3l1.1 1.1M11.6 11.6l1.1 1.1M12.7 3.3l-1.1 1.1M4.4 11.6l-1.1 1.1"/></svg>';
+  var MOON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M13.2 9.6A5.5 5.5 0 0 1 6.4 2.8 5.5 5.5 0 1 0 13.2 9.6Z"/></svg>';
+
+  var toggle = document.getElementById('themeToggle');
+  function applyTheme(theme) {
+    root.setAttribute('data-theme', theme);
+    var isLight = theme === 'light';
+    toggle.innerHTML = isLight ? MOON : SUN;
+    toggle.setAttribute('aria-checked', String(isLight));
+    var label = isLight ? '切换为深色外观' : '切换为浅色外观';
+    toggle.setAttribute('aria-label', label);
+    toggle.title = label;
+  }
+  var q = null, saved = null;
+  try { q = new URLSearchParams(location.search).get('theme'); } catch (e) {}
+  try { saved = localStorage.getItem('al-theme'); } catch (e) {}
+  applyTheme(q === 'light' || q === 'dark' ? q : (saved === 'light' ? 'light' : 'dark'));
+  toggle.addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+    applyTheme(next);
+    try { localStorage.setItem('al-theme', next); } catch (e) {}
+  });
+
+  /* ---------- 复制地址 ---------- */
+  var copyBtn = document.getElementById('copyAddr');
+  var addrEl = document.getElementById('addrText');
+  function flash() {
+    copyBtn.textContent = '已复制';
+    setTimeout(function () { copyBtn.textContent = '复制地址'; }, 1200);
+  }
+  function legacyCopy(text) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '-1000px';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      flash();
+    } catch (e) { /* file:// 下剪贴板可能受限，静默忽略 */ }
+  }
+  copyBtn.addEventListener('click', function () {
+    var text = addrEl.textContent.trim();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(flash, function () { legacyCopy(text); });
+    } else {
+      legacyCopy(text);
+    }
+  });
+})();
+</script>
+</body>
+</html>

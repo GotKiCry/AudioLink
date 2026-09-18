@@ -1,0 +1,177 @@
+Thursday, [October](/blog/2025/10/) [16](/blog/2025/10/16/), [2025](/blog/2025/)
+
+[Tahoe Window Corners](https://mjtsai.com/blog/2025/10/16/tahoe-window-corners/ "Permanent Link: Tahoe Window Corners")
+=======================================================================================================================
+
+[Mario Guzmán](https://mastodon.social/@marioguzman/115220197925326025):
+
+> I can’t stop laughing at how comically large the corner radii are on #macOSTahoe windows. Clownish.
+
+[Dominik Wagner](https://mastodon.social/@monkeydom/115252342595033774):
+
+> Preview? These are white, A4 PDF pages, they don’t have round corners. We are not on battlestar galactica. I need my pdf preview to show me my paper as it is, not with different rounded corners based on my zoom factor 😡
+
+[Marcin Krzyzanowski](https://mastodon.social/@krzyzanowskim/115276780228935315):
+
+> after I upgraded to macOS26 literally the only thing that annoys me the most is hikarious windows curvature. no content really fits in.
+
+[Rui Carmo](https://taoofmac.com/space/notes/2025/09/15/2359):
+
+> I can see four *five* different sizes of window corner radius on my Mac desktop. The overall visual design for menus and dialogs is still a joke, and is so badly executed that Apple should be ashamed of shipping it.
+
+See also: [Rob Jonson](https://x.com/ConfusedVorlon/status/1971944618108624985).
+
+[Nick Heer](https://pxlnv.com/blog/on-liquid-glass/):
+
+> Perhaps I am taking this too literally. Then again, Apple is the one [saying](https://www.apple.com/ca/newsroom/2025/06/apple-introduces-a-delightful-and-elegant-new-software-design/#:~:text=Previously%20configured%20for%20rectangular%20displays%2C%20they%20now%20fit%20perfectly%20concentric%20with%20the%20rounded%20corners%20of%20modern%20hardware%20and%20app%20windows%20%E2%80%94%20establishing%20greater%20harmony%20between%20hardware%2C%20software%2C%20and%20content.) application windows are no longer “configured for rectangular displays”, and that they now fit the “rounded corners of modern hardware”. Regardless of the justification, I quite like the roundness of these windows. Perhaps it is simply the newness, but they make applications seem friendlier and softer. I understand why they are controversial; the large radius severely restricts what can be present in the corners, thus lowering the information density of an application window. It seems Apple agrees it is more appropriate in some apps than in others — app windows in System Information and Terminal have a much smaller corner radius.
+>
+> […]
+>
+> Even on a device with four rounded display corners, this dedication to concentricity is not always executed correctly. My iPhone 15 Pro, for example, has corners with a slightly smaller radius than an iPhone 16 Pro. The bottom corners of the share sheet on my device are cramped, nearly touching the edge of the display at their apex.
+>
+> […]
+>
+> Then there are the issues caused by this dedication to concentricity. Look again at that Finder window screenshot above and pay attention to the buttons in the toolbar. In particular, notice how the icon in the item grouping button — the solitary one between the view switcher, and the group that includes the sharing button — looks like it is touching the rounded edge.
+
+Previously:
+
+* [Liquid Glass: Content vs. Controls](https://mjtsai.com/blog/2025/10/16/liquid-glass-content-vs-controls/)
+* [Shipping Liquid Glass](https://mjtsai.com/blog/2025/10/16/shipping-liquid-glass/)
+* [One Size Does Not Fit All](https://mjtsai.com/blog/2025/09/05/one-size-does-not-fit-all/)
+* [“No” Part 2](https://mjtsai.com/blog/2025/08/08/no-part-2/)
+* [Assorted Notes on Liquid Glass](https://mjtsai.com/blog/2025/06/30/assorted-notes-on-liquid-glass/)
+* [Rounded Quick Look Corners](https://mjtsai.com/blog/2024/06/28/rounded-quick-look-corners/)
+
+Update ([2025-11-12](#tahoe-window-corners-update-2025-11-12)): [John Gruber](https://daringfireball.net/2025/11/software_update_tahoe_confusing):
+
+> But my main MacBook Pro is still running MacOS 15 Sequoia — not because of any compatibility issues, but simply because I think the Tahoe user interface is goofy looking. I’ll probably bite the bullet and upgrade when 26.2 comes out next month, but for now, I’m luxuriating with a MacOS UI with [well-crafted app icons](https://daringfireball.net/linked/2025/11/07/tahoes-terrible-icons) and windows that don’t have [Fisher-Price-style corner radiuses](https://mjtsai.com/blog/2025/10/16/tahoe-window-corners/).
+
+Update ([2026-03-05](#tahoe-window-corners-update-2026-03-05)): [Jeff Johnson](https://lapcatsoftware.com/articles/2026/3/1.html):
+
+> I was of course aware that app windows on Tahoe have exaggerated corner radiuses, but I was unaware until now that the window corner radius on Tahoe is not uniform: different windows can have different corner radiuses!
+>
+> […]
+>
+> When I add a toolbar to the window, the corner radius automatically becomes more exaggerated, like Calculator.
+>
+> […]
+>
+> Apparently the corner radius also changes on Tahoe for some other window elements, such as a sidebar.
+
+[Vitor](https://hachyderm.io/@vitor/116173645392105148):
+
+> It gets stupider. Notice the corner radius of a window change *while in use*. This is Apple Notes, when you’re setting it up (first launch).
+
+Update ([2026-03-18](#tahoe-window-corners-update-2026-03-18)): [Jeff Johnson](https://lapcatsoftware.com/articles/2026/3/4.html):
+
+> Thus, in this blog post I’ll look at the prototypical document-style app, TextEdit.
+>
+> […]
+>
+> The so-called “logic” of the Tahoe design changes make no sense to me, because the concentricity of the window is matched to the elements at the *top* of the window, but the same corner radius is applied to the *bottom* of the window, where the concentricity does not match any elements and may indeed clip the elements. Ironically, Apple claims as one of its goals to *emphasize* the content and deemphasize the controls, so in this respect, Liquid Glass is an utter failure. The early Mac OS X screenshots wake us from our dogmatic slumber and undermine the unexamined assumption that every window corner needs to look the same.
+>
+> I would be remiss if I neglected to mention the “metal” style of window that goes all the way back to iTunes on Mac OS X 10.1 Puma, increasingly adopted by other apps in subsequent OS X versions.
+>
+> The iTunes window always had rounded corners at the top and bottom. However, iTunes also had a kind of toolbar at the bottom of the window, as well as a resizing gripper in the bottom right corner, which provides perhaps *some* justification for the choice.
+
+[Adam Bell](https://mastodon.social/@b3ll/116245935421675174):
+
+> UIKit currently has this amazing bug where if you supply a corner radius that’s ~1/3 the height of the rect supplied to UIBezierPath it just snaps it to 1/2 the height and makes it a capsule.
+>
+> e.g. a 24x24 rect, pass that to UIBezierPath and make a rounded rect with 8 as the corner radius, and you’ll get a 12 radius instead.
+
+[Design](https://mjtsai.com/blog/tag/design/) [Finder](https://mjtsai.com/blog/tag/finder/) [iTunes](https://mjtsai.com/blog/tag/itunes/) [Liquid Glass](https://mjtsai.com/blog/tag/liquid-glass/) [Mac](https://mjtsai.com/blog/tag/mac/) [macOS Tahoe 26](https://mjtsai.com/blog/tag/macos-tahoe-26/) [Preview.app](https://mjtsai.com/blog/tag/preview/) [TextEdit](https://mjtsai.com/blog/tag/textedit/)
+
+6 Comments
+[RSS](https://mjtsai.com/blog/2025/10/16/tahoe-window-corners/feed/) · [Twitter](https://twitter.com/search?q=from%3Amjtsai%20since%3A2025-10-16%20until%3A2025-10-17&src=typed_query&f=top) · [Mastodon](https://mastodon.social/@mjtsai/115385421903690476)
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+---
+
+Ben G
+
+[October 16, 2025 6:01 PM](#comment-4317883)
+
+I haven't upgraded my Mac yet, but the corner radii on everything on iOS are also way too big. I don't get it. Small device, small screen, should have small corner radii on interface elements. But they're HUGE, like what would maybe, maybe be appropriate on a 32" 4K monitor. But not a small phone screen. Everything with these new huge radii looks unbalanced. The previous corner radii were perfect. I don't see why Apple changed it.
+
+---
+
+Dave
+
+[October 16, 2025 8:56 PM](#comment-4317930)
+
+Without getting political, our current US president has a certain trait in the females working for him. Once you see it you can't ignore it....
+
+Your comment had me looking at things in iOS 26 I hadn't seen - still don't with many 3rd party apps I use (not many, my home screen has 17 apps), so I looked at Apple's Settings app. Now that I've seen how the bottom looks? Wow. I'll never be able to look at things the same anymore.
+
+---
+
+Ben G
+
+[October 16, 2025 10:03 PM](#comment-4317943)
+
+The Settings app is definitely one of the worst offenders. The icons on the top left of each section look totally out of whack with the huge radius next to it. Looks like a bad mockup. Nothing seems to have an appropriate relative scale anymore. I think the dock at the bottom of the iPhone home screen looks awful too. Something about it is "off".
+
+---
+
+Richard
+
+[October 17, 2025 12:21 PM](#comment-4318222)
+
+I was listening to an album in the Music app on Apple TV last night and it was distracting to me how much they rounded the corners from the artwork. It’s altering the artwork, not respecting it.
+
+---
+
+[Michael Tsai](http://mjtsai.com/blog/)
+
+[October 17, 2025 1:06 PM](#comment-4318241)
+
+@Richard I was just entering a bug in Feedback Reporter, and it blurs the bottom two lines of the main text field.
+
+---
+
+Jonathan Baldwin
+
+[November 11, 2025 12:44 PM](#comment-4329310)
+
+Try deleting an album from your Apple Music library on iOS 26. Keep trying. It might take a few goes before you figure it out.
+
+### Leave a Comment
+
+Name
+
+E-mail (will not be published)
+
+Web site
+
+[←](https://mjtsai.com/blog/2025/10/16/on-liquid-glass/)  [→](https://mjtsai.com/blog/2025/10/16/liquid-glass-content-vs-controls/)
+
+[Blog](/blog/)
+  
+[Archives](/blog/archives/)
+  
+[Tag Cloud](/blog/tag-cloud/)
+  
+[Top Posts](/blog/tag/top-posts/)
+
+[Recently Updated](/blog/recently-updated/)
+  
+[RSS Feed](/blog/feed/ "Syndicate this site using RSS") · [Comments](/blog/comments/feed/ "The latest comments to all posts in RSS")
+  
+[Mastodon](https://mastodon.social/@mjtsai "Follow updates via Mastodon") · [Twitter](https://twitter.com/mjtsai "Follow updates via Twitter")
+  
+[Apple News](https://apple.news/TOe8IoEHXTDKknwyO8gNRTQ)
+
+Support this site via [Patreon](https://www.patreon.com/mjtsai).
+
+Try my Mac apps:
+
+[![DropDMG](https://mjtsai.com/images/dropdmg-icon-32.png)![DropDMG](https://mjtsai.com/images/dropdmg-icon-32@2x.png)](https://c-command.com/dropdmg/ "The easy way to create and convert Mac disk images (.dmg files).")[DropDMG](https://c-command.com/dropdmg/ "The easy way to create and convert Mac disk images (.dmg files).")
+  
+[![EagleFiler](https://mjtsai.com/images/eaglefiler-icon-32.png)![EagleFiler](https://mjtsai.com/images/eaglefiler-icon-32@2x.png)](https://c-command.com/eaglefiler/ "Organize files, archive e-mails, save Web pages and notes, search everything.")[EagleFiler](https://c-command.com/eaglefiler/ "Organize files, archive e-mails, save Web pages and notes, search everything.")
+  
+[![SpamSieve](https://mjtsai.com/images/spamsieve-icon-32.png)![SpamSieve](https://mjtsai.com/images/spamsieve-icon-32@2x.png)](https://c-command.com/spamsieve/ "Easy-to-use Mac spam filter for Apple Mail, Airmail, Outlook, GyazMail, MailMate, Postbox, and more.")[SpamSieve](https://c-command.com/spamsieve/ "Easy-to-use Mac spam filter for Apple Mail, Airmail, Outlook, GyazMail, MailMate, Postbox, and more.")
+  
+[![ToothFairy](https://mjtsai.com/images/toothfairy-icon-32.png)![ToothFairy](https://mjtsai.com/images/toothfairy-icon-32@2x.png)](https://c-command.com/toothfairy/ "Connect AirPods (or other Bluetooth headphones) to your Mac with a single click or keypress.")[ToothFairy](https://c-command.com/toothfairy/ "Connect AirPods (or other Bluetooth headphones) to your Mac with a single click or keypress.")
+
+Copyright © 2000–2026 [Michael Tsai](mailto:mjt@mjtsai.com).

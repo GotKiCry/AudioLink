@@ -1,0 +1,751 @@
+[↓Skip to main content](#main-content)
+
+* [Home](https://blog.verslu.is)
+* [About](https://jfversluis.dev/about)
+* [Blog posts](/posts/ "Blog Posts — .NET MAUI, GitHub Copilot & AI Development")
+* [YouTube Channel](https://youtube.com/GeraldVersluis)
+
+iOS and macOS Dark Mode Dynamic Colors Overview
+===============================================
+
+13 May 2020·15 mins
+
+[Xamarin](https://blog.verslu.is/categories/xamarin/)
+[Dark-Mode](https://blog.verslu.is/tags/dark-mode/)
+[Dynamic-Colors](https://blog.verslu.is/tags/dynamic-colors/)
+[iOS](https://blog.verslu.is/tags/ios/)
+[macOS](https://blog.verslu.is/tags/macos/)
+[Nscolor](https://blog.verslu.is/tags/nscolor/)
+[Semantic-Colors](https://blog.verslu.is/tags/semantic-colors/)
+[Systemblue](https://blog.verslu.is/tags/systemblue/)
+[Systemred](https://blog.verslu.is/tags/systemred/)
+[Uicolor](https://blog.verslu.is/tags/uicolor/)
+
+![](https://blog.verslu.is/xamarin/ios-macos-dark-mode-dynamic-colors-overview/cover_hu_92d2cd04c243dd29.png)
+
+While working on adding the integration of Dark Mode on macOS into Xamarin.Forms, I found that there wasn’t an overview for all the Dynamic Colors. I probably just missed it somewhere, but I decided to create my own anyway.
+
+This will be a rather post, it’s mostly just a reference (for myself) to have a quick overview of the actual dynamic color values in light and dark mode for iOS and macOS. Values are presented in RGB and Hex.
+
+Do note that the idea behind the dynamic colors is that they can be changed by Apple whenever they update styles throughout the OS. Always double-check in the current Human Interface Guide for [iOS](https://developer.apple.com/design/human-interface-guidelines/ios/visual-design/color/) and [macOS](https://developer.apple.com/design/human-interface-guidelines/macos/visual-design/color/) to see if the values are still current. Also, there are variations for high contrast and vibrant modes etc. Those are not in here. These overviews are just the default light/dark mode variants.
+
+iOS Dynamic Colors Overview [#](#ios-dynamic-colors-overview)
+-------------------------------------------------------------
+
+Here is the color overview for iOS. Note that when the alpha is not specified it’s 100%.
+
+Please note that you can’t use these colors with iOS pre-13.
+
+/\\* COLOR PALLETTES \\*/ .color-palette { margin-top: 2em; margin-bottom: 2em } .swatch { display: inline-block; width: 125px; height: 125px; font-family: -apple-system, "Myriad Set Pro", "Lucida Grande", "Helvetica Neue", "Helvetica", "Arial", "Verdana", "sans-serif"; } @media all and (max-width: 1068px) { .swatch { width: 24%; } } @media all and (max-width: 735px) { .swatch { width: 49%; } } .swatch .swatch-color { margin-left: 6px; margin-right: 6px; height: 85px; border-radius: 10px; padding: 0.8em; } .swatch .swatch-color span { display:block; color: #FFF; line-height: 1.2; font-size:14px; white-space: nowrap; } /\\* Light \\*/ .swatch .swatch-color.color-red { background-color: rgb(255,59,48);} .swatch .swatch-color.color-orange { background-color: rgb(255,149,0);} .swatch .swatch-color.color-yellow { background-color: rgb(255,204,0);} .swatch .swatch-color.color-green { background-color: rgb(52,199,89);} /\\* was 76,217,100 \\*/ .swatch .swatch-color.color-teal { background-color: rgb(90,200,250);} .swatch .swatch-color.color-blue { background-color: rgb(0,122,255);} .swatch .swatch-color.color-indigo { background-color: rgb(88,86,214);} .swatch .swatch-color.color-purple { background-color: rgb(175,82,222);} /\\* was 88,86,214 \\*/ .swatch .swatch-color.color-pink { background-color: rgb(255,45,85);} .swatch .swatch-color.color-brown { background-color: rgb(0,0,0);} /\\* need values \\*/ .swatch .swatch-color.color-gray { background-color: rgb(142,142,147);} .swatch .swatch-color.color-gray2 { background-color: rgb(174,174,178);} .swatch .swatch-color.color-gray3 { background-color: rgb(199,199,204);} .swatch .swatch-color.color-gray4 { background-color: rgb(209,209,214);} .swatch .swatch-color.color-gray5 { background-color: rgb(229,229,234);} .swatch .swatch-color.color-gray6 { background-color: rgb(242,242,247);} .swatch .swatch-color.color-gray6 span { color:black;} .swatch .swatch-color.color-label { background-color: rgb(0,0,0);} .swatch .swatch-color.color-secondaryLabel { background-color: rgba(60,60,67,0.6);} .swatch .swatch-color.color-tertiaryLabel { background-color: rgba(60,60,67,0.3);} .swatch .swatch-color.color-quaternaryLabel { background-color: rgba(60,60,67,0.2);} .swatch .swatch-color.color-placeholderText { background-color: rgba(60,60,67,0.3);} .swatch .swatch-color.color-separator { background-color: rgba(60,60,67,0.3);} .swatch .swatch-color.color-opaqueSeparator { background-color: rgb(198,198,200);} .swatch .swatch-color.color-link { background-color: rgb(0,122,255);} /\\* Dark \\*/ .swatch .swatch-color.color-dark-red { background-color: rgb(255,69,58);} .swatch .swatch-color.color-dark-orange { background-color: rgb(255,159,10);} .swatch .swatch-color.color-dark-yellow { background-color: rgb(255,214,10);} .swatch .swatch-color.color-dark-green { background-color: rgb(48,209,88);} .swatch .swatch-color.color-dark-teal { background-color: rgb(100,210,255);} .swatch .swatch-color.color-dark-blue { background-color: rgb(10,132,255);} .swatch .swatch-color.color-dark-indigo { background-color: rgb(94,92,230);} .swatch .swatch-color.color-dark-purple { background-color: rgb(191,90,242);} .swatch .swatch-color.color-dark-pink { background-color: rgb(255,55,95);} .swatch .swatch-color.color-dark-brown { background-color: rgb(0,0,0);} /\\* need values \\*/ .swatch .swatch-color.color-dark-gray { background-color: rgb(142,142,147);} .swatch .swatch-color.color-dark-gray2 { background-color: rgb(99,99,102);} .swatch .swatch-color.color-dark-gray3 { background-color: rgb(72,72,74);} .swatch .swatch-color.color-dark-gray4 { background-color: rgb(58,58,60);} .swatch .swatch-color.color-dark-gray5 { background-color: rgb(44,44,46);} .swatch .swatch-color.color-dark-gray6 { background-color: rgb(28,28,30);} .swatch .swatch-color.color-dark-label { background-color: rgb(255,255,255);} .swatch .swatch-color.color-dark-label span { color:black;} .swatch .swatch-color.color-dark-secondaryLabel { background-color: rgba(235,235,245,0.6);} .swatch .swatch-color.color-dark-secondaryLabel span { color: black;} .swatch .swatch-color.color-dark-tertiaryLabel { background-color: rgba(235,235,245,0.3);} .swatch .swatch-color.color-dark-tertiaryLabel span { color:black;} .swatch .swatch-color.color-dark-quaternaryLabel { background-color: rgba(235,235,245,0.2);} .swatch .swatch-color.color-dark-quaternaryLabel span { color:black;} .swatch .swatch-color.color-dark-placeholderText { background-color: rgba(235,235,245,0.3);} .swatch .swatch-color.color-dark-placeholderText span { color: black;} .swatch .swatch-color.color-dark-separator { background-color: rgba(84,84,88,0.3);} .swatch .swatch-color.color-dark-opaqueSeparator { background-color: rgb(56,56,58);} .swatch .swatch-color.color-dark-link { background-color: rgb(9,132,255);} .swatch .swatch-label { display:block; text-align: center; color:#666; padding-top:0.7em; font-size:14px; margin-bottom:1em; } /\\* TABLES \\*/ table { width:100%; margin-bottom: 3em; font-size: 14px; word-wrap: normal; /\\* 12 column layout fixes begin \\*/ table-layout: fixed; display: table; overflow: hidden; overflow-x: auto; /\\* 12 column layout fixes end \\*/ } table thead tr { border-bottom: 1px solid #333; } table thead tr th { font-weight:600; color: #333; padding: 3px 1em 3px 0; vertical-align: bottom; } table tr { border-bottom: 1px solid #e6e6e6; } table tr td { color: #666; line-height: 1.5em; padding: .5em 1em .5em 0; vertical-align: top; } .scroll-table table thead tr th, .scroll-table table tr td { min-width: 80px; } .table-3-up table tr td:nth-of-type(1) { width: 20%; } .table-3-up table tr td:nth-of-type(2), .table-3-up table tr td:nth-of-type(3) { width:40%; } .table-2-up table tr td:nth-of-type(1) { width: 20%; } .table-2-up table tr td:nth-of-type(2) { width:80%; } .table-icons table tr td:nth-of-type(1) { width: 8%; text-align: center; padding-top: 1em; padding-bottom: 1em; } .table-icons table tr td:nth-of-type(2), .table-icons table tr td:nth-of-type(3), .table-icons table tr td:nth-of-type(4), .table-icons table tr td:nth-of-type(5) { min-width: 130px; } @media all and (max-width: 735px) { table thead tr th, table tr td { /\\*font-size: 11px;\\*/ line-height:1.2em; } .scroll-table { overflow-x:scroll; -webkit-overflow-scrolling: touch; -ms-overflow-style: none; margin-left: -2em; padding-left: 2em; margin-right: -2em; margin-top: 2em; margin-bottom: 3em; } .scroll-table ::-webkit-scrollbar { width: 0 !important } .scroll-table table { min-width: 650px; width: auto; margin-top: 0; margin-bottom: 0; } .scroll-table table thead tr th, .scroll-table table tr td { min-width: 80px; line-height: 1.5em; } }
+
+| Light | Dark | Name |
+| --- | --- | --- |
+|  |  |  |
+| R 0 G 122 B 255 |  |  |
+| #FF007AFF |  |  |
+
+|
+
+R 10 G 132 B 255  
+#FF0A84FF
+
+| systemBlue |
+|
+
+R 52 G 199 B 89  
+#FF34C759
+
+|
+
+R 48 G 209 B 88  
+#FF30D158
+
+| systemGreen |
+|
+
+R 88 G 86 B 214  
+#FF5856D6
+
+|
+
+R 94 G 92 B 230  
+#FF5E5CE6
+
+| systemIndigo |
+|
+
+R 255 G 149 B 0  
+#FFFF9500
+
+|
+
+R 255 G 159 B 10  
+#FFFF9F0A
+
+| systemOrange |
+|
+
+R 255 G 45 B 85  
+#FFFF2D55
+
+|
+
+R 255 G 55 B 95  
+#FFFF375F
+
+| systemPink |
+|
+
+R 175 G 82 B 222  
+#FFAF52DE
+
+|
+
+R 191 G 90 B 242  
+#FFBF5AF2
+
+| systemPurple |
+|
+
+R 255 G 59 B 48  
+#FFFF3B30
+
+|
+
+R 255 G 69 B 58  
+#FFFF453A
+
+| systemRed |
+|
+
+R 90 G 200 B 250  
+#FF5AC8FA
+
+|
+
+R 100 G 210 B 255  
+#FF64D2FF
+
+| systemTeal |
+|
+
+R 255 G 204 B 0  
+#FFFFCC00
+
+|
+
+R 255 G 214 B 10  
+#FFFFD60A
+
+| systemYellow |
+|
+
+R 142 G 142 B 147  
+#FF8E8E93
+
+|
+
+R 142 G 142 B 147  
+#FF8E8E93
+
+| systemGray |
+|
+
+R 174 G 174 B 178  
+#FFAEAEB2
+
+|
+
+R 99 G 99 B 102  
+#FF636366
+
+| systemGray2 |
+|
+
+R 199 G 199 B 204  
+#FFC7C7CC
+
+|
+
+R 72 G 72 B 74  
+#FF48484A
+
+| systemGray3 |
+|
+
+R 209 G 209 B 214  
+#FFD1D1D6
+
+|
+
+R 58 G 58 B 60  
+#FF3A3A3C
+
+| systemGray4 |
+|
+
+R 229 G 229 B 234  
+#FFE5E5EA
+
+|
+
+R 44 G 44 B 46  
+#FF2C2C2E
+
+| systemGray5 |
+|
+
+R 242 G 242 B 247  
+#FFF2F2F7
+
+|
+
+R 28 G 28 B 30  
+#FF1C1C1E
+
+| systemGray6 |
+|
+
+R 0 G 0 B 0  
+#FF000000
+
+|
+
+R 255 G 255 B 255  
+#FFFFFFFF
+
+| label |
+|
+
+R 60 G 60 B 67 A 0.6 #993C3C43
+
+|
+
+R 235 G 235 B 245 A 0.6 #99EBEBF5
+
+| secondaryLabel |
+|
+
+R 60 G 60 B 67 A 0.3 #4C3C3C43
+
+|
+
+R 235 G 235 B 245 A 0.3 #4CEBEBF5
+
+| tertiaryLabel |
+|
+
+R 60 G 60 B 67 A 0.2 #2D3C3C43
+
+|
+
+R 235 G 235 B 245 A 0.2 #2DEBEBF5
+
+| quaternaryLabel |
+|
+
+R 60 G 60 B 67 A 0.3 #4CC3C43
+
+|
+
+R 235 G 235 B 245 A 0.3 #4CEBEBF5
+
+| placeholderText |
+|
+
+R 60 G 60 B 67 A 0.3 #493C3C43
+
+|
+
+R 84 G 84 B 88 A 0.3 #99545458
+
+| separator |
+|
+
+R 198 G 198 B 200  
+#FFC6C6C8
+
+|
+
+R 56 G 56 B 58  
+#FF38383A
+
+| opaqueSeparator |
+|
+
+R 0 G 122 B 255  
+#FF007AFF
+
+|
+
+R 9 G 132 B 255  
+#FF0984FF
+
+| link |
+
+macOS Dynamic Colors Overview [#](#macos-dynamic-colors-overview)
+-----------------------------------------------------------------
+
+Here is the color overview for macOS. Note that when the alpha is not specified it’s 100%.
+
+Please note that you can’t use these colors on macOS pre-14.10.
+
+/\* COLOR PALLETTES \*/
+
+.color-palette { margin-top: 2em; margin-bottom: 2em }.swatch { display: inline-block; width: 125px; height: 125px; font-family: -apple-system, “Myriad Set Pro”, “Lucida Grande”, “Helvetica Neue”, “Helvetica”, “Arial”, “Verdana”, “sans-serif”; }@media all and (max-width: 1068px) { .swatch { width: 24%; } }@media all and (max-width: 735px) { .swatch { width: 49%; } }.swatch .swatch-color { margin-left: 6px; margin-right: 6px; height: 85px; border-radius: 10px; padding: 0.8em; }.swatch .swatch-color span { display:block; color: #FFF; line-height: 1.2; font-size:14px; white-space: nowrap; } /\* Light \*/ .swatch .swatch-color.color-blue { background-color: rgb(0,122,255);} .swatch .swatch-color.color-brown { background-color: rgb(162,132,94);} .swatch .swatch-color.color-gray { background-color: rgb(142,142,147);} .swatch .swatch-color.color-green { background-color: rgb(40,205,65);} .swatch .swatch-color.color-indigo { background-color: rgb(88,86,214);} .swatch .swatch-color.color-orange { background-color: rgb(255,149,0);} .swatch .swatch-color.color-pink { background-color: rgb(255,45,85);} .swatch .swatch-color.color-purple { background-color: rgb(175,82,222);} .swatch .swatch-color.color-red { background-color: rgb(255,59,48);} .swatch .swatch-color.color-teal { background-color: rgb(90,200,250);} .swatch .swatch-color.color-yellow { background-color: rgb(255,204,0);}.swatch .swatch-color.color-alternateSelectedControl { background-color: rgb(0,99,225);} .swatch .swatch-color.color-alternateSelectedControlText { background-color: rgb(255,255,255);} .swatch .swatch-color.color-alternateSelectedControlText span { color: black;} .swatch .swatch-color.color-controlBackground { background-color: rgb(255,255,255);} .swatch .swatch-color.color-controlBackground span { color: black;} .swatch .swatch-color.color-controlText { background-color: rgba(0,0,0,0.8);} .swatch .swatch-color.color-currentControlTint { background-color: rgba(60,60,67,0.3);} .swatch .swatch-color.color-disabledControlText { background-color: rgba(0,0,0,0.2);} .swatch .swatch-color.color-findHighlightColor { background-color: rgb(0,122,255);} .swatch .swatch-color.color-grid { background-color: rgb(204,204,204);} .swatch .swatch-color.color-headerText { background-color: rgba(0,0,0,0.8);} .swatch .swatch-color.color-highlight { background-color: rgb(255,255,255);} .swatch .swatch-color.color-highlight span { color:black;} .swatch .swatch-color.color-labelColor { background-color: rgba(0,0,0,0.8);} .swatch .swatch-color.color-linkColor { background-color: rgb(0,104,218);} .swatch .swatch-color.color-placeholderTextColor { background-color: rgba(0,0,0,0.2);} .swatch .swatch-color.color-quaternaryLabelColor { background-color: rgba(0,0,0,0.1);} .swatch .swatch-color.color-secondaryLabelColor { background-color: rgba(0,0,0,0.5);} .swatch .swatch-color.color-selectedContentBackgroundColor { background-color: rgb(0,99,225);} .swatch .swatch-color.color-selectedControlColor { background-color: rgb(179,215,255);} .swatch .swatch-color.color-selectedControlTextColor { background-color: rgba(0,0,0,0.8);} .swatch .swatch-color.color-selectedMenuItemTextColor { background-color: rgb(255,255,255);} .swatch .swatch-color.color-selectedMenuItemTextColor span { color:black;} .swatch .swatch-color.color-selectedTextBackgroundColor { background-color: rgb(179,215,255);} .swatch .swatch-color.color-selectedTextColor { background-color: rgb(0,0,0);} .swatch .swatch-color.color-separatorColor { background-color: rgba(0,0,0,0.1);} .swatch .swatch-color.color-shadowColor { background-color: rgb(0,0,0);} .swatch .swatch-color.color-tertiaryLabelColor { background-color: rgba(0,0,0,0.2);} .swatch .swatch-color.color-textBackgroundColor { background-color: rgb(255,255,255);} .swatch .swatch-color.color-textBackgroundColor span { color:black;} .swatch .swatch-color.color-textColor { background-color: rgb(0,0,0);} .swatch .swatch-color.color-underPageBackgroundColor { background-color: rgba(150,150,150,0.9);} .swatch .swatch-color.color-unemphasizedSelectedContentBackgroundColor { background-color: rgb(220,220,220);} .swatch .swatch-color.color-unemphasizedSelectedTextBackgroundColor { background-color: rgb(220,220,220);} .swatch .swatch-color.color-unemphasizedSelectedTextColor { background-color: rgb(0,0,0);} .swatch .swatch-color.color-windowBackgroundColor { background-color: rgb(236,236,236);} .swatch .swatch-color.color-windowFrameTextColor { background-color: rgba(0,0,0,0.8);}/\* Dark \*/ .swatch .swatch-color.color-dark-blue { background-color: rgb(10,132,255);} .swatch .swatch-color.color-dark-brown { background-color: rgb(172,142,104);} .swatch .swatch-color.color-dark-gray { background-color: rgb(152,152,157);} .swatch .swatch-color.color-dark-green { background-color: rgb(50,215,75);} .swatch .swatch-color.color-dark-indigo { background-color: rgb(94,92,230);} .swatch .swatch-color.color-dark-orange { background-color: rgb(255,159,10);} .swatch .swatch-color.color-dark-pink { background-color: rgb(255,55,95);} .swatch .swatch-color.color-dark-purple { background-color: rgb(191,90,242);} .swatch .swatch-color.color-dark-red { background-color: rgb(255,69,58);} .swatch .swatch-color.color-dark-teal { background-color: rgb(100,210,255);} .swatch .swatch-color.color-dark-yellow { background-color: rgb(255,214,10);}.swatch .swatch-color.color-dark-alternateSelectedControl { background-color: rgb(0,88,208);} .swatch .swatch-color.color-dark-alternateSelectedControlText { background-color: rgb(255,255,255);} .swatch .swatch-color.color-dark-alternateSelectedControlText span { color: black;}.swatch .swatch-color.color-dark-controlBackground { background-color: rgb(30,30,30);} .swatch .swatch-color.color-dark-controlText { background-color: rgba(255,255,255,0.8);} .swatch .swatch-color.color-dark-controlText span { color:black;} .swatch .swatch-color.color-dark-currentControlTint { background-color: rgba(60,60,67,0.3);} .swatch .swatch-color.color-dark-disabledControlText { background-color: rgb(255,255,255,0.2);} .swatch .swatch-color.color-dark-disabledControlText span { color:black;} .swatch .swatch-color.color-dark-findHighlightColor { background-color: rgb(0,122,255);} .swatch .swatch-color.color-dark-grid { background-color: rgb(255,255,255,0.1);} .swatch .swatch-color.color-dark-grid span { color: black;} .swatch .swatch-color.color-dark-headerText { background-color: rgb(255,255,255);} .swatch .swatch-color.color-dark-headerText span { color:black;} .swatch .swatch-color.color-dark-highlight { background-color: rgb(180,180,180);} .swatch .swatch-color.color-dark-keyboardFocusIndicatorColor { background-color: rgb(0,122,255);} .swatch .swatch-color.color-dark-labelColor { background-color: rgba(255,255,255,0.8);} .swatch .swatch-color.color-dark-labelColor span { color:black;} .swatch .swatch-color.color-dark-linkColor { background-color: rgba(65,156,255,1);} .swatch .swatch-color.color-dark-placeholderTextColor { background-color: rgba(255,255,255,0.2);} .swatch .swatch-color.color-dark-placeholderTextColor span { color:black;} .swatch .swatch-color.color-dark-quaternaryLabelColor { background-color: rgb(255,255,255,0.1);} .swatch .swatch-color.color-dark-quaternaryLabelColor span { color:black;} .swatch .swatch-color.color-dark-secondaryLabelColor { background-color: rgba(255,255,255,0.5);} .swatch .swatch-color.color-dark-secondaryLabelColor span { color:black;} .swatch .swatch-color.color-dark-selectedContentBackgroundColor { background-color: rgba(0,88,208,1);} .swatch .swatch-color.color-dark-selectedControlColor { background-color: rgb(63,99,139);} .swatch .swatch-color.color-dark-selectedControlTextColor { background-color: rgba(255,255,255,0.8);} .swatch .swatch-color.color-dark-selectedControlTextColor span { color:black;} .swatch .swatch-color.color-dark-selectedMenuItemTextColor { background-color: rgb(255,255,255);} .swatch .swatch-color.color-dark-selectedMenuItemTextColor span { color:black;} .swatch .swatch-color.color-dark-selectedTextBackgroundColor { background-color: rgb(63,99,139);} .swatch .swatch-color.color-dark-selectedTextColor { background-color: rgb(255,255,255);} .swatch .swatch-color.color-dark-selectedTextColor span { color:black;} .swatch .swatch-color.color-dark-separatorColor { background-color: rgba(255,255,255,0.1);} .swatch .swatch-color.color-dark-separatorColor span { color:black;} .swatch .swatch-color.color-dark-shadowColor { background-color: rgb(0,0,0,1);} .swatch .swatch-color.color-dark-tertiaryLabelColor { background-color: rgba(255,255,255,0.2);} .swatch .swatch-color.color-dark-tertiaryLabelColor span { color:black;} .swatch .swatch-color.color-dark-textBackgroundColor { background-color: rgb(30,30,30);} .swatch .swatch-color.color-dark-textColor { background-color: rgb(255,255,255);} .swatch .swatch-color.color-dark-textColor span { color:black;} .swatch .swatch-color.color-dark-underPageBackgroundColor { background-color: rgb(40,40,40);} .swatch .swatch-color.color-dark-unemphasizedSelectedContentBackgroundColor { background-color: rgb(70,70,70);} .swatch .swatch-color.color-dark-unemphasizedSelectedTextBackgroundColor { background-color: rgb(70,70,70);} .swatch .swatch-color.color-dark-unemphasizedSelectedTextColor { background-color: rgb(255,255,255);} .swatch .swatch-color.color-dark-unemphasizedSelectedTextColor span { color:black;} .swatch .swatch-color.color-dark-windowBackgroundColor { background-color: rgb(50,50,50);} .swatch .swatch-color.color-dark-windowFrameTextColor { background-color: rgba(255,255,255,0.8);} .swatch .swatch-color.color-dark-windowFrameTextColor span { color:black;}.swatch .swatch-label { display:block; text-align: center; color:#666; padding-top:0.7em; font-size:14px; margin-bottom:1em; } /\* TABLES \*/table { width:100%; margin-bottom: 3em; font-size: 14px; word-wrap: normal; /\* 12 column layout fixes begin \*/ table-layout: fixed; display: table; overflow: hidden; overflow-x: auto; /\* 12 column layout fixes end \*/ }table thead tr th { font-weight:600; color: #333; padding: 3px 1em 3px 0; vertical-align: bottom; }table tr td { color: #666; line-height: 1.5em; padding: .5em 1em .5em 0; vertical-align: top; }.scroll-table table thead tr th, .scroll-table table tr td { min-width: 80px; }.table-3-up table tr td:nth-of-type(1) { width: 20%; }.table-3-up table tr td:nth-of-type(2), .table-3-up table tr td:nth-of-type(3) { width:40%; }.table-2-up table tr td:nth-of-type(1) { width: 20%; }.table-2-up table tr td:nth-of-type(2) { width:80%; }.table-icons table tr td:nth-of-type(1) { width: 8%; text-align: center; padding-top: 1em; padding-bottom: 1em; }.table-icons table tr td:nth-of-type(2), .table-icons table tr td:nth-of-type(3), .table-icons table tr td:nth-of-type(4), .table-icons table tr td:nth-of-type(5) { min-width: 130px; }@media all and (max-width: 735px) { table thead tr th, table tr td { /\*font-size: 11px;\*/ line-height:1.2em; }.scroll-table { overflow-x:scroll; -webkit-overflow-scrolling: touch; -ms-overflow-style: none; margin-left: -2em; padding-left: 2em; margin-right: -2em; margin-top: 2em; margin-bottom: 3em; }.scroll-table ::-webkit-scrollbar { width: 0 !important }.scroll-table table { min-width: 650px; width: auto; margin-top: 0; margin-bottom: 0; }.scroll-table table thead tr th, .scroll-table table tr td { min-width: 80px; line-height: 1.5em; } }
+
+| Aqua | Dark | Name |
+| --- | --- | --- |
+|  |  |  |
+| R 0 G 122 B 255 |  |  |
+| #FF007AFF |  |  |
+
+|
+
+R 10 G 132 B 255  
+#FF0A84FF
+
+| systemBlue |
+|
+
+R 162 G 132 B 94  
+#FFA2845E
+
+|
+
+R 172 G 142 B 104  
+#FFAC8E68
+
+| systemBrown |
+|
+
+R 142 G 142 B 147  
+#FF8E8E93
+
+|
+
+R 152 G 152 B 157  
+#FF98989D
+
+| systemGray |
+|
+
+R 40 G 205 B 65  
+#FF34C759
+
+|
+
+R 50 G 215 B 75  
+#FF32D74B
+
+| systemGreen |
+|
+
+R 88 G 86 B 214  
+#FF5856D6
+
+|
+
+R 94 G 92 B 230  
+#FF5E5CE6
+
+| systemIndigo |
+|
+
+R 255 G 149 B 0  
+#FFFF9500
+
+|
+
+R 255 G 159 B 10  
+#FFFF9F0A
+
+| systemOrange |
+|
+
+R 255 G 45 B 85  
+#FFFF2D55
+
+|
+
+R 255 G 55 B 95  
+#FFFF375F
+
+| systemPink |
+|
+
+R 175 G 82 B 222  
+#FFAF52DE
+
+|
+
+R 191 G 90 B 242  
+#FFBF5AF2
+
+| systemPurple |
+|
+
+R 255 G 59 B 48  
+#FFFF3B30
+
+|
+
+R 255 G 69 B 58  
+#FFFF453A
+
+| systemRed |
+|
+
+R 90 G 200 B 250  
+#FF5AC8FA
+
+|
+
+R 100 G 210 B 255  
+#FF64D2FF
+
+| systemTeal |
+|
+
+R 255 G 204 B 0  
+#FFFFCC00
+
+|
+
+R 255 G 214 B 10  
+#FFFFD60A
+
+| systemYellow |
+|
+
+R 0 G 99 B 255  
+#FF0063E1
+
+|
+
+R 0 G 88 B 208  
+#FF0058D0
+
+| alternateSelectedControl |
+|
+
+R 255 G 255 B 255  
+#FFFFFFFF
+
+|
+
+R 255 G 255 B 255  
+#FFFFFFFF
+
+| alternateSelectedControlText |
+|
+
+R 255 G 255 B 255  
+#FFFFFFFF
+
+|
+
+R 30 G 30 B 30  
+#FF1E1E1E
+
+| controlBackground |
+|
+
+R 0 G 0 B 0 A 0.8 #D8000000
+
+|
+
+R 255 G 255 B 255 A 0.8 #D8FFFFFF
+
+| controlText |
+|
+
+R 0 G 0 B 0 A 0.2 #3F000000
+
+|
+
+R 255 G 255 B 255 A 0.2 #3FFFFFFF
+
+| disabledControlText |
+|
+
+R 204 G 204 B 204  
+#FFCCCCCC
+
+|
+
+R 255 G 255 B 255 A 0.1 #19FFFFFF
+
+| grid |
+|
+
+R 0 G 0 B 0 A 0.8 #D8000000
+
+|
+
+R 255 G 255 B 255  
+#FFFFFFFF
+
+| headerText |
+|
+
+R 255 G 255 B 255  
+#FFFFFFFF
+
+|
+
+R 180 G 180 B 180  
+#FFB4B4B4
+
+| highlight |
+|
+
+R 0 G 0 B 0 A 0.8 #D8000000
+
+|
+
+R 255 G 255 B 255 A 0.8 #D8FFFFFF
+
+| labelColor |
+|
+
+R 0 G 104 B 218  
+#FF0068DA
+
+|
+
+R 65 G 156 B 255  
+#FF419CFF
+
+| linkColor |
+|
+
+R 0 G 0 B 0 A 0.2 #3F000000
+
+|
+
+R 255 G 255 B 255 A 0.2 #3FFFFFFF
+
+| placeholderTextColor |
+|
+
+R 0 G 0 B 0 A 0.1 #19000000
+
+|
+
+R 255 G 255 B 255 A 0.1 #19FFFFFF
+
+| quaternaryLabelColor |
+|
+
+R 0 G 0 B 0 A 0.5 #7F000000
+
+|
+
+R 255 G 255 B 255 A 0.5 #8CFFFFFF
+
+| secondaryLabelColor |
+|
+
+R 0 G 99 B 225  
+#FF0063E1
+
+|
+
+R 0 G 88 B 208  
+#FF0058D0
+
+| selectedContentBackgroundColor |
+|
+
+R 179 G 215 B 255  
+#FFB3D7FF
+
+|
+
+R 63 G 99 B 109  
+#FF3F638B
+
+| selectedControlColor |
+|
+
+R 0 G 0 B 0 A 0.8 #D8000000
+
+|
+
+R 255 G 255 B 255 A 0.8 #D8FFFFFF
+
+| selectedControlTextColor |
+|
+
+R 255 G 255 B 255  
+#FFFFFFFF
+
+|
+
+R 255 G 255 B 255  
+#FFFFFFFF
+
+| selectedMenuItemTextColor |
+|
+
+R 179 G 215 B 255  
+#FFB3D7FF
+
+|
+
+R 63 G 99 B 139  
+#FF3F638B
+
+| selectedTextBackgroundColor |
+|
+
+R 0 G 0 B 0  
+#FF000000
+
+|
+
+R 255 G 255 B 255  
+#FFFFFFFF
+
+| selectedTextColor |
+|
+
+R 0 G 0 B 0 A 0.1 #19000000
+
+|
+
+R 255 G 255 B 255 A 0.1 #19FFFFFF
+
+| separatorColor |
+|
+
+R 0 G 0 B 0  
+#FF000000
+
+|
+
+R 0 G 0 B 0  
+#FF000000
+
+| shadowColor |
+|
+
+R 0 G 0 B 0 A 0.2 #3F000000
+
+|
+
+R 255 G 255 B 255 A 0.2 #3FFFFFFF
+
+| tertiaryLabelColor |
+|
+
+R 255 G 255 B 255  
+#FFFFFFFF
+
+|
+
+R 30 G 30 B 30  
+#FF1E1E1E
+
+| textBackgroundColor |
+|
+
+R 0 G 0 B 0  
+#FF000000
+
+|
+
+R 255 G 255 B 255  
+#FFFFFFFF
+
+| textColor |
+|
+
+R 150 G 150 B 150 A 0.9 #E5969696
+
+|
+
+R 40 G 40 B 40  
+#FF282828
+
+| underPageBackgroundColor |
+|
+
+R 220 G 220 B 220  
+#FFDCDCDC
+
+|
+
+R 70 G 70 B 70  
+#FF464646
+
+| unemphasizedSelectedContentBackgroundColor |
+|
+
+R 220 G 220 B 220  
+#FFDCDCDC
+
+|
+
+R 70 G 70 B 70  
+#FF464646
+
+| unemphasizedSelectedTextBackgroundColor |
+|
+
+R 0 G 0 B 0  
+#FF000000
+
+|
+
+R 255 G 255 B 255  
+#FFFFFFFF
+
+| unemphasizedSelectedTextColor |
+|
+
+R 236 G 236 B 236  
+#FFECECEC
+
+|
+
+R 50 G 50 B 50  
+#FF323232
+
+| windowBackgroundColor |
+|
+
+R 0 G 0 B 0 A 0.8 #D8000000
+
+|
+
+R 255 G 255 B 255 A 0.8 #D8FFFFFF
+
+| windowFrameTextColor |
+
+That’s it! [#](#thats-it)
+-------------------------
+
+I hope you find this Dynamic Colors Overview useful, at least I do :) this overview is quite handy when you want to quickly have a look at what a color is in both light and dark mode. If you find any errors, please let me know. This was a lot of manual labor that went into this, so I probably have copy/pasted something wrong somewhere.
+
+If you want to get started with dark mode support go check out the docs [here](https://docs.microsoft.com/xamarin/xamarin-forms/user-interface/theming/). It is under an [experimental flag](/xamarin/xamarin-forms-xamarin/experimental-flags-xamarin-forms/) right now, but don’t let that stop you!
+
+The code I used for this is in Xamarin and up on Github [here](https://github.com/jfversluis/MaciOSDynamicColors). Note that I have used a custom NuGet package because I needed some latest and greatest features. So it might not run out of the box for you. I will update this later when it is released.
+
+Oh and did you know I have a [YouTube channel](http://www.youtube.com/c/GeraldVersluis?sub_confirmation=1)? Could I persuade you to subscribe? Thanks!
+
+![Gerald Versluis](https://blog.verslu.is/img/profilepicture_hu_e1e79c04689d08ea.png)
+
+Author
+
+Gerald Versluis
+
+---
+
+[←→
+Test Xamarin.Forms bugfixes by downloading PR NuGet packages
+11 May 2020](https://blog.verslu.is/xamarin-forms-xamarin/test-xamarin-forms-bugfixes/)[Clearing downloaded Source Link cache for Visual Studio for Mac
+19 May 2020→←](https://blog.verslu.is/development/clearing-source-link-cache/)
+
+[↑](#the-top "Scroll to top")

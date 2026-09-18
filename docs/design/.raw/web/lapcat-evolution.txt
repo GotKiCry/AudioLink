@@ -1,0 +1,63 @@
+Previous: [MacBook Neo](/articles/2026/3/3.html)
+  
+[Articles index](/articles/index.html "The Desolation of Blog")[Jeff Johnson](https://lapcatsoftware.com) ([My apps](https://underpassapp.com), [PayPal.Me](https://www.paypal.me/JeffJohnsonWI), [Mastodon](https://mastodon.social/@lapcatsoftware "@lapcatsoftware@mastodon.social"))
+
+The evolution of Mac app window corners
+=======================================
+
+### March 10 2026
+
+This is a follow-up to my recent blog post [macOS Tahoe windows have different corner radiuses](/articles/2026/3/1.html). I’ll start by noting that Apple goes into more detail about the new Tahoe design in the WWDC 2025 session video [Build an AppKit app with the new design](https://developer.apple.com/videos/play/wwdc2025/310/):
+
+> The floating sidebar, along with the toolbar, demonstrate a key element of the new design system: concentricity.
+> Each element is designed with a curvature that sits neatly within the corner radius of its container, in this case the window itself.
+> And this relationship goes both ways.
+> In the new design system, windows now have a softer, more generous corner radius, which varies based on the style of window.
+> Windows with toolbars now use a larger radius, which is designed to wrap concentrically around the glass toolbar elements, scaling to match the size of the toolbar.
+> Titlebar-only windows retain a smaller corner radius, wrapping compactly around the window controls.
+> These larger corners provide a softer feel and elegant concentricity to the window but they can also clip content that sits close to the edge of the window.
+> To position content that nests into a corner, use the new NSView
+> LayoutRegion API.
+
+I hadn’t seen this video, because I rarely watch WWDC session videos, which I consider a waste of my time and a poor substitute for written documentation. Moreover, I had no specific interest in building an app with the new design. Anyway, you can find more of an explanation of the design in the video, though I would characterize “a softer feel and elegant concentricity” as nonsense. At least Apple admits to one problem: clipping.
+
+For the rest of this blog post, I’ll borrow screenshots from a wonderful resource, the [macOS Screenshot Library](https://512pixels.net/projects/aqua-screenshot-library/). Hopefully that’s ok! I found no terms of use. All credit goes to Stephen Hackett of 512 Pixels. I’ll focus on Mac OS X and later, because that’s been my personal focus. I’ve used a Mac (or an Apple II) at various times since the 1980s, but I did not own a Mac and become a full-time Mac user until the 21st century. The original Macintosh OS included [Desk Accessories](https://www.folklore.org/Desk_Ornaments.html), some of which such as Calculator had rounded window corners.
+
+![Mac OS Desk Accessories](/articles/2026/3/4-images/desk_accessories.gif)
+
+In my previous blog post, I chose Calculator app to illustrate the different corner radiuses only because Calculator has a very small window, which allowed me to post a small screenshot for those reading on a phone screen. In other ways, Calculator was admittedly a poor choice, because the Calculator window is not resizable and not the kind of window you would usually position in a corner of your screen. I think a more fanciful window design is more appropriate for a widget-style app than for a document-style app. Thus, in this blog post I’ll look at the prototypical document-style app, TextEdit. Below is TextEdit from Mac OS X 10.0 Cheetah.
+
+![TextEdit on Cheetah](/articles/2026/3/4-images/10-0-Cheetah-TextEdit.png)
+
+Notice that while the top of the window has rounded corners, the bottom of the window does not! This same basic design continued through Mac OS X 10.6 Snow Leopard, shown below.
+
+![TextEdit on Snow Leopard](/articles/2026/3/4-images/10-6-Snow-Leopard-TextEdit.png)
+
+Notice also that the toolbar is entirely separate from the window titlebar at the top with the traffic light buttons. The window did not yet have a “unified” design, combining the titlebar and toolbar. I think the old design was superior to the latest design for several reasons, one of which is that the ample space at the top allowed easier dragging of windows around the screen.
+
+TextEdit on Mac OS X 10.7 Lion, shown below, was the first version to have rounded corners at the bottom of the window in addition to the top. This version also eliminated the visual distinction between the titlebar and the toolbar.
+
+![TextEdit on Lion](/articles/2026/3/4-images/10-7-Lion-TextEdit.png)
+
+Like Tahoe, Lion was much maligned when introduced. Critics (including myself) felt that Apple went overboard bringing iPhone features to the Mac, marketed as “Back to the Mac.” You can also see that Lion eliminated the always-visible scrollbars. I agree with [John Gruber](https://daringfireball.net/2026/01/resizing_windows_macos_26) about this: “One can argue with the logic behind these changes, 15 years ago. I’ll repeat that I think it was a grave error to make scroll bars invisible by default.”
+
+TextEdit continued with the same basic design, more or less, until macOS 11 Big Sur, which decided to blur the distinction between the document and the toolbar, as well as between the toolbar and the background.
+
+![TextEdit on Big Sur](/articles/2026/3/4-images/Big-Sur-TextEdit.jpg)
+
+Last, and least, we have Tahoe. The window corners are a little more rounded, and for some damn reason, the window title is now left-aligned.
+
+![TextEdit on Tahoe](/articles/2026/3/4-images/26-Tahoe-TextEdit.png)
+
+If you compare with the Cheetah screenshot, you can see what we’ve lost.
+
+The so-called “logic” of the Tahoe design changes make no sense to me, because the concentricity of the window is matched to the elements at the *top* of the window, but the same corner radius is applied to the *bottom* of the window, where the concentricity does not match any elements and may indeed clip the elements. Ironically, Apple claims as one of its goals to *emphasize* the content and deemphasize the controls, so in this respect, Liquid Glass is an utter failure. The early Mac OS X screenshots wake us from our dogmatic slumber and undermine the unexamined assumption that every window corner needs to look the same.
+
+I would be remiss if I neglected to mention the “metal” style of window that goes all the way back to iTunes on Mac OS X 10.1 Puma, increasingly adopted by other apps in subsequent OS X versions.
+
+![iTunes on Puma](/articles/2026/3/4-images/10-1-Puma-iTunes-v1.png)
+
+The iTunes window always had rounded corners at the top and bottom. However, iTunes also had a kind of toolbar at the bottom of the window, as well as a resizing gripper in the bottom right corner, which provides perhaps *some* justification for the choice. I think it’s unfortunate that iTunes became a model for future apps, because iTunes, originally Carbon rather than Cocoa, was always one of the worst designed apps on the Mac, and its horrible nonstandard preferences window with Cancel and OK buttons in place of traffic lights has somehow survived into the present, continuing to plague us in the equally awful Music app.
+
+[Jeff Johnson](https://lapcatsoftware.com) ([My apps](https://underpassapp.com), [PayPal.Me](https://www.paypal.me/JeffJohnsonWI), [Mastodon](https://mastodon.social/@lapcatsoftware "@lapcatsoftware@mastodon.social"))[Articles index](/articles/index.html "The Desolation of Blog")  
+Previous: [MacBook Neo](/articles/2026/3/3.html)

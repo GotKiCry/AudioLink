@@ -1,0 +1,43 @@
+Previous: [The myth and reality of Mac OS X Snow Leopard revisited](/articles/2026/2/5.html)
+  
+[Articles index](/articles/index.html "The Desolation of Blog")[Jeff Johnson](https://lapcatsoftware.com) ([My apps](https://underpassapp.com), [PayPal.Me](https://www.paypal.me/JeffJohnsonWI), [Mastodon](https://mastodon.social/@lapcatsoftware "@lapcatsoftware@mastodon.social"))
+
+macOS Tahoe windows have different corner radiuses
+==================================================
+
+### March 4 2026
+
+I’m sometimes late to notice new and terrible things about macOS 26 Tahoe, because I use it only for testing, on a secondary Mac. My main Mac remains on Sequoia, [as enforced by Little Snitch](/articles/2026/1/6.html "My way to prevent the macOS Tahoe update with Little Snitch"). I was of course aware that app windows on Tahoe have exaggerated corner radiuses, but I was unaware until now that the window corner radius on Tahoe is not uniform: different windows can have different corner radiuses!
+
+Below is a TextEdit window on Tahoe.
+
+![TextEdit window in front of Calculator window](1-images/1.png)
+
+And below is a Calculator window in front of the TextEdit window. Notice the corners of the TextEdit window sticking out!
+
+![Calculator window in front of TextEdit window](1-images/2.png)
+
+What accounts for the difference? A toolbar in the window.
+
+In a new Mac app Xcode project, the main window has a less exaggerated corner radius by default, like TextEdit.
+
+![window without toolbar](1-images/3.png)
+
+When I add a toolbar to the window, the corner radius automatically becomes more exaggerated, like Calculator.
+
+![window with toolbar](1-images/4.png)
+
+That’s it. Seriously.
+
+Apparently the corner radius also changes on Tahoe for some other window elements, such as a sidebar.
+
+If this isn’t the stupidest user interface “feature” ever invented, I don’t know what is. The Mac used to be famous for consistency; now it’s becoming infamous for inconsistency.
+
+By the way, Tahoe’s UI changes are perplexing not only for Apple users but also for Apple engineers. Here’s a bug fix from the open source WebKit browser engine powering Safari: [[macOS] Scroll bars of root scroller may be cutoff due to corner radii of window](https://github.com/WebKit/WebKit/commit/643493bea2f9824959ebb9824bfb011aedf7498c).
+
+### Addendum: March 10 2026
+
+See my follow-up post [The evolution of Mac app window corners](/articles/2026/3/4.html).
+
+[Jeff Johnson](https://lapcatsoftware.com) ([My apps](https://underpassapp.com), [PayPal.Me](https://www.paypal.me/JeffJohnsonWI), [Mastodon](https://mastodon.social/@lapcatsoftware "@lapcatsoftware@mastodon.social"))[Articles index](/articles/index.html "The Desolation of Blog")  
+Previous: [The myth and reality of Mac OS X Snow Leopard revisited](/articles/2026/2/5.html)

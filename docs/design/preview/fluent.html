@@ -1,0 +1,1543 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>AudioLink — Fluent 2 界面预览</title>
+<style>
+/* ==========================================================================
+   AudioLink · Fluent 2 / Windows 11 界面预览（单文件，零外部依赖）
+   --------------------------------------------------------------------------
+   材质分层（毛玻璃：糊得住 / 透得出 / 读得清）：
+     z0 .desktop  应用背景：用户可配置的单色 / 双色 / 三色（默认值按主题各一套）
+     z1 .mica     窗口 Mica 等效：半透明 + backdrop-filter blur(60px) saturate(180%)
+                  —— 壁纸色光透过这一层，玻璃由此成立
+     z2 .chrome   侧栏 / 工具栏：自有底色 + blur(32px)，比 Mica 更实，与内容区拉开层次
+     z3 .card     卡片：LayerFillColorDefault + 一层实色（合计 ≈ .56），blur(16px) 玻璃片
+     z4 .pop      浮层 Acrylic：半透明 + blur(40px) saturate(160%)
+   原则：不透明度抬到"背后内容不可辨认"，但保留透光率让背景色相仍透出来
+   注意：Mica 层是【兄弟层】而非 .app 的自身背景 —— 这样卡片的 backdrop-filter
+   采样到的是整张壁纸 + Mica 结果，避免嵌套 backdrop-root 的采样陷阱。
+    同一个坑的第二处（曾经的 bug）：z4 浮层原本在 .toolbar 内部，而 .toolbar 自己带
+    backdrop-filter —— 工具栏于是成为浮层的 backdrop root，浮层能采样的范围被限制在
+    工具栏的盒子里；而浮层是 position:absolute; top:calc(100% + 8px)，视觉上伸出盒子，
+    伸出的部分没有可采样内容 → blur(40px) 完全失效，只剩半透明底。现在浮层挂在 <body>
+    直接子级 + position:fixed，祖先链上没有 backdrop-filter / filter / transform，采样域
+    恢复为整页（CSS Filter Effects L2：filter 类属性创建 backdrop root）。
+   ========================================================================== */
+
+/* ---------- 1. 令牌：深色（默认） ---------------------------------------- */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* z0 应用背景：用户可自定义（单色 / 双色 / 三色），这里是深色主题的默认值 */
+  --wall-base: #1B2A4A;
+  --wall-image: linear-gradient(135deg, #1b2a4a 0%, #3d2a6b 52%, #0f6b6b 100%);
+
+  /* z1 Mica 等效：透光 32%，背后的内容已被 blur(60px) 糊掉，只剩下色光 */
+  --mica-fill: rgba(22, 24, 32, .68);
+
+  /* z2 chrome 自有底色：比 Mica 更实，配合 blur(32px) 把侧栏 / 工具栏从内容区托出来 */
+  --chrome-fill: rgba(15, 18, 26, .64);
+  --chrome-line: rgba(255, 255, 255, .085);
+
+  /* z3 卡片：官方 LayerFillColorDefault（深色 rgba(58,58,58,.298)）+ 叠一层实色
+     合计 = 1-(1-.298)(1-.38) ≈ .565 —— 比裸 LayerFill 实得多，但仍留透光 */
+  --card-fill: rgba(58, 58, 58, .298);
+  --card-veil: rgba(52, 56, 66, .38);
+  --card-stroke: rgba(255, 255, 255, .115);
+  --card-hl: rgba(255, 255, 255, .10);       /* 顶边内高光（亮） */
+  --card-sh: rgba(0, 0, 0, .34);             /* 底边内暗边（暗） */
+  --card-drop: rgba(0, 0, 0, .42);           /* 玻璃片浮起 */
+  --card-glare: rgba(255, 255, 255, .045);   /* 斜向反光 */
+
+  /* 下沉槽（输入框 / 下拉）：偏暖，与冷调卡片形成温度差 */
+  --well-fill: rgba(32, 26, 22, .34);
+  --well-fill-hover: rgba(42, 34, 29, .40);
+  --well-stroke: rgba(255, 255, 255, .07);
+  --well-bottom: rgba(255, 255, 255, .135);
+  --well-inset: rgba(0, 0, 0, .30);
+
+  --text: #FFFFFF;
+  --text-secondary: #C7C7CC;
+  --text-tertiary: #94959E;
+  --text-disabled: rgba(255, 255, 255, .3628);
+
+  --ctrl-fill: rgba(255, 255, 255, .0605);
+  --ctrl-fill-hover: rgba(255, 255, 255, .0832);
+  --ctrl-fill-pressed: rgba(255, 255, 255, .0326);
+  --ctrl-fill-subtle-hover: rgba(255, 255, 255, .0605);
+  --ctrl-fill-subtle-pressed: rgba(255, 255, 255, .0832);
+  --ctrl-fill-disabled: rgba(255, 255, 255, .0419);
+  --ctrl-stroke: rgba(255, 255, 255, .093);
+  --ctrl-stroke-strong: rgba(255, 255, 255, .16);
+
+  --accent: #4CC2FF;
+  --accent-hover: #6BCDFF;
+  --accent-pressed: #8AD8FF;
+  --accent-text: #003A5C;
+  --accent-disabled: rgba(255, 255, 255, .1581);
+  --accent-glow: rgba(76, 194, 255, .40);
+  --accent-halo: rgba(76, 194, 255, .16);
+  --ambient: rgba(76, 194, 255, .075);
+
+  --ok: #6CCB5F;   --ok-glow: rgba(108, 203, 95, .55);  --ok-halo: rgba(108, 203, 95, .15);  --ok-tint: rgba(108, 203, 95, .055);
+  --warn: #FCE100; --warn-glow: rgba(252, 225, 0, .42); --warn-halo: rgba(252, 225, 0, .13); --warn-tint: rgba(252, 225, 0, .045);
+  --idle: #9A9BA3; --idle-glow: rgba(154, 155, 163, .28); --idle-halo: rgba(154, 155, 163, .10); --idle-tint: rgba(255, 255, 255, .012);
+  --danger: #FF99A4;
+
+  --focus-outer: #FFFFFF;
+  --focus-inner: #000000;
+
+  --slider-rest: rgba(255, 255, 255, .26);
+  --slider-thumb-ring: rgba(255, 255, 255, .92);
+  --slider-thumb-outline: rgba(0, 0, 0, .45);
+
+  --pop-fill: rgba(47, 50, 60, .84);        /* 浮层最实：它承载交互 */
+  --pop-stroke: rgba(255, 255, 255, .10);
+  --pop-shadow: rgba(0, 0, 0, .62);
+  --option-bg: #2B2D34;                      /* 原生下拉选项需不透明底色 */
+
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "Microsoft YaHei UI", monospace;
+}
+
+/* ---------- 2. 令牌：浅色 ------------------------------------------------ */
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* z0 应用背景：浅色主题默认（米白 → 淡蓝，对角） */
+  --wall-base: #F4F0E6;
+  --wall-image: linear-gradient(135deg, #f4f0e6 0%, #a9c8f2 100%);
+
+  --mica-fill: rgba(242, 244, 250, .68);
+
+  --chrome-fill: rgba(255, 255, 255, .62);
+  --chrome-line: rgba(0, 0, 0, .07);
+
+  /* 卡片：官方 LayerFillColorDefault（浅色 rgba(255,255,255,.502)）+ 一层实色
+     合计 = 1-(1-.502)(1-.26) ≈ .63 —— 浅色玻璃更实更亮，但不压成纯白 */
+  --card-fill: rgba(255, 255, 255, .502);
+  --card-veil: rgba(255, 255, 255, .26);
+  --card-stroke: rgba(0, 0, 0, .10);
+  --card-hl: rgba(255, 255, 255, .85);
+  --card-sh: rgba(0, 0, 0, .10);
+  --card-drop: rgba(31, 41, 70, .15);
+  --card-glare: rgba(255, 255, 255, .34);
+
+  --well-fill: rgba(255, 250, 244, .56);
+  --well-fill-hover: rgba(255, 252, 248, .74);
+  --well-stroke: rgba(0, 0, 0, .07);
+  --well-bottom: rgba(0, 0, 0, .16);
+  --well-inset: rgba(60, 50, 40, .07);
+
+  --text: #1B1B1B;
+  --text-secondary: #5D5D63;
+  --text-tertiary: #82838C;
+  --text-disabled: rgba(0, 0, 0, .3614);
+
+  --ctrl-fill: rgba(255, 255, 255, .62);
+  --ctrl-fill-hover: rgba(255, 255, 255, .84);
+  --ctrl-fill-pressed: rgba(255, 255, 255, .50);
+  --ctrl-fill-subtle-hover: rgba(0, 0, 0, .0373);
+  --ctrl-fill-subtle-pressed: rgba(0, 0, 0, .0698);
+  --ctrl-fill-disabled: rgba(0, 0, 0, .0373);
+  --ctrl-stroke: rgba(0, 0, 0, .09);
+  --ctrl-stroke-strong: rgba(0, 0, 0, .18);
+
+  --accent: #0F6CBD;
+  --accent-hover: #1C7ECB;
+  --accent-pressed: #2A8DDA;
+  --accent-text: #FFFFFF;
+  --accent-disabled: rgba(0, 0, 0, .2169);
+  --accent-glow: rgba(15, 108, 189, .28);
+  --accent-halo: rgba(15, 108, 189, .12);
+  --ambient: rgba(15, 108, 189, .05);
+
+  --ok: #0F7B0F;   --ok-glow: rgba(15, 123, 15, .34);   --ok-halo: rgba(15, 123, 15, .13);   --ok-tint: rgba(15, 123, 15, .055);
+  --warn: #9D5D00; --warn-glow: rgba(157, 93, 0, .30);  --warn-halo: rgba(157, 93, 0, .12);  --warn-tint: rgba(157, 93, 0, .05);
+  --idle: #82838C; --idle-glow: rgba(130, 131, 140, .24); --idle-halo: rgba(130, 131, 140, .10); --idle-tint: rgba(0, 0, 0, .012);
+  --danger: #C42B1C;
+
+  --focus-outer: #000000;
+  --focus-inner: #FFFFFF;
+
+  --slider-rest: rgba(0, 0, 0, .20);
+  --slider-thumb-ring: rgba(255, 255, 255, .95);
+  --slider-thumb-outline: rgba(0, 0, 0, .12);
+
+  --pop-fill: rgba(253, 253, 255, .85);     /* 浮层最实：它承载交互 */
+  --pop-stroke: rgba(0, 0, 0, .08);
+  --pop-shadow: rgba(31, 41, 70, .20);
+  --option-bg: #FFFFFF;
+}
+
+/* ---------- 3. 基础 ------------------------------------------------------ */
+*, *::before, *::after { box-sizing: border-box; }
+
+::selection { background-color: var(--accent); color: var(--accent-text); }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background-color: var(--wall-base);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 14px;      /* Windows type ramp：Body 14 / 20 */
+  line-height: 20px;
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .01em;
+}
+
+/* type ramp：只用 12 / 14 / 20（页面标题 28），行高 16 / 20 / 28 / 36 */
+.caption { font-size: 12px; line-height: 16px; }
+.muted { color: var(--text-secondary); }
+.tertiary { color: var(--text-tertiary); }
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+
+/* ---------- 4. z0 桌面壁纸：玻璃的可透之物 ------------------------------ */
+.desktop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-color: var(--wall-base);
+  /* 背景内容由「背景」浮层驱动：单色 = 纯色，双色 / 三色 = 线性渐变 */
+  background-image: var(--wall-image);
+}
+
+/* 7 个色斑之外的细微颗粒，避免大面积渐变出现色带 */
+.desktop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: .16;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, .035) 0 1px, transparent 1px 3px);
+}
+
+/* ---------- 5. z1 Mica 等效层：玻璃的来源 ------------------------------- */
+.mica {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background-color: var(--mica-fill);
+  -webkit-backdrop-filter: blur(60px) saturate(180%);
+  backdrop-filter: blur(60px) saturate(180%);
+}
+
+/* ---------- 6. 骨架布局 -------------------------------------------------- */
+.app {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  height: 100%;
+  min-width: 0;
+}
+
+.sidebar {
+  flex: 0 0 280px;
+  width: 280px;                      /* 官方导航栏宽度 */
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 12px 12px;
+  /* z2 chrome：比 Mica 更薄的一层自有底色，让侧栏与内容区有区分 */
+  background-color: var(--chrome-fill);
+  -webkit-backdrop-filter: blur(32px) saturate(150%);
+  backdrop-filter: blur(32px) saturate(150%);
+  border-right: 1px solid var(--chrome-line);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.main {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* 一处极淡的 accent 环境光（主区右上角），只做氛围，不做装饰色块 */
+  background-image: radial-gradient(52% 40% at 96% -8%, var(--ambient), transparent 70%);
+}
+
+.content {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+/* ---------- 7. 滚动条 ---------------------------------------------------- */
+.sidebar, .content { scrollbar-width: thin; scrollbar-color: var(--ctrl-stroke-strong) transparent; }
+.sidebar::-webkit-scrollbar, .content::-webkit-scrollbar { width: 12px; height: 12px; }
+.sidebar::-webkit-scrollbar-thumb, .content::-webkit-scrollbar-thumb {
+  background-color: var(--ctrl-stroke-strong);
+  background-clip: content-box;
+  border: 4px solid transparent;
+  border-radius: 6px;
+}
+.sidebar::-webkit-scrollbar-thumb:hover, .content::-webkit-scrollbar-thumb:hover { background-color: var(--text-tertiary); }
+.sidebar::-webkit-scrollbar-corner, .content::-webkit-scrollbar-corner { background: transparent; }
+
+/* ---------- 8. 侧栏头部 / 本机区块 -------------------------------------- */
+.sidebar-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 4px 0;
+}
+
+.brand-name { font-size: 20px; line-height: 28px; font-weight: 600; }
+.brand-version { color: var(--text-tertiary); }
+
+.host-block { display: flex; flex-direction: column; gap: 4px; padding: 0 4px; }
+
+.section-label { margin: 0; color: var(--text-secondary); font-weight: 600; }
+
+.host-name { display: flex; align-items: center; gap: 8px; margin: 0; }
+
+.host-fp { margin: 0; padding-left: 16px; }
+
+.sidebar-foot { margin-top: auto; padding-top: 4px; }
+
+/* ---------- 9. z3 卡片：浮在 Mica 上的玻璃片 ---------------------------- */
+.card {
+  position: relative;
+  border: 1px solid var(--card-stroke);
+  border-radius: 8px;                /* 卡片 / 浮层 8px */
+  background-color: var(--card-fill);
+  /* 毛玻璃：LayerFill 之上再叠一层实色（--card-veil），表面留一道斜向反光。
+     两层不透明度合计 ≈ .565（深色）/ .63（浅色）：糊得住，但仍透色光。 */
+  background-image:
+    linear-gradient(168deg, var(--card-glare) 0%, transparent 42%),
+    linear-gradient(var(--card-veil), var(--card-veil));
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+  /* 顶边亮 / 底边暗的渐变描边思路（ControlElevationBorderBrush）+ 极轻内高光 + 浮起 */
+  box-shadow:
+    inset 0 1px 0 0 var(--card-hl),
+    inset 0 -1px 0 0 var(--card-sh),
+    0 2px 8px -3px var(--card-drop);
+}
+
+.card-title { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }
+
+.card-desc { margin: 4px 0 0; color: var(--text-secondary); }
+
+.divider { height: 0; margin: 12px 0; border: 0; border-top: 1px solid var(--card-stroke); }
+
+.collect-card { padding: 16px; }
+
+/* ---------- 10. 按钮：accent / standard / subtle ------------------------ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 32px;                  /* 官方槽位 */
+  padding: 5px 11px 6px;             /* 官方槽位 */
+  border: 1px solid transparent;
+  border-radius: 4px;                /* 控件圆角 4px，没有 pill 按钮 */
+  background-color: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background-color 120ms cubic-bezier(0, 0, 0, 1),
+              border-color 120ms cubic-bezier(0, 0, 0, 1),
+              color 120ms cubic-bezier(0, 0, 0, 1),
+              box-shadow 120ms cubic-bezier(0, 0, 0, 1);
+}
+
+.btn svg { flex: none; }
+
+/* standard：控件填充 + 1px 描边，未聚焦时底边更深 */
+.btn-standard {
+  background-color: var(--ctrl-fill);
+  border-color: var(--ctrl-stroke);
+  border-bottom-color: var(--ctrl-stroke-strong);
+}
+.btn-standard:hover { background-color: var(--ctrl-fill-hover); border-color: var(--ctrl-stroke-strong); }
+.btn-standard:active { background-color: var(--ctrl-fill-pressed); }
+
+/* subtle：默认透明，hover 才有填充 */
+.btn-subtle { background-color: transparent; border-color: transparent; }
+.btn-subtle:hover { background-color: var(--ctrl-fill-subtle-hover); }
+.btn-subtle:active { background-color: var(--ctrl-fill-subtle-pressed); }
+
+/* accent：强调色只出现在这种小面积上，并且自带一圈极淡光晕 */
+.btn-accent {
+  background-color: var(--accent);
+  border-color: transparent;
+  border-bottom-color: rgba(0, 0, 0, .14);
+  color: var(--accent-text);
+  box-shadow: 0 0 0 1px var(--accent-halo), 0 4px 14px -4px var(--accent-glow);
+}
+.btn-accent:hover { background-color: var(--accent-hover); box-shadow: 0 0 0 1px var(--accent-halo), 0 6px 18px -4px var(--accent-glow); }
+.btn-accent:active { background-color: var(--accent-pressed); box-shadow: 0 0 0 1px var(--accent-halo), 0 2px 8px -4px var(--accent-glow); }
+
+.btn-block { width: 100%; }
+
+.icon-btn { width: 32px; padding-left: 0; padding-right: 0; }
+
+.btn:disabled,
+.btn[disabled] {
+  cursor: default;
+  background-color: var(--ctrl-fill-disabled);
+  border-color: var(--ctrl-stroke);
+  color: var(--text-disabled);
+  box-shadow: none;
+}
+.btn-accent:disabled,
+.btn-accent[disabled] {
+  background-color: var(--accent-disabled);
+  border-color: transparent;
+  color: var(--text-disabled);
+  box-shadow: none;
+}
+
+/* ---------- 11. 焦点：内外双层描边，不用浏览器 outline ------------------ */
+.btn:focus-visible,
+.theme-switch:focus-visible,
+.segmented-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--focus-outer), inset 0 0 0 1px var(--focus-inner);
+}
+.btn-accent:focus-visible {
+  box-shadow: 0 0 0 1px var(--focus-outer), inset 0 0 0 1px var(--focus-inner), 0 4px 14px -4px var(--accent-glow);
+}
+
+/* ---------- 12. 表单：未聚焦底边更深 → 聚焦底边 2px accent -------------- */
+.field-label { display: block; margin: 12px 0 4px; color: var(--text-secondary); }
+
+.field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+
+.field-head .field-label { margin: 0; }
+
+.field-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.field-row .btn { flex: none; }
+
+.select-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+/* 下沉槽：偏暖的底 + 内阴影，与冷调卡片拉开温度 */
+select,
+.text-input {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid var(--well-stroke);
+  border-bottom-color: var(--well-bottom);
+  border-radius: 4px;
+  background-color: var(--well-fill);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+  padding: 5px 10px 6px;
+  box-shadow: inset 0 1px 2px 0 var(--well-inset);
+  transition: background-color 120ms cubic-bezier(0, 0, 0, 1),
+              border-color 120ms cubic-bezier(0, 0, 0, 1);
+}
+
+select { appearance: none; -webkit-appearance: none; padding-right: 24px; text-overflow: ellipsis; cursor: pointer; }
+
+select:hover, .text-input:hover { background-color: var(--well-fill-hover); }
+
+/* 聚焦：底边加粗到 2px accent（padding 补偿，避免内容跳动） */
+select:focus-visible,
+.text-input:focus-visible {
+  outline: none;
+  border-color: var(--well-stroke);
+  border-bottom: 2px solid var(--accent);
+  background-color: var(--well-fill-hover);
+  padding-bottom: 5px;
+  box-shadow: inset 0 1px 2px 0 var(--well-inset), 0 0 0 1px var(--accent-halo);
+}
+
+.text-input::placeholder { color: var(--text-tertiary); opacity: 1; }
+
+select option { background-color: var(--option-bg); color: var(--text); }
+
+.select-chevron { position: absolute; right: 7px; pointer-events: none; color: var(--text-secondary); }
+
+.hint { margin: 8px 0 0; }
+
+.add-row { margin-top: 12px; }
+.selected-line { margin: 0; color: var(--text-secondary); }
+
+/* ---------- 13. 滑块：轨道胶囊 + accent 填充左侧 ------------------------ */
+.volume { display: inline-flex; align-items: center; gap: 8px; }
+
+.volume-value { min-width: 36px; text-align: right; color: var(--text-secondary); }
+
+.slider {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 96px;
+  height: 20px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;               /* 胶囊只用于开关 / 轨道 / 标签 */
+  background: linear-gradient(
+    to right,
+    var(--accent) 0 var(--fill, 0%),
+    var(--slider-rest) var(--fill, 0%) 100%
+  );
+}
+
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: -8px;
+  border-radius: 50%;
+  background-color: var(--accent);
+  border: 1px solid var(--slider-thumb-ring);
+  box-shadow: 0 0 0 1px var(--slider-thumb-outline), 0 0 8px -1px var(--accent-glow);
+}
+.slider:hover::-webkit-slider-thumb { background-color: var(--accent-hover); }
+.slider:active::-webkit-slider-thumb { background-color: var(--accent-pressed); }
+
+.slider:focus-visible { outline: none; }
+.slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 1px var(--focus-inner), 0 0 0 2px var(--focus-outer);
+}
+
+.slider::-moz-range-track { height: 4px; border-radius: 999px; background-color: var(--slider-rest); }
+.slider::-moz-range-progress { height: 4px; border-radius: 999px; background-color: var(--accent); }
+.slider::-moz-range-thumb {
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background-color: var(--accent);
+  border: 1px solid var(--slider-thumb-ring);
+  box-shadow: 0 0 0 1px var(--slider-thumb-outline);
+}
+.slider:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 1px var(--focus-inner), 0 0 0 2px var(--focus-outer);
+}
+
+/* ---------- 14. 状态灯：带柔光的小灯，不是死板圆点 ---------------------- */
+.dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-image: radial-gradient(circle at 34% 30%, rgba(255, 255, 255, .85), rgba(255, 255, 255, 0) 62%);
+}
+
+.dot-ok {
+  background-color: var(--ok);
+  box-shadow: 0 0 0 3px var(--ok-halo), 0 0 7px 1px var(--ok-glow);
+}
+.dot-warn {
+  background-color: var(--warn);
+  box-shadow: 0 0 0 3px var(--warn-halo), 0 0 7px 1px var(--warn-glow);
+}
+.dot-idle {
+  background-color: var(--idle);
+  box-shadow: 0 0 0 3px var(--idle-halo), 0 0 5px 0 var(--idle-glow);
+}
+.dot-danger {
+  background-color: var(--danger);
+  box-shadow: 0 0 0 3px rgba(255, 153, 164, .14), 0 0 7px 1px rgba(255, 153, 164, .40);
+}
+
+.status { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+
+/* 状态文字也带状态色：状态色参与构图，但依然只用于状态 */
+.status-ok { color: var(--ok); }
+.status-warn { color: var(--warn); }
+.status-idle { color: var(--text-secondary); }
+
+/* ---------- 15. 工具栏（52px）------------------------------------------ */
+.toolbar {
+  /* backdrop-filter 让工具栏自建 stacking context；不给它 z-index，后面 .content 里
+     position:relative 的卡片会按绘制顺序压在工具栏之上。这里把工具栏抬到内容层之上。
+     注意：z4 浮层已不在工具栏内部（见 .pop 与 DOM 末尾），它盖住卡片靠自身 z-index:40。 */
+  position: relative;
+  z-index: 3;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 0 20px;
+  background-color: var(--chrome-fill);
+  -webkit-backdrop-filter: blur(32px) saturate(150%);
+  backdrop-filter: blur(32px) saturate(150%);
+  border-bottom: 1px solid var(--chrome-line);
+}
+
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.toolbar-left .mono { color: var(--text-tertiary); }
+.sep { color: var(--text-tertiary); }
+
+.toolbar-right { display: flex; align-items: center; gap: 12px; margin-left: auto; flex: none; }
+
+/* ---------- 16. 分段控件：小圆角，不是胶囊 ------------------------------ */
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--ctrl-stroke);
+  border-radius: 4px;
+  background-color: var(--well-fill);
+}
+
+.segmented-item {
+  min-height: 28px;
+  padding: 3px 12px 4px;
+  border: 1px solid transparent;
+  border-radius: 2px;                 /* ≤32px 的小元素用 2px */
+  background-color: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+  cursor: pointer;
+  transition: background-color 120ms cubic-bezier(0, 0, 0, 1),
+              border-color 120ms cubic-bezier(0, 0, 0, 1),
+              color 120ms cubic-bezier(0, 0, 0, 1);
+}
+
+.segmented-item:hover { background-color: var(--ctrl-fill-subtle-hover); color: var(--text); }
+.segmented-item[aria-pressed="true"] {
+  background-color: var(--accent);
+  color: var(--accent-text);
+  box-shadow: 0 0 0 1px var(--accent-halo), 0 2px 8px -3px var(--accent-glow);
+}
+.segmented-item[aria-pressed="true"]:hover { background-color: var(--accent-hover); }
+.segmented-item[aria-pressed="true"]:active { background-color: var(--accent-pressed); }
+
+/* ---------- 17. 主题开关（胶囊只用于开关 / 轨道 / 标签）---------------- */
+.theme-switch {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--ctrl-stroke-strong);
+  border-radius: 10px;
+  background-color: var(--well-fill);
+  cursor: pointer;
+  transition: background-color 120ms cubic-bezier(0, 0, 0, 1),
+              border-color 120ms cubic-bezier(0, 0, 0, 1);
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background-color: var(--text-secondary);
+  transform: translate(3px, -50%);
+  transition: transform 150ms cubic-bezier(0, 0, 0, 1),
+              background-color 150ms cubic-bezier(0, 0, 0, 1);
+}
+
+.theme-switch[aria-checked="true"] {
+  background-color: var(--accent);
+  border-color: transparent;
+  box-shadow: 0 0 0 1px var(--accent-halo), 0 0 10px -2px var(--accent-glow);
+}
+.theme-switch[aria-checked="true"] .switch-thumb {
+  background-color: var(--accent-text);
+  transform: translate(23px, -50%);
+}
+
+/* ---------- 18. 本机地址卡片 -------------------------------------------- */
+.address-card { padding: 16px; }
+
+.address-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+
+.address-head .card-title { margin-right: auto; }
+
+.address-right { display: flex; align-items: center; gap: 12px; min-width: 0; }
+
+.address-value { font-size: 20px; line-height: 28px; font-weight: 600; }
+
+.address-card .card-desc { margin-top: 8px; }
+
+/* ---------- 19. 设备卡片：v1 的两行式布局 ------------------------------- */
+.page-title {
+  margin: 0 0 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--card-stroke);
+  font-size: 28px;                    /* 页面标题档，Semibold */
+  line-height: 36px;
+  font-weight: 600;
+}
+
+.device-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;                          /* 卡片间距 */
+}
+
+.device-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  /* 状态着色：卡片边缘有一丝状态色的极淡染色 */
+  background-image: linear-gradient(135deg, var(--dev-tint, transparent) 0%, transparent 58%),
+                    linear-gradient(168deg, var(--card-glare) 0%, transparent 42%),
+                    linear-gradient(var(--card-veil), var(--card-veil));
+}
+
+.device-card[data-state="live"] { --dev-tint: var(--ok-tint); --dev-edge: var(--ok-halo); }
+.device-card[data-state="unstable"] { --dev-tint: var(--warn-tint); --dev-edge: var(--warn-halo); }
+.device-card[data-state="idle"] { --dev-tint: var(--idle-tint); --dev-edge: transparent; }
+
+/* 接收中 / 网络不稳的卡片，左侧加一道状态色细线（状态参与构图，但不是装饰色块） */
+.device-card[data-state="live"]::before,
+.device-card[data-state="unstable"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  border-radius: 999px;
+  background-color: var(--state-line, transparent);
+}
+
+.device-card:hover { border-color: var(--ctrl-stroke-strong); }
+
+.device-card[data-state="live"] { --state-line: var(--ok-glow); }
+.device-card[data-state="unstable"] { --state-line: var(--warn-glow); }
+
+.device-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+
+/* 第一行：名字 + 状态灯 + 状态文字 + 信任标记 */
+.device-line1 { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+
+.device-name { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }
+
+/* 第二行：等宽小字（指纹 · 地址） */
+.device-fp { margin: 0; color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.pair-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px 2px;
+  border: 1px solid var(--ctrl-stroke);
+  border-radius: 999px;               /* 胶囊：标签 */
+  background-color: var(--ctrl-fill);
+  color: var(--text-secondary);
+}
+
+.device-actions { flex: none; display: flex; align-items: center; gap: 12px; }
+
+/* ---------- 20. z4 浮层：Acrylic ---------------------------------------- */
+/* .pop-wrap 只是按钮的容器，不再是定位参考系：浮层本身必须挂在 <body> 直接子级
+   （见 DOM 末尾），否则它落在玻璃祖先里，模糊失效（祖先链要求见文件头注释）。 */
+.pop-wrap { position: relative; display: flex; }
+
+.pop {
+  /* position:fixed + 祖先链上无 backdrop-filter/filter/transform：采样域是整页 backdrop。
+     top/right 由 JS 按触发按钮的 getBoundingClientRect() 写入，resize / scroll 时重算。 */
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 40;                        /* z4：在 body 层级上盖过 .app(z2) 与卡片(z3) */
+  min-width: 240px;
+  max-width: calc(100vw - 16px);
+  padding: 12px 14px;
+  border: 1px solid var(--pop-stroke);
+  border-radius: 8px;                 /* 浮层 8px */
+  background-color: var(--pop-fill);
+  -webkit-backdrop-filter: blur(40px) saturate(160%);
+  backdrop-filter: blur(40px) saturate(160%);
+  box-shadow:
+    inset 0 1px 0 0 var(--card-hl),
+    0 12px 32px -10px var(--pop-shadow);
+}
+
+.pop[hidden] { display: none; }
+
+.pop-title { margin: 0 0 8px; color: var(--text-secondary); font-weight: 600; }
+
+.pop-list { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+
+.pop-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+
+.pop-row dt { margin: 0; color: var(--text-secondary); }
+.pop-row dd { margin: 0; color: var(--text); }
+
+/* ---------- 21. 「背景」浮层：单色 / 双色 / 三色 ------------------------ */
+.pop-bg { min-width: 268px; }
+
+.bg-field { margin-top: 12px; }
+.bg-field .field-label { margin: 0 0 4px; }
+
+/* 颜色槽：方形色块（32px 槽位）+ 只读 hex */
+.bg-colors { display: flex; flex-direction: column; gap: 6px; }
+
+.bg-slot { display: flex; align-items: center; gap: 8px; }
+.bg-slot[hidden] { display: none; }
+
+.color-input {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--ctrl-stroke);
+  border-bottom-color: var(--ctrl-stroke-strong);
+  border-radius: 4px;
+  background-color: transparent;
+  cursor: pointer;
+  transition: background-color 120ms cubic-bezier(0, 0, 0, 1),
+              border-color 120ms cubic-bezier(0, 0, 0, 1);
+}
+.color-input::-webkit-color-swatch-wrapper { padding: 3px; }
+.color-input::-webkit-color-swatch { border: 0; border-radius: 2px; }
+.color-input::-moz-color-swatch { border: 0; border-radius: 2px; }
+.color-input:hover { background-color: var(--ctrl-fill-hover); }
+
+.bg-hex { color: var(--text-secondary); }
+
+/* 三色留空：色块淡化、文案显示「留空」，实际按双色处理 */
+.bg-slot.is-empty .color-input { opacity: .40; }
+.bg-slot.is-empty .bg-hex { color: var(--text-disabled); }
+
+.bg-toggle {
+  min-height: 24px;
+  padding: 1px 8px 2px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+/* 单色模式下方向无意义：整组禁用并置灰 */
+.segmented.is-disabled { opacity: .55; }
+.segmented-item:disabled,
+.segmented-item:disabled:hover,
+.segmented-item:disabled:active {
+  cursor: default;
+  background-color: transparent;
+  color: var(--text-disabled);
+  box-shadow: none;
+}
+
+/* 预设：一排小色块，选中项用 accent 细圈（小面积） */
+.bg-presets { display: flex; align-items: center; gap: 6px; }
+
+.swatch {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--ctrl-stroke);
+  border-bottom-color: var(--ctrl-stroke-strong);
+  border-radius: 4px;
+  background-color: transparent;
+  background-image: linear-gradient(135deg, var(--sw-a), var(--sw-b) 52%, var(--sw-c, var(--sw-b)));
+  cursor: pointer;
+  transition: border-color 120ms cubic-bezier(0, 0, 0, 1),
+              box-shadow 120ms cubic-bezier(0, 0, 0, 1);
+}
+.swatch:hover { border-color: var(--ctrl-stroke-strong); }
+.swatch[aria-pressed="true"] {
+  border-color: transparent;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.swatch:focus-visible,
+.color-input:focus-visible {
+  outline: none;                      /* 焦点一律走内外双层描边，不用浏览器 outline */
+  box-shadow: 0 0 0 1px var(--focus-outer), inset 0 0 0 1px var(--focus-inner);
+}
+
+.pop-bg .hint { margin-top: 10px; }
+
+/* ---------- 22. 动效：尊重系统「减少动效」设置 -------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+  }
+}
+
+/* ---------- 23. 窄窗口（1024px 起）也不破版 ----------------------------- */
+@media (max-width: 1100px) {
+  .content { padding: 16px; }
+  .toolbar { padding: 0 16px; }
+  .page-title { font-size: 20px; line-height: 28px; }
+  .device-card { padding: 12px 14px; gap: 12px; }
+  .slider { width: 80px; }
+}
+</style>
+</head>
+<body>
+<div class="desktop" aria-hidden="true"></div>
+<div class="mica" aria-hidden="true"></div>
+<div class="app">
+
+  <!-- ===================== 左侧边栏（280px） ===================== -->
+  <aside class="sidebar" aria-label="本机与采集设置">
+    <h1 class="visually-hidden">AudioLink 控制台</h1>
+
+    <header class="sidebar-head">
+      <span class="brand-name">AudioLink</span>
+      <span class="brand-version caption mono">v0.1.0</span>
+    </header>
+
+    <section class="host-block" aria-labelledby="host-label">
+      <h2 class="section-label caption" id="host-label">本机</h2>
+      <p class="host-name"><span class="dot dot-ok" aria-hidden="true"></span>GOTKICRY_WORK</p>
+      <p class="host-fp mono caption tertiary">fp:88a402e625794a6f</p>
+      <p class="caption tertiary">未播出</p>
+    </section>
+
+    <section class="card collect-card" aria-labelledby="collect-title">
+      <h2 class="card-title" id="collect-title">采集声音</h2>
+      <p class="card-desc">将此输出设备正在播放的声音发送给对方。</p>
+
+      <div class="field-head">
+        <p class="field-label caption" id="output-device-label">输出设备</p>
+        <button type="button" class="btn btn-subtle icon-btn" aria-label="刷新设备列表" title="刷新设备列表">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+               stroke-width="1.2" stroke-linecap="square" stroke-linejoin="miter"
+               aria-hidden="true" focusable="false">
+            <path d="M8 2.8A5.2 5.2 0 1 0 13.2 8"/>
+            <path d="M12.3 9.1 13.2 8 14.1 9.1"/>
+          </svg>
+        </button>
+      </div>
+      <div class="select-wrap">
+        <select id="output-device" aria-labelledby="output-device-label">
+          <option selected>系统默认（开始推流时使用）</option>
+          <option>扬声器 (Realtek(R) Audio)</option>
+          <option>耳机 (WH-1000XM5)</option>
+        </select>
+        <svg class="select-chevron" width="16" height="16" viewBox="0 0 16 16" fill="none"
+             stroke="currentColor" stroke-width="1.2" stroke-linecap="square" stroke-linejoin="miter"
+             aria-hidden="true" focusable="false">
+          <path d="M4.4 6.4 8 10 11.6 6.4"/>
+        </svg>
+      </div>
+
+      <p class="hint caption tertiary">让播放器使用同一个输出设备。更换耳机或声卡后，可刷新设备列表。</p>
+
+      <hr class="divider">
+
+      <p class="selected-line caption">已选择：<span class="mono">扬声器 (Realtek(R) Audio)</span></p>
+    </section>
+
+    <div class="sidebar-foot">
+      <button type="button" class="btn btn-accent btn-block">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M5 3.1 12.4 8 5 12.9Z" fill="currentColor" stroke="currentColor"
+                stroke-width="1" stroke-linejoin="miter"/>
+        </svg>
+        <span>开始广播</span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- ===================== 主区 ===================== -->
+  <main class="main">
+
+    <!-- 顶部工具栏（52px） -->
+    <header class="toolbar">
+      <div class="toolbar-left">
+        <span class="mono caption">fp:88a402e625794a6f</span>
+        <span class="sep caption" aria-hidden="true">·</span>
+        <span class="mono caption">0.0.0.0:58290</span>
+        <span class="sep caption" aria-hidden="true">·</span>
+        <span class="status status-idle caption"><span class="dot dot-idle" aria-hidden="true"></span>未在推流</span>
+      </div>
+
+      <div class="toolbar-right">
+        <div class="pop-wrap">
+          <button type="button" class="btn btn-standard" id="telemetry-btn"
+                  aria-haspopup="true" aria-expanded="false" aria-controls="telemetry-pop">
+            <span>遥测</span>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+                 stroke-width="1.2" stroke-linecap="square" stroke-linejoin="miter"
+                 aria-hidden="true" focusable="false">
+              <path d="M4.4 6.4 8 10 11.6 6.4"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="segmented" role="group" aria-label="界面风格">
+          <button type="button" class="segmented-item" aria-pressed="true">Fluent</button>
+          <button type="button" class="segmented-item" aria-pressed="false">macOS</button>
+        </div>
+
+        <div class="pop-wrap">
+          <button type="button" class="btn btn-standard" id="bg-btn"
+                  aria-haspopup="true" aria-expanded="false" aria-controls="bg-pop">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+                 stroke-width="1.2" stroke-linecap="square" stroke-linejoin="miter"
+                 aria-hidden="true" focusable="false">
+              <rect x="2.6" y="2.6" width="10.8" height="10.8" rx="1"/>
+              <path d="M2.6 9.6 9.6 2.6"/>
+              <path d="M2.6 13.4 13.4 2.6"/>
+              <path d="M6.6 13.4 13.4 6.6"/>
+            </svg>
+            <span>背景</span>
+          </button>
+        </div>
+
+        <button type="button" class="theme-switch" role="switch" aria-checked="true"
+                aria-label="深色外观" title="切换深浅外观">
+          <span class="switch-thumb" aria-hidden="true"></span>
+        </button>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <!-- 1. 本机地址 -->
+      <section class="card address-card" aria-labelledby="addr-title">
+        <div class="address-head">
+          <h2 class="card-title" id="addr-title">本机地址</h2>
+          <div class="address-right">
+            <span class="mono address-value" id="address-value">0.0.0.0:58290</span>
+            <button type="button" class="btn btn-standard copy-btn" data-address="0.0.0.0:58290">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+                   stroke-width="1.2" stroke-linecap="square" stroke-linejoin="miter"
+                   aria-hidden="true" focusable="false">
+                <rect x="2.6" y="2.6" width="7.6" height="7.6" rx="1"/>
+                <path d="M5.6 13.4h6.8a1 1 0 0 0 1-1V5.6"/>
+              </svg>
+              <span class="btn-label">复制地址</span>
+            </button>
+          </div>
+        </div>
+        <p class="card-desc">在对方设备（手机）上输入这个地址即可接入</p>
+      </section>
+
+      <!-- 2. 正在收听本机的设备 -->
+      <section aria-labelledby="devices-title">
+        <h2 class="page-title" id="devices-title">正在收听本机的设备</h2>
+
+        <ul class="device-list">
+
+          <li class="card device-card" data-state="live">
+            <div class="device-info">
+              <div class="device-line1">
+                <h3 class="device-name">卧室手机</h3>
+                <span class="status status-ok caption"><span class="dot dot-ok" aria-hidden="true"></span>接收中</span>
+                <span class="pair-tag caption">已配对</span>
+              </div>
+              <p class="device-fp mono caption">指纹 3f9a1c0b · 192.168.1.23:58290</p>
+            </div>
+            <div class="device-actions">
+              <span class="volume">
+                <input type="range" class="slider" id="vol-bedroom" min="0" max="100" value="80"
+                       style="--fill:80%" aria-label="卧室手机 音量">
+                <output class="mono caption volume-value" id="vol-bedroom-value" for="vol-bedroom">80%</output>
+              </span>
+              <button type="button" class="btn btn-standard">停止推流</button>
+            </div>
+          </li>
+
+          <li class="card device-card" data-state="idle">
+            <div class="device-info">
+              <div class="device-line1">
+                <h3 class="device-name">客厅音箱</h3>
+                <span class="status status-idle caption"><span class="dot dot-idle" aria-hidden="true"></span>空闲</span>
+                <span class="pair-tag caption">未配对</span>
+              </div>
+              <p class="device-fp mono caption">指纹 b21e77aa · 192.168.1.31:58291</p>
+            </div>
+            <div class="device-actions">
+              <button type="button" class="btn btn-standard">输入配对码</button>
+            </div>
+          </li>
+
+          <li class="card device-card" data-state="unstable">
+            <div class="device-info">
+              <div class="device-line1">
+                <h3 class="device-name">小米平板</h3>
+                <span class="status status-warn caption"><span class="dot dot-warn" aria-hidden="true"></span>网络不稳</span>
+                <span class="pair-tag caption">已配对</span>
+              </div>
+              <p class="device-fp mono caption">指纹 c09d4412 · 192.168.1.44:58293</p>
+            </div>
+            <div class="device-actions">
+              <span class="volume">
+                <input type="range" class="slider" id="vol-tablet" min="0" max="100" value="96"
+                       style="--fill:96%" aria-label="小米平板 音量">
+                <output class="mono caption volume-value" id="vol-tablet-value" for="vol-tablet">96%</output>
+              </span>
+              <button type="button" class="btn btn-standard">停止推流</button>
+            </div>
+          </li>
+
+        </ul>
+      </section>
+
+      <!-- 3. 手动添加设备 -->
+      <section class="card add-card" aria-labelledby="manual-title" style="padding:16px">
+        <h2 class="card-title" id="manual-title">手动添加设备</h2>
+        <p class="card-desc">两台设备需在同一 Wi-Fi/局域网；若自动发现失效（AP 客户端隔离），用对方「本机状态条」上的地址直连。</p>
+        <div class="field-row add-row">
+          <input type="text" class="text-input" id="manual-address" autocomplete="off" spellcheck="false"
+                 placeholder="192.168.1.23 或 192.168.1.23:58290" aria-label="对方设备地址">
+          <button type="button" class="btn btn-standard" id="connect-btn" disabled>连接</button>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<!-- z4 浮层：必须挂在 <body> 直接子级 —— 祖先链上不能有 backdrop-filter / filter /
+     transform，否则浮层的 backdrop 采样域被限制在玻璃祖先的盒子内，浮层伸出盒子的
+     部分没有可采样内容，blur(40px) 直接失效（曾经的 bug：它们原本在 .toolbar 里）。
+     定位由 JS 按触发按钮的 getBoundingClientRect() 写入 fixed 的 top/right。 -->
+<div class="pop" id="telemetry-pop" role="dialog" aria-label="遥测" hidden>
+  <p class="pop-title caption">实时遥测</p>
+  <dl class="pop-list">
+    <div class="pop-row"><dt class="caption">本机地址</dt><dd class="mono caption">0.0.0.0:58290</dd></div>
+    <div class="pop-row"><dt class="caption">正在收听</dt><dd class="mono caption">2 台</dd></div>
+    <div class="pop-row"><dt class="caption">累计推送</dt><dd class="mono caption">00:04:12</dd></div>
+  </dl>
+</div>
+
+<div class="pop pop-bg" id="bg-pop" role="dialog" aria-label="背景" hidden>
+  <p class="pop-title caption">背景</p>
+
+  <div class="bg-field">
+    <p class="field-label caption" id="bg-mode-label">模式</p>
+    <div class="segmented" id="bg-mode" role="group" aria-labelledby="bg-mode-label">
+      <button type="button" class="segmented-item" data-mode="mono" aria-pressed="false">单色</button>
+      <button type="button" class="segmented-item" data-mode="duo" aria-pressed="false">双色</button>
+      <button type="button" class="segmented-item" data-mode="tri" aria-pressed="true">三色</button>
+    </div>
+  </div>
+
+  <div class="bg-field">
+    <p class="field-label caption" id="bg-color-label">颜色</p>
+    <div class="bg-colors" id="bg-colors" role="group" aria-labelledby="bg-color-label">
+      <div class="bg-slot" data-slot="1">
+        <input type="color" class="color-input" id="bg-c1" value="#1b2a4a" aria-label="第一个颜色">
+        <span class="mono caption bg-hex" id="bg-c1-hex">#1b2a4a</span>
+      </div>
+      <div class="bg-slot" data-slot="2">
+        <input type="color" class="color-input" id="bg-c2" value="#3d2a6b" aria-label="第二个颜色">
+        <span class="mono caption bg-hex" id="bg-c2-hex">#3d2a6b</span>
+      </div>
+      <div class="bg-slot" data-slot="3">
+        <input type="color" class="color-input" id="bg-c3" value="#0f6b6b" aria-label="第三个颜色">
+        <span class="mono caption bg-hex" id="bg-c3-hex">#0f6b6b</span>
+        <button type="button" class="btn btn-subtle bg-toggle" id="bg-c3-toggle"
+                aria-pressed="false" title="第三个颜色留空（按双色处理）">留空</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="bg-field">
+    <p class="field-label caption" id="bg-dir-label">方向</p>
+    <div class="segmented" id="bg-dir" role="group" aria-labelledby="bg-dir-label">
+      <button type="button" class="segmented-item" data-dir="diag" aria-pressed="true">对角</button>
+      <button type="button" class="segmented-item" data-dir="h" aria-pressed="false">水平</button>
+      <button type="button" class="segmented-item" data-dir="v" aria-pressed="false">垂直</button>
+    </div>
+  </div>
+
+  <div class="bg-field">
+    <p class="field-label caption" id="bg-preset-label">预设</p>
+    <div class="bg-presets" id="bg-presets" role="group" aria-labelledby="bg-preset-label"></div>
+  </div>
+
+  <p class="hint caption tertiary">背景只影响外观，不影响任何连接与音频行为。</p>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var root = document.documentElement;
+
+  /* ===================== 应用背景：单色 / 双色 / 三色 =====================
+     背景写在 z0（.desktop）上，z1 Mica 与 z3 卡片玻璃把它透上来。
+     状态存 localStorage['audiolink.bg']；没有存过就交给 CSS 令牌（按主题各一套默认值）。
+     ====================================================================== */
+  var BG_KEY = 'audiolink.bg';
+  var BG_DEFAULT = {
+    dark:  { mode: 'tri', c1: '#1b2a4a', c2: '#3d2a6b', c3: '#0f6b6b', dir: 'diag' },
+    light: { mode: 'duo', c1: '#f4f0e6', c2: '#a9c8f2', c3: '',         dir: 'diag' }
+  };
+  var BG_PRESETS = {
+    dark: [
+      { name: '深蓝紫', c1: '#17244f', c2: '#4a2a86', c3: '#1f5f8f' },
+      { name: '石墨',   c1: '#191c22', c2: '#3a4049', c3: '#5b6572' },
+      { name: '靛青',   c1: '#12294f', c2: '#1e5a96', c3: '#2f92c4' },
+      { name: '暗青绿', c1: '#0c2a26', c2: '#155a50', c3: '#1f8570' },
+      { name: '炭黑暖', c1: '#1d1815', c2: '#3a2c22', c3: '#5c4630' },
+      { name: '深酒红', c1: '#25090f', c2: '#5e1626', c3: '#8c2a34' }
+    ],
+    light: [
+      { name: '米白',   c1: '#f7f2e6', c2: '#e0d7c3', c3: '#c3b89f' },
+      { name: '淡蓝',   c1: '#eaf3ff', c2: '#bcd8f7', c3: '#8fbdf0' },
+      { name: '暖灰',   c1: '#f5f1ec', c2: '#ddd5cb', c3: '#c2b8ac' },
+      { name: '薄荷',   c1: '#eafaf3', c2: '#b6ebd6', c3: '#83d6b8' },
+      { name: '浅杏',   c1: '#fff2e3', c2: '#ffd8b0', c3: '#ffbe80' },
+      { name: '雾紫',   c1: '#f5effc', c2: '#dbc9f5', c3: '#bda1e8' }
+    ]
+  };
+
+  var bgPanel = document.getElementById('bg-pop');
+  var bgState = null;         /* 非 null = 用户自定义过，值持久化在 localStorage */
+  var bgLastC3 = '';          /* 记住被「留空」清掉的第三色，便于恢复 */
+
+  function bgTheme() { return root.getAttribute('data-theme') === 'light' ? 'light' : 'dark'; }
+  function bgHexOk(v) { return (typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v)) ? v.toLowerCase() : ''; }
+  function bgCopy(s) { return { mode: s.mode, c1: s.c1, c2: s.c2, c3: s.c3, dir: s.dir }; }
+  function bgShown() { return bgState ? bgCopy(bgState) : bgCopy(BG_DEFAULT[bgTheme()]); }
+
+  /* 单色 → 纯色；双色 / 三色 → 线性渐变（三色留空时按双色处理） */
+  function bgPaint(s) {
+    if (!s) {
+      root.style.removeProperty('--wall-base');
+      root.style.removeProperty('--wall-image');
+      return;
+    }
+    var deg = s.dir === 'h' ? '90deg' : (s.dir === 'v' ? '180deg' : '135deg');
+    var stops = [s.c1, s.c2];
+    if (s.mode === 'tri' && s.c3) { stops.push(s.c3); }
+    root.style.setProperty('--wall-base', s.c1);
+    root.style.setProperty('--wall-image',
+      s.mode === 'mono' ? 'none' : 'linear-gradient(' + deg + ', ' + stops.join(', ') + ')');
+  }
+
+  function bgPersist(s) {
+    try {
+      window.localStorage.setItem(BG_KEY, JSON.stringify(bgCopy(s)));
+    } catch (e) { /* 无痕模式 / 存储被禁用：本次会话仍实时生效，只是刷新后回到默认 */ }
+  }
+
+  function bgLoad() {
+    var raw = null;
+    try { raw = window.localStorage.getItem(BG_KEY); } catch (e) { return null; }
+    if (!raw) { return null; }
+    var o = null;
+    try { o = JSON.parse(raw); } catch (e) { return null; }
+    if (!o || typeof o !== 'object') { return null; }
+    var fb = BG_DEFAULT[bgTheme()];
+    return {
+      mode: (o.mode === 'mono' || o.mode === 'duo' || o.mode === 'tri') ? o.mode : fb.mode,
+      c1: bgHexOk(o.c1) || fb.c1,
+      c2: bgHexOk(o.c2) || fb.c2,
+      c3: (o.c3 === '' || o.c3 === null || o.c3 === undefined) ? '' : (bgHexOk(o.c3) || fb.c3),
+      dir: (o.dir === 'diag' || o.dir === 'h' || o.dir === 'v') ? o.dir : fb.dir
+    };
+  }
+
+  function bgCommit(next) {
+    bgState = next;
+    bgPersist(next);
+    bgPaint(next);
+    bgSyncUI();
+  }
+
+  /* 预设色块随主题换一套 */
+  function bgRenderPresets() {
+    var host = bgPanel && bgPanel.querySelector('#bg-presets');
+    if (!host) { return; }
+    var list = BG_PRESETS[bgTheme()];
+    host.textContent = '';
+    Array.prototype.forEach.call(list, function (p) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'swatch';
+      b.title = p.name;
+      b.setAttribute('aria-label', p.name);
+      b.style.setProperty('--sw-a', p.c1);
+      b.style.setProperty('--sw-b', p.c2);
+      b.style.setProperty('--sw-c', p.c3);
+      host.appendChild(b);
+    });
+  }
+
+  function bgSyncUI() {
+    if (!bgPanel) { return; }
+    var s = bgShown();
+
+    Array.prototype.forEach.call(bgPanel.querySelectorAll('#bg-mode .segmented-item'), function (b) {
+      b.setAttribute('aria-pressed', String(b.getAttribute('data-mode') === s.mode));
+    });
+
+    /* 颜色槽：单色 1 个 / 双色 2 个 / 三色 3 个 */
+    var visible = s.mode === 'mono' ? 1 : (s.mode === 'duo' ? 2 : 3);
+    Array.prototype.forEach.call([[1, 'c1'], [2, 'c2'], [3, 'c3']], function (pair) {
+      var slot = bgPanel.querySelector('.bg-slot[data-slot="' + pair[0] + '"]');
+      if (!slot) { return; }
+      var value = s[pair[1]];
+      slot.hidden = pair[0] > visible;
+      slot.classList.toggle('is-empty', value === '');
+      var input = slot.querySelector('.color-input');
+      var hexEl = slot.querySelector('.bg-hex');
+      if (value) { input.value = value; }
+      hexEl.textContent = value || '留空';
+    });
+
+    var toggle = bgPanel.querySelector('#bg-c3-toggle');
+    if (toggle) {
+      var empty = s.c3 === '';
+      toggle.textContent = empty ? '恢复' : '留空';
+      toggle.setAttribute('aria-pressed', String(empty));
+      toggle.title = empty ? '恢复第三个颜色' : '第三个颜色留空（按双色处理）';
+    }
+
+    /* 方向：单色下没有意义，禁用并置灰 */
+    var dirGroup = bgPanel.querySelector('#bg-dir');
+    var dirOff = s.mode === 'mono';
+    dirGroup.classList.toggle('is-disabled', dirOff);
+    Array.prototype.forEach.call(dirGroup.querySelectorAll('.segmented-item'), function (b) {
+      b.disabled = dirOff;
+      b.setAttribute('aria-pressed', String(b.getAttribute('data-dir') === s.dir));
+    });
+
+    var list = BG_PRESETS[bgTheme()];
+    Array.prototype.forEach.call(bgPanel.querySelectorAll('#bg-presets .swatch'), function (b, i) {
+      var p = list[i];
+      b.setAttribute('aria-pressed', String(!!p && p.c1 === s.c1 && p.c2 === s.c2 && p.c3 === s.c3));
+    });
+  }
+
+  function bgOnThemeChange() {
+    /* 用户自定义优先；没自定义过时 CSS 令牌已切到该主题的默认背景 */
+    bgRenderPresets();
+    bgSyncUI();
+  }
+
+  function bgHit(event, selector) {
+    var t = event.target;
+    return (t && t.closest) ? t.closest(selector) : null;
+  }
+
+  if (bgPanel) {
+    bgPanel.querySelector('#bg-mode').addEventListener('click', function (event) {
+      var btn = bgHit(event, '.segmented-item');
+      if (!btn) { return; }
+      var s = bgShown();
+      s.mode = btn.getAttribute('data-mode');
+      bgCommit(s);
+    });
+
+    bgPanel.querySelector('#bg-dir').addEventListener('click', function (event) {
+      var btn = bgHit(event, '.segmented-item');
+      if (!btn || btn.disabled) { return; }
+      var s = bgShown();
+      s.dir = btn.getAttribute('data-dir');
+      bgCommit(s);
+    });
+
+    /* 取色即生效：input 事件在系统取色器里连续触发 */
+    Array.prototype.forEach.call(bgPanel.querySelectorAll('.bg-slot'), function (slot) {
+      var input = slot.querySelector('.color-input');
+      var key = 'c' + slot.getAttribute('data-slot');
+      input.addEventListener('input', function () {
+        var s = bgShown();
+        s[key] = bgHexOk(input.value) || s[key];
+        if (key === 'c3') { bgLastC3 = s.c3; }
+        bgCommit(s);
+      });
+    });
+
+    bgPanel.querySelector('#bg-c3-toggle').addEventListener('click', function () {
+      var s = bgShown();
+      if (s.c3) {
+        bgLastC3 = s.c3;
+        s.c3 = '';
+      } else {
+        s.c3 = bgLastC3 || BG_DEFAULT[bgTheme()].c3 || s.c2;
+      }
+      bgCommit(s);
+    });
+
+    /* 预设：只换颜色，模式与方向保持用户当前选择 */
+    bgPanel.querySelector('#bg-presets').addEventListener('click', function (event) {
+      var btn = bgHit(event, '.swatch');
+      if (!btn) { return; }
+      var list = BG_PRESETS[bgTheme()];
+      var p = list[Array.prototype.indexOf.call(btn.parentNode.children, btn)];
+      if (!p) { return; }
+      var s = bgShown();
+      s.c1 = p.c1;
+      s.c2 = p.c2;
+      s.c3 = p.c3;
+      bgLastC3 = p.c3;
+      bgCommit(s);
+    });
+  }
+
+  bgState = bgLoad();
+  bgPaint(bgState);
+  bgRenderPresets();
+  bgSyncUI();
+
+  /* ---------- 主题切换：只改 <html data-theme="dark|light">，其余全交给 CSS 令牌 ---------- */
+  var themeSwitch = document.querySelector('.theme-switch');
+  if (themeSwitch) {
+    themeSwitch.addEventListener('click', function () {
+      var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      themeSwitch.setAttribute('aria-checked', String(next === 'dark'));
+      bgOnThemeChange();
+    });
+  }
+
+  /* 音量滑块：同步读数与轨道已填充比例 */
+  Array.prototype.forEach.call(document.querySelectorAll('.slider'), function (slider) {
+    var out = document.getElementById(slider.id + '-value');
+    var sync = function () {
+      var v = Number(slider.value) || 0;
+      slider.style.setProperty('--fill', v + '%');
+      if (out) { out.textContent = v + '%'; }
+    };
+    slider.addEventListener('input', sync);
+    sync();
+  });
+
+  /* 浮层（Acrylic）：按钮点击切换，点击外部或 Esc 关闭。
+     浮层挂在 <body> 直接子级（祖先链上没有 backdrop-filter，见 CSS 第 20 节），
+     所以定位用 position:fixed —— 按触发按钮的 rect 算 top/right；窗口 resize 与
+     任意滚动（捕获阶段，含 .content / .sidebar 内部滚动）都重算。 */
+  function bindFlyout(btn, pop) {
+    if (!btn || !pop) { return; }
+    var place = function () {
+      if (pop.hidden) { return; }
+      var r = btn.getBoundingClientRect();
+      /* 用 right 而不是 left 定位：右缘精确对齐触发按钮右缘，不必先量浮层自身宽度，
+         也就没有"resize 那一帧量到的宽度还是旧值"这种误差。 */
+      pop.style.right = Math.max(8, Math.round(window.innerWidth - r.right)) + 'px';
+      pop.style.left = 'auto';
+      pop.style.maxWidth = Math.max(120, Math.round(r.right) - 16) + 'px'; /* 左边界至少留 8px */
+      pop.style.top = Math.round(r.bottom + 8) + 'px';                     /* 与按钮间距 8px */
+    };
+    var setOpen = function (open) {
+      pop.hidden = !open;
+      btn.setAttribute('aria-expanded', String(open));
+      if (open) { place(); }
+    };
+    btn.addEventListener('click', function (event) {
+      event.stopPropagation();
+      setOpen(pop.hidden);
+    });
+    document.addEventListener('click', function (event) {
+      if (!pop.hidden && !pop.contains(event.target)) { setOpen(false); }
+    });
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && !pop.hidden) { setOpen(false); btn.focus(); }
+    });
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);    /* 捕获阶段：任何滚动容器都算 */
+  }
+
+  bindFlyout(document.getElementById('telemetry-btn'), document.getElementById('telemetry-pop'));
+  bindFlyout(document.getElementById('bg-btn'), document.getElementById('bg-pop'));
+
+  /* 「连接」：地址为空时禁用（演示 disabled 槽位） */
+  var addr = document.getElementById('manual-address');
+  var connectBtn = document.getElementById('connect-btn');
+  if (addr && connectBtn) {
+    var syncConnect = function () { connectBtn.disabled = addr.value.trim().length === 0; };
+    addr.addEventListener('input', syncConnect);
+    syncConnect();
+  }
+
+  /* 复制地址：file:// 下 Clipboard API 可能不可用，回退到 execCommand */
+  var copyBtn = document.querySelector('.copy-btn');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', function () {
+      var text = copyBtn.getAttribute('data-address') || '';
+      var label = copyBtn.querySelector('.btn-label');
+      var flash = function () {
+        if (!label) { return; }
+        var prev = label.textContent;
+        label.textContent = '已复制';
+        window.setTimeout(function () { label.textContent = prev; }, 1200);
+      };
+      var fallback = function () {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = false;
+        try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+        document.body.removeChild(ta);
+        if (ok) { flash(); }
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(flash, fallback);
+      } else {
+        fallback();
+      }
+    });
+  }
+})();
+</script>
+</body>
+</html>

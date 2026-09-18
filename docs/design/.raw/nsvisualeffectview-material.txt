@@ -1,0 +1,2 @@
+# NSVisualEffectView.Material> Constants to specify the material shown by the visual effect view.
+swiftenum Material
