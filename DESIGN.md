@@ -356,7 +356,7 @@ AudioLink 把任意节点的声音低延迟、可同步地推给局域网内的�
 | `surfaceVariant` | `#3D3D3D` | `#F5F5F5` | grey-24 / surface-2 |
 | `onSurface` | `#FFFFFF` | `#1B1B1B` | text |
 | `onSurfaceVariant` | `#C5C5C5` | `#616161` | text-2 |
-| `outline` | `#616161` | `#8A8A8A` | grey-38 / text-3 |
+| `outline` | `#616161` | `#8A8A8A` | grey-38 / grey-54。**只做描边**（卡片边、分隔线、输入框轮廓、未填充轨道）—— **不要拿它当三级文字**，三级文字另有 `TextColors.text3`（见文末） |
 | `outlineVariant` | `#3D3D3D` | `#D1D1D1` | grey-24 / grey-82 |
 | `primary` | `#4CC2FF` | `#0F6CBD` | accent |
 | `onPrimary` | `#003A5C` | `#FFFFFF` | accent-on |
@@ -382,6 +382,14 @@ AudioLink 把任意节点的声音低延迟、可同步地推给局域网内的�
 **`StatusColors`（`ui/theme/Theme.kt`）**：深色 `on #6CCB5F` / `warn #FCE100` / `live #FF99A4` / `idle #9A9BA3`；浅色 `on #0F7B0F` / `warn #9D5D00` / `live #C42B1C` / `idle #6E6E73`。`*Ink` 取同值（灯与文字同色）。
 **门槛**：在 `surfaceContainer` 上深色 `on 6.98` / `warn 10.73` / `live 6.97` / `idle 5.12`，浅色 `on 5.26` / `warn 5.07` / `live 5.47` / `idle 4.90` —— 四档两端全部 ≥4.5:1。改任何一个值都要重算并在此登记。
 **语义保持不变**：`live` 仍是「ON AIR / 失败断开」的红，必须与桌面 `--color-lamp-live: var(--t-danger)` 同义，不要改成绿色。
+
+**`TextColors`（`ui/theme/Theme.kt`，2026-09-18 落地时新增）**：`text3` = 深 `#9A9A9A` / 浅 `#6E6E73`（5.03:1 / 4.90:1），接在 `KeyValueRow` 的**字段名**上（指纹 / 地址 / 状态 / 信任 / 采样率 / 声道数）。
+**为什么必须独立成层**：Android 侧原本**没有** text-3 的承载者 —— 三级字段全走 `onSurfaceVariant`（那是 **text-2** 的值），而 `outline` 只做描边。上面这张表早先把 `outline` 的「来源」标成 `grey-38 / text-3`，属于**标注与值本身不一致**（它给的是描边灰，不是 text-3 的值），落地时按实际语义纠正。
+**不要**把 `text3` 接到 `SilkLabel`：那个控件被 `ConsoleTopBar` 当按钮文字用（「主题」「许可」），三级灰写在可点击文字上会读成 disabled。
+
+**`ControlColors`（`ui/theme/Theme.kt`，同批新增）**：`controlStrongFill` = Fluent `ControlStrongFillDefault`（深 `rgba(255,255,255,.544)` / 浅 `rgba(0,0,0,.446)`），专供滑块 / 进度轨道的**未填充**部分；`controlStroke` = Fluent `ControlStrokeColorDefault`。
+
+**`AlControls.kt`（`ui/components/`，同批新增）**：M3 默认形状与默认禁用色的**唯一**覆盖点 —— `AlButton` / `AlOutlinedButton` / `AlTextButton` / `AlCard`。调用点一律写 `Al*`，不要在 13 个地方各贴一遍 `shape = MaterialTheme.shapes.small`（那种抄法的漏法在界面上表现为「这一颗还是药丸」的随机感）。
 
 **被实际消费的角色/档位**（改造时必须覆盖；实测于 `android/.../ui/`）：`colorScheme` 的 `background` `surfaceContainer` `surfaceContainerHigh` `onSurface` `onSurfaceVariant` `primary` `primaryContainer` `onPrimaryContainer` `error` `errorContainer` `onErrorContainer` `outline` `outlineVariant`；`typography` 的 `bodySmall` `bodyMedium` `labelSmall` `labelLarge` `titleSmall` `titleMedium` `titleLarge`；`shapes.medium`；`statusColors.*` 四档。
 
