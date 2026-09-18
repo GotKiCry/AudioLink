@@ -1,6 +1,8 @@
 # AudioLink 设计规范与样张
 
-这个目录装的是**两套平台设计语言的权威规范**和它们的**可运行样张**。
+这个目录装的是**设计语言的规范调研**与**可运行样张**。
+
+**生效的只有一套：Microsoft Fluent 2（Windows 11 口径）。** macOS HIG 与其实验样张已归档、不进入产品 —— 用户检验过两版样张后的裁定是「没区别，只要 fluent」（决策记录见项目根 `DESIGN.md` §已决）。
 产品代码在 `desktop/`（Tauri + React + Tailwind v4）与 `android/`（Compose），本目录只放设计依据与预览。
 
 ## 目录内容
@@ -8,9 +10,9 @@
 | 文件 | 是什么 | 依据 |
 |---|---|---|
 | `fluent-2.md` | **Microsoft Fluent 2 / Windows 11** 规范要素（78 KB） | 43 项微软官方来源：fluent2.microsoft.design 9 页 + learn.microsoft.com 11 页 + WinUI 3 主题资源源码 8 个 + Fluent UI tokens 源码 15 个 |
-| `macos-hig.md` | **Apple macOS** 规范要素（58 KB） | 30 项 Apple 官方来源：23 个 HIG 页面（走官方 JSON 数据端点取的原文）+ 2 个 Technology Overviews + 2 个 AppKit API 参考 + 72 张官方色板 PNG（颜色为像素取样，非二手转抄） |
+| `macos-hig.md` | **Apple macOS** 规范要素（58 KB）——**已归档，不生效** | 30 项 Apple 官方来源：23 个 HIG 页面（走官方 JSON 数据端点取的原文）+ 2 个 Technology Overviews + 2 个 AppKit API 参考 + 72 张官方色板 PNG（颜色为像素取样，非二手转抄） |
 | `preview/fluent.html` | Fluent 语言的**单文件样张** | 对照 `fluent-2.md` 逐条落位 |
-| `preview/macos.html` | macOS 语言的**单文件样张** | 对照 `macos-hig.md` 逐条落位 |
+| `archive/macos-preview.html` | macOS 语言的**单文件样张**——**已归档，不生效** | 对照 `macos-hig.md` 逐条落位 |
 | `.raw/` | 规范调研的原始抓取物、官方 JSON、色板 PNG | 供复核，勿删 |
 
 两份规范都带**「给 Tauri/React 的落地映射」**一节（CSS 变量命名、Tailwind v4 `@theme` 约定、组件工具类清单、自检清单）——实现时直接照那一节抄。
@@ -26,7 +28,7 @@ cd docs/design/preview
 node _serve.cjs        # 监听 http://127.0.0.1:8799/
 ```
 
-## 两套语言的**关键分野**（这是它们不像的原因，也是它们不该像的原因）
+## 附：两套语言的**关键分野**（macOS 已退役，此表留作记录与对照）
 
 | 维度 | Fluent（Windows 11） | macOS |
 |---|---|---|
@@ -79,7 +81,8 @@ React 落地对应：**一律 `createPortal` 挂 `body`**，不允许就地渲�
 ## 当前状态
 
 - 规范：已完成，含实现映射与自检清单。
-- 样张：两版均已完成，深/浅主题都验过渲染。
-- **设计系统已固化**：项目根 `DESIGN.md`（YAML 令牌 + 八节规范 + 迁移清单）是唯一权威，本目录的规范稿是它的上游依据、样张是它的视觉基准。
-- **待定**：壁纸饱和度（Fluent 版浅色偏甜，是否收敛一档）、`page-title` 最终档位、Android 是否保留自研 On-Air Console 暖调个性。
-- 进行中：Android 端主题色对齐基准（已改 `ui/theme/`）；桌面端 `desktop/src` 的材质与浮层重构见 `DESIGN.md` Migration & Gaps。
+- 样张：Fluent 版已完成（深/浅都验过渲染，含背景自定义与 Acrylic 浮层）；macOS 版移入 `archive/` 冻结。
+- **设计系统已固化**：项目根 `DESIGN.md`（YAML 令牌 + 规范各节 + 迁移清单 + 已决/未决）是唯一权威，本目录的规范稿是它的上游依据、样张是它的视觉基准。
+- **已落地**：Android 33 个 M3 颜色角色 + `StatusColors` 已换成 Fluent 值（暖调清零，165 单测全绿，真机深浅截图复核）。
+- **进行中**：Android 形状语言与对比度收口；桌面端 `desktop/src` 的材质、浮层与背景自定义重构（见 `DESIGN.md` §Migration & Gaps）。
+- **待定**：壁纸饱和度（Fluent 浅色偏甜，是否收敛一档）、`page-title` 最终档位（Title 28 vs Subtitle 20）、桌面端窗口底是否接真 Mica（`window-vibrancy` / `DwmSetWindowAttribute`）。

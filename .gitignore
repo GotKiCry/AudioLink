@@ -21,6 +21,7 @@ desktop/src-tauri/gen/schemas/
 
 # ---------- Android ----------
 android/.gradle/
+android/.kotlin/               # Kotlin 增量编译的会话/缓存目录
 android/.gradle-home/          # 本项目隔离的 GRADLE_USER_HOME（避免混入全局私服凭据）
 .gradle-home/
 android/build/

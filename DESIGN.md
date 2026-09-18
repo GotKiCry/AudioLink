@@ -12,7 +12,7 @@ colors:
   line-strong: "rgba(255,255,255,0.14)"
   text: "#FFFFFF"
   text-2: "#C5C5C5"
-  text-3: "#8A8A8A"
+  text-3: "#9A9A9A"
   accent: "#4CC2FF"
   accent-hover: "#6BCDFF"
   accent-pressed: "#8AD8FF"
@@ -32,13 +32,13 @@ colors:
   line-strong-light: "rgba(0,0,0,0.14)"
   text-light: "#1B1B1B"
   text-2-light: "#616161"
-  text-3-light: "#8A8A8A"
+  text-3-light: "#6E6E73"
   accent-light: "#0F6CBD"
   accent-hover-light: "#1C7ECB"
   accent-on-light: "#FFFFFF"
   ok-light: "#0F7B0F"
   warn-light: "#9D5D00"
-  idle-light: "#82838C"
+  idle-light: "#6E6E73"
   danger-light: "#C42B1C"
   layer-light: "rgba(255,255,255,0.502)"
 typography:
@@ -130,8 +130,8 @@ components:
 # AudioLink 设计系统（DESIGN.md）
 
 > **本文是项目设计的唯一权威（single source of truth），机读令牌在 YAML frontmatter。**
-> 上游依据（规范调研，只读）：`docs/design/fluent-2.md`（Fluent 2 / Windows 11）、`docs/design/macos-hig.md`（macOS HIG）。
-> 视觉基准（可运行样张）：`docs/design/preview/fluent.html`、`docs/design/preview/macos.html`。
+> 上游依据（规范调研，只读）：`docs/design/fluent-2.md`（Fluent 2 / Windows 11，**生效**）、`docs/design/macos-hig.md`（macOS HIG，**已归档，不生效**）。
+> 视觉基准（可运行样张）：`docs/design/preview/fluent.html`（**唯一**；macOS 样张已移入 `docs/design/archive/`）。
 > 落地目标：`desktop/`（Tauri 2 + React 19 + Tailwind v4）与 `android/`（Kotlin + Compose M3）。
 > 效力顺序：**本文 > 样张 > 规范调研稿 > 既有代码**。界面要变，先改本文。
 
@@ -139,9 +139,9 @@ components:
 
 AudioLink 把任意节点的声音低延迟、可同步地推给局域网内的其他节点。界面的职责不是展示功能，而是让「在推什么、给谁、质量如何」在三秒内可读——使用者整晚不看界面，靠余光判断系统是否正常。
 
-**视觉世界**：Microsoft Fluent 2（Windows 11 口径）。桌面端是主场：Mica 窗口底 + 层叠表面 + 系统字体 + 4/8px 小圆角 + 双层焦点描边。macOS HIG 是桌面端的**可选外观**（第二语言，`data-style="macos"`），不是第二套产品。Android 端以 Material 3 的结构与交互惯例承载**同一套令牌与状态语义**。
+**视觉世界**：Microsoft Fluent 2（Windows 11 口径），**唯一**。桌面端是主场：Mica 窗口底 + 层叠表面 + 系统字体 + 4/8px 小圆角 + 双层焦点描边。Android 端以 Material 3 的**结构与交互惯例**承载**同一套令牌、形状与状态语义**。macOS HIG 调研稿留在 `docs/design/macos-hig.md` 与 `docs/design/archive/`，**不进入产品**。
 
-**两条正交的轴**（桌面端）：`data-style` = `fluent` \| `macos`（语言），`data-theme` = `light` \| `dark`（光照）。四套外观各自完整，**没有一套是另一套反转出来的**。
+**一条轴**（桌面端）：`data-theme` = `light` \| `dark`（光照）。深浅两套各自完整，**没有一套是另一套反转出来的**。
 
 **允许的平台差异**：控件高度、触控目标（Android ≥48dp）、导航模式（桌面侧栏 / 手机单页）、窗口圆角与系统标题栏（由 OS 提供）、字体族。
 **不允许的差异**：状态色的语义与文案、强调色色相、字号档位、语义色用途、错误文案口径。
@@ -161,13 +161,21 @@ AudioLink 把任意节点的声音低延迟、可同步地推给局域网内的�
 | `line` / `line-strong` | `rgba(255,255,255,.08)` / `.14` | `rgba(0,0,0,.06)` / `.14` | 描边 / 强调描边 |
 | `text` | `#FFFFFF` | `#1B1B1B` | 正文 |
 | `text-2` | `#C5C5C5` | `#616161` | 次要文字（说明、单位） |
-| `text-3` | `#8A8A8A` | `#8A8A8A` | 三级文字（指纹、时间戳） |
+| `text-3` | `#9A9A9A` | `#6E6E73` | 三级文字（指纹、时间戳）；深 5.03:1 / 浅 4.90:1 |
 | `accent` | `#4CC2FF` | `#0F6CBD` | 主操作、选中态、焦点强调 |
 | `accent-on` | `#003A5C` | `#FFFFFF` | accent 之上的文字 |
 | `ok` | `#6CCB5F` | `#0F7B0F` | 推流中 / 接收中 |
 | `warn` | `#FCE100` | `#9D5D00` | 网络不稳 / 重连中 |
 | `danger` | `#FF99A4` | `#C42B1C` | 断开 / 失败 |
-| `idle` | `#9A9BA3` | `#82838C` | 空闲（中性，不抢注意力）；桌面端当前复用 `text-3`，迁移时拆成独立令牌 |
+| `idle` | `#9A9BA3` | `#6E6E73` | 空闲（中性，不抢注意力）；状态灯与 idle 文字都用它（5.12:1 / 4.90:1）。**浅色旧值 `#82838C` 只有 3.64:1，已废** |
+
+**配对法则（血泪）**：**Fluent 的令牌编号不是配对契约**。`brandWeb[80]`（`#0F548C`）与 `brandWeb[110]`（`#62ABF5`）在原体系里分别服务「品牌底」与「中性底上的品牌文字」，把编号相邻的两个 token 当前景/背景对子用，实测只有 **3.25:1**。凡是 `on*` / `*Ink` 类令牌，取值**必须按实际配对算对比度**（正文 ≥4.5:1，图形/大字 ≥3:1）。
+
+**同族第二案：调色板 ramp ≠ theme token**。Fluent 2 有两套并行的颜色来源 —— **brandWeb 调色板 ramp**（`brand-40/60/80/100/110`）与 **theme token**（`colorBrandBackground` 一族）。它们**不是同一个体系，编号更不是同一回事**：`brandWeb[80] = #0F6CBD`，而 dark theme 的 `colorBrandBackground = #4CC2FF`（**ramp 里根本没有这个值**）。落地时 `--al-accent` 曾错取 `brand-100 = #479EF5`，真机采样主按钮填充确为 `#479EF5`，其上 `accent-on` 文字对比度 **5.95:1 → 4.25:1**（跌破 4.5）。
+
+**规则**：语义角色（accent 等品牌前景/底色）**只准取 theme token**，注释里写 token 名（`colorBrandBackground`）而不是档位编号；ramp 只作色阶参考。桌面端令牌命名为 `--al-global-accent-{rest,hover,pressed}[-light]`。
+
+**状态灯底座**：滑块/进度轨道未填充部分用 Fluent `ControlStrongFillDefault` —— 深 `rgba(255,255,255,.544)`（在 `#2B2B2B` 上 5.29:1）、浅 `rgba(0,0,0,.446)`（在 `#FBFBFB` 上 3.29:1）。**不要**用 `outline`（`#616161` 在深色下仅 2.29:1，低于非文字 UI 的 3:1 门槛）。
 
 **材质填充**（玻璃层专用，见 Elevation & Depth）：
 
@@ -237,12 +245,16 @@ AudioLink 把任意节点的声音低延迟、可同步地推给局域网内的�
 
 ## Shapes
 
-| 元素 | Fluent | macOS 外观 |
+| 元素 | 桌面（Fluent） | Android（`MaterialTheme.shapes` 档位） |
 |---|---|---|
-| 小元素（≤32px：色块、滑块拇指、开关拇指） | 2px | 4px |
-| 控件（按钮、输入框、分段、下拉） | 4px | 6px |
-| 卡片 / 浮层 | 8px | 10px / 12px |
-| 标签 / 开关轨道 / 滑块轨道 | 999px（pill 白名单仅此四类 + 头像） | 同 |
+| 小元素（≤32px：色块、分段选中项、滑块拇指） | 2px | `extraSmall` = **2dp** |
+| 控件（按钮、输入框、下拉） | 4px | `small` = **4dp** |
+| 分段外框 / 次级容器 | 4px | `medium` = **4dp** |
+| 卡片 / 浮层 / 对话框 | 8px | `large` = **8dp** |
+| 大片容器 | — | `extraLarge` = **8dp**（不许更大） |
+| 标签 / 开关轨道 / 滑块轨道 | 999px（pill 白名单仅此四类 + 头像） | 同（`CircleShape` 仅限白名单） |
+
+**Android 落点（M3 默认值必须显式覆盖）**：`Shapes` 五档按上表钉死；且 **M3 的 `Button` / `FilledTonalButton` / `ElevatedButton` 默认 `ButtonDefaults.shape = CircleShape`（整条药丸），根本不读 `shapes` 档位** —— 每处按钮都要显式 `shape = MaterialTheme.shapes.small`；`AlertDialog` 默认 `extraLarge` = 28dp，同理覆盖。**药丸按钮是本基准的头号视觉破绽**（Fluent 只在标签/轨道/头像上允许 pill）。
 
 **描边纪律**：Windows 用 1px 描边代替 key shadow —— 卡片 `card-stroke`，控件 `ctrl-stroke`，输入框底边深一档（`ctrl-stroke-strong`）；聚焦时底边变 2px accent。
 
@@ -307,17 +319,19 @@ AudioLink 把任意节点的声音低延迟、可同步地推给局域网内的�
 
 本节记录**现状与本文的差距**，供重构分步执行（按顺序，每步可独立回滚）。
 
-### 桌面端（`desktop/`）
+### 桌面端（`desktop/`）—— 已落地（2026-09-18）
 
-| 差距 | 现状 | 目标 |
-|---|---|---|
-| 材质 | `--t-window/chrome/surface` 是**不透明实色**，玻璃只存在于样张 | 引入 z0–z4 五层结构；Mica 由 Tauri 窗口层提供（`window-vibrancy` 或 `DwmSetWindowAttribute`），CSS 只做应用内层级 |
-| 令牌命名 | `--t-*`（历史名） | 统一为 `--al-*`（见 `docs/design/fluent-2.md` §10.1），`@theme` 暴露 `--color-al-*` |
-| 玻璃嵌套 | 侧栏内卡片曾同时带 backdrop（样张 `sidebar ⊃ collect-card` 已复现该坑） | 卡片不再自带 backdrop，只保留填充 + 描边 |
-| 浮层 | 组件内就地渲染（`PairDialog`、抽屉等） | 一律 `createPortal(document.body)` + 焦点转移 |
-| 页面标题 | `page-title` 为 20px | 提到 28px Title 档（或明确降级为 Subtitle，二选一并统一） |
-| 状态灯 idle | 复用 `--t-text-3`（#8A8A8A） | 独立 `idle` 令牌（#9A9BA3 / #82838C） |
-| 诊断抽屉 | 右侧抽屉 + 内容堆叠 | 保持结构，换成浮层材质 + 8px 圆角 + 描边分层 |
+| 项 | 落地做法（落点） |
+|---|---|
+| 材质 | z0–z4 五层已在 `desktop/src/index.css` 实现：`z0 .al-desktop`（用户可配背景）、`z1 .al-mica`（blur 60）、`z2 .al-chrome`（blur 32）、`z3 .al-card`（blur 16 + veil）、`z4 .al-pop`（blur 40）。各层不透明度取本文件上文「材质填充」表的最终值 |
+| 令牌命名 | 两层：`--al-global-*`（原始值）→ `--al-*`（语义 alias），`@theme` 暴露 `--color-*` / `--radius-*` / `--text-*` / `--ease-fluent`，组件只写语义工具类（`bg-surface-card` / `text-text-secondary` / `border-stroke-control` / `rounded-control` / `text-body`） |
+| 玻璃嵌套 | `.al-chrome .al-card` 与 `.al-flat .al-card` 的 `backdrop-filter: none`：侧栏 / 工具栏 / 抽屉内的卡片只留填充与描边。实证：`aside .al-card` 计算值 `none`，`main .al-card` 为 `blur(16px) saturate(1.4)` |
+| 浮层 | `BackgroundPanel` 走 `createPortal(document.body)` + 焦点转移（打开聚焦首个可聚焦元素、关闭归还触发按钮、Esc 关闭）。实证：浮层祖先链上带 backdrop-filter 的元素**只有它自己** |
+| 页面标题 | `.al-page-title` = 28 / 36 / 600（Title 档） |
+| 状态灯 idle | 独立 `--al-idle`（深 #9A9BA3 / 浅 #82838C），`.al-lamp[data-on]` 四态各有 halo + glow |
+| 诊断抽屉 | 保持结构，材质换成 z2（`.al-chrome.al-chrome-t`）+ 1px 描边分层；内部卡片由 `.al-chrome .al-card` 退掉 backdrop |
+| 背景（新增能力） | 单色 / 双色 / 三色 + 方向；状态存 `settings.json` 的 `background` 键（与 `locale` / `autostart` 同一条路），Rust 侧 `settings.rs` 校验 `#rrggbb` |
+| 设计语言 | `data-style` 那一条轴已删除（只保留 Fluent 2）；主题轴保留 `data-theme` |
 
 ### Android 端（`android/`）
 
@@ -347,7 +361,7 @@ AudioLink 把任意节点的声音低延迟、可同步地推给局域网内的�
 | `primary` | `#4CC2FF` | `#0F6CBD` | accent |
 | `onPrimary` | `#003A5C` | `#FFFFFF` | accent-on |
 | `primaryContainer` | `#0F548C` | `#DCE9F7` | brandWeb[60] / 派生（浅色无官方值） |
-| `onPrimaryContainer` | `#62ABF5` | `#0F548C` | brandWeb[110] / brandWeb[80] |
+| `onPrimaryContainer` | `#9CD3FF` | `#0F548C` | brandWeb 浅档 / brandWeb[80]。**深色按实际配对取 4.94:1** —— 原值 `#62ABF5` 仅 3.25:1（配对卡与省电白名单卡的正文），见「配对法则」 |
 | `secondary` | `#C5C5C5` | `#616161` | text-2 |
 | `onSecondary` | `#003A5C` | `#FFFFFF` | accent-on |
 | `secondaryContainer` | `#323232` | `#F5F5F5` | surface-2 |
@@ -365,12 +379,13 @@ AudioLink 把任意节点的声音低延迟、可同步地推给局域网内的�
 | `surfaceTint` | `= primary` | `= primary` | — |
 | `scrim` | `#000000` | `#000000` | Smoke 之外的对话框遮罩 |
 
-**`StatusColors`（`ui/theme/Theme.kt`）**：深色 `on #6CCB5F` / `warn #FCE100` / `live #FF99A4` / `idle #9A9BA3`；浅色 `on #0F7B0F` / `warn #9D5D00` / `live #C42B1C` / `idle #82838C`。`*Ink` 取同值（灯与文字同色，对比度按 §Colors 验收）。
+**`StatusColors`（`ui/theme/Theme.kt`）**：深色 `on #6CCB5F` / `warn #FCE100` / `live #FF99A4` / `idle #9A9BA3`；浅色 `on #0F7B0F` / `warn #9D5D00` / `live #C42B1C` / `idle #6E6E73`。`*Ink` 取同值（灯与文字同色）。
+**门槛**：在 `surfaceContainer` 上深色 `on 6.98` / `warn 10.73` / `live 6.97` / `idle 5.12`，浅色 `on 5.26` / `warn 5.07` / `live 5.47` / `idle 4.90` —— 四档两端全部 ≥4.5:1。改任何一个值都要重算并在此登记。
 **语义保持不变**：`live` 仍是「ON AIR / 失败断开」的红，必须与桌面 `--color-lamp-live: var(--t-danger)` 同义，不要改成绿色。
 
 **被实际消费的角色/档位**（改造时必须覆盖；实测于 `android/.../ui/`）：`colorScheme` 的 `background` `surfaceContainer` `surfaceContainerHigh` `onSurface` `onSurfaceVariant` `primary` `primaryContainer` `onPrimaryContainer` `error` `errorContainer` `onErrorContainer` `outline` `outlineVariant`；`typography` 的 `bodySmall` `bodyMedium` `labelSmall` `labelLarge` `titleSmall` `titleMedium` `titleLarge`；`shapes.medium`；`statusColors.*` 四档。
 
-**桌面端 `desktop/src/index.css` 的材质令牌差距**（步骤 B/C 用）：现有 514 行只覆盖 z0–z3 的不透明实色，缺 `mica-fill` / `chrome-fill` / `card-fill` / `card-veil` / `card-stroke` / `pop-fill` / `pop-stroke`；`src-tauri` 中**没有任何** window-vibrancy / DwmSetWindowAttribute / transparent 代码，Mica 未被接上（CSS `backdrop-filter` 拿不到桌面壁纸，必须窗口层实现）。
+**桌面端材质令牌：已补齐**。`desktop/src/index.css` 现在按 §10.1 分两层定义 `mica-fill` / `chrome-fill` / `card-fill` / `card-veil` / `card-stroke` / `pop-fill` / `pop-stroke`（含深浅各一套）。**仍未做的**：`src-tauri` 里没有 window-vibrancy / `DwmSetWindowAttribute` 代码 —— 窗口级 Mica（桌面壁纸）尚未接上，当前 z1 模糊的是应用自己的 z0 壁纸（这正是「背景可配」的用途）。接窗口 Mica 时 `.al-desktop` 应在 Mica 不可用或用户关透明效果时保留壁纸兜底。
 
 ### 未决（需人工确认）
 
