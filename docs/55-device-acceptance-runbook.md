@@ -322,6 +322,7 @@ cargo run -q -p audiolink-tools --bin device-link -- run --peer <手机IP> --sec
 > ```
 >
 > 出处：`target/evidence/m1-device-p1/guard/README.md` §6；失效件留档 `counters-guardA-end.txt`（未删）。
+> **（2026-09-18 已修）**：`guard2/guard2-run.ps1` 已把「每次打点前唤醒 → 收起通知栏 → 确保 App 前台」做成固定步骤，并加了读数自检与重试；guardB 轮的起点与终点打点均 **MISSING = 0/21**（对比 guardA 终点 21/21 `<MISSING>`）—— 出处 `target/evidence/m1-device-p1/guard2/README.md` §2。
 
 ### 3.4 证据留存
 

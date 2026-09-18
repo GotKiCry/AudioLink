@@ -265,8 +265,11 @@ async fn water_level_growth_repro() {
         let underruns = stats.as_ref().map_or(0, |s| s.underruns);
         let late = stats.as_ref().map_or(0, |s| s.late_drops);
         // depth_drops 不在 StreamStats 里（它是引擎的独立出口），必须单独读。
-        // 口径：它有两个来源（抖动降档 / 水位护栏）；在本装置里只要 underruns == 0
-        // ⇒ target 从未升档 ⇒ 30 个稳定窗口后也不会有降档 ⇒ 这一格就等于护栏触发次数。
+        // 口径：它只有**一个**来源 —— 抖动深度**降档**的主动丢帧（`PlayoutDepthAction::DropOldest`）。
+        // （2026-09-18 的「水位护栏」曾给它加过第二个来源，但两版护栏的真机验证都没过代价判据
+        // （计数 6.9× / 103×，见 `docs/12` §11.12–§11.14），已于 `b6b0f90` 整体移除。）
+        // 在本装置里只要 underruns == 0 ⇒ target 从未升档 ⇒ 30 个稳定窗口后也不会有降档 ⇒
+        // 这一格应恒为 0。
         let depth_drops = receiver.depth_drops(sender_id).unwrap_or(0);
         let sent = sent_packets.load(Ordering::Relaxed) - base_sent;
         let writes = sink_writes.load(Ordering::Relaxed) - base_writes;
