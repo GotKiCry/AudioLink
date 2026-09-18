@@ -308,6 +308,21 @@ cargo run -q -p audiolink-tools --bin device-link -- run --peer <手机IP> --sec
 2. **瞬时丢包**（30 min 里最大 1 s 窗口曾到 6.25%）→ 看 `docs/22` 的判定口径；
 3. **系统侧**（MIUI 省电/后台限制杀掉采集或服务；前台服务类型位是否被系统接受，见 §5.3 #4）。
 
+> ⚠️ **读数前必读：`svc power stayon true` 只在充电时生效（2026-09-18 实测的坑）**
+>
+> 设备**未充电**时该设置不生效，屏幕会按系统超时息屏；息屏后 `uiautomator dump` 拿到的是**锁屏界面** ——
+> guardA 轮（`docs/12` §11.12）的 8 份终点 dump 全是 16313 B 相同的锁屏，`counters-guardA-end.txt` 的 21 个字段全部 `<MISSING>`，**终点读数整份失效**。
+> **长跑读数前必须另做防息屏**，实测可用的顺序（**不动服务进程**）：
+>
+> ```powershell
+> adb shell settings put system screen_off_timeout 1800000
+> adb shell input keyevent KEYCODE_WAKEUP
+> adb shell cmd statusbar collapse
+> adb shell am start -n com.gotkicry.audiolink/.MainActivity   # 组件名以设备实际为准（README §6 原文记「am start MainActivity」）
+> ```
+>
+> 出处：`target/evidence/m1-device-p1/guard/README.md` §6；失效件留档 `counters-guardA-end.txt`（未删）。
+
 ### 3.4 证据留存
 
 `target/evidence/m1-device/`：`soak30.log`（逐秒）、`soak30.json`（账本）、`flinger.txt`、`ui.xml`、`notes.md`。
