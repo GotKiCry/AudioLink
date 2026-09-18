@@ -4886,6 +4886,7 @@ fn playout_main(
         // 余量该由协议 §7 的 lead_ms 提供，不该靠插入静音。
         // 排播状态先同步给护栏：排播下水位护栏不生效（丢帧会把本端时间轴前移一帧）。
         depth_state.set_scheduled_mode(scheduled_mode);
+        depth_state.set_depth_guard(crate::runtime::jitter::PLAYOUT_DEPTH_GUARD_ENABLED);
         let depth_action = depth_state.action(requested_target, buffered_frames);
         match depth_action {
             PlayoutDepthAction::Hold if scheduled_mode => {} // 排播模式：不 Hold，落到下面的正常取帧
