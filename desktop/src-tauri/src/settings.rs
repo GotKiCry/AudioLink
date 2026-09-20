@@ -136,9 +136,7 @@ impl BackgroundConfig {
 /// #rrggbb（六位十六进制）。刻意不接受 #rgb / 带 alpha：界面上的取色器给的就是六位，
 /// 多一种可接受的写法只是多一种能被写坏的方式。
 fn is_hex_color(value: &str) -> bool {
-    value.len() == 7
-        && value.starts_with('#')
-        && value[1..].chars().all(|c| c.is_ascii_hexdigit())
+    value.len() == 7 && value.starts_with('#') && value[1..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// 读背景配置；None = 用户还没配过（前端用主题默认值）。
@@ -163,8 +161,9 @@ pub fn write_background(app: &AppHandle, config: &BackgroundConfig) -> Result<()
     let store = app
         .store(SETTINGS_FILE)
         .map_err(|error| CommandError::busy(format!("打开设置失败：{error}"), "set_background"))?;
-    let value = serde_json::to_value(config)
-        .map_err(|error| CommandError::busy(format!("背景配置无法序列化：{error}"), "set_background"))?;
+    let value = serde_json::to_value(config).map_err(|error| {
+        CommandError::busy(format!("背景配置无法序列化：{error}"), "set_background")
+    })?;
     store.set(KEY_BACKGROUND, value);
     store
         .save()
