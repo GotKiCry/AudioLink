@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -19,6 +20,7 @@ import com.gotkicry.audiolink.ui.i18n.LocalStrings
 import com.gotkicry.audiolink.ui.theme.AudioLinkTheme
 import com.gotkicry.audiolink.ui.theme.ThemeMode
 import com.gotkicry.audiolink.ui.theme.ThemePreference
+import com.gotkicry.audiolink.update.UpdateController
 
 /**
  * 应用根：**主题 + 语言 + 导航**三件事，一层解决。
@@ -54,8 +56,16 @@ fun AudioLinkRoot(
     val strings = remember(language) { AudioLinkStrings.forLanguage(language) }
     var themeMode by remember { mutableStateOf(ThemePreference.read(context)) }
     var showLicenses by rememberSaveable { mutableStateOf(false) }
+    var showUpdate by rememberSaveable { mutableStateOf(false) }
     val consoleScroll = rememberScrollState()
     val licensesScroll = rememberScrollState()
+    val updateScroll = rememberScrollState()
+    // 更新控制器由本层持有（而不是 UpdateScreen 自己 remember）：
+    // 下载中途切回控制台再回来时，进度与「已下载待安装」的状态都还在。
+    val updateController = remember { UpdateController(context.applicationContext) }
+    DisposableEffect(updateController) {
+        onDispose { updateController.dispose() }
+    }
 
     AudioLinkTheme(mode = themeMode) {
         CompositionLocalProvider(LocalStrings provides strings) {
@@ -64,6 +74,14 @@ fun AudioLinkRoot(
                 LicensesScreen(
                     onBack = { showLicenses = false },
                     scrollState = licensesScroll,
+                    modifier = modifier,
+                )
+            } else if (showUpdate) {
+                BackHandler { showUpdate = false }
+                UpdateScreen(
+                    controller = updateController,
+                    onBack = { showUpdate = false },
+                    scrollState = updateScroll,
                     modifier = modifier,
                 )
             } else {
@@ -82,6 +100,7 @@ fun AudioLinkRoot(
                         onThemeModeChanged(mode)
                     },
                     onOpenLicenses = { showLicenses = true },
+                    onOpenUpdate = { showUpdate = true },
                     scrollState = consoleScroll,
                     modifier = modifier,
                 )

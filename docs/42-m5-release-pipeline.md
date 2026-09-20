@@ -783,5 +783,7 @@ Android 清单 —— 它跑在 `windows-latest`，而 Android 依赖只有 andr
 - 为什么现在才暴露：这个缺陷**只在传绝对路径时出现**，而本地一直传相对路径（`.gradle-home/...`）；新加的 CI 步骤是它的第一个绝对路径调用方；
 - 本地三例验证：相对路径 exit 0 / 绝对路径 exit 0 / 不存在的路径报出真实路径。
 
+> **Android 侧的应用内更新**（独立于 Tauri updater 的机制、安全模型与实现）见 `docs/61-android-self-update.md`。
+
 > **教训（写给下一轮）**：新接进 CI 的脚本，第一次跑要当作「它还没被验证过」——
 > 两个缺陷（声明缺 Android、`Join-Path` 绝对路径）都是**第一次真实运行**才现形的。

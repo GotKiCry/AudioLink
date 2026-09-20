@@ -164,4 +164,24 @@ on Android it is the "Open source licences" page.
 - Android **system audio capture** and microphone input: **implemented** (loopback needs Android 10+, via MediaProjection + AudioPlaybackCapture; microphone via AudioRecord); **on-device acceptance is still outstanding**;
 - Android **battery-optimisation guidance**: **implemented** (detection + actionable prompt; only opens the system allowlist, requests no sensitive permission). Android **start-on-boot is deliberately not implemented** — Android 15+ forbids starting a mediaPlayback foreground service from BOOT_COMPLETED (see docs/53-m5-audit.md);
 - The Windows installer is **not code-signed**: SmartScreen warns on first run, choose "Run anyway";
+- **In-app updates**: available on both desktop and Android (checked **only when you ask**, never downloaded or installed in the background); the first Android update needs you to allow "install unknown apps";
 - Across the public internet, iOS and a web client: explicitly out of scope.
+
+---
+
+## 14. Updates
+
+**Updates only happen when you ask.** AudioLink never downloads or installs in the background: being
+restarted silently while you are streaming or recording is not acceptable.
+
+**Desktop**: open the "Software update" panel, click **Check for updates**, then **Download and install**.
+The installer first winds the session down gracefully, closes AudioLink, runs, and reopens the app.
+
+**Android**: top bar → **Updates** → **Check for updates** → **Download and install**.
+
+- The first Android update asks the system for permission to install apps - grant it, come back, tap **Continue install**;
+- Android only sees **published** releases: a freshly built version that nobody has published yet still shows as "up to date";
+- Android can only install over an existing copy from the second version on (Android requires the same signature).
+
+When an update fails, the panel states the reason (cannot reach GitHub, timeout, wrong package). If GitHub is
+unreliable on your network, simply retry later.

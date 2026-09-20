@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 的暴露范围：只有 filesDir/updates 这一个目录。
+  刻意不暴露整个 filesDir —— 安装器只需要那一个 APK，能少给就少给。
+  路径与 update/ApkDownload.kt 的落盘位置一一对应。
+-->
+<paths>
+    <files-path name="updates" path="updates/" />
+</paths>

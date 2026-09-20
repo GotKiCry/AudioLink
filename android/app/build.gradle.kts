@@ -25,8 +25,25 @@ android {
         // 未授权时局域网 UDP/TCP/组播全部失败（EPERM），且后台音频写入会被静默吞掉。
         targetSdk = 36
 
-        versionCode = 1
         versionName = "0.1.0" // CI 校验：必须与 Cargo.toml workspace version 一致
+        // versionCode 从 versionName 派生（major*10000 + minor*100 + patch）：
+        //  * 覆盖安装的硬要求是 versionCode **递增** —— 写死 1 会让「应用内更新」永远装不上去
+        //    （同版本或降级，系统直接拒绝）；
+        //  * 派生而不手写第二个数字：版本只有**一个**真相（check-version.ps1 校验三处里就有
+        //    versionName 这处），不会出现「名字升了、code 忘了」。
+        //  实际取值：0.1.0 → 100，0.1.1 → 101，0.2.0 → 200，1.0.0 → 10000。
+        //  patch 到 99 为止（真实项目不会有 100 个补丁版）；到 100 会进位到 minor，可接受。
+        // `versionName` 在这个 DSL 里是 String?（AGP 的属性类型）——`orEmpty()` 而不是 `!!`：
+        // 万一将来有人删了上面那行，这里退化成 0（能被 CI 的 check-version.ps1 当场抓住），
+        // 而不是让构建脚本在配置阶段崩掉。
+        versionCode = versionName.orEmpty()
+            .split(".")
+            .let { parts ->
+                val major = parts.getOrNull(0)?.toIntOrNull() ?: 0
+                val minor = parts.getOrNull(1)?.toIntOrNull() ?: 0
+                val patch = parts.getOrNull(2)?.toIntOrNull() ?: 0
+                major * 10000 + minor * 100 + patch
+            }
 
         // ABI 集合**只在一处声明**：下面的 `splits.abi.include`。
         // 不在这里再写 `ndk { abiFilters }`，是因为 AGP 直接拒绝二者并存：

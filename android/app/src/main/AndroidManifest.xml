@@ -39,6 +39,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
+    <!-- 应用内更新（M5）：把校验过签名的更新包交给系统安装器。
+         Android 8+ 起这是**按应用**授权的权限，首次安装时系统会弹「安装未知应用」引导页；
+         本应用只把自己签名的包交给安装器（见 update/ApkSignature.kt），不用于任何其它分发。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:name=".AudioLinkApp"
         android:allowBackup="false"
@@ -78,5 +83,19 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback|connectedDevice|microphone|mediaProjection" />
+
+        <!-- 应用内更新的交接口：把下载好的 APK 以 content:// 交给系统安装器。
+             API 24+ 禁止 file:// 跨应用传递（FileUriExposedException），所以必须走 provider。
+             暴露范围只有 filesDir/updates/（见 res/xml/update_file_paths.xml）；
+             authority 用 ${applicationId} 展开，debug 与 release 各自独立，不会互相串。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_file_paths" />
+        </provider>
     </application>
 </manifest>

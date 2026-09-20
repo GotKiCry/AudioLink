@@ -67,6 +67,7 @@ fun ConsoleScreen(
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
     onOpenLicenses: () -> Unit,
+    onOpenUpdate: () -> Unit,
     scrollState: ScrollState,
     modifier: Modifier = Modifier,
 ) {
@@ -83,6 +84,7 @@ fun ConsoleScreen(
                 themeMode = themeMode,
                 onThemeModeChange = onThemeModeChange,
                 onOpenLicenses = onOpenLicenses,
+                onOpenUpdate = onOpenUpdate,
             )
         },
     ) { padding ->
@@ -167,6 +169,7 @@ private fun ConsoleTopBar(
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
     onOpenLicenses: () -> Unit,
+    onOpenUpdate: () -> Unit,
 ) {
     val strings = LocalStrings.current
     var menuExpanded by remember { mutableStateOf(false) }
@@ -212,6 +215,13 @@ private fun ConsoleTopBar(
                         )
                     }
                 }
+            }
+            // 「更新」排在「许可」前：它是用户会主动找的那个入口，合规声明不是。
+            AlTextButton(
+                onClick = onOpenUpdate,
+                modifier = Modifier.heightIn(min = 48.dp),
+            ) {
+                SilkLabel(strings.updateAction)
             }
             AlTextButton(
                 onClick = onOpenLicenses,
