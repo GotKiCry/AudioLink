@@ -24,6 +24,82 @@ import androidx.compose.ui.unit.dp
  */
 object AppIcons {
 
+    val Link = strokeIcon("Link", strokeWidth = 1.8f) {
+        moveTo(10f, 14f); lineTo(14f, 10f)
+        moveTo(8f, 12f); lineTo(5f, 15f)
+        arcToRelative(3f, 3f, 0f, false, false, 4f, 4f)
+        lineTo(12f, 16f)
+        moveTo(12f, 8f); lineTo(15f, 5f)
+        arcToRelative(3f, 3f, 0f, false, true, 4f, 4f)
+        lineTo(16f, 12f)
+    }
+
+    val Computer = strokeIcon("Computer", strokeWidth = 1.6f) {
+        moveTo(3f, 4f); lineTo(21f, 4f); lineTo(21f, 16f); lineTo(3f, 16f); close()
+        moveTo(12f, 16f); lineTo(12f, 20f)
+        moveTo(8f, 20f); lineTo(16f, 20f)
+    }
+
+    val Phone = strokeIcon("Phone", strokeWidth = 1.6f) {
+        moveTo(7f, 2f); lineTo(17f, 2f); lineTo(17f, 22f); lineTo(7f, 22f); close()
+        moveTo(11f, 18f); lineTo(13f, 18f)
+    }
+
+    val Copy = strokeIcon("Copy", strokeWidth = 2f) {
+        moveTo(9f, 8f); lineTo(20f, 8f); lineTo(20f, 21f); lineTo(9f, 21f); close()
+        moveTo(15f, 4f); lineTo(4f, 4f); lineTo(4f, 16f)
+    }
+
+    val Headphones = strokeIcon("Headphones", strokeWidth = 2f) {
+        moveTo(4f, 14f)
+        lineTo(4f, 11f)
+        arcToRelative(8f, 8f, 0f, false, true, 16f, 0f)
+        lineTo(20f, 14f)
+        moveTo(4f, 13f)
+        lineTo(8f, 13f)
+        lineTo(8f, 20f)
+        lineTo(4f, 20f)
+        close()
+        moveTo(20f, 13f)
+        lineTo(16f, 13f)
+        lineTo(16f, 20f)
+        lineTo(20f, 20f)
+        close()
+    }
+
+    val Broadcast = strokeIcon("Broadcast", strokeWidth = 2f) {
+        moveTo(12f, 12f)
+        lineTo(12f, 21f)
+        moveTo(9f, 21f)
+        lineTo(15f, 21f)
+        moveTo(8.5f, 8.5f)
+        arcToRelative(5f, 5f, 0f, false, false, 0f, 7f)
+        moveTo(15.5f, 8.5f)
+        arcToRelative(5f, 5f, 0f, false, true, 0f, 7f)
+        moveTo(5.5f, 5.5f)
+        arcToRelative(9f, 9f, 0f, false, false, 0f, 13f)
+        moveTo(18.5f, 5.5f)
+        arcToRelative(9f, 9f, 0f, false, true, 0f, 13f)
+    }
+
+    val Settings = strokeIcon("Settings", strokeWidth = 2f) {
+        moveTo(4f, 7f); lineTo(8f, 7f)
+        moveTo(12f, 7f); lineTo(20f, 7f)
+        moveTo(8f, 4f); lineTo(12f, 4f); lineTo(12f, 10f); lineTo(8f, 10f); close()
+        moveTo(4f, 17f); lineTo(12f, 17f)
+        moveTo(16f, 17f); lineTo(20f, 17f)
+        moveTo(12f, 14f); lineTo(16f, 14f); lineTo(16f, 20f); lineTo(12f, 20f); close()
+    }
+
+    val ChevronRight = strokeIcon("ChevronRight", strokeWidth = 2f) {
+        moveTo(9f, 6f); lineTo(15f, 12f); lineTo(9f, 18f)
+    }
+
+    val Back = strokeIcon("Back", strokeWidth = 2f) {
+        moveTo(11f, 5f); lineTo(4f, 12f); lineTo(11f, 19f)
+        moveTo(4f, 12f); lineTo(20f, 12f)
+    }
+
     /** 勾：两条斜线，方头。 */
     val Check: ImageVector = strokeIcon("Check") {
         moveTo(4.5f, 12.6f)
@@ -161,7 +237,7 @@ object AppIcons {
  */
 private fun strokeIcon(
     name: String,
-    strokeWidth: Float = 2.4f,
+    strokeWidth: Float = 1.6f,
     pathBuilder: PathBuilder.() -> Unit,
 ): ImageVector = ImageVector.Builder(
     name = name,
@@ -173,7 +249,7 @@ private fun strokeIcon(
     path(
         stroke = SolidColor(Color.White),
         strokeLineWidth = strokeWidth,
-        strokeLineCap = StrokeCap.Square,
+        strokeLineCap = StrokeCap.Round,
         strokeLineJoin = StrokeJoin.Round,
         pathBuilder = pathBuilder,
     )

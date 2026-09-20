@@ -99,23 +99,23 @@ impl DispatchStats {
 /// [`DispatchOutcome::IgnoredUnimplemented`] 路径 —— 这正好是 §13「未知值可忽略」的实践。
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlRequest {
-    /// `0x01` 发起方 →：连接请求。
+    /// `0x01` 接收端 → 主机：连接请求。
     Hello(HelloPayload),
-    /// `0x02` 响应方 →：连接应答。
+    /// `0x02` 主机 → 接收端：连接应答。
     HelloAck(HelloAckPayload),
     /// `0x03` 双方：挑战随机数。
     AuthChallenge(AuthChallengePayload),
     /// `0x04` 双方：挑战应答签名。
     AuthResponse(AuthResponsePayload),
-    /// `0x05` 接收方 →：需要 PIN 配对。
+    /// `0x05` 主机 → 接收端：需要 PIN 配对。
     PairRequired(PairRequiredPayload),
-    /// `0x06` 发起方 →：提交 PIN。
+    /// `0x06` 接收端 → 主机：提交 PIN。
     PairSubmit(PairSubmitPayload),
-    /// `0x07` 接收方 →：配对结果。
+    /// `0x07` 主机 → 接收端：配对结果。
     PairResult(PairResultPayload),
-    /// `0x10` 发送方 →：开流协商。
+    /// `0x10` 主机 → 接收端：开流协商。
     OpenStream(OpenStreamPayload),
-    /// `0x11` 接收方 →：开流应答。
+    /// `0x11` 接收端 → 主机：开流应答。
     OpenStreamAck(OpenStreamAckPayload),
     /// `0x12` 双方：关流。
     CloseStream(CloseStreamPayload),
@@ -125,17 +125,17 @@ pub enum ControlRequest {
     SetGain(SetGainPayload),
     /// `0x21` 双方：设置静音。
     SetMute(SetMutePayload),
-    /// `0x30` 发送方 →：时钟同步结果（对端诊断）。
+    /// `0x30` 主机 → 接收端：时钟同步结果（对端诊断）。
     ClockResult(ClockResultPayload),
-    /// `0x40` 发送方 →：创建临时同步组（§7）。
+    /// `0x40` 主机 → 接收端：创建临时同步组（§7）。
     GroupCreate(GroupCreatePayload),
-    /// `0x41` 发送方 →：成员动态加入（§7）。
+    /// `0x41` 主机 → 接收端：成员动态加入（§7）。
     GroupJoin(GroupJoinPayload),
-    /// `0x42` 发送方 →：成员退出（§7）。
+    /// `0x42` 主机 → 接收端：成员退出（§7）。
     GroupLeave(GroupLeavePayload),
-    /// `0x43` 发送方 →：同步组公共时间基准（§7 预约播放）。
+    /// `0x43` 主机 → 接收端：同步组公共时间基准（§7 预约播放）。
     GroupEpoch(GroupEpochPayload),
-    /// `0x44` 接收方 →：接收端作为**基准来源**广播共同时间基准（M4 多源混音对齐）。
+    /// `0x44` 接收端 → 主机：接收端作为**基准来源**广播共同时间基准（M4 多源混音对齐）。
     ReceiverEpoch(GroupEpochPayload),
     /// `0x60` 双方：可靠流 ping。
     Ping(PingPayload),

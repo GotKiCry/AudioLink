@@ -1,7 +1,6 @@
 package com.gotkicry.audiolink.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -39,6 +38,7 @@ import com.gotkicry.audiolink.ui.components.LampTone
 import com.gotkicry.audiolink.ui.components.SilkLabel
 import com.gotkicry.audiolink.ui.components.StatusBadge
 import com.gotkicry.audiolink.ui.i18n.LocalStrings
+import com.gotkicry.audiolink.ui.i18n.diagnosticsSummary
 import java.util.Locale
 import kotlinx.coroutines.launch
 
@@ -66,7 +66,9 @@ fun DiagnosticsDeck(
 
     ExpandablePanel(
         title = strings.deckDiagnostics,
-        summary = strings.diagnosticsSummary,
+        // 有内核报错时副标题改成"展开看原因"：主路径只会说"请再试一次"，
+        // 而真正的原因就埋在这块折叠区里（真机踩过）。
+        summary = diagnosticsSummary(strings, state.engineError),
         expanded = expanded,
         onToggle = onToggle,
         expandedStateText = strings.semanticsExpanded,
@@ -168,6 +170,20 @@ fun DiagnosticsDeck(
                     color = MaterialTheme.colorScheme.error,
                 )
             }
+        }
+
+        // ── 契约说明（首屏撤下来的技术约定收在这里） ────────────────
+        DiagSection(title = strings.diagContracts) {
+            Text(
+                text = strings.diagHostContract,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = strings.diagCaptureContract,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         // ── 低延迟（实测） ──────────────────────────────────────────

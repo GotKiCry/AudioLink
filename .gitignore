@@ -60,6 +60,7 @@ logs/
 # Impeccable 的工作目录（截图 / 决策页 / A-B 对照）：过程物，不进仓库。
 # 设计规范与可运行样张在 docs/design/ 下 —— 那些是长期资产，要入库。
 .impeccable/
+.tmp-shots/
 
 # ---------- IDE / OS ----------
 .vscode/

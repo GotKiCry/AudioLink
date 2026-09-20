@@ -782,6 +782,16 @@ internal open class UniffiVTableCallbackInterfacePcmPull(
 
 
 
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -799,11 +809,15 @@ internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
     fun uniffi_audiolink_ffi_checksum_func_connect(
 ): Short
+fun uniffi_audiolink_ffi_checksum_func_disconnect_peer(
+): Short
 fun uniffi_audiolink_ffi_checksum_func_displayed_pin(
 ): Short
 fun uniffi_audiolink_ffi_checksum_func_engine_start(
 ): Short
 fun uniffi_audiolink_ffi_checksum_func_engine_stop(
+): Short
+fun uniffi_audiolink_ffi_checksum_func_local_peer_gain(
 ): Short
 fun uniffi_audiolink_ffi_checksum_func_local_status(
 ): Short
@@ -811,9 +825,15 @@ fun uniffi_audiolink_ffi_checksum_func_peers(
 ): Short
 fun uniffi_audiolink_ffi_checksum_func_protocol_self_test(
 ): Short
+fun uniffi_audiolink_ffi_checksum_func_set_local_peer_gain(
+): Short
+fun uniffi_audiolink_ffi_checksum_func_set_peer_gain(
+): Short
 fun uniffi_audiolink_ffi_checksum_func_start_send(
 ): Short
 fun uniffi_audiolink_ffi_checksum_func_stop_send(
+): Short
+fun uniffi_audiolink_ffi_checksum_func_stop_send_to(
 ): Short
 fun uniffi_audiolink_ffi_checksum_func_submit_pin(
 ): Short
@@ -876,21 +896,31 @@ fun uniffi_audiolink_ffi_fn_init_callback_vtable_pcmpull(`vtable`: UniffiVTableC
 ): Unit
 fun uniffi_audiolink_ffi_fn_func_connect(`addr`: RustBuffer.ByValue,
 ): Long
+fun uniffi_audiolink_ffi_fn_func_disconnect_peer(`peerId`: RustBuffer.ByValue,
+): Long
 fun uniffi_audiolink_ffi_fn_func_displayed_pin(uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_audiolink_ffi_fn_func_engine_start(`config`: RustBuffer.ByValue,`playout`: RustBuffer.ByValue,`capture`: RustBuffer.ByValue,
 ): Long
 fun uniffi_audiolink_ffi_fn_func_engine_stop(
 ): Long
+fun uniffi_audiolink_ffi_fn_func_local_peer_gain(`peerId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_audiolink_ffi_fn_func_local_status(uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_audiolink_ffi_fn_func_peers(uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_audiolink_ffi_fn_func_protocol_self_test(uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_audiolink_ffi_fn_func_set_local_peer_gain(`peerId`: RustBuffer.ByValue,`gain`: Float,
+): Long
+fun uniffi_audiolink_ffi_fn_func_set_peer_gain(`peerId`: RustBuffer.ByValue,`gain`: Float,
+): Long
 fun uniffi_audiolink_ffi_fn_func_start_send(
 ): Long
 fun uniffi_audiolink_ffi_fn_func_stop_send(
+): Long
+fun uniffi_audiolink_ffi_fn_func_stop_send_to(`peerId`: RustBuffer.ByValue,
 ): Long
 fun uniffi_audiolink_ffi_fn_func_submit_pin(`pin`: RustBuffer.ByValue,
 ): Long
@@ -1025,13 +1055,19 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_audiolink_ffi_checksum_func_connect() != 12465.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_audiolink_ffi_checksum_func_disconnect_peer() != 34397.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_audiolink_ffi_checksum_func_displayed_pin() != 17789.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_audiolink_ffi_checksum_func_engine_start() != 32272.toShort()) {
+    if (lib.uniffi_audiolink_ffi_checksum_func_engine_start() != 16758.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_audiolink_ffi_checksum_func_engine_stop() != 39110.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_audiolink_ffi_checksum_func_local_peer_gain() != 35079.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_audiolink_ffi_checksum_func_local_status() != 21978.toShort()) {
@@ -1043,10 +1079,19 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_audiolink_ffi_checksum_func_protocol_self_test() != 3293.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_audiolink_ffi_checksum_func_set_local_peer_gain() != 23920.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_audiolink_ffi_checksum_func_set_peer_gain() != 11343.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_audiolink_ffi_checksum_func_start_send() != 53400.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_audiolink_ffi_checksum_func_stop_send() != 5031.toShort()) {
+    if (lib.uniffi_audiolink_ffi_checksum_func_stop_send() != 16712.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_audiolink_ffi_checksum_func_stop_send_to() != 7210.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_audiolink_ffi_checksum_func_submit_pin() != 52703.toShort()) {
@@ -2031,6 +2076,38 @@ public object FfiConverterTypePcmPull: FfiConverterCallbackInterface<PcmPull>()
 /**
  * @suppress
  */
+public object FfiConverterOptionalUInt: FfiConverterRustBuffer<kotlin.UInt?> {
+    override fun read(buf: ByteBuffer): kotlin.UInt? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterUInt.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.UInt?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterUInt.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.UInt?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterUInt.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?> {
     override fun read(buf: ByteBuffer): kotlin.String? {
         if (buf.get().toInt() == 0) {
@@ -2206,6 +2283,33 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
     }
 
         /**
+         * 断开与某台设备的会话（**保留信任**）。
+         *
+         * 与 [`Engine::disconnect`] 同语义：只结束这条会话，信任库**不读不写不落盘** —— 该设备下次
+         * 连进来仍然免交互直连（§8 白名单命中）。要「连信任一起撤、逼它重新配对」是另一件事
+         * （引擎侧 [`Engine::revoke_trust`]；FFI 侧本里程碑不提供）。
+         *
+         * 返回是否真的断了一条会话：`false` = 本来就没有（幂等，调用方不必先查 `peers()`）。
+         *
+         * **别承诺做不到的事**：断开只让对端看到「链路丢失」，若对端是发起方且正在推流，
+         * 它会按自己的 FR-27 逻辑重拨回来（本机信任库还留着它，握手直接过）。
+         */
+    @Throws(FfiException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+     suspend fun `disconnectPeer`(`peerId`: kotlin.String) : kotlin.Boolean {
+        return uniffiRustCallAsync(
+        UniffiLib.INSTANCE.uniffi_audiolink_ffi_fn_func_disconnect_peer(FfiConverterString.lower(`peerId`),),
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_poll_i8(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_complete_i8(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_free_i8(future) },
+        // lift function
+        { FfiConverterBoolean.lift(it) },
+        // Error FFI converter
+        FfiException.ErrorHandler,
+    )
+    }
+
+        /**
          * 本机（接收端）当前展示给用户的配对 PIN；没有在配对时返回 `None`。
          */
     @Throws(FfiException::class) fun `displayedPin`(): kotlin.String? {
@@ -2221,7 +2325,7 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
         /**
          * 启动引擎并开始监听入站连接。
          *
-         * - `playout`：接收方向的内核 PCM 出口（Android 传 `AudioLinkService`）；`null` = 本机不接收；
+         * - `playout`：播放方向的内核 PCM 出口（Android 传 `AudioLinkService`）；`null` = 本机不接收；
          * - `capture`：发送方向的 PCM 入口；`null` = 本机不推流（M1 Android 即为 `null`）；
          * - 两个回调都传 `null` 时能力位为 0，UI 可以据此置灰按钮（能力位只由「有没有工厂」决定）。
          *
@@ -2263,6 +2367,23 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
     }
 
         /**
+         * 读回本机对该设备的本地增益（**千分点**；`null` = 用户没设过，等价 1.0）。
+         *
+         * 为什么给千分点整数而不是浮点：内核内部一律用整数比较（浮点会让「有没有变化」不可复现，
+         * 见 engine `gain.rs` 的说明），而界面上的滑块本来就是 0–2000 的离散值 —— 转成浮点再转回来
+         * 只会引入误差。`None` 与「设成了 1000」是两件事：界面据此决定要不要打「已调整」标记。
+         */
+    @Throws(FfiException::class) fun `localPeerGain`(`peerId`: kotlin.String): kotlin.UInt? {
+            return FfiConverterOptionalUInt.lift(
+    uniffiRustCallWithError(FfiException) { _status ->
+    UniffiLib.INSTANCE.uniffi_audiolink_ffi_fn_func_local_peer_gain(
+        FfiConverterString.lower(`peerId`),_status)
+}
+    )
+    }
+    
+
+        /**
          * 本机状态。
          */
     @Throws(FfiException::class) fun `localStatus`(): LocalStatus {
@@ -2301,6 +2422,62 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
     
 
         /**
+         * 设置**本机**对该设备的本地播放增益（FR-12：接收端每路独立音量）。
+         *
+         * 与 [`set_peer_gain`] 方向相反、互不覆盖：
+         * - [`set_peer_gain`] 是**发送方向**（让对端调它播放本机音频的音量，走网络）；
+         * - 本函数只影响**本机混音**，一个字节都不发出去。
+         *
+         * 最终音量 = **本地 × 对端下发**（相乘）—— 对端照常能调，本机再叠一层。
+         *
+         * `gain` 取值 0.0–2.0（1.0 = 原声），非法值当场拒绝。**本地静音就是 `gain = 0.0`**：
+         * 内核只维护「增益」一份状态，「取消静音时回到多少」由壳侧自己记 —— 它才是持有 UI 状态的一侧。
+         *
+         * 设备当前没在收音频（本机是发送端 / 还没开流）也**照样成功**：用户设的是「这台设备的音量」，
+         * 值会在下次开流时自然生效。
+         */
+    @Throws(FfiException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+     suspend fun `setLocalPeerGain`(`peerId`: kotlin.String, `gain`: kotlin.Float) {
+        return uniffiRustCallAsync(
+        UniffiLib.INSTANCE.uniffi_audiolink_ffi_fn_func_set_local_peer_gain(FfiConverterString.lower(`peerId`),FfiConverterFloat.lower(`gain`),),
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+        
+        // Error FFI converter
+        FfiException.ErrorHandler,
+    )
+    }
+
+        /**
+         * 按设备调音量（发送方 → 对端播放侧；§4.1 的 `SET_GAIN`）。
+         *
+         * `gain` 取值 0.0–2.0（1.0 = 原声）。NaN / 负数 / 超上限由**引擎边界**拒绝并返回人话原因，
+         * 这里不重复校验 —— 判据只留一处，错误文案才能与桌面端逐字一致。
+         *
+         * 渐变时长固定 [`DEFAULT_PEER_GAIN_RAMP_MS`]：壳侧的滑块拖动自带频次控制，
+         * 多开一个参数只会让两端各自发明一套取值。
+         */
+    @Throws(FfiException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+     suspend fun `setPeerGain`(`peerId`: kotlin.String, `gain`: kotlin.Float) {
+        return uniffiRustCallAsync(
+        UniffiLib.INSTANCE.uniffi_audiolink_ffi_fn_func_set_peer_gain(FfiConverterString.lower(`peerId`),FfiConverterFloat.lower(`gain`),),
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+        
+        // Error FFI converter
+        FfiException.ErrorHandler,
+    )
+    }
+
+        /**
          * 开始向当前对端推流（发送方向）。
          */
     @Throws(FfiException::class)
@@ -2320,13 +2497,45 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
     }
 
         /**
-         * 停止推流（保留连接与信任）。
+         * 停止推流（保留连接与信任）—— **单对端语义**：停内核选中的那位 [`current_peer`]。
+         *
+         * 多设备界面上请用 [`stop_send_to`]（显式点名对端）；本函数保留是给单对端调用方
+         * （Android 现有代码）的兼容入口，两者**是同一个内核动作**，不是两套实现。
          */
     @Throws(FfiException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
      suspend fun `stopSend`() {
         return uniffiRustCallAsync(
         UniffiLib.INSTANCE.uniffi_audiolink_ffi_fn_func_stop_send(),
+        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_poll_void(future, callback, continuation) },
+        { future, continuation -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_complete_void(future, continuation) },
+        { future -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_free_void(future) },
+        // lift function
+        { Unit },
+        
+        // Error FFI converter
+        FfiException.ErrorHandler,
+    )
+    }
+
+        /**
+         * 按设备停这一路（显式指定对端，`PeerView.idHex` 或 `idShort`）。
+         *
+         * 与无参 [`stop_send`] 的区别**只有「停谁」**：无参版停 [`current_peer`]（单对端 UI 的兜底），
+         * 本函数停调用方点名的那一台 —— 多设备界面上的「停止」按钮用这个。
+         *
+         * 语义按**本机在链路的哪一侧**分成两种（内核只有一条实现，效果由此决定）：
+         * - 本机是**发送端**：停本机采集并向对端发 `CLOSE_STREAM`，对端停止播放这一路；
+         * - 本机是**接收端**：本机没有采集可停，实际效果是**请对端停发这一路**。
+         *
+         * 两种都**保留连接与信任** —— 要彻底结束这条会话（仍然保留信任）用 [`disconnect_peer`]；
+         * 要连信任一起撤、逼它重新配对是 [`Engine::revoke_trust`]（FFI 侧本里程碑不提供）。
+         */
+    @Throws(FfiException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+     suspend fun `stopSendTo`(`peerId`: kotlin.String) {
+        return uniffiRustCallAsync(
+        UniffiLib.INSTANCE.uniffi_audiolink_ffi_fn_func_stop_send_to(FfiConverterString.lower(`peerId`),),
         { future, callback, continuation -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_poll_void(future, callback, continuation) },
         { future, continuation -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_complete_void(future, continuation) },
         { future -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_free_void(future) },

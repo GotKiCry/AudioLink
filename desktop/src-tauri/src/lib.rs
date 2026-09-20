@@ -262,6 +262,21 @@ async fn try_auto_connect(
     bridge.try_auto_connect().await
 }
 
+/// M5：自动推流开关（**默认开**：有人接入就自动开始推流）。
+#[tauri::command]
+async fn auto_broadcast_state(bridge: State<'_, EngineBridge>) -> Result<bool, CommandError> {
+    bridge.auto_broadcast_state().await
+}
+
+/// M5：开关「有人接入时自动开始推流」。
+#[tauri::command(rename_all = "snake_case")]
+async fn set_auto_broadcast(
+    bridge: State<'_, EngineBridge>,
+    enabled: bool,
+) -> Result<(), CommandError> {
+    bridge.set_auto_broadcast(enabled).await
+}
+
 /// M5：开机自启状态（FR-31 的一部分）。
 #[tauri::command]
 async fn autostart_enabled(app: tauri::AppHandle) -> Result<bool, CommandError> {
@@ -367,6 +382,8 @@ pub fn run() {
             auto_connect_state,
             set_auto_connect,
             try_auto_connect,
+            auto_broadcast_state,
+            set_auto_broadcast,
             locale,
             set_locale,
             background,

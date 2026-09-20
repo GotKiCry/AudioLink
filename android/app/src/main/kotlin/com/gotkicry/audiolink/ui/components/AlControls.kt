@@ -11,12 +11,13 @@ import androidx.compose.material3.CardColors
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CardElevation
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.dp
+import com.gotkicry.audiolink.ui.theme.fluentColors
+import com.gotkicry.audiolink.ui.theme.fluentEdges
 
 /**
  * 控件形状的统一出口 —— **M3 默认形状的显式覆盖点，只有这一处**。
@@ -58,7 +59,9 @@ import androidx.compose.ui.unit.dp
  */
 @Composable
 fun alButtonColors(): ButtonColors = ButtonDefaults.buttonColors(
-    disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.30f),
+    // 禁用态必须**一眼看出不可点**（真机评审 P1）：原来用 primary@30% 的浅蓝，在真机上被当成
+    // "可以点的次要按钮"。改成中性面色 + 更弱的字色：没有主色就不再暗示"这是主行动"。
+    disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
     disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.36f), // Fluent text-disabled
 )
 
@@ -82,19 +85,25 @@ fun AlButton(
     )
 }
 
-/** M3 [OutlinedButton] 的形状对齐版（同上，默认 4dp）。 */
+/** Fluent standard 次按钮：中性填充与细描边，沿用既有调用名称。 */
 @Composable
 fun AlOutlinedButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     shape: Shape = MaterialTheme.shapes.small,
-    colors: ButtonColors = ButtonDefaults.outlinedButtonColors(),
+    colors: ButtonColors = ButtonDefaults.buttonColors(
+        containerColor = MaterialTheme.fluentColors.controlFill,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        disabledContainerColor = MaterialTheme.fluentColors.controlFill,
+        disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.36f),
+    ),
     content: @Composable RowScope.() -> Unit,
 ) {
-    OutlinedButton(
+    Button(
         onClick = onClick,
         modifier = modifier,
+        border = BorderStroke(0.5.dp, MaterialTheme.fluentColors.stroke),
         enabled = enabled,
         shape = shape,
         colors = colors,
@@ -144,7 +153,7 @@ fun AlCard(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Card(
-        modifier = modifier,
+        modifier = modifier.fluentEdges(),
         shape = shape,
         colors = colors,
         elevation = elevation,

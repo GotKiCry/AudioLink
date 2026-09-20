@@ -91,8 +91,9 @@ fun PowerWhitelistDeck(modifier: Modifier = Modifier) {
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.semantics { heading() },
             )
+            // 只留一句人话：状态标签 + 一句说明 + 按钮。运行期技术说明（API 26、后台回收策略）
+            // 属于排障信息，不该出现在首屏（产品评审：省电卡两段长文压成一句）。
             Text(state.detail, style = MaterialTheme.typography.bodySmall)
-            state.runtimeNote?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             state.actionLabel?.let { label ->
                 AlTextButton(
                     onClick = openSettings,
@@ -104,28 +105,21 @@ fun PowerWhitelistDeck(modifier: Modifier = Modifier) {
 
         PowerWhitelistVariant.Action -> PanelCard(
             modifier = modifier,
-            containerColor = MaterialTheme.colorScheme.primaryContainer,
-            borderColor = MaterialTheme.colorScheme.primary,
         ) {
             state.prompt?.let { prompt ->
                 Text(
                     text = prompt.title,
                     style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.semantics { heading() },
                 )
                 Text(
                     text = state.detail,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                state.runtimeNote?.let {
-                    Text(
-                        text = it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                }
+                // 运行期技术说明（API 26 / 后台回收）已按产品评审砍掉：这一屏只要
+                // "为什么 + 怎么办"两句话，技术细节属于排障信息。
                 AlButton(
                     onClick = openSettings,
                     modifier = Modifier.heightIn(min = 48.dp),

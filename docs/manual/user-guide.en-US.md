@@ -32,12 +32,17 @@ telemetry leaves your machines.
 ## 3. First run: three steps
 
 1. **Put both devices on the same LAN** (same Wi-Fi, or the same router with a cable).
-2. **Connect from the PC**: in "Add a device manually", enter the other side address (like `192.168.1.23`
-   or `192.168.1.23:58290`). The phone does not need to enter anything - one side starts the connection.
-3. **Pair**: one screen shows 6 digits; type them on the other device. When both sides show the same digits,
+2. **On the receiver, enter the host address**: open AudioLink on the phone (or the other PC) and type the
+   address shown on the host screen (like `192.168.1.23` or `192.168.1.23:58290`).
+   **The host enters no address at all** - it only waits to be connected to.
+3. **Pair**: the host screen shows 6 digits; type them on the receiver. When both sides show the same digits,
    no third device sits in between.
 
 After pairing, the device goes on the allow-list, so you will not need the code again.
+
+> There is only one direction: **the receiver connects to the host**. The side that listens (the phone, or the
+> second PC) is the one that types the address and the code; the side that provides the audio just shows its
+> address and waits. A host has no place to type a peer address.
 
 ---
 
@@ -177,7 +182,7 @@ restarted silently while you are streaming or recording is not acceptable.
 **Desktop**: open the "Software update" panel, click **Check for updates**, then **Download and install**.
 The installer first winds the session down gracefully, closes AudioLink, runs, and reopens the app.
 
-**Android**: top bar → **Updates** → **Check for updates** → **Download and install**.
+**Android**: top bar → **Settings** → **Software update** → **Check for updates** → **Download and install**.
 
 - The first Android update asks the system for permission to install apps - grant it, come back, tap **Continue install**;
 - After that, some vendors add one more **hand-off confirmation** (e.g. ColorOS asking whether AudioLink may open the installer) - just allow it; that is a system guard, not an error;
@@ -186,3 +191,9 @@ The installer first winds the session down gracefully, closes AudioLink, runs, a
 
 When an update fails, the panel states the reason (cannot reach GitHub, timeout, wrong package). If GitHub is
 unreliable on your network, simply retry later.
+
+### Android console
+
+- **Receive** opens by default. Enter the host address, then the pairing code on your first connection. Once connected, playback status, media volume and disconnect controls appear. Each device also has its own mute, gain and disconnect controls.
+- **Send** shows this device's address, the listener control and audio source. Switching views does not start or stop audio; changing the capture source still restarts the service and interrupts sessions.
+- **Settings** contains appearance, background activity, updates, open-source licences and collapsed diagnostics. Back returns through each page and preserves your address and scroll position.

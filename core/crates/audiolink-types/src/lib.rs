@@ -294,26 +294,38 @@ impl Flags {
 // ---------------------------------------------------------------------------
 
 /// 控制帧命令码（§4.1 命令表）。
+///
+/// # 方向怎么写
+///
+/// 每条命令的方向都用**主机 / 接收端**标注。它们描述的是**本次会话中的角色**，不是设备属性 ——
+/// 同一台设备这次当主机、下次当接收端都合法：
+///
+/// - **主机**：提供声音、被连接的一方。**永不主动发起连接**，只出示地址、亮 6 位配对码、接受接入、开始推流。
+/// - **接收端**：收听声音、主动连接主机的一方。它提交主机亮出的 6 位配对码。
+///
+/// 协议文档 §5 的节点 A 是发起方（= 接收端），节点 B 是响应方（= 主机）。旧文里的「发起方 →」
+/// 等于「接收端 →」，「响应方 →」等于「主机 →」；而「接收方」一词在旧文里既指接受连接的主机、
+/// 又指播放侧的接收端 —— 这一词两义正是连接方向老被读反的根源，故本表不再使用这四种旧写法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum OpCode {
-    /// `0x01` 发起方 →：`proto_version, node_info, nonce`。
+    /// `0x01` 接收端 → 主机：`proto_version, node_info, nonce`（接收端发起连接，先发 HELLO）。
     Hello = 0x01,
-    /// `0x02` 响应方 →：`proto_version, node_info, accepted, reason`。
+    /// `0x02` 主机 → 接收端：`proto_version, node_info, accepted, reason`。
     HelloAck = 0x02,
     /// `0x03` 双方：`nonce(32B)`。
     AuthChallenge = 0x03,
     /// `0x04` 双方：`ECDSA(privkey, nonce ‖ fp_pair)`。
     AuthResponse = 0x04,
-    /// `0x05` 接收方 →：`pin_display`。
+    /// `0x05` 主机 → 接收端：`pin_display`（主机生成并亮出 6 位配对码）。
     PairRequired = 0x05,
-    /// `0x06` 发起方 →：`pin(6 位数字)`。
+    /// `0x06` 接收端 → 主机：`pin(6 位数字)`（把主机屏幕上的码提交回来）。
     PairSubmit = 0x06,
-    /// `0x07` 接收方 →：`ok, reason, persist`。
+    /// `0x07` 主机 → 接收端：`ok, reason, persist`。
     PairResult = 0x07,
-    /// `0x10` 发送方 →：开流协商。
+    /// `0x10` 主机 → 接收端：开流协商（推流方向由主机发起）。
     OpenStream = 0x10,
-    /// `0x11` 接收方 →：`stream_id, codec_chosen, epoch_id, epoch_local_us`。
+    /// `0x11` 接收端 → 主机：`stream_id, codec_chosen, epoch_id, epoch_local_us`。
     OpenStreamAck = 0x11,
     /// `0x12` 双方：`stream_id, reason`。
     CloseStream = 0x12,
@@ -323,19 +335,19 @@ pub enum OpCode {
     SetGain = 0x20,
     /// `0x21` 双方：`stream_id | ALL, mute`。
     SetMute = 0x21,
-    /// `0x22` 接收方 →：`max_gain`。
+    /// `0x22` 接收端 → 主机：`max_gain`（接收端限制主机可调的音量上限）。
     SetVolumeLock = 0x22,
-    /// `0x30` 发送方 →：`offset_us, drift_ppm, quality`。
+    /// `0x30` 主机 → 接收端：`offset_us, drift_ppm, quality`。
     ClockResult = 0x30,
-    /// `0x40` 发送方 →：临时同步组创建（FR-22）。
+    /// `0x40` 主机 → 接收端：临时同步组创建（FR-22）。
     GroupCreate = 0x40,
-    /// `0x41` 发送方 →：成员加入。
+    /// `0x41` 主机 → 接收端：成员加入。
     GroupJoin = 0x41,
-    /// `0x42` 发送方 →：成员退出。
+    /// `0x42` 主机 → 接收端：成员退出。
     GroupLeave = 0x42,
-    /// `0x43` 发送方 →：`epoch_id, epoch_local_us, lead_ms`。
+    /// `0x43` 主机 → 接收端：`epoch_id, epoch_local_us, lead_ms`。
     GroupEpoch = 0x43,
-    /// `0x44` 接收方 →：`epoch_id, epoch_local_us, lead_ms`（接收端作为基准来源广播共同时间基准）。
+    /// `0x44` 接收端 → 主机：`epoch_id, epoch_local_us, lead_ms`（接收端作为基准来源广播共同时间基准）。
     ReceiverEpoch = 0x44,
     /// `0x50` 双方：汇总指标快照。
     TelemetryPush = 0x50,

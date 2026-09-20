@@ -1,5 +1,5 @@
 /**
- * M5 · 设置（界面语言 + 开关自启 + 启动时自动连接上次设备）。
+ * M5 · 设置（界面语言 + 开关自启 + 启动时自动连接上次设备 + 接入即自动推流）。
  *
  * 为什么单独一块而不是塞进「关于」：关于页讲的是「这个软件是什么、用了谁的代码」，
  * 设置页讲的是「它怎么运行」—— 两件事放在一起，用户找起来会慢。
@@ -20,7 +20,21 @@ import { LOCALES, setLocale, t, useLocale, type Locale } from "../i18n";
 /** 读数缺失时的占位（与其它诊断面板同一条约定）。 */
 const DASH = "—";
 
-export function SettingsPanel() {
+interface SettingsPanelProps {
+  /**
+   * 「有人接入时自动开始推流」。状态与执行都在 useAudioLink（自动推流就在那里跑），
+   * 面板只做开关 —— 两处各记一份"开没开"，关掉之后自动推流还在跑，是最难查的那种 bug。
+   */
+  autoBroadcast: boolean;
+  autoBroadcastBusy: boolean;
+  onToggleAutoBroadcast: (enabled: boolean) => void;
+}
+
+export function SettingsPanel({
+  autoBroadcast,
+  autoBroadcastBusy,
+  onToggleAutoBroadcast,
+}: SettingsPanelProps) {
   const locale = useLocale();
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [policy, setPolicy] = useState<AutoConnectPolicy | null>(null);
@@ -167,6 +181,23 @@ export function SettingsPanel() {
             ? t("set.no_history")
             : t("set.last_peer", { peer: policy.lastPeer })}
         </p>
+
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={autoBroadcast}
+            disabled={busy || autoBroadcastBusy}
+            onChange={(event) => onToggleAutoBroadcast(event.target.checked)}
+            // 名字钉在开关自己身上：label 里还会追加"读取中…"，让它去拼 accessible name 会得到
+            // 一个随忙碌态变化的字符串（读屏用户听到的名字忽长忽短）。
+            aria-label={t("set.auto_broadcast")}
+            className="accent-caution disabled:cursor-not-allowed"
+          />
+          {t("set.auto_broadcast")}
+          {autoBroadcastBusy ? <span className="text-caption text-text-tertiary">{t("set.loading")}</span> : null}
+        </label>
+        {/* 说清代价与边界：默认开、以及"你停过的不会被自动重启"——自动行为最需要被信任的一点 */}
+        <p className="pl-5 text-caption text-text-tertiary">{t("set.auto_broadcast_hint")}</p>
       </div>
 
       {/*

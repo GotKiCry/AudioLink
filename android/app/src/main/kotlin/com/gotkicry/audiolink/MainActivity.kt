@@ -120,7 +120,17 @@ class MainActivity : ComponentActivity() {
                 },
                 // 发送方向：四个动作分别对应内核的 connect / submitPin / startSend / stopSend。
                 // 这里只把「用户点了什么」转成服务请求；能不能连、能不能发由 service 判定并回写状态。
-                onConnect = { addr -> AudioLinkService.connect(this, addr) },
+                // 连接会顺带把前台服务拉起来（真机评审 P0：用户不该先去找另一个按钮），
+                // 所以通知权限也在这一步问 —— 与「开始接收」那条路径同一套处理。
+                onConnect = { addr ->
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                        checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                    AudioLinkService.connect(this, addr)
+                },
                 onSubmitPin = { pin -> AudioLinkService.submitPin(this, pin) },
                 onStartSend = { AudioLinkService.startSend(this) },
                 onStopSend = { AudioLinkService.stopSend(this) },

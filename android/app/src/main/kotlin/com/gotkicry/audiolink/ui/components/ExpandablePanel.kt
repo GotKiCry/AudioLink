@@ -30,6 +30,10 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
+import com.gotkicry.audiolink.ui.theme.LocalReducedMotion
+import com.gotkicry.audiolink.ui.theme.fluentColors
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 
 /**
  * 可折叠面板 —— 诊断区的容器（产品原则：**诊断归诊断**，内核真值默认折叠）。
@@ -48,10 +52,11 @@ fun ExpandablePanel(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val reducedMotion = LocalReducedMotion.current
     AlCard(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        border = BorderStroke(0.5.dp, MaterialTheme.fluentColors.stroke),
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
@@ -90,8 +95,8 @@ fun ExpandablePanel(
             }
             AnimatedVisibility(
                 visible = expanded,
-                enter = expandVertically(animationSpec = tween(200)) + fadeIn(animationSpec = tween(200)),
-                exit = shrinkVertically(animationSpec = tween(200)) + fadeOut(animationSpec = tween(200)),
+                enter = if (reducedMotion) EnterTransition.None else expandVertically(animationSpec = tween(200)) + fadeIn(animationSpec = tween(200)),
+                exit = if (reducedMotion) ExitTransition.None else shrinkVertically(animationSpec = tween(200)) + fadeOut(animationSpec = tween(200)),
             ) {
                 Column(
                     modifier = Modifier
@@ -120,8 +125,8 @@ fun NoticePanel(
 ) {
     AlCard(
         modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        border = BorderStroke(0.5.dp, MaterialTheme.fluentColors.stroke),
     ) {
         Column(
             modifier = Modifier
@@ -138,7 +143,7 @@ fun NoticePanel(
             Text(
                 text = message,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onErrorContainer,
+                color = MaterialTheme.colorScheme.onSurface,
             )
             if (detail != null && detailLabel != null) {
                 Spacer(modifier = Modifier.size(4.dp))
@@ -146,7 +151,7 @@ fun NoticePanel(
                 Text(
                     text = detail,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -157,8 +162,8 @@ fun NoticePanel(
 @Composable
 private fun SilkBare(text: String) {
     Text(
-        text = text.uppercase(java.util.Locale.ROOT),
+        text = text,
         style = com.gotkicry.audiolink.ui.theme.AudioLinkType.silk,
-        color = MaterialTheme.colorScheme.onErrorContainer,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }

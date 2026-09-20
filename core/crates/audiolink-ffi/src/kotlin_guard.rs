@@ -261,6 +261,13 @@ mod tests {
         "fun `connect`",
         "fun `startSend`",
         "fun `stopSend`",
+        // 按设备控制（§8 的 FR-12 解锁项）：多设备界面用的就是这两个，缺了它们 Android 侧无从下手。
+        "fun `stopSendTo`",
+        "fun `setPeerGain`",
+        // T21：断连与「接收端本地每路音量」（FR-12 的另一半）同样在导出面上。
+        "fun `disconnectPeer`",
+        "fun `setLocalPeerGain`",
+        "fun `localPeerGain`",
         "fun `submitPin`",
         "fun `localStatus`",
         "fun `peers`",

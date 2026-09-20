@@ -41,8 +41,9 @@ mod kotlin_guard;
 
 pub use audio_bridge::{PcmFeed, PcmPull};
 pub use engine_bridge::{
-    EngineStartConfig, LocalStatus, PeerView, TelemetryView, connect, displayed_pin, engine_start,
-    engine_stop, local_status, peers, start_send, stop_send, submit_pin, telemetry,
+    EngineStartConfig, LocalStatus, PeerView, TelemetryView, connect, disconnect_peer,
+    displayed_pin, engine_start, engine_stop, local_peer_gain, local_status, peers,
+    set_local_peer_gain, set_peer_gain, start_send, stop_send, stop_send_to, submit_pin, telemetry,
 };
 pub use error::FfiError;
 pub use golden::protocol_self_test;

@@ -48,6 +48,13 @@ use crate::error::FfiError;
 /// 工作线程数：QUIC 驱动 + 编解码会话任务都要跑，1 个线程会被网络 IO 阻塞拖死。
 const WORKER_THREADS: usize = 4;
 
+/// 按设备调音量时的渐变时长（ms）。
+///
+/// 为什么固定 200：桌面端前端调的就是 `setPeerGain(idShort, gain, 200)` —— 「同一件事在两端的
+/// 听感」不该因为参数默认值不同而分叉。协议里 `SET_MUTE` 帧自带 50 ms（只做 0/1 切换、要更
+/// 干脆，见 engine `runtime.rs` 的处理），两者服务的场景不同，不要互相抄。
+const DEFAULT_PEER_GAIN_RAMP_MS: u32 = 200;
+
 /// 进程级多线程运行时（见模块文档「线程模型」）。**故意不实现 Drop 路径**。
 static RUNTIME: Mutex<Option<Arc<Runtime>>> = Mutex::new(None);
 
@@ -304,6 +311,71 @@ fn parse_addr(text: &str) -> Result<SocketAddr, FfiError> {
     )))
 }
 
+/// 壳侧给的设备标识：完整指纹或短码。两者的来源都是 [`peers()`] 返回的 [`PeerView`]。
+enum PeerRef {
+    /// 64 hex 完整指纹：不查表就能确定身份。
+    Full(NodeId),
+    /// 16 hex 短码：必须去会话表里查，且要求唯一命中。
+    Short(String),
+}
+
+/// 把壳侧给的标识切成「完整指纹 / 短码」两种形态。
+///
+/// 先试完整指纹是因为它**无歧义**（`NodeId::from_hex` 只接受 64 hex）；短码是 64 位截断，
+/// 理论上会撞（概率极低，但后果见 [`pick_short`]）。
+fn parse_peer_ref(text: &str) -> Result<PeerRef, FfiError> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(FfiError::invalid_argument(
+            "peer id is empty; pass PeerView.idHex (or idShort) from peers()",
+        ));
+    }
+    match NodeId::from_hex(trimmed) {
+        Some(id) => Ok(PeerRef::Full(id)),
+        None => Ok(PeerRef::Short(trimmed.to_lowercase())),
+    }
+}
+
+/// 短码 → 唯一对端。**纯函数**（不碰引擎），所以「0 条 / 1 条 / 多条」三种结局都能单测。
+///
+/// 多条命中必须报错而不是取第一条：短码撞车时取第一条的后果是「点了 A 的停止，B 的流掉了」——
+/// 这类错在真机上极难复现（要两台设备前 8 字节相同），也最难向用户解释。
+fn pick_short(short: &str, known: &[NodeId]) -> Result<NodeId, FfiError> {
+    let mut hits = known.iter().filter(|id| id.short_matches(short));
+    match (hits.next(), hits.next()) {
+        (Some(only), None) => Ok(*only),
+        (None, _) => Err(FfiError::from_code(
+            ErrorCode::NotPaired,
+            format!("no session matches peer id {short}; call peers() and pass its idHex"),
+        )),
+        (Some(_), Some(_)) => Err(FfiError::invalid_argument(format!(
+            "peer short id {short} matches more than one session; pass the full idHex from peers()"
+        ))),
+    }
+}
+
+/// 设备标识 → [`NodeId`]：完整指纹直接采信，短码在**会话表**里查。
+///
+/// # 为什么两种形态都收（「壳侧不做映射」的落点）
+///
+/// [`peers()`] 返回的每个 [`PeerView`] 同时带 `idHex` 与 `idShort`，都是壳侧**已经在手**的东西：
+/// 界面上显示的是短码，列表去重/持久化更可能用完整指纹。任选其一直接回传即可 ——
+/// 壳侧不必自己把短码换算成指纹（那正是「各端各写一份映射、迟早分叉」的来源）。
+///
+/// # 为什么只查会话表（不查信任库）
+///
+/// 本模块导出的按设备动作（停流 / 调音量）都是**对活会话**的动作：一台只在信任库里、
+/// 没有会话的设备没有任何可停的流。删除配对记录是另一件事，桌面端有独立入口覆盖它。
+fn resolve_peer(engine: &Engine, peer_id: &str) -> Result<NodeId, FfiError> {
+    match parse_peer_ref(peer_id)? {
+        PeerRef::Full(id) => Ok(id),
+        PeerRef::Short(short) => {
+            let known: Vec<NodeId> = engine.peers().into_iter().map(|status| status.id).collect();
+            pick_short(&short, &known)
+        }
+    }
+}
+
 fn local_status_of(engine: &Engine) -> LocalStatus {
     let info = engine.info();
     LocalStatus {
@@ -352,7 +424,7 @@ fn peer_view_for(engine: &Engine, id: NodeId) -> Result<PeerView, FfiError> {
 
 /// 启动引擎并开始监听入站连接。
 ///
-/// - `playout`：接收方向的内核 PCM 出口（Android 传 `AudioLinkService`）；`null` = 本机不接收；
+/// - `playout`：播放方向的内核 PCM 出口（Android 传 `AudioLinkService`）；`null` = 本机不接收；
 /// - `capture`：发送方向的 PCM 入口；`null` = 本机不推流（M1 Android 即为 `null`）；
 /// - 两个回调都传 `null` 时能力位为 0，UI 可以据此置灰按钮（能力位只由「有没有工厂」决定）。
 ///
@@ -440,12 +512,101 @@ pub async fn start_send() -> Result<(), FfiError> {
     on_runtime(async move { engine.start_send(peer).await }).await
 }
 
-/// 停止推流（保留连接与信任）。
+/// 停止推流（保留连接与信任）—— **单对端语义**：停内核选中的那位 [`current_peer`]。
+///
+/// 多设备界面上请用 [`stop_send_to`]（显式点名对端）；本函数保留是给单对端调用方
+/// （Android 现有代码）的兼容入口，两者**是同一个内核动作**，不是两套实现。
 #[uniffi::export(async_runtime = "tokio")]
 pub async fn stop_send() -> Result<(), FfiError> {
     let engine = require_engine("stopSend")?;
     let peer = current_peer(&engine)?;
     on_runtime(async move { engine.stop_send(peer).await }).await
+}
+
+/// 按设备停这一路（显式指定对端，`PeerView.idHex` 或 `idShort`）。
+///
+/// 与无参 [`stop_send`] 的区别**只有「停谁」**：无参版停 [`current_peer`]（单对端 UI 的兜底），
+/// 本函数停调用方点名的那一台 —— 多设备界面上的「停止」按钮用这个。
+///
+/// 语义按**本机在链路的哪一侧**分成两种（内核只有一条实现，效果由此决定）：
+/// - 本机是**发送端**：停本机采集并向对端发 `CLOSE_STREAM`，对端停止播放这一路；
+/// - 本机是**接收端**：本机没有采集可停，实际效果是**请对端停发这一路**。
+///
+/// 两种都**保留连接与信任** —— 要彻底结束这条会话（仍然保留信任）用 [`disconnect_peer`]；
+/// 要连信任一起撤、逼它重新配对是 [`Engine::revoke_trust`]（FFI 侧本里程碑不提供）。
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn stop_send_to(peer_id: String) -> Result<(), FfiError> {
+    let engine = require_engine("stopSendTo")?;
+    let peer = resolve_peer(&engine, &peer_id)?;
+    on_runtime(async move { engine.stop_send(peer).await }).await
+}
+
+/// 按设备调音量（发送方 → 对端播放侧；§4.1 的 `SET_GAIN`）。
+///
+/// `gain` 取值 0.0–2.0（1.0 = 原声）。NaN / 负数 / 超上限由**引擎边界**拒绝并返回人话原因，
+/// 这里不重复校验 —— 判据只留一处，错误文案才能与桌面端逐字一致。
+///
+/// 渐变时长固定 [`DEFAULT_PEER_GAIN_RAMP_MS`]：壳侧的滑块拖动自带频次控制，
+/// 多开一个参数只会让两端各自发明一套取值。
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn set_peer_gain(peer_id: String, gain: f32) -> Result<(), FfiError> {
+    let engine = require_engine("setPeerGain")?;
+    let peer = resolve_peer(&engine, &peer_id)?;
+    on_runtime(async move {
+        engine
+            .set_peer_gain(peer, gain, DEFAULT_PEER_GAIN_RAMP_MS)
+            .await
+    })
+    .await
+}
+
+/// 设置**本机**对该设备的本地播放增益（FR-12：接收端每路独立音量）。
+///
+/// 与 [`set_peer_gain`] 方向相反、互不覆盖：
+/// - [`set_peer_gain`] 是**发送方向**（让对端调它播放本机音频的音量，走网络）；
+/// - 本函数只影响**本机混音**，一个字节都不发出去。
+///
+/// 最终音量 = **本地 × 对端下发**（相乘）—— 对端照常能调，本机再叠一层。
+///
+/// `gain` 取值 0.0–2.0（1.0 = 原声），非法值当场拒绝。**本地静音就是 `gain = 0.0`**：
+/// 内核只维护「增益」一份状态，「取消静音时回到多少」由壳侧自己记 —— 它才是持有 UI 状态的一侧。
+///
+/// 设备当前没在收音频（本机是发送端 / 还没开流）也**照样成功**：用户设的是「这台设备的音量」，
+/// 值会在下次开流时自然生效。
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn set_local_peer_gain(peer_id: String, gain: f32) -> Result<(), FfiError> {
+    let engine = require_engine("setLocalPeerGain")?;
+    let peer = resolve_peer(&engine, &peer_id)?;
+    on_runtime(async move { engine.set_local_peer_gain(peer, gain).map(|_| ()) }).await
+}
+
+/// 读回本机对该设备的本地增益（**千分点**；`null` = 用户没设过，等价 1.0）。
+///
+/// 为什么给千分点整数而不是浮点：内核内部一律用整数比较（浮点会让「有没有变化」不可复现，
+/// 见 engine `gain.rs` 的说明），而界面上的滑块本来就是 0–2000 的离散值 —— 转成浮点再转回来
+/// 只会引入误差。`None` 与「设成了 1000」是两件事：界面据此决定要不要打「已调整」标记。
+#[uniffi::export]
+pub fn local_peer_gain(peer_id: String) -> Result<Option<u32>, FfiError> {
+    let engine = require_engine("localPeerGain")?;
+    let peer = resolve_peer(&engine, &peer_id)?;
+    Ok(engine.local_peer_gain(peer))
+}
+
+/// 断开与某台设备的会话（**保留信任**）。
+///
+/// 与 [`Engine::disconnect`] 同语义：只结束这条会话，信任库**不读不写不落盘** —— 该设备下次
+/// 连进来仍然免交互直连（§8 白名单命中）。要「连信任一起撤、逼它重新配对」是另一件事
+/// （引擎侧 [`Engine::revoke_trust`]；FFI 侧本里程碑不提供）。
+///
+/// 返回是否真的断了一条会话：`false` = 本来就没有（幂等，调用方不必先查 `peers()`）。
+///
+/// **别承诺做不到的事**：断开只让对端看到「链路丢失」，若对端是发起方且正在推流，
+/// 它会按自己的 FR-27 逻辑重拨回来（本机信任库还留着它，握手直接过）。
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn disconnect_peer(peer_id: String) -> Result<bool, FfiError> {
+    let engine = require_engine("disconnectPeer")?;
+    let peer = resolve_peer(&engine, &peer_id)?;
+    on_runtime(async move { engine.disconnect(peer).await }).await
 }
 
 /// 提交对端屏幕上显示的 6 位 PIN（本机是发起端时用）。
@@ -507,6 +668,64 @@ mod tests {
     use super::*;
     use crate::audio_bridge::PcmFeed;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// 短码解析的三种结局：唯一命中 / 查无此设备 / 短码撞车。
+    ///
+    /// 改坏（撞车时取第一条）→ 用户在 A 上点「停止」，掉的是 B 的流。这类错在真机上要求
+    /// 「两台设备前 8 字节相同」，几乎无法复现，也最难向用户解释。
+    #[test]
+    fn short_peer_ids_require_a_unique_match() {
+        let first = NodeId::from_bytes([0x11; NodeId::LEN]);
+        let second = NodeId::from_bytes([0x22; NodeId::LEN]);
+        assert_eq!(
+            pick_short(&first.short(), &[first, second]).ok(),
+            Some(first)
+        );
+        assert_eq!(
+            pick_short(&second.short(), &[first, second]).ok(),
+            Some(second)
+        );
+        // 会话表里没有的短码：报「没有会话」，并提示去 peers() 拿 idHex。
+        let absent = NodeId::from_bytes([0x33; NodeId::LEN]);
+        assert!(pick_short(&absent.short(), &[first, second]).is_err());
+        assert!(pick_short(&first.short(), &[]).is_err());
+
+        // 短码相同、但完整指纹不同（只差最后一个字节）→ 必须报错，绝不猜。
+        let mut twin_bytes = [0x11; NodeId::LEN];
+        twin_bytes[NodeId::LEN - 1] = 0x99;
+        let twin = NodeId::from_bytes(twin_bytes);
+        assert_eq!(twin.short(), first.short(), "构造前提：两台短码相同");
+        assert_ne!(twin, first);
+        assert!(
+            pick_short(&first.short(), &[first, twin]).is_err(),
+            "短码撞车时不能猜一台"
+        );
+        // 完整指纹不查表也能定身份（撞车只影响短码路径）。
+        assert_eq!(
+            parse_peer_ref(&first.to_hex())
+                .ok()
+                .map(|r| matches!(r, PeerRef::Full(x) if x == first)),
+            Some(true)
+        );
+    }
+
+    /// 标识解析：大小写/首尾空白要容忍（壳侧的值多半来自复制粘贴或列表控件），空串要有人话原因。
+    #[test]
+    fn peer_id_parsing_is_forgiving_but_explicit() {
+        let id = NodeId::from_bytes([0xAB; NodeId::LEN]);
+        assert!(
+            matches!(parse_peer_ref(&format!("  {}  ", id.to_hex())), Ok(PeerRef::Full(x)) if x == id)
+        );
+        // 大写十六进制照样能认（短码比较本来就是大小写不敏感）。
+        assert!(matches!(
+            parse_peer_ref(&id.short().to_uppercase()),
+            Ok(PeerRef::Short(_))
+        ));
+        // 短码形态不在解析阶段失败：它要等会话表来判「有没有 / 唯一不唯一」。
+        assert!(matches!(parse_peer_ref(&id.short()), Ok(PeerRef::Short(_))));
+        // 空串：直接拒绝，并说清该传什么。
+        assert!(parse_peer_ref("   ").is_err());
+    }
 
     #[tokio::test]
     async fn lifecycle_cancellation_preserves_dispatched_work_and_skips_queued_work() {

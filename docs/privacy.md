@@ -59,7 +59,7 @@ MIUI 后台限制（见 `capture/CaptureController.kt:40` 的清单）。**真�
 |---|---|---|---|
 | 桌面 `%APPDATA%\com.gotkicry.audiolink\identity\` | 本机自签证书 + 私钥（`cert.pem` / `key.pem`） | 设备身份（指纹即 `NodeId`），下次启动复用 | `desktop/src-tauri/src/engine_bridge.rs:855-875`；`runtime.rs:202-203, 741` |
 | 桌面 `...\trust.json` | **信任库**：已配对对端的指纹、显示名、平台、配对时间 | 免 PIN 重连的判据 | `engine_bridge.rs:881`；`runtime.rs:204-205, 743` |
-| 桌面 `...\settings.json` | `auto_connect`（启动自动连上次设备）、`locale`（语言）、`last_peer`（**上次成功连接**的地址）| 界面偏好与便利性 | `engine_bridge.rs:44-50`（键名）、`:206-228`（读写）、`:466-513`（命令）|
+| 桌面 `...\settings.json` | `auto_connect`（启动自动连上次的主机）、`auto_broadcast`（有人接入时自动开始推流，**默认开**）、`locale`（语言）、`last_peer`（**上次成功连接**的地址）| 界面偏好与便利性 | `engine_bridge.rs:44-52`（键名）、`:206-228`（读写）、`:466-513`（命令）、`auto_broadcast_state` / `set_auto_broadcast` |
 | Android 应用私有目录（`filesDir`） | 同上：证书 + 信任库 | 同上；清单声明 `allowBackup="false"`，**不参与系统云备份** | `android/.../service/AudioLinkService.kt:253, 435`；`AndroidManifest.xml`（`allowBackup`）|
 | 桌面 `%USERPROFILE%\AudioLink\telemetry-<时间戳>.csv` | 遥测数字（丢包/抖动/缓冲水位…），**仅在你点"导出"时写入** | 你自己要看/要发给别人排障 | `engine_bridge.rs:1317-1331`（目录与写文件）、`:632`（命令）、`view.rs:255`（CSV 渲染）|
 
@@ -105,7 +105,8 @@ MIUI 后台限制（见 `capture/CaptureController.kt:40` 的清单）。**真�
 | 停止发送声音 | 界面「停止推流 / 断开」→ 采集线程停止、采集源释放（麦克风/内录随即不再被读取）| `runtime.rs:1465`（`stop_send`）、`:3011`（`stop_capture`）、Android `CaptureController.kt:95`（停止会唤醒阻塞的读取）|
 | 回收 Android 的录音权限 | 系统设置 → 应用 → 权限 → 麦克风/屏幕录制 关闭；**内录每次会话都要重新授权**（系统行为，绕不过）| `capture/CaptureError.kt:20,142`（`PermissionRevoked` 是正常路径）、`CaptureStateMachine.kt:116`、`SystemLoopbackCaptureSource.kt:16` |
 | 停止后台服务 | 通知栏停止（前台服务）| `AndroidManifest.xml` 服务声明 + 通知 |
-| 关掉开机自动连接 | 设置面板的「启动时自动连接上次设备」开关 | `engine_bridge.rs:503-513`（`set_auto_connect`）、`settings.rs` |
+| 关掉开机自动连接 | 设置面板的「启动时自动连接上次的主机（本机作为接收端）」开关 | `engine_bridge.rs:503-513`（`set_auto_connect`）、`settings.rs` |
+| 关掉「接入即自动推流」 | 设置面板的「有人接入时自动开始推流」开关（默认开）；关掉后回到手动点「开始推流」 | `set_auto_broadcast` 命令、`settings.json` 的 `auto_broadcast` 键 |
 | **取消配对（不再信任某台设备）** | ⚠️ **当前没有界面出口**：底层有撤销能力（`TrustStore::revoke`，`core/crates/audiolink-identity/src/trust.rs:125`），但**产品里没有任何调用点**。可操作手段只有文件级：删除信任库（桌面 `%APPDATA%\com.gotkicry.audiolink\trust.json`、Android 应用私有目录内同名文件），或在系统里「清除数据 / 卸载」 | 全仓 grep `revoke` 只命中 identity crate 与其单测 —— **这是一处真实缺口，见 §7** |
 | 换一个设备身份 | 删除身份目录（桌面 `...\identity\`）→ 下次启动重新生成证书，指纹随之改变，对端需重新配对 | `runtime.rs:741`（`load_or_create`）|
 | 清掉"上次设备"记录 | ⚠️ 同样没有界面出口；可编辑/删除 `settings.json` 里的 `last_peer` 键 | `engine_bridge.rs:50, 216-218` |

@@ -20,6 +20,7 @@
 //! - [`control`]：控制流 #0 的帧收发（[`ControlChannel`] / [`ControlMessage`]）
 //! - [`clock`]：§6 的四时间戳偏移 / 漂移估计（[`ClockEstimator`]，**纯逻辑**）
 //! - [`error`]：唯一错误类型 [`NetError`]
+//! - [`local_addr`]：本机可达地址探测（[`local_endpoints`] / [`reachable_endpoints`]）
 //!
 //! # 实测提醒（§3「实测修正」）
 //!
@@ -37,6 +38,7 @@ pub mod connection;
 pub mod control;
 pub mod endpoint;
 pub mod error;
+pub mod local_addr;
 mod tls;
 
 pub use clock::{BEST_RTT_SAMPLES, ClockEstimate, ClockEstimator, ClockSample, WINDOW_SAMPLES};
@@ -46,6 +48,7 @@ pub use endpoint::{
     AudioLinkEndpoint, DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_KEEP_ALIVE_MS, EndpointConfig,
 };
 pub use error::NetError;
+pub use local_addr::{local_endpoints, reachable_endpoints};
 
 /// 回环 / 测试用：`server_name` 的固定取值（自签证书下 SNI 不参与信任判定，§2）。
 pub const TLS_SERVER_NAME: &str = "audiolink";

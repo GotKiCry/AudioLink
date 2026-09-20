@@ -9,6 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
@@ -23,15 +24,8 @@ import com.gotkicry.audiolink.ui.theme.ThemePreference
 import com.gotkicry.audiolink.update.UpdateController
 
 /**
- * 应用根：**主题 + 语言 + 导航**三件事，一层解决。
- *
- * 导航为什么不引 navigation-compose：全应用只有两个目的地（控制台 / 开源许可），
- * 为两屏引入一整套导航图、返回栈与序列化契约，是拿一个依赖换一次 if —— 不划算。
- * 但**必须**有 [BackHandler]：许可页是真正的二级目的地，按系统返回要回控制台，
- * 而不是像旧版那样直接退出 App（旧版用一个布尔替换整屏且没有返回处理，这是真机上的返回键陷阱）。
- *
- * 滚动位置由这一层持有（[consoleScroll] / [licensesScroll]）：切走再回来时**位置还在**，
- * 不会被重置到顶部。
+ * 主题、系统语言和二级导航。设置、更新与许可逐级返回；保存每个页面的表单与滚动位置。
+ * 页面数量有限，使用轻量状态导航，不额外引入导航依赖。
  */
 @Composable
 fun AudioLinkRoot(
@@ -57,9 +51,12 @@ fun AudioLinkRoot(
     var themeMode by remember { mutableStateOf(ThemePreference.read(context)) }
     var showLicenses by rememberSaveable { mutableStateOf(false) }
     var showUpdate by rememberSaveable { mutableStateOf(false) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
+    val screenState = rememberSaveableStateHolder()
     val consoleScroll = rememberScrollState()
     val licensesScroll = rememberScrollState()
     val updateScroll = rememberScrollState()
+    val settingsScroll = rememberScrollState()
     // 更新控制器由本层持有（而不是 UpdateScreen 自己 remember）：
     // 下载中途切回控制台再回来时，进度与「已下载待安装」的状态都还在。
     val updateController = remember { UpdateController(context.applicationContext) }
@@ -84,26 +81,39 @@ fun AudioLinkRoot(
                     scrollState = updateScroll,
                     modifier = modifier,
                 )
+            } else if (showSettings) {
+                BackHandler { showSettings = false }
+                screenState.SaveableStateProvider("settings") {
+                    SettingsScreen(
+                        state = state,
+                        themeMode = themeMode,
+                        onThemeModeChange = { mode ->
+                            themeMode = mode
+                            ThemePreference.write(context, mode)
+                            onThemeModeChanged(mode)
+                        },
+                        onBack = { showSettings = false },
+                        onOpenLicenses = { showLicenses = true },
+                        onOpenUpdate = { showUpdate = true },
+                        scrollState = settingsScroll,
+                        modifier = modifier,
+                    )
+                }
             } else {
-                ConsoleScreen(
-                    state = state,
-                    onTogglePlayback = onTogglePlayback,
-                    onConnect = onConnect,
-                    onSubmitPin = onSubmitPin,
-                    onStartSend = onStartSend,
-                    onStopSend = onStopSend,
-                    onSelectCapture = onSelectCapture,
-                    themeMode = themeMode,
-                    onThemeModeChange = { mode ->
-                        themeMode = mode
-                        ThemePreference.write(context, mode)
-                        onThemeModeChanged(mode)
-                    },
-                    onOpenLicenses = { showLicenses = true },
-                    onOpenUpdate = { showUpdate = true },
-                    scrollState = consoleScroll,
-                    modifier = modifier,
-                )
+                screenState.SaveableStateProvider("console") {
+                    ConsoleScreen(
+                        state = state,
+                        onTogglePlayback = onTogglePlayback,
+                        onConnect = onConnect,
+                        onSubmitPin = onSubmitPin,
+                        onStartSend = onStartSend,
+                        onStopSend = onStopSend,
+                        onSelectCapture = onSelectCapture,
+                        onOpenSettings = { showSettings = true },
+                        scrollState = consoleScroll,
+                        modifier = modifier,
+                    )
+                }
             }
         }
     }

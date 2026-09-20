@@ -12,17 +12,22 @@
 |---|---|
 | **Node（节点）** | 一个 AudioLink 实例（桌面或 Android），身份由自签证书指纹确定 |
 | **Peer（对端）** | 已完成配对与握手的另一个节点 |
-| **Session（会话）** | 一次"发送方向接收方推音频"的逻辑关系，1 对 1 |
+| **Session（会话）** | 一次"主机向接收端推音频"的逻辑关系，1 对 1 |
 | **Stream（流）** | 会话内的一条音频通道（立体声/左/右/麦克风/内录） |
 | **Sync Group（同步组）** | 一个发送端 + N 个接收端，共享同一 `epoch`，组内 ±10 ms |
 | **epoch** | 同步组公共时间基准（单调时间轴上的一个点），用于预约播放 |
+
+> **方向用词**：本表与 §4.1 的命令方向一律用「**主机**」（提供声音、被连接的一方）与「**接收端**」（收听声音、主动连接的一方）标注
+> —— 二者是**会话角色**、不是设备属性，同一台设备这次当主机、下次当接收端都合法。
+> 描述「**收到某帧的一方**」这类**中性**角色时一律写「**对端**」（它既可能是主机也可能是接收端），不要与产品角色混用
+> —— 旧文在这些位置写的「接收方」正是「一词两义」的来源，已全部改写。
 
 **编码约定**：
 - 所有整数字段**小端**（LE）；
 - 时间字段为 **i64/u64 微秒**，基于**单调时钟**（`QueryPerformanceCounter` / `elapsedRealtimeNanos`），不使用挂钟；
 - 所有变长字段带显式长度；
 - **未知类型必须忽略而非报错**（旧版教训：协议不可演进）—— 注意：该规则是 **L2 分发层** 的行为，见 §1.1。
-- 保留字段填 0；接收方不得依赖其为 0。
+- 保留字段填 0；对端不得依赖其为 0。
 
 ### 1.1 非法帧的两层处置（v1，消除「忽略 vs 拒绝」的歧义）
 
@@ -35,7 +40,7 @@
 - **L2 分发层**（`audiolink-engine`，v1 起实现）：收到 `BadRequest`，或解码成功但 `ptype` / 命令码不在自身实现范围时，
   **计数并丢弃该帧，不中断会话、不向对端回报错误**（§13 演进策略）。
 - **结论**：上文「未知类型必须忽略而非报错」是 **L2 的行为**，§12「必须拒绝」是 **L1 的返回值**；二者不矛盾
-  —— **禁止把 L1 的 `Err` 升级为断连或用户可见报错**。新增 `ptype` / 新 flags 位只由新版发送端使用，
+  —— **禁止把 L1 的 `Err` 升级为断连或用户可见报错**。新增 `ptype` / 新 flags 位只由**新版本的一端**使用，
   旧版的表现是「丢弃该帧（计数）」，音频侧由 PLC / 静音填充兜底（§8.1），不影响既有流。
 - 为便于握手阶段识别主版本差异，控制帧额外提供**宽容信封解析**（只做结构校验，不校验 `ver` / `type`），
   上层据此决定是否回 `1001 VERSION_MISMATCH`；**严格解码**仍要求 `ver == 0x02` —— 该宽容入口仅用于握手，不用于数据面。
@@ -118,7 +123,7 @@ TLS1.3（quinn 默认 rustls）：
 
 - 长度不符 → `1008 BAD_REQUEST`（L1 层，见 §1.1）；
 - `AUDIO` 的 `payload_len = 0` **仅当 `DTX` 位置位**：静音段必须显式置 `DTX`；未置位却为空 → `1008 BAD_REQUEST`（视为协议违规，由 L2 计数丢弃）；
-- 非 `AUDIO`/`FEC` 的包中 `stream_id` / `seq` / `sample_index` / `epoch_id` **无意义，发送端置 0，接收端不校验**（见 §12 示例 2）。
+- 非 `AUDIO`/`FEC` 的包中 `stream_id` / `seq` / `sample_index` / `epoch_id` **无意义：发送方置 0，对端不校验**（见 §12 示例 2）。
 
 **flags 位定义**：
 | 位 | 名称 | 含义 |
@@ -128,9 +133,9 @@ TLS1.3（quinn 默认 rustls）：
 | 2 | `FRAME_10MS` | 该流使用 10 ms 帧长 |
 | 3 | `MONO` | 单声道负载 |
 | 4 | `LAST_IN_BURST` | 标志突发结束（用于拥塞/延迟统计） |
-| 5–15 | 保留 | 必须置 0，接收方忽略 |
+| 5–15 | 保留 | 必须置 0，对端忽略 |
 
-**MTU 约束**：单包总长 ≤ **1200 B**（保守值，避免 QUIC 分片）。默认 Opus 20 ms @160 kbps ≈ 400 B，余量充足。若协商为高码率（>512 kbps）或 PCM 档，需**应用层分片**（同一 `seq` 内可用 `flags` 扩展或分包：v1 采取"PCM 档限制为 20 ms 片、必要时同 seq 多包，接收方按 `sample_index` 重组"）。
+**MTU 约束**：单包总长 ≤ **1200 B**（保守值，避免 QUIC 分片）。默认 Opus 20 ms @160 kbps ≈ 400 B，余量充足。若协商为高码率（>512 kbps）或 PCM 档，需**应用层分片**（同一 `seq` 内可用 `flags` 扩展或分包：v1 采取"PCM 档限制为 20 ms 片、必要时同 seq 多包，对端按 `sample_index` 重组"）。
 
 > ⚠️ **实测修正（M0 用 `tools/latency-probe` 量得）**：1200 B 是**协议预算**，不是**实际可用值**。
 > QUIC 数据报的真实上限由连接自身的 `max_datagram_size()` 决定：quinn 0.11 在默认 `initial_mtu = 1200` 下实测只有 **1162 B**
@@ -168,24 +173,25 @@ TLS1.3（quinn 默认 rustls）：
 
 | 值 | 名称 | 方向 | 载荷要点 |
 |---|---|---|---|
-| `0x01` | `HELLO` | 发起方 → | `proto_version, node_info{name, platform, caps, fp16}, nonce` |
-| `0x02` | `HELLO_ACK` | 响应方 → | `proto_version, node_info, accepted: bool, reason` |
+| `0x01` | `HELLO` | 接收端 → 主机 | `proto_version, node_info{name, platform, caps, fp16}, nonce` |
+| `0x02` | `HELLO_ACK` | 主机 → 接收端 | `proto_version, node_info, accepted: bool, reason` |
 | `0x03` | `AUTH_CHALLENGE` | 双方 | `nonce(32B)` |
 | `0x04` | `AUTH_RESPONSE` | 双方 | `signature = ECDSA(privkey, nonce ‖ fp_pair)` |
-| `0x05` | `PAIR_REQUIRED` | 接收方 → | `pin_display: bool`（true 时接收端屏幕显示 6 位码） |
-| `0x06` | `PAIR_SUBMIT` | 发起方 → | `pin(6 位数字)` |
-| `0x07` | `PAIR_RESULT` | 接收方 → | `ok: bool, reason, persist: bool`（是否写入白名单） |
-| `0x10` | `OPEN_STREAM` | 发送方 → | `session_id, source_desc(采集源描述), codec_prefs[], target_rate, channels, group: Option<group_id>` |
-| `0x11` | `OPEN_STREAM_ACK` | 接收方 → | `session_id, stream_id, codec_chosen, epoch_id, epoch_local_us` |
+| `0x05` | `PAIR_REQUIRED` | 主机 → 接收端 | `pin_display: bool`（true 时主机屏幕显示 6 位码，由接收端输入） |
+| `0x06` | `PAIR_SUBMIT` | 接收端 → 主机 | `pin(6 位数字)` |
+| `0x07` | `PAIR_RESULT` | 主机 → 接收端 | `ok: bool, reason, persist: bool`（是否写入白名单） |
+| `0x10` | `OPEN_STREAM` | 主机 → 接收端 | `session_id, source_desc(采集源描述), codec_prefs[], target_rate, channels, group: Option<group_id>` |
+| `0x11` | `OPEN_STREAM_ACK` | 接收端 → 主机 | `session_id, stream_id, codec_chosen, epoch_id, epoch_local_us` |
 | `0x12` | `CLOSE_STREAM` | 双方 | `stream_id, reason` |
 | `0x13` | `STREAM_STATS` | 双方 | 见 §10 遥测字段（每 1 s 一次） |
 | `0x20` | `SET_GAIN` | 双方 | `stream_id | ALL, gain: f32 (0.0–2.0), ramp_ms` |
 | `0x21` | `SET_MUTE` | 双方 | `stream_id | ALL, mute: bool` |
-| `0x22` | `SET_VOLUME_LOCK` | 接收方 → | `max_gain: f32`（接收端限制发送端可调上限） |
-| `0x30` | `CLOCK_RESULT` | 发送方 → | `offset_us, drift_ppm, quality`（用于对端诊断） |
-| `0x40` | `GROUP_CREATE` | 发送方 → | `group_id(随机), epoch_id, epoch_local_us, members[]`（临时同步组，FR-22） |
-| `0x41` | `GROUP_JOIN` / `0x42` `GROUP_LEAVE` | 发送方 → | `group_id, member` |
-| `0x43` | `GROUP_EPOCH` | 发送方 → | `epoch_id, epoch_local_us, lead_ms`（预约播放提前量） |
+| `0x22` | `SET_VOLUME_LOCK` | 接收端 → 主机 | `max_gain: f32`（接收端限制主机可调上限） |
+| `0x30` | `CLOCK_RESULT` | 主机 → 接收端 | `offset_us, drift_ppm, quality`（用于对端诊断） |
+| `0x40` | `GROUP_CREATE` | 主机 → 接收端 | `group_id(随机), epoch_id, epoch_local_us, members[]`（临时同步组，FR-22） |
+| `0x41` | `GROUP_JOIN` / `0x42` `GROUP_LEAVE` | 主机 → 接收端 | `group_id, member` |
+| `0x43` | `GROUP_EPOCH` | 主机 → 接收端 | `epoch_id, epoch_local_us, lead_ms`（预约播放提前量） |
+| `0x44` | `RECEIVER_EPOCH` | 接收端 → 主机 | `epoch_id, epoch_local_us, lead_ms`（接收端作为基准来源广播共同时间基准，M4 多源混音对齐） |
 | `0x50` | `TELEMETRY_PUSH` | 双方 | 汇总指标快照（供 UI 直接渲染） |
 | `0x60` | `PING` / `0x61` `PONG` | 双方 | `t1, t2`（可靠流版本，用于诊断） |
 | `0x70` | `ERROR` | 双方 | `code(u16), message(utf8), context(可选)` |
@@ -197,8 +203,8 @@ TLS1.3（quinn 默认 rustls）：
 
 ```mermaid
 sequenceDiagram
-    participant A as 发起方 (Node A)
-    participant B as 响应方 (Node B)
+    participant A as 发起方 · 接收端 (Node A)
+    participant B as 响应方 · 主机 (Node B)
 
     A->>B: QUIC 握手（TLS1.3，自签证书，验证指纹在白名单）
     A->>B: HELLO (proto_version, node_info, caps)
@@ -211,12 +217,14 @@ sequenceDiagram
         B->>A: PONG/OK（进入会话协商）
     else 未配对
         B->>A: PAIR_REQUIRED(pin_display=true)
-        Note over B: 屏幕显示 6 位 PIN（60 s 有效，最多 5 次尝试）
+        Note over B: 主机屏幕显示 6 位 PIN，A 照着输入（60 s 有效，最多 5 次尝试）
         A->>B: PAIR_SUBMIT(pin)
         B->>A: PAIR_RESULT(ok, persist=true) 或 ERROR(1003 PAIR_REJECTED)
         Note over A,B: 成功后双方写入信任库
     end
-    A->>B: OPEN_STREAM(...) → 音频数据报开始流动
+    B->>A: OPEN_STREAM(...) → 音频数据报开始流动
+    A->>B: OPEN_STREAM_ACK(stream_id, codec_chosen, epoch_id, epoch_local_us)
+    Note over A,B: 连接由 A（接收端）发起，推流由 B（主机）发起 —— 两条方向相反
 ```
 
 **认证强度**：TLS 已保证通道加密与对端持有私钥；`AUTH_CHALLENGE/RESPONSE` 用于证明"私钥持有者 = 证书主体"（防止指纹白名单被伪造证书绕过，即防止仅凭指纹信任的中间人）。

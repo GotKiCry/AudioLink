@@ -48,6 +48,28 @@ const KEY_AUTO_CONNECT: &str = "auto_connect";
 const KEY_LOCALE: &str = "locale";
 /// 上一次成功连接的地址。
 const KEY_LAST_PEER: &str = "last_peer";
+/// 「有人接入时自动开始推流」开关。
+const KEY_AUTO_BROADCAST: &str = "auto_broadcast";
+
+/// [`KEY_AUTO_BROADCAST`] 的默认值：**开**。
+///
+/// 与 [`KEY_AUTO_CONNECT`] 的「键缺失 = 关」刻意相反，因为两者的默认体验不是一回事：
+/// 自动重连是「开机去连一台用户上次连过的机器」—— 用户此刻什么都没做，主动去连别人
+/// 必须显式授权；自动推流是「别人连上我之后，我照他已经在走的那条路出声」—— 用户已经把
+/// 设备连进来了，期待的就是「连上就有声」，还要再点一次「开始推流」属于多余门槛。
+/// 这是产品要求的默认行为，不是历史兼容。
+const DEFAULT_AUTO_BROADCAST: bool = true;
+
+/// 开关取值：`settings.json` 里的原始值 → 布尔。
+///
+/// **键缺失即视为开**（理由见 [`DEFAULT_AUTO_BROADCAST`]）。类型不对也回默认值：
+/// settings.json 是可以被手改的，把 `"auto_broadcast": "no"` 当成「用户想关」是猜，
+/// 按默认值处理至少是可预期的行为。
+fn auto_broadcast_from(stored: Option<&serde_json::Value>) -> bool {
+    stored
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(DEFAULT_AUTO_BROADCAST)
+}
 
 /// 第三方声明的文件名（打包资源与仓库内生成路径同名）。
 pub const NOTICES_FILE: &str = "THIRD-PARTY-NOTICES.md";
@@ -74,8 +96,8 @@ pub const EVENT_TELEMETRY: &str = "audiolink://telemetry";
 /// 配对请求事件，载荷 `{ idShort, name, pin }`。
 ///
 /// 两个方向共用这一个事件（契约只冻结了一个名字）：
-/// * `pin` 非空 → **本机是接收端**：把码亮给用户，让对方照着输入（`EngineEvent::DisplayPin`）；
-/// * `pin` 为空 → **本机是发起端**：请用户输入对方屏幕上显示的码（`EngineEvent::PinNeeded`）。
+/// * `pin` 非空 → **本机是主机**：把码亮给用户，让对方照着输入（`EngineEvent::DisplayPin`）；
+/// * `pin` 为空 → **本机是接收端**：请用户输入主机屏幕上显示的码（`EngineEvent::PinNeeded`）。
 pub const EVENT_PAIR_REQUIRED: &str = "audiolink://pair-required";
 
 /// §7 同步组变化（建组 / 成员加入退出）：前端收到就去拉一次最新的组列表。
@@ -186,12 +208,23 @@ impl EngineBridge {
     pub async fn local_status(&self) -> Result<LocalStatus, CommandError> {
         let engine = self.engine().await?;
         let info = engine.info();
+        // 两个地址口径都要给出去，且**不能混用**：`addr` 是监听地址（诊断用，通配绑定下恒为
+        // `0.0.0.0:58290`）；`lanAddrs/displayAddr` 才是用户能填进门牌号的东西。
+        // 只印监听地址的后果实测过：用户抄 `0.0.0.0:58290` 到手机，必然连不上。
+        let lan_addrs: Vec<String> = engine
+            .lan_addrs()
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
+        let display_addr = lan_addrs.first().cloned();
         Ok(LocalStatus {
             // 短码口径由内核唯一确定（`NodeId::short()` = 指纹前 8 字节的 hex），
             // 外壳**不自己截字符串**：否则 UI 上的码会与协议/发现报文里的码悄悄分叉。
             id_short: info.id.short(),
             name: info.name.clone(),
             addr: engine.local_addr().to_string(),
+            lan_addrs,
+            display_addr,
             platform: info.platform.as_str().to_string(),
         })
     }
@@ -577,6 +610,33 @@ impl EngineBridge {
         Ok(())
     }
 
+    /// M5：自动推流开关的当前值（`auto_broadcast`，**默认开**）。
+    ///
+    /// 只读设置、不碰引擎：设置面板要在引擎就绪**之前**就能显示当前状态。
+    /// 返回**裸布尔**（契约如此）：前端只关心开/关，再包一层对象没有信息量。
+    pub async fn auto_broadcast_state(&self) -> Result<bool, CommandError> {
+        let Ok(store) = self.app.store(SETTINGS_FILE) else {
+            // 设置读不出来（目录不可写等）不是错误：回默认值，界面照常可用。
+            return Ok(DEFAULT_AUTO_BROADCAST);
+        };
+        Ok(auto_broadcast_from(store.get(KEY_AUTO_BROADCAST).as_ref()))
+    }
+
+    /// M5：开关「有人接入时自动开始推流」。
+    ///
+    /// 只写设置，**不触碰任何正在跑的会话**：用户关掉的是「以后自动」，不是「现在别出声」。
+    /// 关掉之后要不要立刻掐断在推的流，是调用方的取舍，不在本命令里替用户决定。
+    pub async fn set_auto_broadcast(&self, enabled: bool) -> Result<(), CommandError> {
+        let store = self.app.store(SETTINGS_FILE).map_err(|error| {
+            CommandError::busy(format!("打开设置失败：{error}"), "set_auto_broadcast")
+        })?;
+        store.set(KEY_AUTO_BROADCAST, serde_json::Value::Bool(enabled));
+        store.save().map_err(|error| {
+            CommandError::busy(format!("保存设置失败：{error}"), "set_auto_broadcast")
+        })?;
+        Ok(())
+    }
+
     /// M5：启动时试一次自动重连。
     ///
     /// 返回连上的对端；没开、没记录或连不上都返回 `None` —— **不报错**：
@@ -837,7 +897,7 @@ async fn run_event_loop(app: AppHandle, engine: Arc<Engine>, cache: Arc<Mutex<Ca
                     emit_peer(&app, &cache, &peers);
                     emit_telemetry(&app, &cache, &view);
                 }
-                // 本机是发起端：请用户输入对端屏幕上的码（pin 留空表达这一点）。
+                // 本机是接收端：请用户输入主机屏幕上的码（pin 留空表达这一点）。
                 EngineEvent::PinNeeded { id, name } => emit(
                     &app,
                     EVENT_PAIR_REQUIRED,
@@ -847,7 +907,7 @@ async fn run_event_loop(app: AppHandle, engine: Arc<Engine>, cache: Arc<Mutex<Ca
                         pin: String::new(),
                     },
                 ),
-                // 本机是接收端：把码亮给用户（对方要照着输入）。
+                // 本机是主机：把码亮给用户（接收端要照着输入）。
                 EngineEvent::DisplayPin {
                     from, name, pin, ..
                 } => emit(
@@ -1523,6 +1583,23 @@ mod tests {
         assert!(!should_forget_last_peer(None, Some(removed)));
         // 会话已经摘表时地址查不到：此时宁可不动记录，也不误删别人的。
         assert!(!should_forget_last_peer(Some(removed), None));
+    }
+
+    /// 自动推流开关的默认值必须是**开**：只有明确写进 settings.json 的 `false` 才算「用户关了」。
+    ///
+    /// 改坏（例如照抄 auto_connect 的 `unwrap_or(false)`）→ 键缺失就变成关，
+    /// 「连上就有声」这个默认体验静默消失，而这正是本任务要交付的东西。
+    #[test]
+    fn auto_broadcast_is_on_unless_explicitly_disabled() {
+        // 键缺失（全新安装 / 用户从没碰过设置）→ 开。
+        assert!(auto_broadcast_from(None));
+        // 写进去什么就读回什么：`set_auto_broadcast` 存的正是这个 Bool。
+        assert!(auto_broadcast_from(Some(&serde_json::json!(true))));
+        assert!(!auto_broadcast_from(Some(&serde_json::json!(false))));
+        // 手改 settings.json 写成非布尔值：按默认值（开）走，而不是猜用户想关。
+        assert!(auto_broadcast_from(Some(&serde_json::json!("no"))));
+        assert!(auto_broadcast_from(Some(&serde_json::json!(0))));
+        assert!(auto_broadcast_from(Some(&serde_json::Value::Null)));
     }
 
     #[test]

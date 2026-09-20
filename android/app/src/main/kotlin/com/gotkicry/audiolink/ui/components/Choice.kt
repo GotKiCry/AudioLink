@@ -51,6 +51,7 @@ fun <T> ChoiceGroup(
         options.forEach { option ->
             val isSelected = option.value == selected
             FilterChip(
+                shape = MaterialTheme.shapes.small,
                 selected = isSelected,
                 onClick = { onSelect(option.value) },
                 enabled = enabled,

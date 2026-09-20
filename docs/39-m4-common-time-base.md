@@ -26,7 +26,7 @@
 同一个载荷（`epoch_id, epoch_local_us, lead_ms`）两个方向，各自换算：
 
 - `epoch_local_us` 由广播方取**本机**单调时刻 + `lead_ms` 提前量；
-- 接收方用它自己的 §6 时钟偏移换算到本端轴：`本端时刻 = 对端时刻 − offset_us`
+- 接收端用它自己的 §6 时钟偏移换算到本端轴：`本端时刻 = 对端时刻 − offset_us`
   （`offset_us` = 对端时钟 − 本端时钟，见 `audiolink-net::clock`）。
 
 ### 2.1 发送端怎么"对齐"

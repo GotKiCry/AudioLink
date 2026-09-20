@@ -70,7 +70,7 @@ use crate::clock::{
 use crate::dispatch::{ControlRequest, DispatchStats, dispatch_into};
 use crate::epoch::{EpochSchedule, PlayoutAction};
 use crate::format_guard::require_unified_format;
-use crate::gain::{GainState, gain_x1000_from_f32};
+use crate::gain::{GainState, combine_local_and_remote, gain_x1000_from_f32};
 use crate::handshake::{Handshake, HandshakeEvent, HandshakeStep, Outgoing, Role};
 use crate::measure::MeasurementTap;
 use crate::payload::{
@@ -103,6 +103,21 @@ pub type PlayoutFactory =
 
 /// 播放队列深度（帧数）。满了丢最旧 —— 与「宁可丢一帧，也不延迟出声」同一条原则（§7 第 1 条）。
 const PLAYBACK_QUEUE_FRAMES: usize = 16;
+
+/// FR-12：本地增益变更的渐变时长（ms）。
+///
+/// 与「对端下发」那层同量级（桌面端下发用 200 ms）：硬切增益就是爆音，这一层同样不能例外。
+const LOCAL_GAIN_RAMP_MS: u32 = 200;
+
+/// FR-12：把本地增益的 ramp 折算成「每帧最多变多少」时假定的帧长（ms）。
+///
+/// 为什么用常量而不是会话里的真实帧长：设置本地音量**可以在开流之前发生**（那时还没有会话、
+/// 更没有帧长）。当前链路帧长固定 20 ms（零重采样 48 kHz 下的唯一帧长），写死一个显式常量
+/// 比「先猜一个、之后再纠正」更诚实 —— 猜错最多让渐变时长差几帧，不影响最终增益值。
+const LOCAL_GAIN_FRAME_MS: u32 = 20;
+
+/// 本地增益的默认值（千分点）：1.0 = 原声。
+const LOCAL_GAIN_DEFAULT_X1000: u32 = 1_000;
 
 /// 编码帧队列深度（帧数）。采集线程比网络快时，满队列意味着积压 —— 丢最旧而不是阻塞采集。
 const ENCODE_QUEUE_FRAMES: usize = 8;
@@ -379,7 +394,7 @@ pub enum EngineEvent {
         /// 断开原因。
         reason: String,
     },
-    /// 本机是接收端：请把 PIN 显示给用户（对端要照着念）。
+    /// 本机是主机：请把 6 位码显示给用户（接收端要照着念）。
     DisplayPin {
         /// 申请配对的对端。
         from: NodeId,
@@ -390,7 +405,7 @@ pub enum EngineEvent {
         /// 剩余尝试次数。
         remaining_attempts: u8,
     },
-    /// 本机是发起端：需要用户输入对端屏幕上显示的 PIN。
+    /// 本机是接收端：需要用户输入主机屏幕上显示的 6 位码。
     PinNeeded {
         /// 对端身份。
         id: NodeId,
@@ -473,7 +488,7 @@ enum SessionCommand {
         /// 关闭原因。
         reason: String,
     },
-    /// 提交 PIN（发起端）。
+    /// 提交 PIN（接收端）。
     SubmitPin(String),
     /// 关闭整个会话。
     Shutdown,
@@ -683,6 +698,20 @@ struct Inner {
     /// 这个槽**从第一次建起永不置空**（这是 M4 多路汇聚的前提），所以「槽里有没有东西」
     /// 绝不能当作「我是不是 owner」的判据。
     playout_mixer: Mutex<Option<Arc<PlayoutMixSlot>>>,
+    /// FR-12：本机对每台设备的**本地**播放增益（本机用户调的那一层）。
+    ///
+    /// # 为什么放在引擎级表里，而不是塞进会话
+    ///
+    /// 播放句柄是**会话任务栈上的局部变量**，会话一结束就没了；而「用户给这台设备设的本地音量」
+    /// 必须跨开流、跨重连活着。放在这里有两个直接好处：先调音量再接入也生效；断开重连之后
+    /// 用户看到的还是自己设过的值。
+    ///
+    /// 表里存的是 `Arc<Mutex<GainState>>` —— 播放线程拿到的是**同一个句柄**，于是「会话任务外的
+    /// 设置」与「播放线程里的逐帧推进」共享同一个渐变状态机（ramp 不会被切成两段）。
+    ///
+    /// 与对端下发的那层（`PlayoutHandle::gain`）是**两份独立状态**，播放时相乘 ——
+    /// 见 [`crate::gain::combine_local_and_remote`]。
+    local_gains: Mutex<HashMap<NodeId, Arc<Mutex<GainState>>>>,
     /// FR-27 断链重连请求：会话任务退出前把「这条会话说要重拨」交给监督任务。
     ///
     /// 为什么用通道而不是原地重连：会话任务的连接是**参数**，它一旦因链路错误退出就换不了连接；
@@ -696,6 +725,26 @@ struct Inner {
 }
 
 impl Inner {
+    /// 取（必要时创建）某台设备的本地增益状态机（FR-12）。
+    ///
+    /// 为什么挂在 [`Inner`] 而不是 [`Engine`]：播放线程手里是 `&Arc<Inner>`，用户设置从 `Engine`
+    /// 进来 —— 两边都必须一次就拿到**同一个**句柄，归属自然落在共享状态这一层。
+    ///
+    /// 为什么用 `entry().or_insert_with()` 而不是「先查再插」：设置路径与播放线程会并发调用它，
+    /// 分两步写就会出现两条各自的状态机 —— 那时 ramp 被切成两段，而且**后建的那条会覆盖用户刚
+    /// 设的值**（症状：调完音量下一拍又弹回 1.0）。
+    fn local_gain_state(&self, peer: NodeId) -> Arc<Mutex<GainState>> {
+        let mut table = self
+            .local_gains
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        Arc::clone(
+            table
+                .entry(peer)
+                .or_insert_with(|| Arc::new(Mutex::new(GainState::new(LOCAL_GAIN_DEFAULT_X1000)))),
+        )
+    }
+
     fn spawn<T: Send + 'static>(
         &self,
         future: impl Future<Output = T> + Send + 'static,
@@ -801,6 +850,7 @@ impl Engine {
                 groups: Mutex::new(HashMap::new()),
                 capture_hub: Mutex::new(None),
                 playout_mixer: Mutex::new(None),
+                local_gains: Mutex::new(HashMap::new()),
                 events,
                 shutdown: AtomicBool::new(false),
                 tasks: Mutex::new(TaskTracker::new()),
@@ -853,6 +903,18 @@ impl Engine {
     /// QUIC 实际监听地址。
     pub fn local_addr(&self) -> std::net::SocketAddr {
         self.inner.listen_addr
+    }
+
+    /// 本机**对端可以直接填写**的候选地址（`ip:port`，IPv4 优先、顺序稳定；没有可用网卡时为空）。
+    ///
+    /// 与 [`Engine::local_addr`] 的分工是刻意分开的：那个是**监听**地址，`bind` 到通配地址时
+    /// 它恒为 `0.0.0.0:58290`（诊断/状态条用得上，但对端填了必然连不上）；这个是**门牌号**。
+    /// 两者不能互相替代 —— 桌面端曾把前者直接印给用户，手机抄过去连不上。
+    ///
+    /// 端口取自实际监听端口（`bind` 传 `:0` 时也就是系统分配的那个），不硬编码；
+    /// 探测零依赖：`UdpSocket::connect()` 只做路由查表、不发包（见 `audiolink_net::local_addr`）。
+    pub fn lan_addrs(&self) -> Vec<std::net::SocketAddr> {
+        audiolink_net::reachable_endpoints(self.inner.listen_addr)
     }
 
     /// 订阅引擎事件。
@@ -1146,6 +1208,58 @@ impl Engine {
             .map_err(|_| AudioLinkError::bad_request("session task is gone"))?
     }
 
+    /// FR-12：设置**本机**对某台设备的播放增益（本地层，**一个字节都不发出去**）。
+    ///
+    /// # 与 [`Engine::set_peer_gain`] 的分工（方向相反，别混用）
+    ///
+    /// - `set_peer_gain`：发送方 → 对端，让**对端**调它播放**本机音频**的音量（§4.1 的 `SET_GAIN`，走网络）；
+    /// - 本函数：本机再叠一层「**我**听这台设备的音量」，只影响本机混音，不发帧。
+    ///
+    /// 两者合成是**相乘**（最终 = 本地 × 对端下发）—— 见 [`crate::gain::combine_local_and_remote`]。
+    ///
+    /// # 为什么没有会话也成功
+    ///
+    /// 用户是在设备列表上给「**这台设备**」设音量，而不是给「当前这一刻的流」设音量：
+    /// 还没开流、甚至本机是发送端时也该设得进去（值在下次开流时自然生效）。
+    /// 参数非法（NaN / 负数 / 超 2.0）则当场拒绝 —— 与对端下发那条路径同一套判据。
+    ///
+    /// 返回设置后的**目标值**（千分点），便于调用方直接回显。
+    pub fn set_local_peer_gain(&self, peer: NodeId, gain: f32) -> Result<u32, AudioLinkError> {
+        let target = gain_x1000_from_f32(gain)
+            .map_err(|error| AudioLinkError::bad_request_owned(format!("invalid gain: {error}")))?;
+        let state = self.inner.local_gain_state(peer);
+        let mut guard = state.lock().unwrap_or_else(|error| error.into_inner());
+        guard
+            .set_target(target, LOCAL_GAIN_RAMP_MS, LOCAL_GAIN_FRAME_MS)
+            .map_err(|error| AudioLinkError::bad_request_owned(format!("invalid gain: {error}")))?;
+        Ok(guard.target_x1000())
+    }
+
+    /// FR-12：读回本机对该设备的本地增益（千分点目标值）。
+    ///
+    /// `None` = 用户**从没设过**（等价 1.0，但如实区分「没设过」与「设成了 1.0」——
+    /// 界面据此决定要不要给这台设备的滑块打「已调整」标记）。
+    ///
+    /// 返回**整数千分点**而不是浮点，与内核内部口径一致（`gain.rs` 的说明：浮点会让
+    /// 「有没有变化」不可复现），也正好是界面滑块的离散取值（0–2000）。
+    pub fn local_peer_gain(&self, peer: NodeId) -> Option<u32> {
+        // 先取出 Arc 再放表锁：状态机自己的锁与表锁不嵌套，谁都不会等谁。
+        let state = {
+            let table = self
+                .inner
+                .local_gains
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            Arc::clone(table.get(&peer)?)
+        };
+        Some(
+            state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .target_x1000(),
+        )
+    }
+
     /// §7 同步组：向某个对端广播组基准（发送方 → `GROUP_EPOCH`）。
     ///
     /// `epoch_local_us` 取本机 `now_monotonic_us()`；接收端用各自的时钟偏移换算到本机轴后排播，
@@ -1270,7 +1384,7 @@ impl Engine {
             .unwrap_or_default()
     }
 
-    /// 当前有效的接收端 PIN；无需订阅事件。多条配对请求时优先显示最新的一条。
+    /// 当前有效的主机 PIN（本机作为主机时亮给接收端看的 6 位码）；无需订阅事件。多条配对请求时优先显示最新的一条。
     /// 成功、锁定、断开或引擎停止后清除；到期判断使用 PinGate 原始失效时刻。
     pub fn displayed_pin(&self) -> Option<String> {
         self.displayed_pin_at(Instant::now())
@@ -1289,7 +1403,7 @@ impl Engine {
             .map(|(pin, _)| pin)
     }
 
-    /// 本机作为发起端正在等待输入 PIN 的对端；与连接同生命周期，无事件缓存。
+    /// 本机作为接收端（发起连接的一方）正在等待输入 PIN 的对端；与连接同生命周期，无事件缓存。
     pub fn pending_pin_peer(&self) -> Option<NodeId> {
         if self.inner.shutdown.load(Ordering::Relaxed) {
             return None;
@@ -1523,6 +1637,46 @@ impl Engine {
         .await
     }
 
+    /// 断开与某台设备的会话（**保留信任**）—— 与 [`Engine::revoke_trust`] 只差「动不动信任库」，
+    /// 但那一步决定了用户下次要不要重新配对。
+    ///
+    /// # 与 `revoke_trust` 的差异（顺序、后果、幂等）
+    ///
+    /// | | `disconnect`（本函数） | `revoke_trust` |
+    /// |---|---|---|
+    /// | 断会话 | 立刻（同一个 `drop_session` 路径） | 立刻（同一个路径） |
+    /// | 信任库 | **不读、不写、不落盘** | 撤销并原子落盘 |
+    /// | 该设备下次连进来 | 白名单里还有它 → 免交互直连（架构 §8） | 必须重新走 PIN 配对 |
+    /// | 顺序 | 只有一步，不存在顺序问题 | **必须先断会话、再撤信任**：反过来的话，活会话下一次
+    ///   握手成功会 `remember_peer` 把记录写回白名单，用户的撤销会「自己回来」（见 `revoke_trust` 的文档） |
+    ///
+    /// # 对端会看到什么（别承诺做不到的事）
+    ///
+    /// 本机结束会话、连接随之关闭，对端按**链路丢失**处理。因此**不能**保证「对方从此安静」：
+    /// 若对端是**发起方且正在推流**，它有自己的 FR-27 重拨逻辑（判据见 `report_peer_gone`），
+    /// 会重新连回来 —— 而本机信任库还留着它，于是握手直接通过。**要它别再回来，得用
+    /// `revoke_trust`**（那才是「我不想再信任这台设备」的表达）。
+    ///
+    /// 幂等：没有这条会话时返回 `Ok(false)`（调用方的意图「现在别连着」已成立），
+    /// 与 `revoke_trust` 的 `Ok(false)` 口径一致 —— UI 不必先查会话表。
+    pub async fn disconnect(&self, peer: NodeId) -> Result<bool, AudioLinkError> {
+        let existing = self
+            .inner
+            .peers
+            .lock()
+            .ok()
+            .and_then(|peers| peers.get(&peer).cloned());
+        let Some(session) = existing else {
+            return Ok(false);
+        };
+        // 顺序与 `revoke_trust` 的第一段一致：**先请会话任务收尾（停流、让出播放 owner），
+        // 再摘表并广播 `PeerDisconnected`** —— UI 从事件里读到「断开」时，那条连接的资源
+        // 已经在回收路上了。
+        let _ = session.commands.send(SessionCommand::Shutdown).await;
+        drop_session(&self.inner, &session, "local disconnect");
+        Ok(true)
+    }
+
     /// 全部**已配对设备**（信任库快照）。
     ///
     /// # 为什么需要它与 `peers()` 并存
@@ -1584,7 +1738,7 @@ impl Engine {
         Ok(revoked)
     }
 
-    /// 提交对端显示的 PIN（本机是发起端时）。
+    /// 提交主机显示的 6 位码（本机是接收端时）。
     pub async fn submit_pin(&self, peer: NodeId, pin: &str) -> Result<(), AudioLinkError> {
         self.send_command(peer, SessionCommand::SubmitPin(pin.to_string()))
             .await
@@ -4511,6 +4665,9 @@ fn spawn_playout_thread(
     // §4.1：音量状态每会话一份；起始 1.0（不做渐变起步）。
     let gain: Arc<Mutex<GainState>> = Arc::new(Mutex::new(GainState::new(1_000)));
     let thread_gain = Arc::clone(&gain);
+    // FR-12：本地增益（本机用户给这台设备设的那一层）。取的是**引擎级表里的共享句柄**，
+    // 不是新建一个：先设音量、后开流要生效，断开重连之后用户设的值也得还在。
+    let thread_local_gain = inner.local_gain_state(session.id);
     let events = inner.events.clone();
     // M2：静音账与事件都要挂对端 id（`EngineEvent::Telemetry` 的已知缺陷不再重演）。
     let peer = session.id;
@@ -4558,6 +4715,7 @@ fn spawn_playout_thread(
                 events,
                 peer,
                 thread_gain,
+                thread_local_gain,
                 thread_mixer.clone(),
                 mix_source,
                 thread_slot,
@@ -4607,6 +4765,8 @@ fn playout_main(
     // M2：这一段静音账挂在哪个对端名下（事件带 id，多对端下不串流）。
     peer: NodeId,
     gain_state: Arc<Mutex<GainState>>,
+    // FR-12：本地那一层增益（与上面这层相乘，见取帧分支）。
+    local_gain_state: Arc<Mutex<GainState>>,
     mixer: Option<PlayoutMix>,
     mix_source: u32,
     mix_slot: Arc<PlayoutMixSlot>,
@@ -4911,10 +5071,17 @@ fn playout_main(
         match take_due_frame(&frames, &mut pending, &mut expected_seq, &telemetry) {
             DueFrame::Ready(mut frame) => {
                 // §4.1：音量在**播放前**应用，并按帧走一个步长（硬切增益就是爆音）。
-                let gain = gain_state
+                // §4.1 + FR-12：两层增益**各自走自己的 ramp**，在播放前合成为一次乘法
+                // （本地 × 对端下发）。这是全链路唯一的增益乘法点，也是「相乘」语义的落点。
+                let remote_gain = gain_state
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .next_frame_gain();
+                let local_gain = local_gain_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .next_frame_gain();
+                let gain = combine_local_and_remote(remote_gain, local_gain);
                 if (gain - 1.0).abs() > f32::EPSILON {
                     for sample in frame.samples.iter_mut() {
                         *sample *= gain;

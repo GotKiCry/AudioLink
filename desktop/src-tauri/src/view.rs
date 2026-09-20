@@ -32,8 +32,14 @@ pub struct LocalStatus {
     pub id_short: String,
     /// 本机节点名（用户可见，仅用于展示）。
     pub name: String,
-    /// 本机 QUIC 端点 `ip:port`。
+    /// 本机 QUIC 端点 `ip:port` —— 这是**监听**地址：`bind` 到通配地址时恒为 `0.0.0.0:58290`，
+    /// 只作诊断/状态条用。**不要**拿它当门牌号给用户填（手机抄过去必然连不上，见 `lan_addrs`）。
     pub addr: String,
+    /// 对端可以**直接填进手机**的候选地址（`ip:port`，IPv4 优先、顺序稳定）。
+    /// 没有可用网卡（无默认路由 / 只绑回环）时是空数组，不是 `null`。
+    pub lan_addrs: Vec<String>,
+    /// 推荐给用户输入的那一条（= `lan_addrs[0]`）；没有候选时为 `null`。
+    pub display_addr: Option<String>,
     /// `windows` / `android`（枚举字符串，M1 桌面外壳只可能是 `windows`）。
     pub platform: String,
 }
@@ -365,11 +371,13 @@ mod tests {
             id_short: "00112233".into(),
             name: "书房 PC".into(),
             addr: "0.0.0.0:58290".into(),
+            lan_addrs: vec!["192.168.1.23:58290".into()],
+            display_addr: Some("192.168.1.23:58290".into()),
             platform: "windows".into(),
         };
         assert_eq!(
             serde_json::to_string(&local).expect("serialize"),
-            r#"{"idShort":"00112233","name":"书房 PC","addr":"0.0.0.0:58290","platform":"windows"}"#
+            r#"{"idShort":"00112233","name":"书房 PC","addr":"0.0.0.0:58290","lanAddrs":["192.168.1.23:58290"],"displayAddr":"192.168.1.23:58290","platform":"windows"}"#
         );
 
         // 唯一的 snake_case 例外：契约就是 `stream_id`。
@@ -385,6 +393,25 @@ mod tests {
             })
             .expect("serialize"),
             r#"{"idShort":"3f9a1c0b","name":"客厅 R1","pin":"482913"}"#
+        );
+    }
+
+    /// 没有可用网卡时（拔网线 / 只绑回环）：`lanAddrs` 是**空数组**、`displayAddr` 是 **null**。
+    /// 前端据此显示「暂时没有可填的地址」—— **绝不**回退到 `addr`（那是 `0.0.0.0`，填了必然连不上）。
+    #[test]
+    fn local_status_without_lan_addresses_is_empty_and_null() {
+        let json = serde_json::to_string(&LocalStatus {
+            id_short: "00112233".into(),
+            name: "书房 PC".into(),
+            addr: "0.0.0.0:58290".into(),
+            lan_addrs: Vec::new(),
+            display_addr: None,
+            platform: "windows".into(),
+        })
+        .expect("serialize");
+        assert_eq!(
+            json,
+            r#"{"idShort":"00112233","name":"书房 PC","addr":"0.0.0.0:58290","lanAddrs":[],"displayAddr":null,"platform":"windows"}"#
         );
     }
 

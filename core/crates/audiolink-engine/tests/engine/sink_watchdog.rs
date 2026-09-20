@@ -166,8 +166,8 @@ async fn wire_up(first_generation: Failure) -> Rig {
     let sender = Engine::start(send_cfg).await.unwrap();
     let receiver = Engine::start(recv_cfg).await.unwrap();
     let accept = receiver.spawn_accept_loop();
-    // PIN 由**接收端**显示、由发起端输入（§5）。所以这里订阅的是接收侧的事件 ——
-    // 订阅发送侧会永远等不到 DisplayPin。
+    // PIN 由**主机**显示、由接收端输入（§5）。本测试里被连的 `receiver` 扮演的正是主机（Responder），
+    // 主动拨号的 `sender` 才是接收端 —— 变量名沿用旧口径，所以 DisplayPin 只会在 receiver 侧出现。
     let mut events = receiver.subscribe();
     let peer = receiver.info().id;
 

@@ -295,17 +295,28 @@ impl Engine {
     /// UI 收到 [`EngineEvent::PinNeeded`] 后调 `submit_pin` 即可接着走同一条连接。
     /// 把「需要 PIN」当成连接失败会让 UI 只能整条重连，白白丢掉已完成的 QUIC 握手与 HELLO 交换。
     pub async fn connect(self: &Arc<Self>, addr: SocketAddr) -> Result<NodeId, AudioLinkError>;
-    /// 开始向对端推流（发送方向）。
+    /// 开始向对端推流（推流方向，由主机调）。
     /// 等本地采集/编码初始化和 OPEN_STREAM 写出，失败直接返回；尚不代表远端已开始播放。
     pub async fn start_send(&self, peer: NodeId) -> Result<(), AudioLinkError>;
     /// 停止推流（保留连接与信任）。
     pub async fn stop_send(&self, peer: NodeId) -> Result<(), AudioLinkError>;
+    /// 断开与对端的会话（**保留信任**）：信任库不读、不写、不落盘，该设备下次连进来仍是白名单直连。
+    /// 与 `revoke_trust` 的差别只有「动不动信任库」，但后果不同 ——
+    /// 断开只让对端看到链路丢失，对端若是发起方且正在推流会按 FR-27 重拨回来；要它别再回来只能用 `revoke_trust`。
+    /// 幂等：没有这条会话时返回 `false`（调用方的意图已成立）。
+    pub async fn disconnect(&self, peer: NodeId) -> Result<bool, AudioLinkError>;
+    /// FR-12 本地层：本机再叠一层「**我**听这台设备的音量」，**不走网络**（一个字节都不发出去）。
+    /// 与 `set_peer_gain`（发给对端、调对端播放**本机音频**的音量）方向相反，别混用。
+    /// **合成语义 = 相乘**（最终 = 本地 × 对端下发，互不覆盖）；返回设置后的千分点目标值。
+    pub fn set_local_peer_gain(&self, peer: NodeId, gain: f32) -> Result<u32, AudioLinkError>;
+    /// 读回本地增益（千分点）；`None` = 用户从没设过（等价 1.0，但如实区分「没设过」与「设成了 1.0」）。
+    pub fn local_peer_gain(&self, peer: NodeId) -> Option<u32>;
     /// 提交对端显示的 PIN。**必须带 `peer`** —— PIN 本身没有归属信息，引擎无法从 6 位数字
     /// 反推是哪条会话（这决定了桌面端 command 是 `{ id_short, pin }` 而不是 `{ pin }`）。
     pub async fn submit_pin(&self, peer: NodeId, pin: &str) -> Result<(), AudioLinkError>;
-    /// 当前有效的接收端 PIN，同步快照，不依赖广播；多请求时优先最新的一条。
+    /// 当前有效的主机 PIN（本机作为主机时亮给接收端看的 6 位码），同步快照，不依赖广播；多请求时优先最新的一条。
     pub fn displayed_pin(&self) -> Option<String>;
-    /// 本机作为发起端正在等待输入 PIN 的对端。
+    /// 本机作为接收端（发起连接的一方）正在等待输入 PIN 的对端。
     pub fn pending_pin_peer(&self) -> Option<NodeId>;
     /// 已连接对端列表 + 每个对端的遥测。
     pub fn peers(&self) -> Vec<PeerStatus>;
@@ -332,9 +343,9 @@ pub enum EngineEvent {
     /// 对端状态变化（连接 / 状态迁移）。
     PeerUpdated(Box<PeerStatus>),
     PeerDisconnected { id: NodeId, reason: String },
-    /// 本机是接收端：把 PIN 显示给用户（对端要照着念）。
+    /// 本机是主机：把 6 位码显示给用户（接收端要照着念）。
     DisplayPin { from: NodeId, name: String, pin: String, remaining_attempts: u8 },
-    /// 本机是发起端：需要用户输入对端屏幕上显示的 PIN。
+    /// 本机是接收端：需要用户输入主机屏幕上显示的 6 位码。
     PinNeeded { id: NodeId, name: String },
     PairCompleted { id: NodeId, ok: bool, reason: String },
     /// 遥测快照。
@@ -367,6 +378,18 @@ pub enum SessionState { Idle, Handshaking, Streaming, Degraded, Reconnecting, Fa
 （b）作为本地事件推给 UI。漏掉 (a) 的后果很具体：推流端面板永远看不到 e2e 延迟、播放环水位、
 欠载次数 —— 而那三个量**只有接收侧才量得到**。
 
+**连接方向（冻结口径）**：`connect` 与 `start_send` 属**两个不同角色**的动作，不要在同一端混着用：
+
+- **接收端**（听声音的一方）：调 `connect(addr)` 主动连主机；对端要 PIN 时（`1002 NOT_PAIRED`）再用
+  `submit_pin(peer, pin)` 提交**主机屏幕上**亮出的 6 位码。
+- **主机**（提供声音、被连的一方）：**从不调 `connect`** —— 只 `spawn_accept_loop()` 等接入，需要配对时由
+  `displayed_pin()` 亮码，接入成功后用 `start_send(peer)` 开流。
+- 角色是**每次会话**的属性，不是设备属性：同一台设备这次当主机、下次当接收端都合法。一眼分辨靠事件镜像 ——
+  收到 `DisplayPin` 的一端是主机（亮码），收到 `PinNeeded` 的一端是接收端（输码）。
+
+协议 §5 的节点 A 是发起方（= 接收端）、节点 B 是响应方（= 主机，负责展示 PIN）；内核侧对应
+`audiolink-engine` 的 `handshake::Role`：只有 `Responder` 生成并显示 PIN，只有 `Initiator` 提交 PIN。
+
 ---
 
 ## 6. 桌面端契约（所有者：desktop-ui）
@@ -376,7 +399,7 @@ pub enum SessionState { Idle, Handshaking, Streaming, Degraded, Reconnecting, Fa
 | command | 入参 | 返回（JSON） |
 |---|---|---|
 | `version` | — | `String`（已有） |
-| `local_status` | — | `{ id_short: string, name: string, addr: string, platform: string }` |
+| `local_status` | — | `{ id_short: string, name: string, addr: string, lanAddrs: string[], displayAddr: string \| null, platform: string }` |
 | `list_peers` | — | `PeerView[]` |
 | `connect` | `{ addr: string }` | `PeerView` |
 | `list_capture_devices` | — | `CaptureDeviceView[]`（活动的 Windows 输出端点） |
@@ -385,6 +408,8 @@ pub enum SessionState { Idle, Handshaking, Streaming, Degraded, Reconnecting, Fa
 | `stop_send` | — | `null` |
 | `submit_pin` | `{ id_short: string, pin: string }` | `{ ok: boolean, reason: string }` |
 | `telemetry` | — | `TelemetryView` |
+| `auto_broadcast_state` | — | `boolean`（**默认 true**：键缺失即视为开） |
+| `set_auto_broadcast` | `{ enabled: boolean }` | `null` |
 
 ```ts
 type PeerView = {
@@ -401,13 +426,42 @@ type CaptureDeviceView = {
   id: string; name: string; isDefault: boolean; isVirtual: boolean;
   sampleRate: number; channels: number; unavailableReason: string | null;
 };
+type LocalStatus = {
+  idShort: string; name: string; addr: string;
+  lanAddrs: string[];          // 对端可直接填写的候选地址（"192.168.1.23:58290"）；无则 []
+  displayAddr: string | null;  // 推荐填写的一条（= lanAddrs[0]）；无则 null
+  platform: string;
+};
 ```
+
+**本机地址的两种口径**（M1 修复：此前把监听地址当门牌号印给用户，手机抄过去必然连不上）：
+`addr` 是**监听**地址 —— `bind` 到通配地址时恒为 `0.0.0.0:58290`，只作诊断/状态条用；
+`lanAddrs` 才是**对端可以直接填进手机**的地址：本机出口 IP + **实际监听端口**（不硬编码），
+IPv4 优先、同族按地址字节序稳定排序，已过滤回环 / 未指定 / 链路本地 / 组播 / 广播（私网段保留）。
+`displayAddr = lanAddrs[0]`；**没有候选地址时 `lanAddrs = []` 且 `displayAddr = null`**
+（机器没有默认路由、或监听绑在回环/某个具体地址上时就是这个形状）——
+界面此时必须显示「暂时没有可填的地址」，**不许**回退到 `addr`。
+探测零依赖（`UdpSocket::connect()` 只做路由查表、不发包；没有默认路由时返回空列表而不是报错），
+实现在 `core/crates/audiolink-net/src/local_addr.rs`，引擎经 `Engine::lan_addrs()` 暴露。
 
 采集选择语义：省略或 `null` 在**每次开流**时解析系统默认输出；显式 ID 精确匹配活动端点，
 不存在或格式不支持则拒绝，不回退默认设备。采集工厂在自己的线程里打开 WASAPI 并记录实际端点名字、ID、格式。
 `start_send` 等待设备/编码初始化与 OPEN_STREAM 写出，失败不会把桌面卡片标成推流中；成功仍不代表远端已开始播放。
 开始/停止操作在桌面桥中串行化；更换端点前需停止推流。选择保留在当前界面会话中。
 `active_capture_device` 的快照不会随 Windows 默认设备变化而改变；停止或断连后返回 `null`。
+
+**自动推流的开关语义**（`auto_broadcast`，默认**开**）：设置面板读 `auto_broadcast_state`、写 `set_auto_broadcast`；
+两个命令只读写 `settings.json`（与 `locale` / `auto_connect` 同一个文件），**不触碰任何正在跑的会话**。
+默认值与 `auto_connect` **刻意相反**（那个键缺失 = 关）：用户已经把设备连进来了，期待的就是「连上就有声」，
+再点一次「开始推流」属于多余门槛；而自动重连是用户在没操作时主动去连一台机器，越权风险不同，必须显式打开。
+
+**「自动」不能打脸用户** —— 后端只提供开关，是否发起由持界面状态的调用方（前端）按下列顺序判定：
+1. 只对「**已配对（trusted）+ 状态 idle**」的设备自动 `start_send`；`failed` **不自动重试**（否则会变成错误风暴），
+   `handshaking` / 配对 PIN 流程中不插手，等它自己变 `idle`；
+2. **同一台设备每轮只自动发起一次**（按 `idShort` 去重），防止事件抖动导致重复调用；
+3. 用户对某台设备**手动点过「停止推流」** → 把它记入「用户拒绝」集合，本轮不再自动推它；
+   拒绝的是**这台设备**，**不因此改动总开关**；
+4. 开关关闭 = 完全回到手动模式（与历史行为一致）。
 
 **事件**（后端 → 前端，`listen` 订阅名冻结）：`audiolink://peer`（`PeerView[]`）、
 `audiolink://telemetry`（`TelemetryView`，**500 ms** 节流）、`audiolink://pair-required`（`{ idShort, name, pin }`）。
@@ -463,6 +517,36 @@ data class PlaybackReport(val lowLatency: Boolean, val actualBufferFrames: Int,
   `submitPin(pin)` / `localStatus()` / `peers()` / `telemetry()` / `displayedPin()`，
   加一个 `protocolSelfTest()` → `String`，内部跑 `audiolink-proto` 的 golden vectors 并返回摘要
   （这就是看板 `[护栏] 跨端一致性夹具`：**同一组向量在 Rust 与 FFI 两侧双跑，结果必须一致**）。
+- **按设备控制**（FR-12 在 Android 侧的解锁项；原来只有无参的 `startSend()/stopSend()`，多设备界面无从下手）：
+  - `stopSendTo(peerId: String)` —— 停**这一台**的流。本机是**发送端**时：停本机采集并向对端发 `CLOSE_STREAM`，
+    对端停止播放这一路；本机是**接收端**时：本机没有采集可停，实际效果是**请对端停发这一路**。
+    两种情况都**保留连接与信任**（断开是另一件事，本里程碑不提供）。
+  - `setPeerGain(peerId: String, gain: Float)` —— §4.1 的 `SET_GAIN`（发送方 → 对端播放侧）：
+    调对端播放**本机音频**的音量，取值 `0.0–2.0`（`1.0` = 原声）。NaN / 负数 / 超上限由引擎边界拒绝并返回人话原因
+    （判据只留一处，文案与桌面端一致）；渐变时长固定 **200 ms**（与桌面端前端 `setPeerGain(idShort, gain, 200)` 同口径）。
+- **断连与本地音量**（T21 补充，两条都要引擎新 API，本轮已贯通 Engine → FFI → 契约）：
+  - `disconnectPeer(peerId: String): Boolean` —— 断开与**这一台**的会话，**保留信任**（信任库不读不写不落盘），
+    该设备下次连进来仍然是白名单直连（§8）。返回 `false` = 本来就没有这条会话（幂等）。
+    与「取消配对」的区别要讲清：要它**别再自己回来**只能用后者 —— 断开只让对端看到链路丢失，
+    而对端若是发起方且正在推流，它有自己的 FR-27 重拨逻辑，会连回来（本机信任库还留着它，握手直接过）。
+  - `setLocalPeerGain(peerId: String, gain: Float)` + `localPeerGain(peerId: String): UInt?` ——
+    **接收端本地**每路音量（FR-12）：只影响本机混音，**一个字节都不发出去**；
+    与 `setPeerGain`（发送方向、让对端调它播放本机音频的音量）**方向相反**，别混用。
+    **合成语义冻结为相乘**：最终音量 = 本地 × 对端下发。两层各自渐变（200 ms）、互不覆盖；两层都为 1.0 时与不分层完全一样。
+    乘积上界 4.0（两层各自受 §4.1 的 0–2.0 约束），**不做二次夹取**（夹了就改掉了拍板语义），削顶由混音器软限幅兜住。
+    读回的是**千分点整数**（0–2000）：`null` = 用户没设过，与「设成了 1.0」是两件事（界面据此打「已调整」标记）。
+    **本地静音 = 本地增益 0**：内核只维护「增益」一份状态，「取消静音时回到多少」由壳侧自己记 —— 它才是持有 UI 状态的一侧。
+    设备当前没在收音频（本机是发送端 / 还没开流）也照样设得进去：用户设的是**这台设备的音量**，值在下次开流时生效。
+- **`peerId` 的口径**：就是 `peers()` 返回的 `PeerView.idHex`（64 hex 完整指纹）或 `idShort`（16 hex 短码）——
+  两者都在同一份 `PeerView` 里，壳侧**任选其一直接回传**，不要自己把短码换算成指纹（各端各写一份映射迟早分叉）。
+  短码必须在会话表里**唯一命中**：命不中报 `1002 NOT_PAIRED`；撞车（两台前 8 字节相同）报参数错误并要求改用完整指纹 ——
+  绝不猜一台（猜错的后果是「点了 A 的停止，B 的流掉了」）。
+- **无参版与按设备版的关系（别误用）**：`stopSend()` **保留且不废弃** —— 它停的是内核选中的「当前对端」
+  （`current_peer()`：优先正在推流的一台，否则第一台），是**单对端** UI 的入口；多设备界面一律用 `stopSendTo(peerId)`。
+  两者调用的是**同一个内核动作**（`Engine::stop_send`），不是两套实现，差异只有「停谁」。
+- **本里程碑不提供（诚实记账）**：① `disconnect(peer)`（只断连、保留信任）—— 引擎没有独立入口，
+  `revoke_trust` 会连信任一起撤；② 「接收端**本地**每路音量/静音」—— 现有路径只有「对端下发 `SET_GAIN`/`SET_MUTE`
+  落到本机该路混音输入」，本机主动调本地每路增益的公开 API 尚不存在。两者都要动 `audiolink-engine` 的 API 面，见 T20 回报。
 - `displayedPin()` 返回当前连接的有效 PIN；未启动/成功/断开/锁定/到期时为 `null`。
   2026-09-16 起直接读取 Engine 同步快照，不再依赖广播缓存；错误重试不延长门禁的原始 60 s 有效期。
   `submitPin(pin)` 同样从当前连接定位待配对对端；FFI 函数签名与 Kotlin 绑定保持兼容。

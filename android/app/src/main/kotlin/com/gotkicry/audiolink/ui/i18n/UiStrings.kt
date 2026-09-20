@@ -12,11 +12,37 @@ import java.util.Locale
  * 本次不动它们（改文案会动到测试，等于改口径）。所以英文界面下，那几行来自内核/服务的提示
  * 会保持中文：这是**已知的残留不一致**，不是漏写。
  *
+ * 唯一的例外是「需要本机输码」那一步：[com.gotkicry.audiolink.ui.screens.SenderDeck] 直接读
+ * `awaitingPin` 这个**字段**改写提示 —— 那一条的 service 原文把主机默认成了「电脑」，
+ * 与冻结术语直接冲突（主机也可能是另一部手机），且它必然会出现在接收端路径的主线上。
+ *
  * 文案纪律（沿用 docs/08-ui-spec.md §4 的既定要求）：短句、动词开头、说人话；
  * 内核真值（水位、欠载、PLC）只出现在诊断区。
  */
 @Immutable
 data class UiStrings(
+
+    val settingsTitle: String,
+    val receiveTab: String,
+    val sendTab: String,
+    val receiveIntro: String,
+    val sendIntro: String,
+    val connectGuideTitle: String,
+    val connectGuide: String,
+    val addHost: String,
+    val pairingEntryTitle: String,
+    val changeHost: String,
+    val connectionDetails: String,
+    val appearanceTitle: String,
+    val appearanceHint: String,
+    val aboutTitle: String,
+    val backgroundTitle: String,
+    val showDiagnostics: String,
+    val stopAll: String,
+    val guideHost: String,
+    val guideReceiver: String,
+    val guideHostRole: String,
+    val guideReceiverRole: String,
 
     // ── 顶部应用栏 ──────────────────────────────────────────────────
     val themeAction: String,
@@ -25,7 +51,26 @@ data class UiStrings(
     val themeDark: String,
     val licensesAction: String,
 
-    // ── 接收台 ─────────────────────────────────────────────────────
+    // ── 本机地址（主机出示的门牌号）───────────────────────────────
+    /** 丝印分区标签（大写化后显示）：本机作为**主机**时的面板。 */
+    val deckHost: String,
+    val hostAddrLabel: String,
+    val hostAddrHint: String,
+    val hostAddrMultiHint: String,
+    val hostAddrMissing: String,
+    val hostAddrMissingHint: String,
+    val hostAddrCopy: String,
+    val hostAddrCopied: String,
+    val hostAddrRefresh: String,
+
+    // ── 接收端（收听声音、主动发起连接的一方）──────────────────────
+    /** 接收端入口（本机切换成接收端，去听另一台主机）——下列三键只服务于这一张卡。 */
+    val deckReceiverEntry: String,
+    /** 角色标签（描边小胶囊）：说清这一格改的是**本机角色**，不是"往列表里加一台设备"。 */
+    val receiverRoleTag: String,
+    /** 代价说明：连上去之后本机是什么状态，以及想反过来推声该去哪张卡。 */
+    val receiverEntryHint: String,
+
     /** 丝印分区标签（大写化后显示）。 */
     val deckReceiver: String,
     val stateReceiving: String,
@@ -40,8 +85,20 @@ data class UiStrings(
     val receiverLoss: String,
     val readoutUnknown: String,
     val volume: String,
-    val actionStartReceiving: String,
-    val actionStopReceiving: String,
+    /** 接收端的唯一主按钮：断开。连接即接收，所以这里没有"开始"这个动作。 */
+    val actionDisconnect: String,
+    /** 已连接、但对方还没推流时的状态字 ——"接收中"只在真有声音时说。 */
+    val stateConnected: String,
+    /** 连上了但还没授信（握手会话）：它出现在列表里，但不是"配对好了"。 */
+    val stateAwaitingPairing: String,
+    /** 多路接收时的大字（%d = 正在推流的台数）。 */
+    val stateReceivingManyFormat: String,
+    /** 多台设备时的来源读数（%d = 台数，%s = 第一台的名字）。 */
+    val receiverSourceManyFormat: String,
+    /** 主机角色的服务开关：起服务 = 等对方接入（只有主机需要它）。 */
+    val actionWaitForDevice: String,
+    val actionStopWaiting: String,
+    val hostServiceHint: String,
     val receiverHint: String,
     val receiverDegradedHint: String,
     val serviceRunning: String,
@@ -53,7 +110,7 @@ data class UiStrings(
     val pairingNote: String,
     val pairingStaleNote: String,
 
-    // ── 发送台 ─────────────────────────────────────────────────────
+    // ── 主机（提供声音、被连接的一方）──────────────────────────────
     val deckSender: String,
     val senderCaptureLabel: String,
     val captureOff: String,
@@ -66,14 +123,45 @@ data class UiStrings(
     val actionConnecting: String,
     val pinLabel: String,
     val actionSubmitPin: String,
+    /** 需要本机输码时的提示（覆盖 service 层的中文常量：那份措辞把主机默认成了「电脑」）。 */
+    val senderAwaitingPinNote: String,
+    /** 上一次的会话已从内核会话表里消失（service 只给 `sessionDropped` 标记，怎么说由这里定）。 */
+    val senderSessionDropped: String,
+    /** 采集未就绪时的提示（同上：service 层 `SenderStateMapper.captureNote` 的中文常量由这组取代）。 */
+    val captureNoteWaiting: String,
+    val captureNoteFailed: String,
+    /** 动作门禁的禁用原因（[SenderStateMapper.gateNote] 的中文常量在 UI 层由此组文案取代）。 */
+    val gateEngineDown: String,
+    val gateConnecting: String,
+    val gateAddressEmpty: String,
+    /** 带一个端口占位（%d）：示例里的端口取自内核的缺省端口，不手写数字。 */
+    val gateAddressInvalidFormat: String,
+    val gateNoSession: String,
+    val gateAwaitingPin: String,
+    val gateAlreadySending: String,
+    val gateNotSending: String,
+    val gateCaptureOff: String,
+    val gateCaptureStopping: String,
+    val gatePeerMismatch: String,
     val actionStartSend: String,
     val actionStopSend: String,
     val senderHint: String,
+    /** 「接入即推」的边界说明：让自动行为**可预期**，也让用户知道怎么关掉它。 */
+    val senderAutoSendHint: String,
 
     // ── 设备通道 ───────────────────────────────────────────────────
     val deckDevices: String,
     val devicesCountFormat: String,
     val devicesEmpty: String,
+    /** 每台设备的本地音量块（只影响本机听到的大小）。 */
+    val peerVolumeLabel: String,
+    val peerMute: String,
+    val peerUnmute: String,
+    val peerMuted: String,
+    /** 用户没设过本地增益时的显示值（与"设成 100%"是两件事）。 */
+    val peerVolumeDefault: String,
+    /** 卡底一句：说清音量是本地层、以及断开不等于永久踢掉。 */
+    val devicesControlNote: String,
     val labelFingerprint: String,
     val labelAddress: String,
     val labelState: String,
@@ -95,6 +183,8 @@ data class UiStrings(
     // ── 诊断 ───────────────────────────────────────────────────────
     val deckDiagnostics: String,
     val diagnosticsSummary: String,
+    /** 折叠时的副标题：内核报错时先说这件事（否则没人会展开一个看起来正常的折叠区）。 */
+    val diagnosticsSummaryError: String,
     val semanticsExpanded: String,
     val semanticsCollapsed: String,
 
@@ -161,6 +251,10 @@ data class UiStrings(
     val actionSelfTesting: String,
 
     val diagExplanation: String,
+    /** 诊断区：把首屏撤下来的契约细节收在这里（首屏只讲产品级的话，排障才需要这些约定）。 */
+    val diagContracts: String,
+    val diagHostContract: String,
+    val diagCaptureContract: String,
 
     // ── 错误 ───────────────────────────────────────────────────────
     val errorTitle: String,
@@ -198,6 +292,27 @@ data class UiStrings(
 
 /** 中文（默认；原文案逐字沿用，只补新结构需要的句子）。 */
 private val Zh = UiStrings(
+    settingsTitle = "设置",
+    receiveTab = "接收声音",
+    sendTab = "发送声音",
+    receiveIntro = "把其他设备的声音，带到这台手机。",
+    sendIntro = "让其他设备收听这台手机的声音。",
+    connectGuideTitle = "连接前的准备",
+    connectGuide = "让两台设备连接同一 Wi-Fi，并打开 AudioLink。首次连接时，在这里输入主机显示的配对码。",
+    addHost = "连接另一台主机",
+    pairingEntryTitle = "输入配对码",
+    changeHost = "更换主机地址",
+    connectionDetails = "连接详情",
+    appearanceTitle = "外观",
+    appearanceHint = "跟随系统，或选择适合当前光线的主题。",
+    aboutTitle = "关于 AudioLink",
+    backgroundTitle = "后台运行",
+    showDiagnostics = "查看诊断",
+    stopAll = "断开全部设备",
+    guideHost = "主机",
+    guideReceiver = "这台设备",
+    guideHostRole = "提供声音",
+    guideReceiverRole = "接收声音",
     themeAction = "主题",
     themeSystem = "跟随系统",
     themeLight = "浅色",
@@ -223,54 +338,95 @@ private val Zh = UiStrings(
     updatePermissionNote = "已在系统设置里打开「安装未知应用」：授权后回来点「继续安装」。",
     updateDevBuildNote = "开发版：更新包与开发版签名不同，无法应用内安装（这条只验证检查链路）。",
 
-    deckReceiver = "接收台",
+    deckHost = "本机地址",
+    hostAddrLabel = "本机地址",
+    hostAddrHint = "在对方的设备上输入这个地址即可接入。",
+    hostAddrMultiHint = "本机有多个局域网地址，当前为默认路由地址。",
+    hostAddrMissing = "未检测到局域网地址",
+    hostAddrMissingHint = "未检测到可用的局域网地址。确认本机已连接 Wi-Fi，再点「重新检测」。",
+    hostAddrCopy = "复制地址",
+    hostAddrCopied = "已复制",
+    hostAddrRefresh = "重新检测",
+
+    deckReceiverEntry = "连接到主机",
+    receiverRoleTag = "本机将作为接收端",
+    receiverEntryHint = "输入主机（提供声音的设备）上显示的地址。",
+
+    deckReceiver = "播放控制",
     stateReceiving = "接收中",
     stateNotReceiving = "未在接收",
     stateServiceStopped = "未在接收（服务已停止）",
     stateDegraded = "接收中（质量下降）",
     stateFailed = "接收异常",
     receiverSource = "来源",
-    receiverSourceNone = "还没有电脑连过来",
+    receiverSourceNone = "未连接到主机",
     receiverLatency = "延迟",
     receiverBitrate = "码率",
     receiverLoss = "丢包",
     readoutUnknown = "—",
     volume = "音量",
-    actionStartReceiving = "开始接收",
-    actionStopReceiving = "停止接收",
-    receiverHint = "接收由电脑端发起：电脑连过来并推流后本机会自动开始播放。",
-    receiverDegradedHint = "链路质量下降，内核正在自动调整；声音可能短暂断续。",
+    actionDisconnect = "断开",
+    stateConnected = "已连接",
+    stateAwaitingPairing = "已连接 · 待配对",
+    stateReceivingManyFormat = "接收中 · %d 台",
+    receiverSourceManyFormat = "%d 台设备（%s）",
+    actionWaitForDevice = "等待设备接入",
+    actionStopWaiting = "停止等待",
+    hostServiceHint = "服务运行期间，接收端可随时接入。",
+    receiverHint = "连接后无需其他操作：主机开始推流时本机自动播放。",
+    receiverDegradedHint = "链路质量下降，声音可能短暂断续。",
     serviceRunning = "服务运行中",
     serviceStopped = "服务已停止",
 
-    pairingTitle = "配对请求：在电脑端输入这 6 位数字",
+    pairingTitle = "配对码：在接收端输入这 6 位数字",
     pairingTitleStale = "配对请求（已失效）",
-    pairingNote = "PIN 由内核生成且限时有效（§5：60 s 过期、失败多次短时锁定）。" +
-        "配对成功后本卡自动消失；对端主动断开则 PIN 作废，需重新连接。",
-    pairingStaleNote = "当前没有等待配对的对端 —— 这个 PIN 来自上一次连接，内核侧的 PinGate 已经随连接销毁，" +
-        "照着输必然失败。请让对方重新连接，本卡会自动换成新的 PIN。",
+    pairingNote = "配对码 60 秒内有效。请在接收端输入；配对成功后会自动关闭。",
+    pairingStaleNote = "这个配对码已失效。请让接收端重新连接，以获取新的配对码。",
 
-    deckSender = "发送台",
+    deckSender = "声音来源",
     senderCaptureLabel = "发送源",
     captureOff = "关闭",
     captureMic = "麦克风",
     captureLoopback = "系统内录",
-    captureHint = "系统内录每次会话都要重新授权（系统行为，绕不过）；麦克风要录音权限。" +
-        "被声明为不可捕获的应用与 DRM 内容录不到。",
-    targetAddress = "电脑地址",
-    targetAddressPlaceholder = "192.168.1.5 或 192.168.1.5:58290",
-    actionConnect = "连接电脑",
+    captureHint = "系统内录每次使用都需重新授权；麦克风需录音权限。",
+    targetAddress = "主机地址",
+    targetAddressPlaceholder = "192.168.1.5:58290",
+    actionConnect = "连接主机",
     actionConnecting = "连接中…",
-    pinLabel = "电脑上显示的 6 位数字",
+    pinLabel = "主机上显示的 6 位数字",
     actionSubmitPin = "提交配对码",
+    senderAwaitingPinNote = "配对码在主机屏幕上，60 秒内有效；连续输错会短暂锁定。",
+    // 中性措辞：这条提示在接收端入口卡上显示，但断开也可能发生在"本机是主机"的时候
+    // （对方收了声音挂断），写成"与主机的连接"在那时会指错人。
+    senderSessionDropped = "与对方的连接已断开",
+    captureNoteWaiting = "正在等待授权，授权后会自动开始推流",
+    captureNoteFailed = "采集当前出错；恢复后会自动开始推流（对方会先看到连接、暂时没有声音）",
+    gateEngineDown = "服务未运行。先点「等待设备接入」。",
+    gateConnecting = "正在连接，请稍候",
+    gateAddressEmpty = "请输入主机地址",
+    gateAddressInvalidFormat = "地址格式不对：应是 192.168.1.5 或 192.168.1.5:%d",
+    gateNoSession = "请先连接主机，再开始推流",
+    // 这条只回答「按钮为什么灰着」；码在哪、多久有效由 senderAwaitingPinNote 说（两处别互相复述）。
+    gateAwaitingPin = "先在下面提交配对码，才能开始推流",
+    gateAlreadySending = "已经在推流了",
+    gateNotSending = "当前没有在推流",
+    gateCaptureOff = "请先选择发送源",
+    gateCaptureStopping = "采集正在停止，稍后再试",
+    gatePeerMismatch = "当前连接的不是刚才那台设备，请重新连接",
     actionStartSend = "开始推流",
     actionStopSend = "停止推流",
-    senderHint = "停止推流只停声音，不断开连接（信任与配对保留）。采集源要排在连接之前选：切换" +
-        "「关闭 ⇄ 非关闭」会重启引擎，把已建立的连接掐断。",
+    senderHint = "让对方听到本机的声音。设备接入后会自动开始推流。",
+    senderAutoSendHint = "需先选择发送源；手动停止的设备不会自动恢复。",
 
     deckDevices = "设备通道",
     devicesCountFormat = "已连接 %d 台",
-    devicesEmpty = "还没有设备连接。电脑端发起连接后这里会出现。",
+    devicesEmpty = "暂无已连接设备。",
+    peerVolumeLabel = "音量",
+    peerMute = "静音",
+    peerUnmute = "取消静音",
+    peerMuted = "已静音",
+    peerVolumeDefault = "默认",
+    devicesControlNote = "每台设备可单独调音量或静音，只影响本机听到的大小。断开只断连接、信任保留，对方可能自己重连。",
     labelFingerprint = "短指纹",
     labelAddress = "地址",
     labelState = "状态",
@@ -289,10 +445,11 @@ private val Zh = UiStrings(
 
     deckDiagnostics = "诊断",
     diagnosticsSummary = "内核真值默认折叠，需要时再展开",
+    diagnosticsSummaryError = "内核报错了 —— 展开看原因",
     semanticsExpanded = "已展开",
     semanticsCollapsed = "已折叠",
 
-    diagEngine = "内核引擎（接收端）",
+    diagEngine = "内核（本机）",
     diagEngineRunning = "运行中（已监听 QUIC 端口）",
     diagEngineStopped = "未启动",
     diagLocalName = "本机名称",
@@ -356,8 +513,11 @@ private val Zh = UiStrings(
     actionRunSelfTest = "运行自检",
     actionSelfTesting = "自检中…",
 
-    diagExplanation = "引擎随服务启停。接收由电脑侧发起连接；对端还没连上或还没推流时，供给欠载会持续增长、" +
-        "输出是静音，这是预期行为。发送方向见上方「发送台」。低延迟是否生效与缓冲帧数不受此影响，可直接读。",
+    diagContracts = "契约说明（从首屏移到这里）",
+    diagHostContract = "主机：停止推流保留连接与配对；切换发送源会重启服务并中断当前会话。",
+    diagCaptureContract = "采集：系统内录每次会话需重新授权；被声明为不可捕获的应用与 DRM 内容无法录制。",
+    diagExplanation = "引擎随服务启停。连接由接收端主动发起；接收端还没连上或还没推流时，供给欠载会持续增长、" +
+        "输出是静音，这是预期行为。主机一侧（地址与推流）见上方「主机」。低延迟是否生效与缓冲帧数不受此影响，可直接读。",
 
     errorTitle = "出了点问题",
     errorRecoveryPlayback = "重新点一次「开始接收」。若还是不行，展开上面的「诊断」看内核原文。",
@@ -373,6 +533,27 @@ private val Zh = UiStrings(
 
 /** English. Same structure, same semantics — 不是逐字直译，而是同一件事的英文说法。 */
 private val En = UiStrings(
+    settingsTitle = "Settings",
+    receiveTab = "Receive",
+    sendTab = "Send",
+    receiveIntro = "Listen to another device on this phone.",
+    sendIntro = "Share this phone's audio with your other devices.",
+    connectGuideTitle = "Before you connect",
+    connectGuide = "Connect both devices to the same Wi-Fi and open AudioLink. The first time, enter the pairing code shown on the host here.",
+    addHost = "Connect another host",
+    pairingEntryTitle = "Enter pairing code",
+    changeHost = "Change host address",
+    connectionDetails = "Connection details",
+    appearanceTitle = "Appearance",
+    appearanceHint = "Follow your system or choose a theme for your surroundings.",
+    aboutTitle = "About AudioLink",
+    backgroundTitle = "Background activity",
+    showDiagnostics = "View diagnostics",
+    stopAll = "Disconnect all devices",
+    guideHost = "Host",
+    guideReceiver = "This device",
+    guideHostRole = "Provides audio",
+    guideReceiverRole = "Receives audio",
     themeAction = "Theme",
     themeSystem = "Follow system",
     themeLight = "Light",
@@ -398,54 +579,94 @@ private val En = UiStrings(
     updatePermissionNote = "The system page for installing unknown apps was opened — grant it, then come back and tap Continue install.",
     updateDevBuildNote = "Development build: the release APK cannot be installed over a dev build (checks only).",
 
-    deckReceiver = "Receiver",
+    deckHost = "This device's address",
+    hostAddrLabel = "This device's address",
+    hostAddrHint = "Enter this address on the other device to connect.",
+    hostAddrMultiHint = "This device has several LAN addresses; the default-route address is shown.",
+    hostAddrMissing = "No LAN address detected",
+    hostAddrMissingHint = "No usable LAN address detected. Make sure Wi-Fi is connected, then tap Refresh.",
+    hostAddrCopy = "Copy address",
+    hostAddrCopied = "Copied",
+    hostAddrRefresh = "Refresh",
+
+    deckReceiverEntry = "Connect to a host",
+    receiverRoleTag = "This device becomes a receiver",
+    receiverEntryHint = "Enter the address shown on the host providing audio.",
+
+    deckReceiver = "Playback",
     stateReceiving = "Receiving",
     stateNotReceiving = "Not receiving",
     stateServiceStopped = "Not receiving (service stopped)",
     stateDegraded = "Receiving (degraded)",
     stateFailed = "Receiver error",
     receiverSource = "Source",
-    receiverSourceNone = "No PC connected yet",
+    receiverSourceNone = "Not connected to a host",
     receiverLatency = "Latency",
     receiverBitrate = "Bitrate",
     receiverLoss = "Loss",
     readoutUnknown = "—",
     volume = "Volume",
-    actionStartReceiving = "Start receiving",
-    actionStopReceiving = "Stop receiving",
-    receiverHint = "The PC starts it: once a PC connects and streams, playback begins automatically.",
-    receiverDegradedHint = "Link quality dropped; the core is adjusting. Audio may stutter briefly.",
+    actionDisconnect = "Disconnect",
+    stateConnected = "Connected",
+    stateAwaitingPairing = "Connected · pairing required",
+    stateReceivingManyFormat = "Receiving · %d devices",
+    receiverSourceManyFormat = "%d devices (%s)",
+    actionWaitForDevice = "Wait for a device",
+    actionStopWaiting = "Stop waiting",
+    hostServiceHint = "Receivers can connect while the service is running.",
+    receiverHint = "No further action is needed — playback starts when the host streams.",
+    receiverDegradedHint = "Link quality dropped; audio may stutter briefly.",
     serviceRunning = "Service running",
     serviceStopped = "Service stopped",
 
-    pairingTitle = "Pairing request — type these 6 digits on the PC",
+    pairingTitle = "Pairing code — type these 6 digits on the receiver",
     pairingTitleStale = "Pairing request (expired)",
-    pairingNote = "The PIN is generated by the core and time-limited (60 s, then short lockout after repeated failures). " +
-        "This card disappears once pairing succeeds; if the peer disconnects the PIN is void and a new one is needed.",
-    pairingStaleNote = "No peer is waiting to pair — this PIN belongs to the previous connection and its PinGate is already " +
-        "destroyed, so typing it can only fail. Ask the peer to reconnect; a fresh PIN will appear here.",
+    pairingNote = "Enter this code on the receiving device within 60 seconds. This panel closes after pairing.",
+    pairingStaleNote = "This code has expired. Ask the receiving device to reconnect for a new code.",
 
-    deckSender = "Sender",
+    deckSender = "Audio source",
     senderCaptureLabel = "Capture source",
     captureOff = "Off",
     captureMic = "Microphone",
     captureLoopback = "System audio",
-    captureHint = "System audio needs a fresh system consent each session (unavoidable); the microphone needs the record " +
-        "permission. Apps marked non-capturable and DRM content cannot be recorded.",
-    targetAddress = "PC address",
+    captureHint = "System audio requires a new consent each time; the microphone requires the record permission.",
+    targetAddress = "Host address",
     targetAddressPlaceholder = "192.168.1.5 or 192.168.1.5:58290",
-    actionConnect = "Connect to PC",
+    actionConnect = "Connect to host",
     actionConnecting = "Connecting…",
-    pinLabel = "6-digit code shown on the PC",
+    pinLabel = "6-digit code shown on the host",
     actionSubmitPin = "Submit code",
+    senderAwaitingPinNote = "The code is on the host's screen, valid for 60 s; repeated mistakes cause a short lockout.",
+    senderSessionDropped = "Disconnected from the other device",
+    captureNoteWaiting = "Waiting for permission — streaming starts automatically once it is granted",
+    captureNoteFailed = "Capture failed; streaming resumes automatically once it recovers " +
+        "(the receiver sees the connection but no audio yet)",
+    gateEngineDown = "The service is not running. Tap “Wait for a device” first.",
+    gateConnecting = "Connecting…",
+    gateAddressEmpty = "Enter the host address",
+    gateAddressInvalidFormat = "Address looks wrong: use 192.168.1.5 or 192.168.1.5:%d",
+    gateNoSession = "Connect to a host before streaming",
+    gateAwaitingPin = "Submit the pairing code below before streaming",
+    gateAlreadySending = "Already streaming",
+    gateNotSending = "Not streaming right now",
+    gateCaptureOff = "Select a capture source first",
+    gateCaptureStopping = "Capture is stopping — try again in a moment",
+    gatePeerMismatch = "This is not the device you just connected to; connect again",
     actionStartSend = "Start streaming",
     actionStopSend = "Stop streaming",
-    senderHint = "Stopping a stream keeps the connection (trust and pairing stay). Pick the capture source before " +
-        "connecting: switching Off ⇄ On restarts the engine and drops an established connection.",
+    senderHint = "Let the other device hear this device. Streaming starts automatically once a device connects.",
+    senderAutoSendHint = "A capture source is required; a device you stopped is not restarted automatically.",
 
     deckDevices = "Devices",
     devicesCountFormat = "%d connected",
-    devicesEmpty = "No device connected yet. It appears here once a PC connects.",
+    devicesEmpty = "No devices connected.",
+    peerVolumeLabel = "Volume",
+    peerMute = "Mute",
+    peerUnmute = "Unmute",
+    peerMuted = "Muted",
+    peerVolumeDefault = "Default",
+    devicesControlNote = "Each device has its own volume and mute, affecting only what this device hears. " +
+        "Disconnecting keeps trust — the peer may reconnect on its own.",
     labelFingerprint = "Fingerprint",
     labelAddress = "Address",
     labelState = "State",
@@ -464,10 +685,11 @@ private val En = UiStrings(
 
     deckDiagnostics = "Diagnostics",
     diagnosticsSummary = "Kernel truth, collapsed by default",
+    diagnosticsSummaryError = "Kernel error — expand for details",
     semanticsExpanded = "expanded",
     semanticsCollapsed = "collapsed",
 
-    diagEngine = "Kernel engine (receiver)",
+    diagEngine = "Kernel (this device)",
     diagEngineRunning = "Running (QUIC port listening)",
     diagEngineStopped = "Not started",
     diagLocalName = "Local name",
@@ -533,9 +755,14 @@ private val En = UiStrings(
     actionRunSelfTest = "Run self-test",
     actionSelfTesting = "Running…",
 
-    diagExplanation = "The engine follows the service. The receiver side is initiated by the PC; until a peer connects and " +
-        "streams, source underruns keep growing and the output stays silent — that is expected. Sending is above, in " +
-        "Sender. Whether low latency is active and the buffer size are unaffected and readable as they are.",
+    diagContracts = "Contracts (moved off the main screen)",
+    diagHostContract = "Host: stopping a stream keeps the connection and pairing; switching the capture source " +
+        "restarts the service and ends the current session.",
+    diagCaptureContract = "Capture: system audio needs a fresh consent per session; non-capturable apps and " +
+        "DRM content cannot be recorded.",
+    diagExplanation = "The engine follows the service. Connections are initiated by the receiver; until a receiver connects " +
+        "and streams, source underruns keep growing and the output stays silent — that is expected. Host duties (address " +
+        "and streaming) are above, in Host. Whether low latency is active and the buffer size are unaffected.",
 
     errorTitle = "Something went wrong",
     errorRecoveryPlayback = "Tap Start receiving again. If it still fails, expand Diagnostics above for the kernel text.",

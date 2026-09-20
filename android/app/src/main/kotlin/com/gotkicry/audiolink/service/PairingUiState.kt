@@ -43,6 +43,19 @@ data class PeerUi(
     val bitrateBps: Long = 0L,
     /** 丢包率（百分比，0.0-100.0）。 */
     val lossPct: Double = 0.0,
+    /**
+     * 完整指纹 —— 调**按设备**的 FFI 时传的就是它。
+     *
+     * 为什么不传短码：内核的报错原文是「peer short id {short} matches more than one session;
+     * pass the full idHex」。多设备时短码可能撞车，而按设备控制正是为多设备准备的。
+     */
+    val idHex: String = "",
+    /**
+     * 本机这一路的音量（千分点 0–2000；`null` = 用户没设过，等价 1000）。
+     *
+     * `null` 与「设成了 1000」是两件事：界面据此决定要不要打「已调整」标记（FFI 的 KDoc 明说）。
+     */
+    val localGain: UInt? = null,
 )
 
 /**
@@ -63,6 +76,11 @@ data class PeerSnapshot(
     val bitrateBps: Long = 0L,
     /** 丢包率（百分比 0.0-100.0）。 */
     val lossPct: Double = 0.0,
+    /**
+     * 完整指纹：按设备调 FFI 用的就是它（见 [PeerUi.idHex]）。
+     * **必须留在末尾**：构造点里有按位置传参的调用，插在中间会把后面所有字段挪位。
+     */
+    val idHex: String = "",
 )
 
 /**
@@ -145,6 +163,7 @@ object PairingStateMapper {
     fun peers(snapshots: List<PeerSnapshot>): List<PeerUi> = snapshots.map { snapshot ->
         PeerUi(
             idShort = snapshot.idShort,
+            idHex = snapshot.idHex,
             name = displayName(snapshot),
             addr = snapshot.addr,
             state = snapshot.state,

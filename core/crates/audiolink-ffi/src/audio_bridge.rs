@@ -6,7 +6,7 @@
 //! 内核只输出「PCM + 目标播放时刻 + 期望速率」。落地方式就是本模块：
 //!
 //! ```text
-//! 接收方向（M1 Android 的主路径）
+//! 播放方向（M1 Android 的主路径）
 //!   网络 → engine 解码 → PlayoutSink::write ──► PcmFeed.feedPcm ──► AudioLinkService.feedPcm
 //!                                                                  └─► PcmRingBuffer ─► AudioTrack
 //! 发送方向（M1 Android 不用；内录推流属后续里程碑）

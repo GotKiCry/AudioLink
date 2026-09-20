@@ -113,6 +113,16 @@ export const api = {
   setAutoConnect: (enabled: boolean): Promise<null> =>
     invoke<null>("set_auto_connect", { enabled }),
   /**
+   * `auto_broadcast_state` —— 读取「有人接入时自动开始推流」的开关（默认开）。
+   *
+   * 与自启 / 自动重连同一条路（设置文件），所以这里读的是**真实状态**，不是前端记住的布尔；
+   * 自动推流本身在 useAudioLink 里执行，这个开关只负责让用户的选择跨启动活下来。
+   */
+  autoBroadcastState: (): Promise<boolean> => invoke<boolean>("auto_broadcast_state"),
+  /** `set_auto_broadcast` —— 开关「有人接入时自动开始推流」。 */
+  setAutoBroadcast: (enabled: boolean): Promise<null> =>
+    invoke<null>("set_auto_broadcast", { enabled }),
+  /**
    * `try_auto_connect` —— M5：启动时试一次自动重连。
    *
    * 没开、没记录、连不上都返回 `null`（**不报错**）：用户什么都没点，不该弹错误横幅。

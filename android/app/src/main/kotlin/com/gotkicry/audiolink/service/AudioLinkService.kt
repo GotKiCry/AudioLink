@@ -32,10 +32,13 @@ import com.gotkicry.audiolink.core.EngineStartConfig
 import com.gotkicry.audiolink.core.FfiException
 import com.gotkicry.audiolink.core.LocalStatus
 import com.gotkicry.audiolink.core.connect
+import com.gotkicry.audiolink.core.disconnectPeer
 import com.gotkicry.audiolink.core.displayedPin
 import com.gotkicry.audiolink.core.engineStart
 import com.gotkicry.audiolink.core.engineStop
+import com.gotkicry.audiolink.core.localPeerGain
 import com.gotkicry.audiolink.core.peers
+import com.gotkicry.audiolink.core.setLocalPeerGain
 import com.gotkicry.audiolink.core.startSend
 import com.gotkicry.audiolink.core.stopSend
 import com.gotkicry.audiolink.core.submitPin
@@ -45,6 +48,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -103,11 +107,37 @@ class AudioLinkService : Service() {
         /** 「已停止发送」的固定说法：与「已断开」严格区分（`stopSend` 只停流、保留连接）。 */
         private const val STOPPED_SENDING_NOTE = "已停止发送（连接保持）"
 
+        /** 引擎就绪等待上限：超过就如实报错，不让用户对着「连接中…」干等。 */
+        private const val ENGINE_READY_TIMEOUT_MS = 25_000L
+
+        /** 就绪轮询间隔（引擎启动跨线程完成，靠状态位轮询，不另加同步原语）。 */
+        private const val ENGINE_READY_POLL_MS = 50L
+
         /** UI → 服务：开始向当前对端推流。 */
         const val ACTION_START_SEND = "com.gotkicry.audiolink.action.START_SEND"
 
         /** UI → 服务：停止推流（**保留连接与信任** —— 内核 `Engine::stop_send` 的语义）。 */
         const val ACTION_STOP_SEND = "com.gotkicry.audiolink.action.STOP_SEND"
+
+        // ---- 按设备控制（接收端多设备：每台独立音量 / 静音 / 断开）----
+
+        /** UI → 服务：设置某台设备的**本机**音量（千分点 0–2000，不走网络）。 */
+        const val ACTION_SET_LOCAL_GAIN = "com.gotkicry.audiolink.action.SET_LOCAL_GAIN"
+
+        /** UI → 服务：切换某台设备的本地静音（0 ⇄ 上一次的非零值）。 */
+        const val ACTION_TOGGLE_MUTE = "com.gotkicry.audiolink.action.TOGGLE_MUTE"
+
+        /** UI → 服务：断开某台设备（**保留信任**；对端若是发起方会自己重拨回来）。 */
+        const val ACTION_DISCONNECT_PEER = "com.gotkicry.audiolink.action.DISCONNECT_PEER"
+
+        /** 目标设备的完整指纹（`PeerView.idHex`）—— 多设备时短码可能撞车。 */
+        const val EXTRA_PEER_ID = "peer_id"
+
+// 增益的上限与默认值搬到了 [LocalGainPolicy]：它们和"点一下静音该设成多少"是同一件事，
+// 分居两处迟早会漂移。
+
+        /** 本机增益（千分点整数 0–2000）。 */
+        const val EXTRA_GAIN_PERMILLE = "gain_permille"
 
         /**
          * UI 入口：连接一台电脑（发送方向）。
@@ -129,6 +159,39 @@ class AudioLinkService : Service() {
                 Intent(context, AudioLinkService::class.java)
                     .setAction(ACTION_SUBMIT_PIN)
                     .putExtra(EXTRA_PIN, pin),
+            )
+        }
+
+        /**
+         * UI 入口：设置**本机**听到的某一路音量（千分点 0–2000）。
+         *
+         * 与 [AudioLinkService] 里的发送方向增益是两回事：那个走网络（让对端调它播放本机的音量），
+         * 这个只在本机生效、不影响对端 —— 用户拍板的语义是**两者相乘**，互不覆盖。
+         */
+        fun setLocalGain(context: Context, peerIdHex: String, gainPermille: Int) {
+            context.startService(
+                Intent(context, AudioLinkService::class.java)
+                    .setAction(ACTION_SET_LOCAL_GAIN)
+                    .putExtra(EXTRA_PEER_ID, peerIdHex)
+                    .putExtra(EXTRA_GAIN_PERMILLE, gainPermille),
+            )
+        }
+
+        /** UI 入口：切换本地静音。"取消静音回到多少"由服务记（内核不记）。 */
+        fun toggleMute(context: Context, peerIdHex: String) {
+            context.startService(
+                Intent(context, AudioLinkService::class.java)
+                    .setAction(ACTION_TOGGLE_MUTE)
+                    .putExtra(EXTRA_PEER_ID, peerIdHex),
+            )
+        }
+
+        /** UI 入口：断开某台设备（**只断连、保留信任**）。 */
+        fun disconnectPeer(context: Context, peerIdHex: String) {
+            context.startService(
+                Intent(context, AudioLinkService::class.java)
+                    .setAction(ACTION_DISCONNECT_PEER)
+                    .putExtra(EXTRA_PEER_ID, peerIdHex),
             )
         }
 
@@ -456,7 +519,10 @@ class AudioLinkService : Service() {
             }
 
             ACTION_CONNECT -> {
+                // 「连接主机」是一条完整动线：前台服务 →（引擎按需启动）→ 连接 →（对端推流后）播放。
+                // 这几步都幂等，所以用户只点一次 —— 不必先点另一个按钮把服务打开（真机评审 P0）。
                 startForegroundWithTypes()
+                startPlayback()
                 val addr = intent?.getStringExtra(EXTRA_TARGET_ADDR).orEmpty()
                 connectSender(addr)
                 return START_STICKY
@@ -478,6 +544,28 @@ class AudioLinkService : Service() {
             ACTION_STOP_SEND -> {
                 startForegroundWithTypes()
                 stopSender()
+                return START_STICKY
+            }
+
+            ACTION_SET_LOCAL_GAIN -> {
+                startForegroundWithTypes()
+                applyLocalGainPermille(
+                    intent?.getStringExtra(EXTRA_PEER_ID).orEmpty(),
+                    intent?.getIntExtra(EXTRA_GAIN_PERMILLE, DEFAULT_GAIN_PERMILLE)
+                        ?: DEFAULT_GAIN_PERMILLE,
+                )
+                return START_STICKY
+            }
+
+            ACTION_TOGGLE_MUTE -> {
+                startForegroundWithTypes()
+                toggleLocalMute(intent?.getStringExtra(EXTRA_PEER_ID).orEmpty())
+                return START_STICKY
+            }
+
+            ACTION_DISCONNECT_PEER -> {
+                startForegroundWithTypes()
+                disconnectPeerNow(intent?.getStringExtra(EXTRA_PEER_ID).orEmpty())
                 return START_STICKY
             }
         }
@@ -630,7 +718,9 @@ class AudioLinkService : Service() {
         // 所以文案是「已停止发送」而不是「已断开」。
         if (SenderStateMapper.shouldStopSendOnCaptureChange(senderState.sending, next)) {
             localSendStarted = false
-            senderState = senderState.copy(sending = false, note = STOPPED_SENDING_NOTE)
+            // 把发送源切到「关闭」同样是明确的"别发了"：记入拒绝集合，这台设备本轮不再自动开始。
+            senderState = SenderStateMapper.afterManualStop(senderState)
+                .copy(sending = false, note = STOPPED_SENDING_NOTE)
             engineScope.launch {
                 withContext(Dispatchers.IO) {
                     try {
@@ -773,9 +863,25 @@ class AudioLinkService : Service() {
             connecting = true,
             note = null,
             error = null,
+            // 用户主动发起新连接：上一次的断开提示退场（它还挂着，界面会自相矛盾）。
+            sessionDropped = false,
         )
-        val generation = engineLifecycle.generation
         engineScope.launch {
+            // P0（真机评审）：点「连接主机」可能是什么都没启动过的第一次 —— 这里把服务该做的事
+            // 做完（拉起引擎并等它就绪）再连。用户不需要知道"服务/引擎"存在，也不需要先去找
+            // 另一个按钮把服务打开（那两个按钮本来就是同一件事）。
+            if (!awaitEngineReady()) {
+                if (!destroyed) {
+                    senderState = senderState.copy(
+                        connecting = false,
+                        error = "服务没能启动；请再试一次",
+                    )
+                }
+                refreshState()
+                return@launch
+            }
+            // 代次必须在**启动之后**取：startEngine() 会 ++generation（见 EngineLifecycle.start）。
+            val generation = engineLifecycle.generation
             val outcome = withContext(Dispatchers.IO) {
                 try {
                     Result.success(connect(addr))
@@ -802,6 +908,9 @@ class AudioLinkService : Service() {
                         peerIdShort = peer.idShort,
                         peerState = peer.state,
                         peerStateLabel = PairingStateMapper.stateLabel(peer.state),
+                        peerTrusted = peer.trusted,
+                        // 本机主动连出去 = 本机在当接收端：这条会话不参与「接入即推」。
+                        sessionInbound = false,
                         awaitingPin = false,
                         note = null,
                         error = null,
@@ -811,6 +920,83 @@ class AudioLinkService : Service() {
             )
             refreshState()
         }
+    }
+
+    /**
+     * 每台设备"取消静音回到多少"的记忆（千分点）。
+     *
+     * 为什么由壳侧记：冻结语义是「本地静音 = 本地增益 0」，而内核**不记**"回到多少"，
+     * 它只认当前值。这张表就是那个记忆点 —— 它是界面状态，内存足够；进程重启后回到默认 100%。
+     */
+    private val lastNonZeroGainPermille = mutableMapOf<String, Int>()
+
+    /** 设置本机听到的某一路音量（千分点）。非零值顺手记下来当作"取消静音回到多少"。 */
+    private fun applyLocalGainPermille(peerId: String, gainPermille: Int) {
+        if (peerId.isEmpty()) return
+        val gain = gainPermille.coerceIn(0, LOCAL_GAIN_MAX_PERMILLE)
+        if (gain > 0) lastNonZeroGainPermille[peerId] = gain
+        engineScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { setLocalPeerGain(peerId, gain / 1000f) }
+            }
+            refreshState()
+        }
+    }
+
+    /** 切换本地静音：当前非零 → 0（并记住）；当前为 0 → 回到上次记住的值（没记过就回到 100%）。 */
+    private fun toggleLocalMute(peerId: String) {
+        if (peerId.isEmpty()) return
+        engineScope.launch {
+            // 读回值有**三态**，这里必须区分清楚（第一版把它们混成两态，静音直接失效）：
+            //  * 调用失败 → 放弃这次动作（不能假装成功）；
+            //  * null = 用户从没设过 → 等价于默认 1000，这是"第一次点静音"最常见的入口；
+            //  * 具体值 → 照常按 0/非 0 判断。
+            val result = withContext(Dispatchers.IO) { runCatching { localPeerGain(peerId) } }
+            if (result.isFailure) return@launch
+            val current = result.getOrNull()?.toInt() ?: DEFAULT_GAIN_PERMILLE
+            // 决策本身是纯函数（三态，见 [nextGainAfterMuteToggle]）：这里只负责记一笔与下发。
+            val next = nextGainAfterMuteToggle(current, lastNonZeroGainPermille[peerId])
+            if (current != 0) lastNonZeroGainPermille[peerId] = current
+            withContext(Dispatchers.IO) {
+                runCatching { setLocalPeerGain(peerId, next / 1000f) }
+            }
+            refreshState()
+        }
+    }
+
+    /**
+     * 断开某台设备：**只断连、保留信任**。
+     *
+     * 文案要说实（产品已核对 Rust 行为）：对端若是发起方且正在推流，会按自己的重拨逻辑**连回来**——
+     * 所以界面上不能写成"永久踢掉"。
+     */
+    private fun disconnectPeerNow(peerId: String) {
+        if (peerId.isEmpty()) return
+        engineScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { disconnectPeer(peerId) }
+            }
+            refreshState()
+        }
+    }
+
+    /**
+     * 等引擎就绪 —— 「点一次连接就完成全部动作」的落点。
+     *
+     * 用户点「连接主机」时可能从没启动过任何东西。以前界面靠"引擎没起来"把按钮变灰，把用户赶去
+     * 找「开始接收」，而那两个按钮做的是同一件事（真机评审 P0）。现在这条路自己把服务拉起来：
+     * 幂等启动 + 等就绪；超时就如实报错，而不是让用户对着「连接中…」无限等下去。
+     *
+     * 幂等：引擎已在跑时立即返回，不重启、不动已有会话。
+     */
+    private suspend fun awaitEngineReady(): Boolean {
+        if (engineStatus != null) return true
+        startEngine()
+        val deadline = SystemClock.uptimeMillis() + ENGINE_READY_TIMEOUT_MS
+        while (engineStatus == null && SystemClock.uptimeMillis() < deadline) {
+            delay(ENGINE_READY_POLL_MS)
+        }
+        return engineStatus != null
     }
 
     /**
@@ -928,7 +1114,10 @@ class AudioLinkService : Service() {
      */
     private fun stopSender(note: String = STOPPED_SENDING_NOTE) {
         localSendStarted = false
-        senderState = senderState.copy(sending = false, note = note, error = null)
+        // 「接入即推」的礼貌规则：用户手动停过的设备，本轮一律不再自动开始。
+        // 记账发生在**这里**（用户动作入口）而不是自动路径里 —— 自动永远不能覆盖用户的选择。
+        senderState = SenderStateMapper.afterManualStop(senderState)
+            .copy(sending = false, note = note, error = null)
         val generation = engineLifecycle.generation
         engineScope.launch {
             val outcome = withContext(Dispatchers.IO) {
@@ -952,47 +1141,44 @@ class AudioLinkService : Service() {
     }
 
     /**
-     * 会话状态同步：**内核是唯一权威**。会话从表里消失（断开 / 被对端关掉）就把发送状态归零。
+     * 会话状态同步：**内核是唯一权威**（判断本身与四条口径见 [SenderStateMapper.sessionAfterPeers]）。
      *
-     * 空表要当成「还没拉到」而不是「已断开」：刚 `connect()` 完的那一小段里 `peers()` 可能还是空的，
-     * 那会儿把状态清零会让用户看到一条假断开。
+     * 判断搬去纯逻辑层是有代价换来的收益：它决定「当前会话是哪一条」，也就决定主机被接入之后
+     * 推流按钮能不能用 —— 而 Service 在 JVM 单测里跑不起来。留在这里的只有两件 Service 自己的事。
      */
     private fun syncSenderWithPeers() {
-        val expected = senderState.peerIdShort
-        if (expected == null) {
-            // 还没有登记会话：**PIN 配对成功后的登记就发生在这里**。
-            // 为什么必须补这一段（2026-09-18 真机定位的真缺陷）：需要 PIN 时 `connect()` 返回的是
-            // `1002 NOT_PAIRED`（不是成功），所以 `peerIdShort` 一直是 null；而旧版这里
-            // `?: return` 直接放行 ⇒ 会话**永远登记不进来**：界面停在「未连接」，`startSender()` 的
-            // `sessionGate` 又按 `PeerMismatch` 把「开始发送」禁用 —— 而桌面端此刻明明已经显示
-            // 「已配对（白名单命中）」且对端数 = 1，链路是通的。
-            // 只登记**唯一的那一个**对端：单对端 UI 语义（契约 §8），多个会话时不猜（宁可让用户重新连接，
-            // 也不能把声音发到错误的设备上）。
-            if (senderState.awaitingPin || senderState.error != null) return
-            val only = pairingState.peers.singleOrNull() ?: return
-            senderState = senderState.copy(
-                peerIdShort = only.idShort,
-                peerState = only.state,
-                peerStateLabel = only.stateLabel,
-                note = null,
-            )
-            return
-        }
-        if (pairingState.peers.isEmpty()) return
-        val peer = pairingState.peers.firstOrNull { it.idShort.equals(expected, ignoreCase = true) }
-        senderState = if (peer == null) {
-            localSendStarted = false
-            senderState.copy(
-                peerIdShort = null,
-                peerState = "",
-                peerStateLabel = "",
-                sending = false,
-                awaitingPin = false,
-                note = "与电脑的连接已断开",
-            )
-        } else {
-            senderState.copy(peerState = peer.state, peerStateLabel = peer.stateLabel)
-        }
+        val next = SenderStateMapper.sessionAfterPeers(senderState, pairingState.peers)
+        if (next == null) return
+        // localSendStarted 是 Service 私有的「本机点过开始推流」意图标记，纯逻辑层不持有它：
+        // 会话真的消失（登记过的对端不在表里了）时一并归零，免得下次连上还被当成"正在推流"。
+        if (next.peerIdShort == null && senderState.peerIdShort != null) localSendStarted = false
+        senderState = next
+    }
+
+    /**
+     * 「接入即推」：主机端有人连进来、且条件齐备时，替用户按下那颗「开始推流」。
+     *
+     * 为什么是**替用户按按钮**而不是另开一条旁路：走的还是 [startSender]（同一个入口、同一套门禁、
+     * 同一份错误处理），所以"自动"与"手动"在链路上完全同构，出问题的表现也一致 ——
+     * 不存在"手动能报错、自动悄悄失败"这种事。
+     *
+     * 六道判定条件全在 [SenderStateMapper.shouldAutoStartSend]（纯逻辑，单测逐条钉住）。
+     * 这里只补一件它管不了的事：**先记账，再发起** —— `startSender()` 是异步的，从发起到
+     * `sending = true` 之间隔着几拍刷新，不先记账每一拍都会再触发一次。
+     *
+     * @param captureState 这一拍刚取到的采集状态（与 [refreshState] 里用的是同一次快照，不重复取）。
+     */
+    private fun maybeAutoStartSend(captureState: CaptureState) {
+        val wanted = SenderStateMapper.shouldAutoStartSend(
+            sender = senderState,
+            // 引擎在跑 = 有 LocalStatus（与 refreshState 里发布给 UI 的 engineRunning 同一判据）。
+            engineRunning = engineStatus != null,
+            captureSelection = captureSelection,
+            captureState = captureState,
+        )
+        if (!wanted) return
+        senderState = SenderStateMapper.afterAutoStartArmed(senderState)
+        startSender()
     }
 
     /** FFI 失败的错误码（`docs/03-protocol.md` §11 的数值）；非 FFI 异常返回 0。 */
@@ -1131,6 +1317,8 @@ class AudioLinkService : Service() {
         val engine = engineStatus
         // 发送方向：会话状态以 pairingState.peers 为权威（同一拍里刚刷新，见 syncSenderWithPeers）。
         syncSenderWithPeers()
+        // 「接入即推」必须排在会话同步**之后**：它依赖这一拍刚刷新的 peerState / peerTrusted。
+        maybeAutoStartSend(captureSnapshot.state)
         val pairing = pairingState
 
         // task-8：把 UI 的请求下发给播放器（设备调用本身仍在播放线程里做）。
@@ -1268,6 +1456,8 @@ class AudioLinkService : Service() {
                     snapshots = peers().map { peer ->
                         PeerSnapshot(
                             idShort = peer.idShort,
+                            // 完整指纹：按设备控制（音量/断开）要传它，短码在多设备时可能撞车。
+                            idHex = peer.idHex,
                             name = peer.name,
                             addr = peer.addr,
                             state = peer.state,
@@ -1285,7 +1475,18 @@ class AudioLinkService : Service() {
                     val reason = "读取对端列表失败：${t.javaClass.simpleName}: ${t.message}"
                     note = if (note == null) reason else "$note；$reason"
                 }
-                PairingStateMapper.map(pin = pin, snapshots = snapshots, error = note)
+                val mapped = PairingStateMapper.map(pin = pin, snapshots = snapshots, error = note)
+                // 本机增益每拍读回：内核才是真值（用户可能在别处改过、或对面看到的数不一样），
+                // 壳侧只缓存一件事 —— "取消静音回到多少"（用户拍板：内核不记，壳侧记）。
+                // 读失败（例如 .so 与绑定不匹配）时降级成 null（= 没设过），不把整块状态带塌。
+                mapped.copy(
+                    peers = mapped.peers.map { ui ->
+                        if (ui.idHex.isEmpty()) ui
+                        else ui.copy(
+                            localGain = runCatching { localPeerGain(ui.idHex) }.getOrNull(),
+                        )
+                    },
+                )
             }
             // 此检查与发布都在主线程，停止不能插入两者之间。
             if (engineStatus == null || !engineLifecycle.isCurrent(generation)) return@launch

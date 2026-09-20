@@ -176,20 +176,45 @@ private val ThumbOuterDiameter = 18.dp
  * 用到的只有这两个 lambda 参数，`Slider` 的其它行为（手势、涟漪、无障碍语义、48 dp 命中区）
  * 全部走稳定路径。
  */
+/** 禁用态的降权系数：与 M3 的 disabled 内容色（38%）对齐，别自己发明一套。 */
+private const val DisabledAlpha = 0.38f
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VolumeFader(
     controller: MediaVolumeController,
     contentDescription: String,
     modifier: Modifier = Modifier,
+    /** 未连接时置 false：没有声音可调，让滑块明确不可动（比"能拖但毫无作用"更诚实）。 */
+    enabled: Boolean = true,
+) {
+    AudioLinkSlider(
+        value = controller.fraction,
+        onValueChange = controller::setFraction,
+        contentDescription = contentDescription,
+        modifier = modifier,
+        enabled = enabled,
+    )
+}
+
+/** 系统音量与单路增益共享轨道、触控尺寸和无障碍名称。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AudioLinkSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    contentDescription: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     val controls = MaterialTheme.controlColors
     val accent = MaterialTheme.colorScheme.primary
-    val fraction = controller.fraction
+    val fraction = value.coerceIn(0f, 1f)
 
     Slider(
         value = fraction,
-        onValueChange = { controller.setFraction(it) },
+        onValueChange = onValueChange,
+        enabled = enabled,
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
@@ -201,27 +226,32 @@ fun VolumeFader(
             activeTrackColor = accent,
             inactiveTrackColor = controls.strongFill,
         ),
-        thumb = { FluentThumb() },
-        track = { FluentTrack(fraction = fraction) },
+        thumb = { FluentThumb(enabled = enabled) },
+        track = { FluentTrack(fraction = fraction, enabled = enabled) },
     )
 }
 
 /** Fluent 拇指：16 dp 圆点 + 1 px 内环（`ControlStrokeColorDefault`）+ 1 px 外描边（`ControlStrongStroke`）。 */
 @Composable
-private fun FluentThumb() {
+private fun FluentThumb(enabled: Boolean) {
     val controls = MaterialTheme.controlColors
+    // 禁用时整颗拇指降权成中性灰：自绘的 thumb **不吃** Slider 的 colors，所以这里必须自己认 enabled ——
+    // 否则"拖不动却长得像能拖"照样会骗到用户（真机评审 P1）。
+    val ink = MaterialTheme.colorScheme.onSurface.copy(alpha = DisabledAlpha)
+    val accent = if (enabled) MaterialTheme.colorScheme.primary else ink
+    val outer = if (enabled) controls.strongFill else ink
     Box(
         modifier = Modifier
             .size(ThumbOuterDiameter)
             .clip(CircleShape)
-            .background(controls.strongFill),
+            .background(outer),
         contentAlignment = Alignment.Center,
     ) {
         Box(
             modifier = Modifier
                 .size(ThumbDiameter)
                 .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary)
+                .background(accent)
                 .border(1.dp, controls.subtleStroke, CircleShape),
         )
     }
@@ -237,22 +267,26 @@ private fun FluentThumb() {
  * 也让这里画的和拇指所在的位置来自同一个真值（`MediaVolumeController.level`）。
  */
 @Composable
-private fun FluentTrack(fraction: Float) {
+private fun FluentTrack(fraction: Float, enabled: Boolean) {
     val controls = MaterialTheme.controlColors
+    // 同上：自绘的 track 也不吃 Slider 的 colors，禁用态要在这里自己画出来。
+    val ink = MaterialTheme.colorScheme.onSurface.copy(alpha = DisabledAlpha)
+    val fill = if (enabled) controls.strongFill else ink.copy(alpha = DisabledAlpha / 2f)
+    val progress = if (enabled) MaterialTheme.colorScheme.primary else ink
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .wrapContentHeight(Alignment.CenterVertically)
             .height(TrackHeight)
             .clip(CircleShape)
-            .background(controls.strongFill),
+            .background(fill),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth(fraction.coerceIn(0f, 1f))
                 .fillMaxHeight()
                 .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary),
+                .background(progress),
         )
     }
 }

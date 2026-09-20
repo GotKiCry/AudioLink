@@ -44,6 +44,29 @@ pub fn gain_x1000_from_f32(gain: f32) -> Result<u32, GainError> {
     Ok((gain * 1000.0).round() as u32)
 }
 
+/// §4.1 + FR-12：两层增益的合成 —— **本地 × 对端下发**。
+///
+/// # 为什么是乘法，而不是「本地覆盖对端」
+///
+/// 两层的**来源与语义都不同**：对端下发的是「对方希望我用多大声听」；本地是「这台设备自己
+/// 还要再调多少」。覆盖语义会让任一侧的动作把另一侧的意图悄悄抹掉 —— 用户调完本地，对端一改
+/// 音量就全丢。相乘则互不覆盖：任一层变化都仍然听得见影响，而两层都为 1.0 时与不分层完全一样。
+///
+/// # 为什么是两层状态、一个乘法点
+///
+/// 两个 [`GainState`] 各自走自己的 ramp（各自响应各自的变更），只在**播放前合成为一次乘法**
+/// （见 `runtime.rs` 里 `playout_main` 的取帧分支）。合成放在乘法点而不是写回状态机，是为了
+/// 避免「本地改一次就把对端的 target 覆盖掉」这类隐式耦合。
+///
+/// # 上界与削顶
+///
+/// 两层各自被 §4.1 的 0.0–2.0 校验，因此乘积最大 **4.0**（+12 dB）。这里**不做二次夹取**：
+/// 夹了就等于偷偷改掉「相乘」这条拍板语义。真正会削顶的情形由混音器的软限幅兜住（它永不削平顶）。
+#[must_use]
+pub fn combine_local_and_remote(remote: f32, local: f32) -> f32 {
+    remote * local
+}
+
 /// 音量状态机：当前值 → 目标值，按步长逐帧逼近。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GainState {
@@ -119,6 +142,28 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
+
+    /// 两层增益**相乘**：本地 0 永远压过对端任何值（本地静音就是静音），两层都 1.0 等于原声。
+    ///
+    /// 改坏（例如写成覆盖或相加）：用户会看到「对端调完音量，我这边设的又没了」，
+    /// 而这正是 FR-12 要避免的那种互相打架。
+    #[test]
+    fn local_and_remote_gains_multiply() {
+        assert_eq!(combine_local_and_remote(1.0, 1.0), 1.0, "两层都原声 = 原声");
+        assert_eq!(combine_local_and_remote(0.5, 1.0), 0.5, "只动对端那层");
+        assert_eq!(combine_local_and_remote(1.0, 0.5), 0.5, "只动本地那层");
+        assert_eq!(
+            combine_local_and_remote(0.5, 0.5),
+            0.25,
+            "两层各减半 → 四分之一，这才是「相乘」的判别性证据"
+        );
+        assert_eq!(
+            combine_local_and_remote(2.0, 2.0),
+            4.0,
+            "上界是乘积而非夹取"
+        );
+        assert_eq!(combine_local_and_remote(2.0, 0.0), 0.0, "本地静音压过一切");
+    }
 
     #[test]
     fn starts_settled_and_clamps_above_the_ceiling() {

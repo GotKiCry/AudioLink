@@ -18,8 +18,23 @@ export type PeerState = "idle" | "handshaking" | "streaming" | "degraded" | "fai
 export interface LocalStatus {
   idShort: string;
   name: string;
+  /**
+   * **监听地址**（QUIC bind 的地址，形如 0.0.0.0:58290）。
+   *
+   * 它不是「给对方输入的地址」：0.0.0.0 在任何一台设备上指的都是**那台设备自己**，
+   * 照着输必然连不上。要展示给人去输的地址，用 displayAddr。
+   */
   addr: string;
   platform: string;
+  /**
+   * 候选可达地址，形如 192.168.1.23:58290。
+   *
+   * 声明为可选：这是后加的能力，老内核（或命令还没回来）不会给它们 ——
+   * 缺字段是**正常态**，界面要按「一条都没有」处理，而不是崩在 undefined.length 上。
+   */
+  lanAddrs?: string[];
+  /** 推荐给用户输入的那一条；null 或缺失 = 一条都没挑出来。 */
+  displayAddr?: string | null;
 }
 
 /** Windows 活动输出端点。id 是完整实例 ID，不能用展示名代替。 */
@@ -126,6 +141,68 @@ const PIN_PATTERN = /^\d{6}$/;
 /** 配对码是否形如 6 位数字（**输入前置校验**，不是安全校验；真正的校验在内核里）。 */
 export function isPinWellFormed(pin: string): boolean {
   return PIN_PATTERN.test(pin);
+}
+
+/** IPv4 的一段（十进制，1-3 位）。 */
+const IPV4_PART = /^[0-9]{1,3}$/;
+
+/** IPv6 的一段（1-4 位十六进制）。 */
+const IPV6_GROUP = /^[0-9a-fA-F]{1,4}$/;
+
+/**
+ * 手工输入的对方地址是否形如「IP」或「IP:端口」。
+ *
+ * 这是**输入前置校验**，不是安全校验：真正的判据在内核（内核还可能比这里更宽，
+ * 比如接受主机名）。所以界面只拿它做「格式对不对」的即时反馈，**不拿它禁用提交按钮** ——
+ * 前端判据一旦比内核窄，用户就会被锁在一个更严的规则之外：提示可以错，拦截不能错。
+ */
+export function isPeerAddrWellFormed(raw: string): boolean {
+  const addr = raw.trim();
+  if (addr === "") return false;
+
+  // 方括号是 IPv6 与端口共存的唯一写法：fe80::1:58290 里最后那段到底算 hextet 还是端口，
+  // 没有方括号根本分不清。
+  if (addr.startsWith("[")) {
+    const close = addr.indexOf("]");
+    if (close === -1) return false;
+    if (!isIpv6Host(addr.slice(1, close))) return false;
+    const rest = addr.slice(close + 1);
+    return rest === "" || (rest.startsWith(":") && isPortWellFormed(rest.slice(1)));
+  }
+
+  // 裸 IPv6 里冒号多于一个，就不存在「末尾那段是端口」的读法，整串当地址看。
+  if (addr.split(":").length > 2) return isIpv6Host(addr);
+
+  const colon = addr.lastIndexOf(":");
+  const host = colon === -1 ? addr : addr.slice(0, colon);
+  if (colon !== -1 && !isPortWellFormed(addr.slice(colon + 1))) return false;
+  return isIpv4Host(host);
+}
+
+/** 端口必须是 1-65535：0 与越界值都是必然连不上的写法，早点说比让用户等超时好。 */
+function isPortWellFormed(raw: string): boolean {
+  if (!/^[0-9]+$/.test(raw)) return false;
+  const port = Number(raw);
+  return port >= 1 && port <= 65535;
+}
+
+function isIpv4Host(host: string): boolean {
+  const parts = host.split(".");
+  return parts.length === 4 && parts.every((part) => IPV4_PART.test(part) && Number(part) <= 255);
+}
+
+/** IPv6 粗判：允许双冒号压缩与链路本地地址的 %zone 后缀，其余按段数与字符集卡。 */
+function isIpv6Host(host: string): boolean {
+  const withoutZone = host.split("%")[0] ?? "";
+  if (!withoutZone.includes(":")) return false;
+
+  const compressed = withoutZone.includes("::");
+  const groups = withoutZone.split(":").filter((group) => group !== "");
+  if (groups.length > 8) return false;
+  if (!groups.every((group) => IPV6_GROUP.test(group))) return false;
+
+  // 没用双冒号压缩就必须正好 8 段；用了压缩则必须少于 8 段（压缩至少代表一段）。
+  return compressed ? groups.length < 8 : groups.length === 8;
 }
 
 /**

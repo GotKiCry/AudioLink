@@ -74,7 +74,7 @@ pub enum CodecPref {
 // §5 握手与配对
 // ---------------------------------------------------------------------------
 
-/// `HELLO`（`0x01`，发起方 →）：`proto_version, node_info, nonce, caps`。
+/// `HELLO`（`0x01`，接收端 → 主机）：`proto_version, node_info, nonce, caps`。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloPayload {
     /// 对端应等于 [`audiolink_types::PROTO_VERSION`]，否则回 `1001 VERSION_MISMATCH`。
@@ -87,7 +87,7 @@ pub struct HelloPayload {
     pub caps: u32,
 }
 
-/// `HELLO_ACK`（`0x02`，响应方 →）。
+/// `HELLO_ACK`（`0x02`，主机 → 接收端）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloAckPayload {
     /// 响应方协议版本。
@@ -118,21 +118,21 @@ pub struct AuthResponsePayload {
     pub signature: Vec<u8>,
 }
 
-/// `PAIR_REQUIRED`（`0x05`，接收方 →）。
+/// `PAIR_REQUIRED`（`0x05`，主机 → 接收端）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PairRequiredPayload {
-    /// `true` 时接收端屏幕显示 6 位码（桌面端为窗口提示，Android 为通知/界面）。
+    /// `true` 时由主机显示 6 位码（桌面端为窗口提示，Android 为通知/界面）。
     pub pin_display: bool,
 }
 
-/// `PAIR_SUBMIT`（`0x06`，发起方 →）。
+/// `PAIR_SUBMIT`（`0x06`，接收端 → 主机）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PairSubmitPayload {
     /// 6 位数字 PIN（经加密通道提交，防窃听）。
     pub pin: String,
 }
 
-/// `PAIR_RESULT`（`0x07`，接收方 →）。
+/// `PAIR_RESULT`（`0x07`，主机 → 接收端）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PairResultPayload {
     /// 是否通过。
@@ -147,7 +147,7 @@ pub struct PairResultPayload {
 // §4.1 会话与流控制
 // ---------------------------------------------------------------------------
 
-/// `OPEN_STREAM`（`0x10`，发送方 →）。
+/// `OPEN_STREAM`（`0x10`，主机 → 接收端）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenStreamPayload {
     /// 发送方分配的会话 ID（ACK 回填同一值）。
@@ -164,7 +164,7 @@ pub struct OpenStreamPayload {
     pub group: Option<u32>,
 }
 
-/// `OPEN_STREAM_ACK`（`0x11`，接收方 →）。
+/// `OPEN_STREAM_ACK`（`0x11`，接收端 → 主机）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenStreamAckPayload {
     /// 回填 `OPEN_STREAM.session_id`。
@@ -188,7 +188,7 @@ pub struct CloseStreamPayload {
     pub reason: String,
 }
 
-/// `GROUP_CREATE`（`0x40`，发送方 →）：创建临时同步组（§7 / FR-22）。
+/// `GROUP_CREATE`（`0x40`，主机 → 接收端）：创建临时同步组（§7 / FR-22）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupCreatePayload {
     /// 组标识（发送方随机生成）。
@@ -203,7 +203,7 @@ pub struct GroupCreatePayload {
     pub members: Vec<NodeId>,
 }
 
-/// `GROUP_JOIN`（`0x41`，发送方 →）：成员动态加入（§7）。
+/// `GROUP_JOIN`（`0x41`，主机 → 接收端）：成员动态加入（§7）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupJoinPayload {
     /// 组标识。
@@ -212,7 +212,7 @@ pub struct GroupJoinPayload {
     pub member: NodeId,
 }
 
-/// `GROUP_LEAVE`（`0x42`，发送方 →）：成员退出（§7）。
+/// `GROUP_LEAVE`（`0x42`，主机 → 接收端）：成员退出（§7）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupLeavePayload {
     /// 组标识。
@@ -221,7 +221,7 @@ pub struct GroupLeavePayload {
     pub member: NodeId,
 }
 
-/// `GROUP_EPOCH`（`0x43`，发送方 →）/ `RECEIVER_EPOCH`（`0x44`，接收方 →）。
+/// `GROUP_EPOCH`（`0x43`，主机 → 接收端）/ `RECEIVER_EPOCH`（`0x44`，接收端 → 主机）。
 ///
 /// 同一个载荷两个方向：`0x43` 由发送端指定、接收端据此排播（同一发送端 → 多台接收端对齐）；
 /// `0x44` 由**接收端**广播、发送端据此对齐自己的发送时间轴（多台发送端 → 一台接收端混音对齐）。
@@ -255,7 +255,7 @@ pub struct SetMutePayload {
     pub mute: bool,
 }
 
-/// `CLOCK_RESULT`（`0x30`，发送方 →）：用于对端诊断。
+/// `CLOCK_RESULT`（`0x30`，主机 → 接收端）：用于对端诊断。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClockResultPayload {
     /// 相对本机的时钟偏移（µs）。
