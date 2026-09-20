@@ -25,7 +25,7 @@ android {
         // 未授权时局域网 UDP/TCP/组播全部失败（EPERM），且后台音频写入会被静默吞掉。
         targetSdk = 36
 
-        versionName = "0.1.0" // CI 校验：必须与 Cargo.toml workspace version 一致
+        versionName = "0.1.1" // CI 校验：必须与 Cargo.toml workspace version 一致
         // versionCode 从 versionName 派生（major*10000 + minor*100 + patch）：
         //  * 覆盖安装的硬要求是 versionCode **递增** —— 写死 1 会让「应用内更新」永远装不上去
         //    （同版本或降级，系统直接拒绝）；

@@ -344,7 +344,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "audiolink-audio"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "audiolink-proto",
  "audiolink-types",
@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "audiolink-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "audiolink-audio",
  "audiolink-engine",
@@ -380,14 +380,14 @@ dependencies = [
 
 [[package]]
 name = "audiolink-discovery"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "audiolink-types",
 ]
 
 [[package]]
 name = "audiolink-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "audiolink-audio",
  "audiolink-identity",
@@ -408,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "audiolink-ffi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "audiolink-audio",
  "audiolink-engine",
@@ -423,7 +423,7 @@ dependencies = [
 
 [[package]]
 name = "audiolink-identity"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "audiolink-types",
  "p256",
@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "audiolink-net"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "audiolink-proto",
  "audiolink-types",
@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "audiolink-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "audiolink-types",
  "postcard",
@@ -465,7 +465,7 @@ dependencies = [
 
 [[package]]
 name = "audiolink-tools"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "audiolink-audio",
@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "audiolink-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
 ]
