@@ -70,7 +70,13 @@ fun UpdateScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp)
                 .verticalScroll(scrollState),
         ) {
-            SilkLabel(strings.updateHint)
+            // 用 Text 而不是 SilkLabel：后者是「丝印分区标签」（大写 + 单行，见 Silk.kt 的 maxLines = 1），
+            // 拿它装整句提示会在第一行就被截断 —— 真机上实测过一次（2026-09-20）。
+            Text(
+                text = strings.updateHint,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Spacer(modifier = Modifier.height(12.dp))
             Text(
                 text = String.format(strings.updateCurrentFormat, controller.currentVersion),
