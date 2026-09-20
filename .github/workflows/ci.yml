@@ -177,6 +177,17 @@ jobs:
       - name: Assemble debug APK
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon
+      # Android 依赖许可的采集门禁：这一步只验「采得到」，声明本体在 release.yml 生成
+      # （那边的 desktop job 经 artifact 拿到这份清单）。放在这里是为了让采集脚本本身
+      # 不会悄悄腐烂 —— 它跑不通时，发布时才发现就太晚了。
+      - name: Dependency tree (release runtime classpath)
+        working-directory: android
+        run: |
+          mkdir -p ../target/evidence/compliance
+          ./gradlew :app:dependencies --configuration releaseRuntimeClasspath --no-daemon \
+            > ../target/evidence/compliance/android-dependencies.txt
+      - name: Collect Android dependency licenses
+        run: pwsh tools/android-licenses.ps1 -Cache "$HOME/.gradle/caches/modules-2/files-2.1"
       - uses: actions/upload-artifact@v4
         with:
           name: audiolink-android-debug

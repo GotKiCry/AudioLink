@@ -41,9 +41,17 @@ jobs:
   # ---------- 桌面：NSIS 安装包 + 更新签名 + latest.json ----------
   desktop:
     name: desktop installer
+    # 依赖 android job：随包发出去的第三方声明必须含 Android 一栏，而那份清单只有 android job
+    # 采得到（它需要 Gradle）。缺了它 license-audit -Notices 会**明确失败** —— 这是刻意的：
+    # 宁可流水线红，也不发一份「看起来完整、其实少一栏」的声明（docs/42 §13.1）。
+    needs: [android]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-licenses
+          path: target/evidence/compliance/
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: pnpm/action-setup@v4
@@ -86,6 +94,15 @@ jobs:
         if: ${{ hashFiles('target/evidence/release/latest.json') != '' }}
         shell: pwsh
         run: node tools/check-update.mjs --dir target/x86_64-pc-windows-msvc/release/bundle/nsis
+
+      # 自动更新端到端：清单生成 → 本地托管 → 真插件 check()/download() 真验签
+      # （含「篡改 1 字节必须被拒」与「错公钥必须被拒」两个负例）。
+      # 为什么必须在这儿跑：签名密钥是发布时才有的东西 —— 私钥配错、或公钥没跟着换，
+      # 只有这一步能当场抓住；否则会产出一批「装得上、永远更新不了」的包（docs/42 §12）。
+      - name: Updater end-to-end (local host + real plugin)
+        if: ${{ hashFiles('target/evidence/release/latest.json') != '' }}
+        shell: pwsh
+        run: pwsh tools/updater-local-e2e.ps1
 
       - name: Collect desktop artifacts
         shell: pwsh
@@ -151,6 +168,21 @@ jobs:
             echo "::warning::未配置 Android keystore：本次只出 debug APK（不是发布物）"
             ./gradlew assembleDebug --no-daemon
           fi
+      # 第三方声明里的 Android 一栏在这里采集（只有本 job 有 Gradle）。
+      # 采集脚本读「依赖树报告 + Gradle 缓存里的 POM」——CI 的缓存在 ~/.gradle（不是本地的 .gradle-home）。
+      - name: Dependency tree (release runtime classpath)
+        working-directory: android
+        run: |
+          mkdir -p ../target/evidence/compliance
+          ./gradlew :app:dependencies --configuration releaseRuntimeClasspath --no-daemon \
+            > ../target/evidence/compliance/android-dependencies.txt
+      - name: Collect Android dependency licenses
+        run: pwsh tools/android-licenses.ps1 -Cache "$HOME/.gradle/caches/modules-2/files-2.1"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-licenses
+          path: target/evidence/compliance/android-licenses.json
+          if-no-files-found: error
       - name: Collect APK
         shell: bash
         run: |

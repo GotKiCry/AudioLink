@@ -676,3 +676,80 @@ release 反证怎么复跑（一次性，会编 release，几分钟）：
 2. `ci.yml` 那一步的名字仍叫 `License audit (Rust + frontend)`，与脚本现在的实际覆盖面（默认含 Android）不符。
 3. `docs/compliance/license-report.md` 里「未覆盖：…Android 侧的**投放位置**（声明入口）」是**自动生成的**，
    模板在 `core/crates/audiolink-tools/src/license.rs` 的报告渲染函数里 —— 见 `docs/41` §10.1。
+---
+
+## 14. 发布链路收口：正式密钥 + secrets + 一个会让 CI 必红的缺口（2026-09-20）
+
+§13 的缺口清单本轮全部落地或明确边界。四件事，按重要性排。
+
+### 14.1 密钥换代（趁「从未发布过」的零成本窗口）
+
+**为什么此刻能动**：`git tag -l` 与远端 tag 都是空的 —— 从没有正式发布过，换 key 不影响任何已装用户。
+**一旦发过版，这笔账就永远关上了**（Tauri 换 key = 老用户收不到更新；Android 换 keystore = 无法覆盖安装）。
+
+| | 旧（本轮替换掉） | 新（现役） |
+|---|---|---|
+| Tauri 更新签名 | `~/.tauri/audiolink.key`，密码 `dev-only-change-me`（§5.3 自注「开发用，发布前应重新生成」） | 同路径，24 字节随机口令；**公钥已写进 `tauri.conf.json`** |
+| Android keystore | `android/release.jks`，`storePassword=test-password`、`CN=AudioLink Test` | `~/.audiolink/audiolink-release.jks`，随机口令、`CN=AudioLink Release`、RSA 4096 / 10000 天 |
+
+- **证书指纹（Android）**：`59:3B:77:66:DB:09:56:FE:07:3C:25:1D:F3:6C:81:91:5A:25:3A:6A:7C:08:17:3A:40:E6:A3:6F:EA:34:9C:3C`；
+- **口令与清单**落在**仓库外** `~/.audiolink/`（`secrets.env` + `README.md`）；旧资产改名留档（`audiolink.key.dev-backup-20260920`）；
+- ⚠️ **备份是硬要求**：这两个文件丢了，就再也签不出「能被老版本接受」的更新包。
+
+### 14.2 CI secrets 已配（六条）
+
+`gh secret list` 实测在位：`TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` /
+`ANDROID_KEYSTORE_BASE64` / `ANDROID_STORE_PASSWORD` / `ANDROID_KEY_ALIAS` / `ANDROID_KEY_PASSWORD`。
+于是 `release.yml` 里那两条 `::warning::`（「本次产物不带更新签名」/「只出 debug APK」）**不会再出现**。
+
+### 14.3 一个会让 CI 必红的缺口（本轮修掉）
+
+**事实**：`0bf3f56`（2026-09-17 17:24）把 `license-audit.ps1 -Notices` 改成「缺 Android 清单 → **明确失败**」
+（这是对的：声明随包发给用户，少一栏比流水线红更坏）。但 `release.yml` 的 desktop job 里那一步**从来没有**
+Android 清单 —— 它跑在 `windows-latest`，而 Android 依赖只有 android job（有 Gradle）采得到。
+
+⇒ **从 09-17 17:24 起，release 流水线必红**（desktop job 在 `Generate third-party notices` 就抛错）。
+最后一次 release 运行是 09-16 17:12（成功）—— 之后一次都没跑过，所以没人发现。
+
+**修法**：
+
+| 位置 | 改动 |
+|---|---|
+| `release.yml` android job | 新增「依赖树（releaseRuntimeClasspath）」+「采集许可」两步，把 `android-licenses.json` 上传为 artifact |
+| `release.yml` desktop job | `needs: [android]` + `download-artifact` 到 `target/evidence/compliance/` |
+| `ci.yml` android job | 同样两步（只验「采得到」，防采集脚本悄悄腐烂） |
+
+⚠️ CI 的 Gradle 缓存在 `~/.gradle/caches/modules-2/...`，本地在 `.gradle-home/...` —— 采集步骤显式传 `-Cache`。
+
+### 14.4 自动更新端到端接进发布流程
+
+`tools/updater-local-e2e.ps1`（§12.6 的 S1–S7）此前**只在本地跑**（§13 把它列为缺口）。现在进了
+`release.yml` 的 desktop job，条件与同源校验一致（有 `latest.json` 才跑）。它在这里的价值最高：
+私钥配错、公钥没跟着换，只有这一步能当场抓住 —— 否则产出的是一批「装得上、永远更新不了」的包。
+
+### 14.5 本轮实测证据
+
+| 验证 | 命令 | 结果 |
+|---|---|---|
+| 桌面：清单 → 托管 → 真插件 check/download 真验签 | `pwsh tools/updater-local-e2e.ps1` | **exit 0**，S1–S7 全 PASS（含「篡改 1 字节被拒」`InvalidSignature`、「错公钥被拒」`UnexpectedKeyId`） |
+| 桌面：新私钥对新产物重新签名 | `tauri signer sign -k <key> -p <pw> AudioLink_0.1.0_x64-setup.exe` | 新 `.sig` 产出；旧密钥那份留档为 `.sig.oldkey` |
+| Android：双 ABI release 用新 keystore 签出 | `pwsh tools/gradlew.ps1 -JavaHome <JDK 17+> :app:assembleRelease` | **BUILD SUCCESSFUL**；`apksigner verify` 对两个包都报 `V2 Signer` + `CN=AudioLink Release` + 指纹一致 |
+| 许可判定含 Android 一栏 | `pwsh tools/license-audit.ps1 -Report <临时路径>` | exit 0：Rust 651 / 前端 154 / Android 114 包 · denied 0 · notice 18 |
+
+### 14.6 仍然必须人工（边界没变）
+
+| 项 | 为什么 |
+|---|---|
+| **Windows 代码签名证书** | 外部资产（购买 + 实名）。它与更新签名是**两回事**：它消除 SmartScreen 警告，不参与 updater 验签 |
+| **GitHub Release 正式发布**（草稿 → Publish） | 对外不可逆；`releases/latest` 只认正式 Release |
+| **干净机器装 0.1.0 → 升到 0.1.1** | 会改系统状态（Program Files / 注册表）；「干净」本身是环境属性 |
+
+⇒ 这三件做完，M5 的发布链路才算真正收口；**代码侧与 CI 侧本轮已无已知缺口**。
+
+### 14.7 顺带更正 §13.1（避免下一轮扫描再当缺口捞出来）
+
+| §13.1 原表述 | 判定 | 实况 |
+|---|---|---|
+| #1「CI 生成的声明可能不含 Android 一栏」 | **已处置** | 走的是「明确失败」路线（`0bf3f56`），本轮再把采集接进两处 workflow（§14.3）—— 两条路都收口了 |
+| #2「`ci.yml` 那一步名字仍叫 License audit (Rust + frontend)」 | **过时** | 现名已含「Android 一列见 tools/android-licenses.ps1」 |
+| #3「报告模板里『未覆盖 Android 投放位置』是自动生成的」 | **仍成立** | 属工具输出口径，未动；改它要动 `audiolink-tools::license` 的渲染函数 |
