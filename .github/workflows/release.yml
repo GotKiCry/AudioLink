@@ -15,6 +15,17 @@ name: Release
 #      自动更新于是永远停在「配置在、功能不可用」。
 #   4. **缺密钥时的行为**：没有签名密钥时 `createUpdaterArtifacts` 会让构建直接失败；现在降级构建
 #      并打 `::warning::`，宁可明确说「这份产物不能用于自动更新」。
+#
+# 2026-09-20 精简（本文件成为仓库唯一 workflow）：`.github/workflows/ci.yml` **整份移除**，流水线只保留打包。
+#   * 移除的是测试：core-light / core-heavy（fmt + clippy + nextest）与 soak-gate（弱网 120 s 长跑）
+#     一律回本地跑 —— 门禁清单见 CONTRIBUTING.md，它们是开发者的责任，不该占 runner 时间。
+#   * 唯一留下的校验是 version-consistency → 下面的 `verify` job：它不是测试，是发布前提
+#     （三处版本号必须同源）。
+#   * ci.yml 的 android debug APK 打包也一并移除：debug 包不是发布物，它的作用是「验证能构建」，
+#     这件事本地就能做。
+#   * 本文件的产物校验（清单同源 check-update.mjs、真插件 updater 端到端）**刻意保留**：它们验的是
+#     发布产物本身，且签名私钥只存在于 CI secrets —— 本地无法复现。删掉它的代价是发出一批
+#     「装得上、永远更新不了」的包（docs/42 §12）。
 
 on:
   push:
@@ -38,13 +49,27 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ---------- 发布前置：版本单一来源校验（唯一校验类 job）----------
+  # 原在 `.github/workflows/ci.yml` 的 version-consistency job —— 日常 CI 已整体移除，这一步以
+  # **发布前置**的身份留下：它不是测试，而是「三处版本号必须同源」的发布前提
+  # （版本漂了就不该产出安装包，更不该发出去）。
+  verify:
+    name: version-consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify version matches across Cargo / tauri.conf / build.gradle
+        shell: pwsh
+        run: ./tools/check-version.ps1
+
   # ---------- 桌面：NSIS 安装包 + 更新签名 + latest.json ----------
   desktop:
     name: desktop installer
+    # 依赖 verify：版本号三处一致才值得打包。
     # 依赖 android job：随包发出去的第三方声明必须含 Android 一栏，而那份清单只有 android job
     # 采得到（它需要 Gradle）。缺了它 license-audit -Notices 会**明确失败** —— 这是刻意的：
     # 宁可流水线红，也不发一份「看起来完整、其实少一栏」的声明（docs/42 §13.1）。
-    needs: [android]
+    needs: [verify, android]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -126,6 +151,7 @@ jobs:
   # ---------- Android：双 ABI，keystore 走 secrets（缺则降级 debug 并标注）----------
   android:
     name: android apk
+    needs: [verify]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -235,6 +261,8 @@ jobs:
           draft: true
 
 # 说明：
-#  * 发布前必须跑 tools/check-version.ps1（CI 的 version-consistency job 每次都在跑）。
+#  * 发布前必须跑 tools/check-version.ps1 —— 本 workflow 的 verify job 每次都会先跑
+#    （原 ci.yml 的 version-consistency job 已挪到此处的 verify job；日常 CI 不再存在）。
+#  * 流水线里不再有 lint / 单元测试 / soak：这些是本地门禁（见 CONTRIBUTING.md）。
 #  * 自动更新的端点是 releases/latest/download/latest.json —— 草稿 Release 不在 latest 里，
 #    所以「草稿 → 手动发布」这一步同时承担了「对外可见」与「更新可见」两件事。

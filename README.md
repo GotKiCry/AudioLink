@@ -1,6 +1,6 @@
 # AudioLink
 
-[![CI](https://github.com/GotKiCry/AudioLink/actions/workflows/ci.yml/badge.svg)](https://github.com/GotKiCry/AudioLink/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/GotKiCry/AudioLink)](https://github.com/GotKiCry/AudioLink/releases/latest)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-informational.svg)](#)
 
