@@ -180,6 +180,7 @@ The installer first winds the session down gracefully, closes AudioLink, runs, a
 **Android**: top bar → **Updates** → **Check for updates** → **Download and install**.
 
 - The first Android update asks the system for permission to install apps - grant it, come back, tap **Continue install**;
+- After that, some vendors add one more **hand-off confirmation** (e.g. ColorOS asking whether AudioLink may open the installer) - just allow it; that is a system guard, not an error;
 - Android only sees **published** releases: a freshly built version that nobody has published yet still shows as "up to date";
 - Android can only install over an existing copy from the second version on (Android requires the same signature).
 

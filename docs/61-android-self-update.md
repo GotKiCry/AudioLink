@@ -65,6 +65,8 @@ CI 产出两个 APK（`app-arm64-v8a-release.apk` / `app-armeabi-v7a-release.apk
 | Play 上架后 | 若改走 Play 分发，更新应由 Play 负责；本机制适用于「GitHub Release 直装」这条路（当前形态） |
 | 增量更新 | 不做。全量 APK 只有 6 MB 量级，差分不值得 |
 | 自动重试 | 不做。失败就报错，用户再点一次 —— 与桌面端一致的保守选择 |
+| **OEM 会再拦一跳** | OPLUS/ColorOS 等会在 `ACTION_VIEW` 拉起安装器时弹**应用跳转确认**（「『AudioLink』想要打开『InstallerX Revived』」），用户要选「仅本次允许 / 30 天内允许」。厂商管控，不是缺陷 |
+| **默认安装器可能不是 AOSP** | 第三方安装器（如 InstallerX Revived）用自定义 View，界面文字**不进 `uiautomator dump`** —— 自动化验证要看截图 + 坐标，不能按文字找控件 |
 
 ## 7. 复现与证据
 
@@ -93,3 +95,34 @@ $env:LOCALAPPDATA\Android\Sdk\build-tools\<ver>\aapt2.exe dump badging `
 | `.../update/ApkInstall.kt` | FileProvider + 系统安装器 + 「安装未知应用」授权引导 |
 | `.../update/UpdateController.kt` | 状态机（Idle/Checking/UpToDate/Available/Downloading/Ready/NeedsPermission/Failed） |
 | `.../ui/screens/UpdateScreen.kt` | 界面（二级目的地，返回键回控制台） |
+
+## 9. 真机验收（2026-09-20 · PHK110 / Android 16 / API 36）
+
+**场景**：手机装 v0.1.0（新 keystore 签、versionCode 100）→ GitHub 发布 v0.1.1 → 走完应用内更新。
+
+| # | 步骤 | 结果 | 证据（`target/evidence/android-update/`） |
+|---|---|---|---|
+| 1 | 顶栏「更新」→「检查更新」 | **发现新版本 0.1.1（当前 0.1.0）**，带发布日期与更新说明 | `release-03-checked.xml` |
+| 2 | 「下载并安装 0.1.1」 | **已下载 0.1.1，可以安装了** —— 这一步隐含**签名证书校验通过**（不符会删包并报错，见 §3） | `release-05-downloaded.xml` |
+| 3 | 「安装」→ 首次 | App 正确跳到系统「安装未知应用」页 | `release-06-after-install-tap.xml` |
+| 4 | 授权后「继续安装」 | 拉起系统安装器，**版本显示 `0.1.0 (100) ▶ 0.1.1 (101)`** | `release-12-installer.png` |
+| 5 | 安装器「升级」 | **装上 0.1.1**：`versionName=0.1.1`、`versionCode=101` | `adb shell dumpsys package com.gotkicry.audiolink` |
+| 6 | 重开 App → 再查一次 | 「当前版本 0.1.1」+「**已是最新版本**」 | `release-16-uptodate.png` |
+
+**本轮真机才暴露的三件事**（已写进 §6 的边界）：
+
+1. **OEM 会再拦一跳**：点「继续安装」后 OPLUS/ColorOS 弹出应用跳转确认（`com.oplus.securitypermission/AppStartConfirmDialogActivity`），需用户点头。属 Android 16 的厂商管控，**不是缺陷**，但用户手册该提，否则会被当成 bug；
+2. **`adb shell appops set ... REQUEST_INSTALL_PACKAGES allow` 不可用**（uid 2000 无 `MANAGE_APP_OPS_MODES`）⇒ 自动化验证必须**真的去点那个开关**；
+3. **默认安装器可能是第三方**（本机是 InstallerX Revived）：自定义 View 的文字不进 `uiautomator dump`，自动化得靠截图 + 坐标。
+
+**验证起点那次「卸载重装」**是换 keystore 的必然代价（旧测试 keystore 签的包无法被新 keystore 覆盖），见 §3 与 `docs/42-m5-release-pipeline.md` §14.1。
+
+## 10. 真机抓出来并修掉的 UI 缺陷（同日）
+
+第一次真机点开更新页时，提示只剩「更新只在点击时检查：AUDIOLINK 不会在后台自动下载或」——**后半句没了**，
+而且整句被丝印大写化。
+
+根因：`SilkLabel` 硬编码 `maxLines = 1`（`ui/components/Silk.kt:42`）—— 它是「分区标签」（大写 + 单行 + 宽字距），
+拿它装整句说明是误用。改成普通 `Text`（bodySmall + onSurfaceVariant）后复验通过（`ui-04-fixed.png`）。
+
+> 教训：**组件的能力边界写在它的实现里，不在它的名字里**。「丝印标签」听起来只是样式，实际还含「单行」这个硬约束。
