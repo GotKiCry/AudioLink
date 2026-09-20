@@ -17,12 +17,25 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$reportPath = Join-Path $root $Report
-$cachePath = Join-Path $root $Cache
-$outPath = Join-Path $root $Out
 
-if (-not (Test-Path $reportPath)) { throw "依赖树报告不存在：$Report（先用 gradlew 生成）" }
-if (-not (Test-Path $cachePath)) { throw "Gradle 缓存不存在：$Cache" }
+# 相对路径按仓库根解析；**绝对路径原样使用**。
+# 为什么需要它：PowerShell 的 Join-Path 在第二段是绝对路径时**不会**丢弃第一段，
+# 而是直接拼接（与 .NET 的 Path.Combine 行为不同）—— 于是 CI 里传绝对路径会被
+# 拼成 `/repo//home/runner/.gradle/...` 这种不存在的路径，再误报成「缓存不存在」。
+function Resolve-RepoPath {
+    param([Parameter(Mandatory)][string]$Path)
+    if ([System.IO.Path]::IsPathRooted($Path)) { return $Path }
+    return (Join-Path $root $Path)
+}
+
+$reportPath = Resolve-RepoPath $Report
+$cachePath = Resolve-RepoPath $Cache
+$outPath = Resolve-RepoPath $Out
+
+# 报错一律打印**实际检查的路径**（而不是原始参数）：上一版的报错信息打印 $Cache，
+# 结果把「拼接出错」伪装成「缓存不存在」，在 CI 上白烧了一轮。
+if (-not (Test-Path $reportPath)) { throw "依赖树报告不存在：$reportPath（先用 gradlew 生成）" }
+if (-not (Test-Path $cachePath)) { throw "Gradle 缓存不存在：$cachePath" }
 
 # ---------- 1. 从依赖树抽出坐标 ----------
 $coords = [ordered]@{}
