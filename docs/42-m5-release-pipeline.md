@@ -753,3 +753,35 @@ Android 清单 —— 它跑在 `windows-latest`，而 Android 依赖只有 andr
 | #1「CI 生成的声明可能不含 Android 一栏」 | **已处置** | 走的是「明确失败」路线（`0bf3f56`），本轮再把采集接进两处 workflow（§14.3）—— 两条路都收口了 |
 | #2「`ci.yml` 那一步名字仍叫 License audit (Rust + frontend)」 | **过时** | 现名已含「Android 一列见 tools/android-licenses.ps1」 |
 | #3「报告模板里『未覆盖 Android 投放位置』是自动生成的」 | **仍成立** | 属工具输出口径，未动；改它要动 `audiolink-tools::license` 的渲染函数 |
+
+### 14.8 CI 端到端验证（同日晚些时候，run `35483230945`）
+
+`gh workflow run release.yml`（`publish=false`，只构建不建 Release）：
+
+| job | 结果 | 关键步骤 |
+|---|---|---|
+| `android apk` | ✅ **3m56s** | 依赖树 + 许可采集（§14.3 新增）· `> Task :app:assembleRelease`（**真 release 路径**，不再是降级 debug）· 两个 artifact 上传 |
+| `desktop installer` | ✅ **21m41s** | `Generate third-party notices`（**曾经的必红点**）· `Tauri build`（**带更新签名**）· `Generate update manifest` · 同源校验 · **`Updater end-to-end`** |
+| `publish release` | skipped | 符合设计：`publish=false` 不建 Release |
+
+产物：`audiolink-desktop` 11.2 MB（安装包 + `.sig` + `latest.json` + 绿色版）、`audiolink-android` 6.7 MB（双 ABI release APK）、`android-licenses` 1.4 KB。
+
+同批 `ci.yml`（run `35483230336`）**恢复全绿** —— 顺带清掉了 core-light 自 `85c57f9` 起一直红的 rustfmt 问题
+（`desktop/src-tauri/src/settings.rs` 两处，`0375581`）。**这两处无关本次改动，但 CI 红着谈「发布链路可用」没有意义。**
+
+### 14.9 第一次跑就踩到第二个真缺陷：`Join-Path` 不会丢弃第一段
+
+`release.yml` 的 android job **第一次运行就红**（run `35482996973`）：
+
+    Gradle 缓存不存在：/home/runner/.gradle/caches/modules-2/files-2.1
+
+实况在 `tools/android-licenses.ps1`：`Join-Path $root $Cache` —— PowerShell 的 `Join-Path` 在第二段是
+**绝对路径**时**不会**丢弃第一段（与 .NET `Path.Combine` 的行为不同），于是把它拼成 `<repo>//home/runner/...`；
+而报错又打印原始参数 `$Cache`，把「拼接出错」伪装成「缓存不存在」—— 排查时白烧一轮 CI。
+
+- 修法：新增 `Resolve-RepoPath`（绝对路径原样使用，相对路径才拼仓库根，覆盖 report/cache/out 三处），报错改为打印**实际检查的路径**（`09e2b25`）；
+- 为什么现在才暴露：这个缺陷**只在传绝对路径时出现**，而本地一直传相对路径（`.gradle-home/...`）；新加的 CI 步骤是它的第一个绝对路径调用方；
+- 本地三例验证：相对路径 exit 0 / 绝对路径 exit 0 / 不存在的路径报出真实路径。
+
+> **教训（写给下一轮）**：新接进 CI 的脚本，第一次跑要当作「它还没被验证过」——
+> 两个缺陷（声明缺 Android、`Join-Path` 绝对路径）都是**第一次真实运行**才现形的。
