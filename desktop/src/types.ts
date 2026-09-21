@@ -71,11 +71,22 @@ export interface PeerView {
   addr: string;
   state: PeerState;
   trusted: boolean;
+  /** 本机主动连接该主机收听声音，不向它自动回传音频。 */
+  receiving?: boolean;
   /** 重连成功次数（0 = 从未重连）：界面据此显示回执。 */
   /** 重连成功次数（Rust 侧总是序列化它；此处声明为可选，因为测试夹具用 Partial<PeerView> 展开构造）。 */
   reconnects?: number;
   /** §13 能力协商结果；null = 还没走完能力交换（握手中就是 null）。 */
   capabilities: PeerCapabilitiesView | null;
+}
+
+export interface DiscoveredHost {
+  idShort: string;
+  name: string;
+  addr: string;
+  platform: string;
+  protoVersion: number;
+  compatible: boolean;
 }
 
 /** `telemetry` 的返回 / `audiolink://telemetry` 的载荷。单位：µs / bps / 百分数。 */

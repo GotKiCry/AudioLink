@@ -64,7 +64,7 @@ async function emit(list: PeerView[]): Promise<void> {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   events = null;
   vi.mocked(subscribeEvents).mockImplementation((handlers) => {
     events = handlers;
@@ -93,7 +93,10 @@ beforeEach(() => {
   vi.mocked(api.tryAutoConnect).mockResolvedValue(null);
   vi.mocked(api.autoBroadcastState).mockResolvedValue(true);
   vi.mocked(api.setAutoBroadcast).mockResolvedValue(null);
-  vi.mocked(api.listCaptureDevices).mockResolvedValue([]);
+  vi.mocked(api.listCaptureDevices).mockResolvedValue([{
+    id: "speakers", name: "Speakers", isDefault: true, isVirtual: false,
+    sampleRate: 48000, channels: 2, unavailableReason: null,
+  }]);
   vi.mocked(api.activeCaptureDevice).mockResolvedValue(null);
   vi.mocked(api.alignment).mockResolvedValue(null as never);
   vi.mocked(api.startSend).mockResolvedValue({} as never);
@@ -171,7 +174,7 @@ describe("接入即自动推流", () => {
     expect(startSend).toHaveBeenCalledTimes(1);
   });
 
-  it("拒绝只针对「那一刻存在的设备」：之后新接入的设备仍按默认规则自动推", async () => {
+  it("暂停是全局意图：新设备接入也不会自动推流", async () => {
     const { result } = await mount();
     await emit([peer({ idShort: "aaaa1111", state: "streaming" })]);
     await act(async () => {
@@ -183,8 +186,8 @@ describe("接入即自动推流", () => {
       peer({ idShort: "bbbb2222" }),
     ]);
 
-    await waitFor(() => expect(startSend).toHaveBeenCalledTimes(1));
-    expect(startSend.mock.calls[0]?.[0]).toBe("bbbb2222");
+    expect(startSend).not.toHaveBeenCalled();
+    expect(result.current.broadcastPaused).toBe(true);
   });
 
   it("开关关掉 = 完全手动：接入也不自动发起", async () => {
@@ -202,7 +205,7 @@ describe("接入即自动推流", () => {
     expect(result.current.broadcastRequested).toBe(false);
   });
 
-  it("重新打开开关 = 一次明确的重新授权：清掉拒绝名单，让设备能再被自动拉起", async () => {
+  it("切换自动偏好不会取消暂停，必须主动恢复", async () => {
     const { result } = await mount();
     await emit([peer({ state: "streaming" })]);
     await act(async () => {
@@ -215,6 +218,162 @@ describe("接入即自动推流", () => {
     });
     await emit([peer({ state: "idle" })]);
 
+    expect(startSend).not.toHaveBeenCalled();
+    await act(async () => { result.current.startBroadcast(["aaaa1111"]); });
     await waitFor(() => expect(startSend).toHaveBeenCalledTimes(1));
+    expect(result.current.broadcastPaused).toBe(false);
   });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+describe("自动共享的时序与恢复", () => {
+  it("设置尚未读完不能抢跑，已保存关闭偏好时保持静音", async () => {
+    const saved = deferred<boolean>();
+    vi.mocked(api.autoBroadcastState).mockReturnValue(saved.promise);
+    await mount();
+    await emit([peer()]);
+    expect(startSend).not.toHaveBeenCalled();
+    await act(async () => { saved.resolve(false); });
+    expect(startSend).not.toHaveBeenCalled();
+  });
+  it("等待音源加载完毕后自动开始", async () => {
+    const sources = deferred<Awaited<ReturnType<typeof api.listCaptureDevices>>>();
+    vi.mocked(api.listCaptureDevices).mockReturnValueOnce(sources.promise);
+    await mount();
+    await emit([peer()]);
+    expect(startSend).not.toHaveBeenCalled();
+    await act(async () => { sources.resolve([{
+      id: "speakers", name: "Speakers", isDefault: true, isVirtual: false,
+      sampleRate: 48000, channels: 2, unavailableReason: null,
+    }]); });
+    await waitFor(() => expect(startSend).toHaveBeenCalledOnce());
+  });
+  it("启动尚未完成时暂停，先等启动完成再停止，且不重复停止", async () => {
+    const starting = deferred<Awaited<ReturnType<typeof api.startSend>>>();
+    startSend.mockReturnValueOnce(starting.promise);
+    const { result } = await mount();
+    await emit([peer()]);
+    let stopping!: Promise<void>;
+    act(() => { stopping = result.current.stopBroadcast(); });
+    expect(result.current.broadcastPaused).toBe(true);
+    expect(stopSend).not.toHaveBeenCalled();
+    act(() => { void result.current.stopBroadcast(); });
+    await act(async () => { starting.resolve({ stream_id: 1 }); await stopping; });
+    expect(stopSend).toHaveBeenCalledOnce();
+    await emit([peer()]);
+    expect(startSend).toHaveBeenCalledOnce();
+  });
+  it("无设备时先暂停，接入不触发；恢复后自动推流", async () => {
+    const { result } = await mount();
+    await act(async () => { await result.current.stopBroadcast(); });
+    await emit([peer()]);
+    expect(startSend).not.toHaveBeenCalled();
+    await act(async () => { result.current.startBroadcast(["aaaa1111"]); });
+    expect(startSend).toHaveBeenCalledOnce();
+  });
+  it("断开后同一设备再次连接可以重新自动开始", async () => {
+    await mount();
+    await emit([peer()]);
+    await waitFor(() => expect(startSend).toHaveBeenCalledOnce());
+    await emit([peer({ state: "failed" })]);
+    await emit([peer()]);
+    await waitFor(() => expect(startSend).toHaveBeenCalledTimes(2));
+  });
+  it("启动失败不会伪装成推流或循环重试，用户可以重试", async () => {
+    startSend.mockRejectedValueOnce({ code: 2001, message: "Capture unavailable", detail: "capture" });
+    const { result } = await mount();
+    await emit([peer()]);
+    await waitFor(() => expect(result.current.error).not.toBeNull());
+    expect(result.current.broadcastRequested).toBe(false);
+    await emit([peer()]);
+    expect(startSend).toHaveBeenCalledOnce();
+    await act(async () => { result.current.startBroadcast(["aaaa1111"]); });
+    expect(startSend).toHaveBeenCalledTimes(2);
+  });
+  it("单路外壳只启动一个目标，避免多设备接入造成 busy 错误", async () => {
+    await mount();
+    await emit([peer(), peer({ idShort: "bbbb2222" })]);
+    await waitFor(() => expect(startSend).toHaveBeenCalledOnce());
+    await emit([peer(), peer({ idShort: "bbbb2222" })]);
+    expect(startSend).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe("设备快照与音源选择", () => {
+  it("晚到的初始快照不能覆盖刚连接的设备", async () => {
+    const initial = deferred<PeerView[]>();
+    vi.mocked(api.listPeers).mockReturnValueOnce(initial.promise);
+    const { result } = await mount();
+    await emit([peer()]);
+    await waitFor(() => expect(startSend).toHaveBeenCalledOnce());
+    await act(async () => { initial.resolve([]); });
+    expect(result.current.peers.map((p) => p.idShort)).toEqual(["aaaa1111"]);
+  });
+  it("无可用音源时不消耗自动启动机会，刷新后可以开始", async () => {
+    vi.mocked(api.listCaptureDevices).mockResolvedValueOnce([]);
+    const { result } = await mount();
+    await emit([peer()]);
+    expect(startSend).not.toHaveBeenCalled();
+    await act(async () => { await result.current.refreshCaptureDevices(); });
+    await waitFor(() => expect(startSend).toHaveBeenCalledOnce());
+  });
+  it("暂停后选择另一音源，恢复使用新设备", async () => {
+    const { result } = await mount();
+    await emit([peer()]);
+    await act(async () => { await result.current.stopBroadcast(); });
+    vi.mocked(api.listCaptureDevices).mockResolvedValueOnce([{
+      id: "headphones", name: "Headphones", isDefault: true, isVirtual: false,
+      sampleRate: 48000, channels: 2, unavailableReason: null,
+    }]);
+    await act(async () => { await result.current.refreshCaptureDevices(); });
+    act(() => { result.current.selectCapture("headphones"); });
+    await act(async () => { result.current.startBroadcast(["aaaa1111"]); });
+    expect(startSend).toHaveBeenLastCalledWith("aaaa1111", "headphones");
+  });
+});
+
+
+it("停止回执失败但会话已回到 idle 时仍能手动恢复", async () => {
+  const { result } = await mount();
+  await emit([peer()]);
+  await waitFor(() => expect(startSend).toHaveBeenCalledOnce());
+  stopSend.mockRejectedValueOnce({ code: 2001, message: "Stop reply lost", detail: "stop" });
+  await act(async () => { await result.current.stopBroadcast(); });
+  await emit([peer()]);
+  expect(startSend).toHaveBeenCalledOnce();
+  await act(async () => { result.current.startBroadcast(["aaaa1111"]); });
+  expect(startSend).toHaveBeenCalledTimes(2);
+});
+
+
+it("快速重复恢复只启动一次，之后断开重连仍可自动发送", async () => {
+  const starting = deferred<Awaited<ReturnType<typeof api.startSend>>>();
+  startSend.mockReturnValueOnce(starting.promise);
+  const { result } = await mount();
+  await act(async () => { await result.current.stopBroadcast(); });
+  await emit([peer()]);
+  act(() => {
+    result.current.startBroadcast(["aaaa1111"]);
+    result.current.startBroadcast(["aaaa1111"]);
+  });
+  expect(startSend).toHaveBeenCalledOnce();
+  await act(async () => { starting.resolve({ stream_id: 1 }); });
+  await emit([]);
+  await emit([peer()]);
+  await waitFor(() => expect(startSend).toHaveBeenCalledTimes(2));
+});
+
+it("收听主机不会自动向主机回传声音，入站接收设备仍自动推流", async () => {
+  await mount();
+  await emit([peer({ receiving: true })]);
+  expect(startSend).not.toHaveBeenCalled();
+  await emit([peer({ receiving: true }), peer({ idShort: "receiver", receiving: false })]);
+  await waitFor(() => expect(startSend).toHaveBeenCalledTimes(1));
+  expect(startSend.mock.calls[0]?.[0]).toBe("receiver");
 });

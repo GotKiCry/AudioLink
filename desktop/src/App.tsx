@@ -1,25 +1,3 @@
-/**
- * AudioLink 桌面端 · 主界面
- *
- * 架构：**音源即主机**。
- *   主机（这台 PC 在往外送声音）不需要知道对方地址 —— 它把自己的地址摆出来，等人来连；
- *   接收端才需要主动输入主机地址（那件事在设备列表下方，一键可达，不藏二级菜单）。
- *
- * 外观（Fluent 2 / Windows 11 口径）：**五层结构**，下层永远为上层提供可采样的背景。
- *   z0 BackgroundLayer  应用背景（用户可配：单色 / 双色 / 三色 + 方向）
- *   z1 BackgroundLayer  窗口 Mica 等效：半透明 + blur(60px)，玻璃的来源
- *                       （z0 / z1 由同一个组件 portal 到 body，见该组件头部注释）
- *   z2 .al-chrome       侧栏 / 工具栏 / 抽屉：自有底色 + blur(32px)
- *   z3 .al-card         卡片：填充合计 ≈ .565 + blur(16px)（含在 z2 内部时不再自建 backdrop）
- *   z4 .al-pop          「背景」浮层：Acrylic + blur(40px)，**portal 到 body**
- *
- * 注意 z0 / z1 是 .al-shell 的**兄弟层**而不是它的自身背景：这样卡片的 backdrop-filter
- * 采样到的是「整张壁纸 + Mica 结果」，而不是被困在某个祖先盒子里（DESIGN.md 红线 1）。
- *
- * 数据流不变：useAudioLink() 订阅 audiolink://peer / audiolink://telemetry /
- * audiolink://pair-required，组件只渲染状态 —— 组件里**没有** invoke/listen（都在 src/lib/ipc.ts）。
- */
-
 import { useEffect, useRef, useState } from "react";
 
 import { AboutPanel } from "./components/AboutPanel";
@@ -41,6 +19,7 @@ import { Sidebar } from "./components/Sidebar";
 import { StatusStrip } from "./components/StatusStrip";
 import { TelemetryPanel } from "./components/TelemetryPanel";
 import { UpdatePanel } from "./components/UpdatePanel";
+import type { BroadcastStatus } from "./lib/broadcast";
 import { DEFAULT_BACKGROUND, normalizeBackground } from "./lib/background";
 import { api } from "./lib/ipc";
 import { useAudioLink } from "./lib/useAudioLink";
@@ -51,6 +30,7 @@ import { toCommandError, type BackgroundConfig } from "./types";
 export default function App() {
   const al = useAudioLink();
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [receiveOpen, setReceiveOpen] = useState(false);
   // 订阅语言：语言一变，App 重渲染 → 整棵子树跟着换文案（t 是渲染期求值的模块函数）。
   const locale = useLocale();
   const theme = useTheme();
@@ -112,29 +92,18 @@ export default function App() {
       .catch((raw: unknown) => setBackgroundError(toCommandError(raw).message));
   };
 
-  /**
-   * 活跃会话数：正在推流**或**降级运行（链路不稳时引擎自动降码率，会话还在推）。
-   *
-   * 口径与 useAudioLink.stopSend 的作用域严格对齐 —— 按钮说"能停"，命令就必须真能停：
-   * 只数 streaming 的话，一台降级会话会让界面回到「未推流」，于是又出现"没有停止入口"。
-   */
   const streamingCount = al.peers.filter(
     (peer) => peer.state === "streaming" || peer.state === "degraded",
   ).length;
-  /** 一键广播的候选：已配对、且还没在推的通道（未配对的不碰 —— 那会必然失败）。 */
-  const broadcastTargets = al.peers.filter(
-    (peer) => peer.trusted && (peer.state === "idle" || peer.state === "failed"),
-  );
-  /**
-   * 「在播」由两个来源合成，都不看 streamingCount 的脸色：
-   *   ① 推流意图 al.broadcastRequested —— 人工点的开始，或"接入即自动推流"替他点的（都在 hook 里）；
-   *   ② 引擎里真实的会话 —— 兜住"点了开始又立刻点停止"的握手窗口：那期间意图已被撤销，
-   *      会话却可能刚建起来，只有把它也算进来，停止入口才不会消失。
-   * 合成之后，只要有①或②，主按钮就是可点的「停止推流」。
-   */
-  const onAir = al.broadcastRequested || streamingCount > 0;
-  /** 已发起、却还没有任何会话在推：界面必须说出来，而不是装作没事。 */
-  const waitingForDevice = onAir && streamingCount === 0;
+  const broadcastTargets = al.peers.filter((peer) => !peer.receiving && peer.trusted && peer.state === "idle");
+  const status: BroadcastStatus = al.broadcastStopping ? "pausing"
+    : streamingCount > 0 ? "streaming"
+    : al.broadcastPaused ? "paused"
+    : !al.autoBroadcastReady || al.captureLoading ? "loading"
+    : !al.canStartCapture ? "unavailable"
+    : al.busyPeer !== null ? "starting"
+    : al.broadcastError !== null ? "error"
+    : al.autoBroadcast || al.broadcastRequested ? "waiting" : "manual";
 
   return (
     <div className="al-shell text-text-primary">
@@ -144,11 +113,10 @@ export default function App() {
       <Sidebar
         version={al.version}
         local={al.local}
-        onAir={onAir}
-        waitingForDevice={waitingForDevice}
+        status={status}
+        autoBroadcast={al.autoBroadcast}
+        canResume={al.canStartCapture && !al.captureLocked}
         streamingCount={streamingCount}
-        broadcastTargets={broadcastTargets.length}
-        busy={al.busyPeer !== null && al.busyPeer !== ""}
         captureDevices={al.captureDevices}
         selectedCaptureId={al.selectedCaptureId}
         activeCapture={al.activeCapture}
@@ -158,19 +126,16 @@ export default function App() {
         onSelectCapture={al.selectCapture}
         onRefreshCapture={al.refreshCaptureDevices}
         onBroadcast={() => {
-          // 逐台发起交给 hook：它先落意图再发起（候选为空时界面也必须立刻切到「推流中」）。
           al.startBroadcast(broadcastTargets.map((peer) => peer.idShort));
         }}
-        // 停止时 hook 还会记下"用户拒绝了谁"，自动推流不得再拉起它们
         onStopBroadcast={() => void al.stopBroadcast()}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* z2 工具栏（52px）：自有底色 + blur(32px)，比 Mica 更实 */}
-        <header className="al-chrome al-chrome-b flex h-13 shrink-0 items-center gap-4 pl-4">
+        <header className="al-toolbar al-chrome al-chrome-b">
           <StatusStrip
-            onAir={onAir}
-            waitingForDevice={waitingForDevice}
+            status={status}
             telemetry={al.telemetry}
             streamingCount={streamingCount}
             telemetryOpen={diagnosticsOpen}
@@ -207,25 +172,30 @@ export default function App() {
               <NoticeBanner message={al.notice} onDismiss={al.dismissNotice} />
             )}
 
+            <header className="al-page-header">
+              <h1 className="al-page-title">{t("share.title")}</h1>
+              <p className="mt-2 text-body text-text-secondary">{t("share.subtitle")}</p>
+            </header>
             <HostAddressCard local={al.local} />
 
             <section aria-labelledby="devices-heading" className="flex flex-col gap-3">
-              <h1 id="devices-heading" className="al-page-title">
-                {t("devices.title")}
-              </h1>
+              <div className="flex items-baseline gap-3">
+                <h2 id="devices-heading" className="text-base font-semibold">{t("devices.title")}</h2>
+                <span className="num text-caption text-text-secondary">{al.peers.length}</span>
+              </div>
 
               {al.peers.length === 0 ? (
-                <div className="al-well px-6 py-8 text-center">
+                <div className="al-devices-empty">
                   <p className="text-body leading-relaxed text-text-secondary">{t("devices.empty")}</p>
-                  {/* 空状态只说"没有"会让人不知道下一步；再给一句动作指引（复用地址卡片的提示，不另造文案）。 */}
-                  <p className="mt-2 text-caption text-text-tertiary">{t("host.hint")}</p>
+                  <p className="mt-2 text-caption leading-relaxed text-text-tertiary">{t("devices.empty_hint")}</p>
                 </div>
               ) : (
-                al.peers.map((peer) => (
+                <div className="al-device-list">{al.peers.map((peer) => (
                   <PeerCard
                     key={peer.idShort}
                     peer={peer}
-                    busy={al.busyPeer === peer.idShort}
+                    busy={al.broadcastStopping || al.busyPeer === peer.idShort}
+                    paused={al.broadcastPaused}
                     canStart={al.canStartCapture && !al.captureLocked}
                     canInputPin={al.pairableIds.includes(peer.idShort)}
                     onStart={al.startSend}
@@ -234,18 +204,14 @@ export default function App() {
                     onGain={(gain) => void al.setPeerGain(peer.idShort, gain)}
                     onRevoke={al.revokeTrust}
                   />
-                ))
+                ))}</div>
               )}
             </section>
 
-            {/*
-              角色切换区：上面整条是主机主路径（出示地址 → 等接入 → 推流），到这里才换角色。
-              两者不是平级的两个主行动 —— 主机永远不会去连别人，所以这一格下沉一级，
-              并用一条分隔线收尾（细节见 ConnectToHost 头注释）。
-            */}
-            <div className="mt-1 border-t border-stroke-control pt-4">
-              <ConnectToHost connecting={al.connecting} onConnect={al.connect} />
-            </div>
+            <details className="al-receive-section" onToggle={(event) => setReceiveOpen(event.currentTarget.open)}>
+              <summary>{t("connect.title")}</summary>
+              {receiveOpen && <ConnectToHost connecting={al.connecting} connectedIds={al.peers.map((peer) => peer.idShort)} onConnect={al.connect} />}
+            </details>
           </div>
 
           <DiagnosticsDrawer
@@ -253,6 +219,12 @@ export default function App() {
             onClose={() => setDiagnosticsOpen(false)}
             local={al.local}
           >
+            {/* 自动推流的开关状态与执行都在 hook 里（见 useAudioLink），面板只做开关 */}
+            <SettingsPanel
+              autoBroadcast={al.autoBroadcast}
+              autoBroadcastBusy={al.autoBroadcastBusy}
+              onToggleAutoBroadcast={al.setAutoBroadcast}
+            />
             <TelemetryPanel
               telemetry={al.telemetry}
               history={al.telemetryHistory}
@@ -273,12 +245,6 @@ export default function App() {
               alignment={al.alignment}
               busy={al.alignmentBusy}
               onBroadcast={(leadMs) => void al.broadcastEpoch(leadMs)}
-            />
-            {/* 自动推流的开关状态与执行都在 hook 里（见 useAudioLink），面板只做开关 */}
-            <SettingsPanel
-              autoBroadcast={al.autoBroadcast}
-              autoBroadcastBusy={al.autoBroadcastBusy}
-              onToggleAutoBroadcast={al.setAutoBroadcast}
             />
             <UpdatePanel />
             <AboutPanel />

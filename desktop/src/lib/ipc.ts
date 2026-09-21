@@ -11,6 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AlignmentView,
+  DiscoveredHost,
   AutoConnectPolicy,
   BackgroundConfig,
   CaptureDeviceView,
@@ -37,6 +38,7 @@ export const EVENT_GROUPS = "audiolink://groups";
 
 /** 契约 §6 的 command 表。参数键名严格照契约（`start_send` 用 `id_short`）。 */
 export const api = {
+  discoveredHosts: (refresh = false): Promise<DiscoveredHost[]> => invoke("discovered_hosts", { refresh }),
   /** `version` —— 外壳版本号（= Cargo workspace 版本）。 */
   version: (): Promise<string> => invoke<string>("version"),
   /** `local_status` —— 本机身份。 */

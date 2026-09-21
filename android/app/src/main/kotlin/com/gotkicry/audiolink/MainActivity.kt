@@ -29,7 +29,7 @@ import com.gotkicry.audiolink.ui.theme.ThemePreference
  * 单页信息架构（docs/08-ui-spec.md §3.1）：M1 落地「本机状态」这一半 ——
  * 服务启停 + 播放可观测项（低延迟是否生效 / 采样率 / 声道 / 缓冲帧数 / 欠载）；
  * 发送方向（连接电脑 + 推流，FR-17/§8）与发送源切换（FR-06/07）已接线，
- * 节点自动发现列表仍属 M2+。
+ * 接收入口在前台扫描局域网主机，选择后复用服务的连接与 PIN 配对流程。
  *
  * 注意：Activity 只负责 UI。前台服务（AudioLinkService）由用户操作显式启动，
  * 不存在「必须先打开 App 才能工作」的隐式依赖；状态经 `AudioLinkService.state` 收流，

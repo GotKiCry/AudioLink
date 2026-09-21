@@ -30,13 +30,14 @@
 
 - dpi 0.1.2
 
-### Apache-2.0 OR ISC OR MIT （3 个）
+### Apache-2.0 OR ISC OR MIT （4 个）
 
+- hyper-rustls 0.27.9
 - rustls 0.23.44
 - rustls-native-certs 0.8.4
 - rustls-pemfile 2.2.0
 
-### Apache-2.0 OR MIT （71 个）
+### Apache-2.0 OR MIT （72 个）
 
 - async-channel 2.5.0
 - async-compat 0.2.6
@@ -100,6 +101,7 @@
 - tauri-plugin-opener 2.5.5
 - tauri-plugin-single-instance 2.4.4
 - tauri-plugin-store 2.4.4
+- tauri-plugin-updater 2.11.0
 - tauri-plugin-window-state 2.4.1
 - tauri-runtime 2.11.3
 - tauri-runtime-wry 2.11.4
@@ -167,7 +169,7 @@
 - rustls-webpki 0.103.15
 - untrusted 0.9.0
 
-### MIT （131 个）
+### MIT （133 个）
 
 - atk 0.18.2
 - atk-sys 0.18.2
@@ -223,6 +225,7 @@
 - libm 0.2.16
 - libredox 0.1.23
 - memoffset 0.9.1
+- minisign-verify 0.2.5
 - mio 1.2.3
 - new_debug_unreachable 1.0.6
 - nom 7.1.3
@@ -296,18 +299,20 @@
 - zbus_macros 5.19.0
 - zbus_names 4.3.4
 - zcheapstr 1.1.0
+- zip 4.6.1
 - zmij 1.0.23
 - zvariant 5.15.0
 - zvariant_derive 5.15.0
 - zvariant_utils 4.2.0
 
-### MIT OR Apache-2.0 （292 个）
+### MIT OR Apache-2.0 （302 个）
 
 - android_log-sys 0.3.2
 - android_logger 0.15.1
 - android_system_properties 0.1.6
 - anstyle 1.0.14
 - anyhow 1.0.104
+- arbitrary 1.4.2
 - askama 0.13.1
 - askama_derive 0.13.1
 - askama_parser 0.13.0
@@ -338,6 +343,7 @@
 - cobs 0.3.0
 - cookie 0.18.2
 - core-foundation 0.10.1
+- core-foundation 0.9.4
 - core-foundation-sys 0.8.7
 - core-graphics 0.25.0
 - core-graphics-types 0.2.0
@@ -353,6 +359,7 @@
 - defmt-parser 1.0.0 ⚠️无全文
 - der-parser 10.0.0
 - deranged 0.5.8
+- derive_arbitrary 1.4.2
 - digest 0.10.7
 - dirs 4.0.0
 - dirs 6.0.0
@@ -431,6 +438,7 @@
 - once_cell 1.21.4
 - openssl-probe 0.2.1
 - ordered-stream 0.2.0
+- osakit 0.3.1
 - parking_lot 0.12.5
 - parking_lot_core 0.9.12
 - percent-encoding 2.3.2
@@ -503,8 +511,11 @@
 - syn 1.0.109
 - syn 2.0.119
 - syn 3.0.5
+- system-configuration 0.7.0
+- system-configuration-sys 0.6.0
 - system-deps 6.2.2
 - tao-macros 0.1.4
+- tar 0.4.46
 - tauri-winrt-notification 0.7.3
 - tempfile 3.27.0
 - tendril 0.5.1
@@ -515,6 +526,7 @@
 - time 0.3.55
 - time-core 0.1.9
 - time-macros 0.2.32
+- tokio-rustls 0.26.5
 - toml 0.8.2
 - toml 0.9.12+spec-1.1.0
 - toml 1.1.6+spec-1.1.0
@@ -555,6 +567,7 @@
 - windows-link 0.2.1
 - windows-numerics 0.2.0
 - windows-numerics 0.3.1
+- windows-registry 0.6.1
 - windows-result 0.3.4
 - windows-result 0.4.1
 - windows-strings 0.4.2
@@ -594,6 +607,7 @@
 - windows_x86_64_msvc 0.52.6
 - windows_x86_64_msvc 0.53.1
 - x509-parser 0.18.1
+- xattr 1.6.1
 - yasna 0.6.0
 
 ### MIT OR Apache-2.0 OR LGPL-2.1-or-later （2 个）
@@ -607,17 +621,22 @@
 - raw-window-handle 0.6.2
 - tinyvec_macros 0.1.1
 
+### MIT OR BSD-3-Clause （1 个）
+
+- if-addrs 0.14.0
+
 ### MIT OR Zlib OR Apache-2.0 （2 个）
 
 - miniz_oxide 0.8.9
 - miniz_oxide 0.9.1
 
-### MIT/Apache-2.0 （29 个）
+### MIT/Apache-2.0 （30 个）
 
 - asn1-rs-impl 0.2.0 ⚠️无全文
 - bitflags 1.3.2
 - bs58 0.5.1
 - ff 0.13.1
+- filetime 0.2.29
 - foreign-types 0.5.0
 - foreign-types-macros 0.2.4
 - foreign-types-shared 0.3.1
@@ -703,7 +722,7 @@
 - foldhash 0.2.0
 - zlib-rs 0.6.7
 
-### Zlib OR Apache-2.0 OR MIT （17 个）
+### Zlib OR Apache-2.0 OR MIT （18 个）
 
 - bytemuck 1.25.2
 - dispatch2 0.3.1 ⚠️无全文
@@ -717,6 +736,7 @@
 - objc2-core-text 0.3.2 ⚠️无全文
 - objc2-exception-helper 0.1.1 ⚠️无全文
 - objc2-io-surface 0.3.2 ⚠️无全文
+- objc2-osa-kit 0.3.2 ⚠️无全文
 - objc2-quartz-core 0.3.2 ⚠️无全文
 - objc2-ui-kit 0.3.2 ⚠️无全文
 - objc2-user-notifications 0.3.2 ⚠️无全文
@@ -725,6 +745,8 @@
 
 ### 前端依赖（pnpm 不提供许可文件路径，只列清单）
 
+- @asamuzakjp/css-color 6.0.7（MIT）
+- @asamuzakjp/dom-selector 8.3.2（MIT）
 - @babel/code-frame 7.29.7（MIT）
 - @babel/compat-data 7.29.7（MIT）
 - @babel/core 7.29.7（MIT）
@@ -741,9 +763,18 @@
 - @babel/parser 7.29.8（MIT）
 - @babel/plugin-transform-react-jsx-self 7.29.7（MIT）
 - @babel/plugin-transform-react-jsx-source 7.29.7（MIT）
+- @babel/runtime 7.29.7（MIT）
 - @babel/template 7.29.7（MIT）
 - @babel/traverse 7.29.8（MIT）
 - @babel/types 7.29.8（MIT）
+- @bramus/specificity 2.4.2（MIT）
+- @csstools/color-helpers 6.1.1（MIT-0）
+- @csstools/css-calc 3.4.0（MIT）
+- @csstools/css-color-parser 4.2.3（MIT）
+- @csstools/css-parser-algorithms 4.0.0（MIT）
+- @csstools/css-syntax-patches-for-csstree 1.1.14（MIT-0）
+- @csstools/css-tokenizer 4.0.0（MIT）
+- @exodus/bytes 1.15.1（MIT）
 - @jridgewell/gen-mapping 0.3.13（MIT）
 - @jridgewell/remapping 2.3.5（MIT）
 - @jridgewell/resolve-uri 3.1.2（MIT）
@@ -764,54 +795,109 @@
 - @tauri-apps/plugin-opener 2.5.5（MIT OR Apache-2.0）
 - @tauri-apps/plugin-store 2.4.4（MIT OR Apache-2.0）
 - @tauri-apps/plugin-updater 2.11.0（MIT OR Apache-2.0）
+- @testing-library/dom 10.4.2（MIT）
+- @testing-library/react 16.3.3（MIT）
+- @types/aria-query 5.0.4（MIT）
 - @types/babel__core 7.20.5（MIT）
 - @types/babel__generator 7.27.0（MIT）
 - @types/babel__template 7.4.4（MIT）
 - @types/babel__traverse 7.28.0（MIT）
+- @types/chai 5.2.3（MIT）
+- @types/deep-eql 4.0.2（MIT）
+- @types/estree 1.0.9（MIT）
 - @types/react 19.3.0（MIT）
 - @types/react-dom 19.3.0（MIT）
 - @vitejs/plugin-react 5.2.0（MIT）
+- @vitest/mocker 5.0.1（MIT）
+- @vitest/spy 5.0.1（MIT）
+- ansi-regex 5.0.1（MIT）
+- ansi-styles 5.2.0（MIT）
+- aria-query 5.3.0（Apache-2.0）
+- assertion-error 2.0.1（MIT）
 - baseline-browser-mapping 2.11.21（Apache-2.0）
+- bidi-js 1.1.0（MIT）
 - browserslist 4.28.9（MIT）
 - caniuse-lite 1.0.30001810（CC-BY-4.0）
+- chai 6.2.2（MIT）
 - clsx 2.1.1（MIT）
 - convert-source-map 2.0.0（MIT）
+- css-tree 3.2.1（MIT）
 - csstype 3.2.3（MIT）
+- data-urls 7.0.0（MIT）
 - debug 4.4.3（MIT）
+- decimal.js 10.6.0（MIT）
+- dequal 2.0.3（MIT）
 - detect-libc 2.1.2（Apache-2.0）
+- dom-accessibility-api 0.5.16（MIT）
 - electron-to-chromium 1.5.425（ISC）
 - enhanced-resolve 5.24.5（MIT）
+- entities 8.1.0（BSD-2-Clause）
+- es-module-lexer 2.3.2（MIT）
 - escalade 3.2.0（MIT）
+- estree-walker 3.0.3（MIT）
+- expect-type 1.4.0（Apache-2.0）
 - fdir 6.5.0（MIT）
 - gensync 1.0.0-beta.2（MIT）
 - graceful-fs 4.2.11（ISC）
+- html-encoding-sniffer 6.0.0（MIT）
+- is-potential-custom-element-name 1.0.1（MIT）
 - jiti 2.7.0（MIT）
 - js-tokens 4.0.0（MIT）
+- jsdom 30.0.1（MIT）
 - jsesc 3.1.0（MIT）
 - json5 2.2.3（MIT）
 - lightningcss 1.32.0, 1.33.0（MPL-2.0）
 - lightningcss-win32-x64-msvc 1.32.0, 1.33.0（MPL-2.0）
+- lru-cache 11.5.2（BlueOak-1.0.0）
 - lru-cache 5.1.1（ISC）
-- magic-string 0.30.21（MIT）
+- lz-string 1.5.0（MIT）
+- magic-string 0.30.21, 1.4.1（MIT）
+- mdn-data 2.27.1（CC0-1.0）
 - ms 2.1.3（MIT）
 - nanoid 3.3.18（MIT）
 - node-releases 2.0.55（MIT）
+- obug 2.2.1（MIT）
+- parse5 8.0.1（MIT）
 - picocolors 1.1.1（ISC）
 - picomatch 4.0.7（MIT）
 - postcss 8.5.28（MIT）
+- pretty-format 27.5.1（MIT）
+- punycode 2.3.1（MIT）
 - react 19.3.0（MIT）
 - react-dom 19.3.0（MIT）
+- react-is 17.0.2（MIT）
 - react-refresh 0.18.0（MIT）
+- require-from-string 2.0.2（MIT）
 - rolldown 1.2.8（MIT）
+- saxes 6.0.0（ISC）
 - scheduler 0.28.0（MIT）
 - semver 6.3.1（ISC）
+- siginfo 2.0.0（ISC）
 - source-map-js 1.2.1（BSD-3-Clause）
+- stackback 0.0.2（MIT）
+- std-env 4.2.0（MIT）
+- symbol-tree 3.2.4（MIT）
 - tailwindcss 4.3.3（MIT）
 - tapable 2.3.3（MIT）
+- tinybench 6.1.4（MIT）
+- tinyexec 1.3.0（MIT）
 - tinyglobby 0.2.17（MIT）
+- tldts 7.4.13（MIT）
+- tldts-core 7.4.13（MIT）
+- tough-cookie 6.0.2（BSD-3-Clause）
+- tr46 6.0.0（MIT）
 - typescript 5.9.3（Apache-2.0）
+- undici 8.10.2（MIT）
 - update-browserslist-db 1.3.2（MIT）
 - vite 8.3.0（MIT）
+- vitest 5.0.1（MIT）
+- w3c-xmlserializer 5.0.0（MIT）
+- webidl-conversions 8.0.1（BSD-2-Clause）
+- whatwg-mimetype 5.0.0（MIT）
+- whatwg-url 16.0.1, 17.1.1（MIT）
+- why-is-node-running 2.3.0（MIT）
+- xml-name-validator 5.0.0（Apache-2.0）
+- xmlchars 2.2.0（MIT）
 - yallist 3.1.1（ISC）
 
 ## 2. 许可全文（按内容去重）
@@ -1851,7 +1937,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 15 · LICENSE-APACHE（被 32 个包引用）
+### 文本 15 · LICENSE-APACHE（被 33 个包引用）
 
 ```text
                               Apache License
@@ -2032,7 +2118,245 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-### 文本 16 · LICENSE-APACHE（被 3 个包引用）
+### 文本 16 · LICENSE-APACHE（被 148 个包引用）
+
+```text
+                              Apache License
+                        Version 2.0, January 2004
+                     http://www.apache.org/licenses/
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+1. Definitions.
+
+   "License" shall mean the terms and conditions for use, reproduction,
+   and distribution as defined by Sections 1 through 9 of this document.
+
+   "Licensor" shall mean the copyright owner or entity authorized by
+   the copyright owner that is granting the License.
+
+   "Legal Entity" shall mean the union of the acting entity and all
+   other entities that control, are controlled by, or are under common
+   control with that entity. For the purposes of this definition,
+   "control" means (i) the power, direct or indirect, to cause the
+   direction or management of such entity, whether by contract or
+   otherwise, or (ii) ownership of fifty percent (50%) or more of the
+   outstanding shares, or (iii) beneficial ownership of such entity.
+
+   "You" (or "Your") shall mean an individual or Legal Entity
+   exercising permissions granted by this License.
+
+   "Source" form shall mean the preferred form for making modifications,
+   including but not limited to software source code, documentation
+   source, and configuration files.
+
+   "Object" form shall mean any form resulting from mechanical
+   transformation or translation of a Source form, including but
+   not limited to compiled object code, generated documentation,
+   and conversions to other media types.
+
+   "Work" shall mean the work of authorship, whether in Source or
+   Object form, made available under the License, as indicated by a
+   copyright notice that is included in or attached to the work
+   (an example is provided in the Appendix below).
+
+   "Derivative Works" shall mean any work, whether in Source or Object
+   form, that is based on (or derived from) the Work and for which the
+   editorial revisions, annotations, elaborations, or other modifications
+   represent, as a whole, an original work of authorship. For the purposes
+   of this License, Derivative Works shall not include works that remain
+   separable from, or merely link (or bind by name) to the interfaces of,
+   the Work and Derivative Works thereof.
+
+   "Contribution" shall mean any work of authorship, including
+   the original version of the Work and any modifications or additions
+   to that Work or Derivative Works thereof, that is intentionally
+   submitted to Licensor for inclusion in the Work by the copyright owner
+   or by an individual or Legal Entity authorized to submit on behalf of
+   the copyright owner. For the purposes of this definition, "submitted"
+   means any form of electronic, verbal, or written communication sent
+   to the Licensor or its representatives, including but not limited to
+   communication on electronic mailing lists, source code control systems,
+   and issue tracking systems that are managed by, or on behalf of, the
+   Licensor for the purpose of discussing and improving the Work, but
+   excluding communication that is conspicuously marked or otherwise
+   designated in writing by the copyright owner as "Not a Contribution."
+
+   "Contributor" shall mean Licensor and any individual or Legal Entity
+   on behalf of whom a Contribution has been received by Licensor and
+   subsequently incorporated within the Work.
+
+2. Grant of Copyright License. Subject to the terms and conditions of
+   this License, each Contributor hereby grants to You a perpetual,
+   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+   copyright license to reproduce, prepare Derivative Works of,
+   publicly display, publicly perform, sublicense, and distribute the
+   Work and such Derivative Works in Source or Object form.
+
+3. Grant of Patent License. Subject to the terms and conditions of
+   this License, each Contributor hereby grants to You a perpetual,
+   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+   (except as stated in this section) patent license to make, have made,
+   use, offer to sell, sell, import, and otherwise transfer the Work,
+   where such license applies only to those patent claims licensable
+   by such Contributor that are necessarily infringed by their
+   Contribution(s) alone or by combination of their Contribution(s)
+   with the Work to which such Contribution(s) was submitted. If You
+   institute patent litigation against any entity (including a
+   cross-claim or counterclaim in a lawsuit) alleging that the Work
+   or a Contribution incorporated within the Work constitutes direct
+   or contributory patent infringement, then any patent licenses
+   granted to You under this License for that Work shall terminate
+   as of the date such litigation is filed.
+
+4. Redistribution. You may reproduce and distribute copies of the
+   Work or Derivative Works thereof in any medium, with or without
+   modifications, and in Source or Object form, provided that You
+   meet the following conditions:
+
+   (a) You must give any other recipients of the Work or
+       Derivative Works a copy of this License; and
+
+   (b) You must cause any modified files to carry prominent notices
+       stating that You changed the files; and
+
+   (c) You must retain, in the Source form of any Derivative Works
+       that You distribute, all copyright, patent, trademark, and
+       attribution notices from the Source form of the Work,
+       excluding those notices that do not pertain to any part of
+       the Derivative Works; and
+
+   (d) If the Work includes a "NOTICE" text file as part of its
+       distribution, then any Derivative Works that You distribute must
+       include a readable copy of the attribution notices contained
+       within such NOTICE file, excluding those notices that do not
+       pertain to any part of the Derivative Works, in at least one
+       of the following places: within a NOTICE text file distributed
+       as part of the Derivative Works; within the Source form or
+       documentation, if provided along with the Derivative Works; or,
+       within a display generated by the Derivative Works, if and
+       wherever such third-party notices normally appear. The contents
+       of the NOTICE file are for informational purposes only and
+       do not modify the License. You may add Your own attribution
+       notices within Derivative Works that You distribute, alongside
+       or as an addendum to the NOTICE text from the Work, provided
+       that such additional attribution notices cannot be construed
+       as modifying the License.
+
+   You may add Your own copyright statement to Your modifications and
+   may provide additional or different license terms and conditions
+   for use, reproduction, or distribution of Your modifications, or
+   for any such Derivative Works as a whole, provided Your use,
+   reproduction, and distribution of the Work otherwise complies with
+   the conditions stated in this License.
+
+5. Submission of Contributions. Unless You explicitly state otherwise,
+   any Contribution intentionally submitted for inclusion in the Work
+   by You to the Licensor shall be under the terms and conditions of
+   this License, without any additional terms or conditions.
+   Notwithstanding the above, nothing herein shall supersede or modify
+   the terms of any separate license agreement you may have executed
+   with Licensor regarding such Contributions.
+
+6. Trademarks. This License does not grant permission to use the trade
+   names, trademarks, service marks, or product names of the Licensor,
+   except as required for reasonable and customary use in describing the
+   origin of the Work and reproducing the content of the NOTICE file.
+
+7. Disclaimer of Warranty. Unless required by applicable law or
+   agreed to in writing, Licensor provides the Work (and each
+   Contributor provides its Contributions) on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+   implied, including, without limitation, any warranties or conditions
+   of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+   PARTICULAR PURPOSE. You are solely responsible for determining the
+   appropriateness of using or redistributing the Work and assume any
+   risks associated with Your exercise of permissions under this License.
+
+8. Limitation of Liability. In no event and under no legal theory,
+   whether in tort (including negligence), contract, or otherwise,
+   unless required by applicable law (such as deliberate and grossly
+   negligent acts) or agreed to in writing, shall any Contributor be
+   liable to You for damages, including any direct, indirect, special,
+   incidental, or consequential damages of any character arising as a
+   result of this License or out of the use or inability to use the
+   Work (including but not limited to damages for loss of goodwill,
+   work stoppage, computer failure or malfunction, or any and all
+   other commercial damages or losses), even if such Contributor
+   has been advised of the possibility of such damages.
+
+9. Accepting Warranty or Additional Liability. While redistributing
+   the Work or Derivative Works thereof, You may choose to offer,
+   and charge a fee for, acceptance of support, warranty, indemnity,
+   or other liability obligations and/or rights consistent with this
+   License. However, in accepting such obligations, You may act only
+   on Your own behalf and on Your sole responsibility, not on behalf
+   of any other Contributor, and only if You agree to indemnify,
+   defend, and hold each Contributor harmless for any liability
+   incurred by, or claims asserted against, such Contributor by reason
+   of your accepting any such warranty or additional liability.
+
+END OF TERMS AND CONDITIONS
+
+APPENDIX: How to apply the Apache License to your work.
+
+   To apply the Apache License to your work, attach the following
+   boilerplate notice, with the fields enclosed by brackets "[]"
+   replaced with your own identifying information. (Don't include
+   the brackets!)  The text should be enclosed in the appropriate
+   comment syntax for the file format. We also recommend that a
+   file or class name and description of purpose be included on the
+   same "printed page" as the copyright notice for easier
+   identification within third-party archives.
+
+Copyright [yyyy] [name of copyright owner]
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+### 文本 17 · LICENSE-MIT（被 2 个包引用）
+
+```text
+MIT License
+
+Copyright (c) 2019 Manish Goregaokar
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### 文本 18 · LICENSE-APACHE（被 3 个包引用）
 
 ```text
                               Apache License
@@ -2238,7 +2562,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 17 · LICENSE-MIT（被 3 个包引用）
+### 文本 19 · LICENSE-MIT（被 3 个包引用）
 
 ```text
 Copyright (c) 2017-2020 Dirkjan Ochtman
@@ -2268,213 +2592,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 18 · LICENSE-APACHE（被 139 个包引用）
-
-```text
-                              Apache License
-                        Version 2.0, January 2004
-                     http://www.apache.org/licenses/
-
-TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
-
-1. Definitions.
-
-   "License" shall mean the terms and conditions for use, reproduction,
-   and distribution as defined by Sections 1 through 9 of this document.
-
-   "Licensor" shall mean the copyright owner or entity authorized by
-   the copyright owner that is granting the License.
-
-   "Legal Entity" shall mean the union of the acting entity and all
-   other entities that control, are controlled by, or are under common
-   control with that entity. For the purposes of this definition,
-   "control" means (i) the power, direct or indirect, to cause the
-   direction or management of such entity, whether by contract or
-   otherwise, or (ii) ownership of fifty percent (50%) or more of the
-   outstanding shares, or (iii) beneficial ownership of such entity.
-
-   "You" (or "Your") shall mean an individual or Legal Entity
-   exercising permissions granted by this License.
-
-   "Source" form shall mean the preferred form for making modifications,
-   including but not limited to software source code, documentation
-   source, and configuration files.
-
-   "Object" form shall mean any form resulting from mechanical
-   transformation or translation of a Source form, including but
-   not limited to compiled object code, generated documentation,
-   and conversions to other media types.
-
-   "Work" shall mean the work of authorship, whether in Source or
-   Object form, made available under the License, as indicated by a
-   copyright notice that is included in or attached to the work
-   (an example is provided in the Appendix below).
-
-   "Derivative Works" shall mean any work, whether in Source or Object
-   form, that is based on (or derived from) the Work and for which the
-   editorial revisions, annotations, elaborations, or other modifications
-   represent, as a whole, an original work of authorship. For the purposes
-   of this License, Derivative Works shall not include works that remain
-   separable from, or merely link (or bind by name) to the interfaces of,
-   the Work and Derivative Works thereof.
-
-   "Contribution" shall mean any work of authorship, including
-   the original version of the Work and any modifications or additions
-   to that Work or Derivative Works thereof, that is intentionally
-   submitted to Licensor for inclusion in the Work by the copyright owner
-   or by an individual or Legal Entity authorized to submit on behalf of
-   the copyright owner. For the purposes of this definition, "submitted"
-   means any form of electronic, verbal, or written communication sent
-   to the Licensor or its representatives, including but not limited to
-   communication on electronic mailing lists, source code control systems,
-   and issue tracking systems that are managed by, or on behalf of, the
-   Licensor for the purpose of discussing and improving the Work, but
-   excluding communication that is conspicuously marked or otherwise
-   designated in writing by the copyright owner as "Not a Contribution."
-
-   "Contributor" shall mean Licensor and any individual or Legal Entity
-   on behalf of whom a Contribution has been received by Licensor and
-   subsequently incorporated within the Work.
-
-2. Grant of Copyright License. Subject to the terms and conditions of
-   this License, each Contributor hereby grants to You a perpetual,
-   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-   copyright license to reproduce, prepare Derivative Works of,
-   publicly display, publicly perform, sublicense, and distribute the
-   Work and such Derivative Works in Source or Object form.
-
-3. Grant of Patent License. Subject to the terms and conditions of
-   this License, each Contributor hereby grants to You a perpetual,
-   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-   (except as stated in this section) patent license to make, have made,
-   use, offer to sell, sell, import, and otherwise transfer the Work,
-   where such license applies only to those patent claims licensable
-   by such Contributor that are necessarily infringed by their
-   Contribution(s) alone or by combination of their Contribution(s)
-   with the Work to which such Contribution(s) was submitted. If You
-   institute patent litigation against any entity (including a
-   cross-claim or counterclaim in a lawsuit) alleging that the Work
-   or a Contribution incorporated within the Work constitutes direct
-   or contributory patent infringement, then any patent licenses
-   granted to You under this License for that Work shall terminate
-   as of the date such litigation is filed.
-
-4. Redistribution. You may reproduce and distribute copies of the
-   Work or Derivative Works thereof in any medium, with or without
-   modifications, and in Source or Object form, provided that You
-   meet the following conditions:
-
-   (a) You must give any other recipients of the Work or
-       Derivative Works a copy of this License; and
-
-   (b) You must cause any modified files to carry prominent notices
-       stating that You changed the files; and
-
-   (c) You must retain, in the Source form of any Derivative Works
-       that You distribute, all copyright, patent, trademark, and
-       attribution notices from the Source form of the Work,
-       excluding those notices that do not pertain to any part of
-       the Derivative Works; and
-
-   (d) If the Work includes a "NOTICE" text file as part of its
-       distribution, then any Derivative Works that You distribute must
-       include a readable copy of the attribution notices contained
-       within such NOTICE file, excluding those notices that do not
-       pertain to any part of the Derivative Works, in at least one
-       of the following places: within a NOTICE text file distributed
-       as part of the Derivative Works; within the Source form or
-       documentation, if provided along with the Derivative Works; or,
-       within a display generated by the Derivative Works, if and
-       wherever such third-party notices normally appear. The contents
-       of the NOTICE file are for informational purposes only and
-       do not modify the License. You may add Your own attribution
-       notices within Derivative Works that You distribute, alongside
-       or as an addendum to the NOTICE text from the Work, provided
-       that such additional attribution notices cannot be construed
-       as modifying the License.
-
-   You may add Your own copyright statement to Your modifications and
-   may provide additional or different license terms and conditions
-   for use, reproduction, or distribution of Your modifications, or
-   for any such Derivative Works as a whole, provided Your use,
-   reproduction, and distribution of the Work otherwise complies with
-   the conditions stated in this License.
-
-5. Submission of Contributions. Unless You explicitly state otherwise,
-   any Contribution intentionally submitted for inclusion in the Work
-   by You to the Licensor shall be under the terms and conditions of
-   this License, without any additional terms or conditions.
-   Notwithstanding the above, nothing herein shall supersede or modify
-   the terms of any separate license agreement you may have executed
-   with Licensor regarding such Contributions.
-
-6. Trademarks. This License does not grant permission to use the trade
-   names, trademarks, service marks, or product names of the Licensor,
-   except as required for reasonable and customary use in describing the
-   origin of the Work and reproducing the content of the NOTICE file.
-
-7. Disclaimer of Warranty. Unless required by applicable law or
-   agreed to in writing, Licensor provides the Work (and each
-   Contributor provides its Contributions) on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-   implied, including, without limitation, any warranties or conditions
-   of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
-   PARTICULAR PURPOSE. You are solely responsible for determining the
-   appropriateness of using or redistributing the Work and assume any
-   risks associated with Your exercise of permissions under this License.
-
-8. Limitation of Liability. In no event and under no legal theory,
-   whether in tort (including negligence), contract, or otherwise,
-   unless required by applicable law (such as deliberate and grossly
-   negligent acts) or agreed to in writing, shall any Contributor be
-   liable to You for damages, including any direct, indirect, special,
-   incidental, or consequential damages of any character arising as a
-   result of this License or out of the use or inability to use the
-   Work (including but not limited to damages for loss of goodwill,
-   work stoppage, computer failure or malfunction, or any and all
-   other commercial damages or losses), even if such Contributor
-   has been advised of the possibility of such damages.
-
-9. Accepting Warranty or Additional Liability. While redistributing
-   the Work or Derivative Works thereof, You may choose to offer,
-   and charge a fee for, acceptance of support, warranty, indemnity,
-   or other liability obligations and/or rights consistent with this
-   License. However, in accepting such obligations, You may act only
-   on Your own behalf and on Your sole responsibility, not on behalf
-   of any other Contributor, and only if You agree to indemnify,
-   defend, and hold each Contributor harmless for any liability
-   incurred by, or claims asserted against, such Contributor by reason
-   of your accepting any such warranty or additional liability.
-
-END OF TERMS AND CONDITIONS
-
-APPENDIX: How to apply the Apache License to your work.
-
-   To apply the Apache License to your work, attach the following
-   boilerplate notice, with the fields enclosed by brackets "[]"
-   replaced with your own identifying information. (Don't include
-   the brackets!)  The text should be enclosed in the appropriate
-   comment syntax for the file format. We also recommend that a
-   file or class name and description of purpose be included on the
-   same "printed page" as the copyright notice for easier
-   identification within third-party archives.
-
-Copyright [yyyy] [name of copyright owner]
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-	http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-```
-
-### 文本 19 · LICENSE-MIT（被 6 个包引用）
+### 文本 20 · LICENSE-MIT（被 6 个包引用）
 
 ```text
 Copyright (c) 2017 Pierre Chifflier
@@ -2504,7 +2622,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 20 · LICENSE-APACHE（被 1 个包引用）
+### 文本 21 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                                  Apache License
@@ -2699,7 +2817,7 @@ DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### 文本 21 · LICENSE-MIT（被 1 个包引用）
+### 文本 22 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -2725,7 +2843,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 22 · LICENSE-APACHE（被 2 个包引用）
+### 文本 23 · LICENSE-APACHE（被 2 个包引用）
 
 ```text
                               Apache License
@@ -2931,7 +3049,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 23 · LICENSE-MIT（被 2 个包引用）
+### 文本 24 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 Permission is hereby granted, free of charge, to any
@@ -2959,7 +3077,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 24 · LICENSE（被 22 个包引用）
+### 文本 25 · LICENSE（被 22 个包引用）
 
 ```text
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -2981,7 +3099,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 25 · LICENSE-MIT（被 1 个包引用）
+### 文本 26 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2020 Dario Nieuwenhuis
@@ -3011,7 +3129,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 26 · LICENSE-THIRD-PARTY（被 2 个包引用）
+### 文本 27 · LICENSE-THIRD-PARTY（被 2 个包引用）
 
 ```text
 ===============================================================================
@@ -3061,7 +3179,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 27 · LICENSE（被 1 个包引用）
+### 文本 28 · LICENSE（被 1 个包引用）
 
 ```text
 MIT License
@@ -3087,7 +3205,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 28 · LICENSE-MIT（被 1 个包引用）
+### 文本 29 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2018 Josh Stone
@@ -3117,7 +3235,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 29 · LICENSE-APACHE（被 19 个包引用）
+### 文本 30 · LICENSE-APACHE（被 19 个包引用）
 
 ```text
                               Apache License
@@ -3323,7 +3441,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 30 · LICENSE-MIT（被 1 个包引用）
+### 文本 31 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2014 Steve "Sc00bz" Thomas (steve at tobtu dot com)
@@ -3354,7 +3472,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 31 · LICENSE-MIT（被 2 个包引用）
+### 文本 32 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -3380,7 +3498,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 32 · LICENSE-MIT（被 1 个包引用）
+### 文本 33 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -3406,7 +3524,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 33 · LICENSE-APACHE（被 7 个包引用）
+### 文本 34 · LICENSE-APACHE（被 7 个包引用）
 
 ```text
                               Apache License
@@ -3612,7 +3730,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 34 · LICENSE-MIT（被 3 个包引用）
+### 文本 35 · LICENSE-MIT（被 3 个包引用）
 
 ```text
 Copyright (c) 2023 The Rust Project Developers
@@ -3642,7 +3760,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 35 · LICENSE-MIT（被 10 个包引用）
+### 文本 36 · LICENSE-MIT（被 10 个包引用）
 
 ```text
 Copyright (c) 2014 The Rust Project Developers
@@ -3672,7 +3790,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 36 · LICENSE-MIT（被 1 个包引用）
+### 文本 37 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2018-2019 The RustCrypto Project Developers
@@ -3702,7 +3820,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 37 · LICENSE.MIT（被 1 个包引用）
+### 文本 38 · LICENSE.MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.
@@ -3726,7 +3844,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 38 · LICENSE-MIT（被 1 个包引用）
+### 文本 39 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -3751,7 +3869,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 39 · LICENSE-MIT（被 1 个包引用）
+### 文本 40 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2019 Nick Fitzgerald
@@ -3781,7 +3899,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 40 · LICENSE-APACHE（被 1 个包引用）
+### 文本 41 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
 Apache License
@@ -3847,7 +3965,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 41 · LICENSE-MIT（被 1 个包引用）
+### 文本 42 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -3861,7 +3979,7 @@ The above copyright notice and this permission notice (including the next paragr
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 42 · LICENSE-ZLIB（被 2 个包引用）
+### 文本 43 · LICENSE-ZLIB（被 2 个包引用）
 
 ```text
 Copyright (c) 2019 Daniel "Lokathor" Gee.
@@ -3877,7 +3995,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 文本 43 · LICENSE（被 1 个包引用）
+### 文本 44 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2018 Carl Lerche
@@ -3907,7 +4025,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 44 · LICENSE（被 1 个包引用）
+### 文本 45 · LICENSE（被 1 个包引用）
 
 ```text
 © Kornel Lesiński
@@ -4114,7 +4232,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 45 · LICENSE-MIT（被 15 个包引用）
+### 文本 46 · LICENSE-MIT（被 16 个包引用）
 
 ```text
 Copyright (c) 2014 Alex Crichton
@@ -4144,7 +4262,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 46 · LICENSE（被 1 个包引用）
+### 文本 47 · LICENSE（被 1 个包引用）
 
 ```text
 MIT License
@@ -4170,7 +4288,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 47 · LICENSE-MIT（被 1 个包引用）
+### 文本 48 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2019 Embark Studios
@@ -4200,7 +4318,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 48 · LICENSE（被 1 个包引用）
+### 文本 49 · LICENSE（被 1 个包引用）
 
 ```text
 MIT License
@@ -4214,7 +4332,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 49 · NOTICES.md（被 1 个包引用）
+### 文本 50 · NOTICES.md（被 1 个包引用）
 
 ```text
 # 3rd Party Notices
@@ -4245,7 +4363,7 @@ The `cfg_aliases!` macro uses a lot of the code from [`tectonic_cfg_support::tar
 ---
 ```
 
-### 文本 50 · LICENSE-MIT（被 1 个包引用）
+### 文本 51 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2019-2026 The RustCrypto Project Developers
@@ -4275,7 +4393,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 51 · LICENSE.txt（被 1 个包引用）
+### 文本 52 · LICENSE.txt（被 1 个包引用）
 
 ```text
 Rust-chrono is dual-licensed under The MIT License [1] and
@@ -4519,7 +4637,7 @@ limitations under the License.
 ~~~~
 ```
 
-### 文本 52 · LICENSE-MIT（被 1 个包引用）
+### 文本 53 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2015 The cobs.rs Developers
@@ -4543,7 +4661,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 53 · LICENSE（被 1 个包引用）
+### 文本 54 · LICENSE（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -4569,7 +4687,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 54 · LICENSE-MIT（被 1 个包引用）
+### 文本 55 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2020-2022 The RustCrypto Project Developers
@@ -4599,7 +4717,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 55 · LICENSE-APACHE（被 1 个包引用）
+### 文本 56 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                               Apache License
@@ -4806,7 +4924,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 56 · LICENSE-MIT（被 1 个包引用）
+### 文本 57 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2017 Sergio Benitez
@@ -4837,7 +4955,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 57 · LICENSE-MIT（被 6 个包引用）
+### 文本 58 · LICENSE-MIT（被 7 个包引用）
 
 ```text
 Copyright (c) 2012-2013 Mozilla Foundation
@@ -4867,7 +4985,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 58 · LICENSE-MIT（被 1 个包引用）
+### 文本 59 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2020-2025 The RustCrypto Project Developers
@@ -4897,7 +5015,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 59 · LICENSE-MIT（被 1 个包引用）
+### 文本 60 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2020-2026 The RustCrypto Project Developers
@@ -4927,7 +5045,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 60 · LICENSE-MIT（被 1 个包引用）
+### 文本 61 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -4953,7 +5071,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 61 · LICENSE-MIT（被 1 个包引用）
+### 文本 62 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2022 The critical-section authors
@@ -4983,7 +5101,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 62 · LICENSE-MIT（被 2 个包引用）
+### 文本 63 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -5015,7 +5133,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 63 · LICENSE-THIRD-PARTY（被 1 个包引用）
+### 文本 64 · LICENSE-THIRD-PARTY（被 1 个包引用）
 
 ```text
 ===============================================================================
@@ -5613,7 +5731,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 64 · LICENSE-MIT（被 1 个包引用）
+### 文本 65 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2021 The RustCrypto Project Developers
@@ -5643,7 +5761,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 65 · LICENSE-MIT（被 1 个包引用）
+### 文本 66 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2021 RustCrypto Developers
@@ -5673,7 +5791,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 66 · LICENSE（被 2 个包引用）
+### 文本 67 · LICENSE（被 2 个包引用）
 
 ```text
 Mozilla Public License Version 2.0
@@ -6051,7 +6169,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ```
 
-### 文本 67 · LICENSE-APACHE（被 4 个包引用）
+### 文本 68 · LICENSE-APACHE（被 4 个包引用）
 
 ```text
 Apache License
@@ -6257,7 +6375,7 @@ Apache License
    limitations under the License.
 ```
 
-### 文本 68 · LICENSE-MIT（被 4 个包引用）
+### 文本 69 · LICENSE-MIT（被 4 个包引用）
 
 ```text
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
@@ -6267,7 +6385,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 69 · LICENSE（被 3 个包引用）
+### 文本 70 · LICENSE（被 3 个包引用）
 
 ```text
 MIT License
@@ -6293,7 +6411,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 70 · LICENSE（被 1 个包引用）
+### 文本 71 · LICENSE（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -6320,7 +6438,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 71 · LICENSE-APACHE（被 2 个包引用）
+### 文本 72 · LICENSE-APACHE（被 2 个包引用）
 
 ```text
 Apache License
@@ -6526,7 +6644,7 @@ Apache License
    limitations under the License.
 ```
 
-### 文本 72 · LICENSE-MIT（被 2 个包引用）
+### 文本 73 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 Copyright (c) 2014-2018 David Henningsson <diwic@ubuntu.com> and other contributors
@@ -6550,7 +6668,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 73 · LICENSE-MIT（被 2 个包引用）
+### 文本 74 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 Copyright (c) Ferrous Systems
@@ -6580,7 +6698,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 74 · LICENSE-MIT（被 2 个包引用）
+### 文本 75 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 Copyright (c) 2020-2023 The RustCrypto Project Developers
@@ -6610,7 +6728,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 75 · LICENSE-Apache（被 1 个包引用）
+### 文本 76 · LICENSE-Apache（被 1 个包引用）
 
 ```text
 
@@ -6817,7 +6935,7 @@ DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### 文本 76 · LICENSE-MIT（被 1 个包引用）
+### 文本 77 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2024 Jacob Pratt et al.
@@ -6841,7 +6959,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 77 · LICENSE（被 2 个包引用）
+### 文本 78 · LICENSE（被 2 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -6867,7 +6985,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 78 · LICENSE-MIT（被 2 个包引用）
+### 文本 79 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 Copyright (c) 2017 Artyom Pavlov
@@ -6897,7 +7015,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 79 · LICENSE-APACHE（被 4 个包引用）
+### 文本 80 · LICENSE-APACHE（被 4 个包引用）
 
 ```text
                               Apache License
@@ -7076,7 +7194,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
    of your accepting any such warranty or additional liability.
 ```
 
-### 文本 80 · LICENSE-MIT（被 4 个包引用）
+### 文本 81 · LICENSE-MIT（被 4 个包引用）
 
 ```text
 Copyright (c) 2018-2019 dirs-rs contributors
@@ -7100,7 +7218,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 81 · LICENSE（被 1 个包引用）
+### 文本 82 · LICENSE（被 1 个包引用）
 
 ```text
 MIT License
@@ -7132,7 +7250,7 @@ derived from the "nipper" project (https://github.com/importcjj/nipper),
 developed by Chen Jiaju, licensed under the MIT License and the Apache License 2.0 (dual licensed).
 ```
 
-### 文本 82 · LICENSE（被 2 个包引用）
+### 文本 83 · LICENSE（被 2 个包引用）
 
 ```text
 Apache License
@@ -7338,7 +7456,7 @@ Apache License
    limitations under the License.
 ```
 
-### 文本 83 · LICENSE-LIBM-MIT（被 1 个包引用）
+### 文本 84 · LICENSE-LIBM-MIT（被 1 个包引用）
 
 ```text
 rust-lang/libm as a whole is available for use under the MIT license:
@@ -7394,7 +7512,7 @@ have been licensed under extremely permissive terms.
 ------------------------------------------------------------------------------
 ```
 
-### 文本 84 · LICENSE（被 1 个包引用）
+### 文本 85 · LICENSE（被 1 个包引用）
 
 ```text
 Mozilla Public License Version 2.0
@@ -7772,7 +7890,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ```
 
-### 文本 85 · LICENSE（被 1 个包引用）
+### 文本 86 · LICENSE（被 1 个包引用）
 
 ```text
 Creative Commons Legal Code
@@ -7898,7 +8016,7 @@ express Statement of Purpose.
     this CC0 or use of the Work.
 ```
 
-### 文本 86 · LICENSE-APACHE（被 2 个包引用）
+### 文本 87 · LICENSE-APACHE（被 2 个包引用）
 
 ```text
                               Apache License
@@ -8104,7 +8222,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 87 · LICENSE-MIT（被 2 个包引用）
+### 文本 88 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 Copyright (c) 2018-2022 RustCrypto Developers
@@ -8134,7 +8252,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 88 · LICENSE-MIT（被 1 个包引用）
+### 文本 89 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2020-2022 RustCrypto Developers
@@ -8164,7 +8282,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 89 · LICENSE（被 1 个包引用）
+### 文本 90 · LICENSE（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -8190,7 +8308,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 90 · LICENSE-APACHE（被 6 个包引用）
+### 文本 91 · LICENSE-APACHE（被 6 个包引用）
 
 ```text
 
@@ -8397,7 +8515,7 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### 文本 91 · LICENSE-MIT（被 1 个包引用）
+### 文本 92 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -8423,7 +8541,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 92 · LICENSE-MIT（被 1 个包引用）
+### 文本 93 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2022 The embedded-io authors
@@ -8453,7 +8571,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 93 · LICENSE-MIT（被 1 个包引用）
+### 文本 94 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2023 The embedded-io authors
@@ -8483,7 +8601,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 94 · LICENSE-APACHE（被 1 个包引用）
+### 文本 95 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
 Apache License
@@ -8556,7 +8674,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 95 · LICENSE-MIT（被 1 个包引用）
+### 文本 96 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2017-2023 Maik Klein, Maja Kądziołka
@@ -8586,7 +8704,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 96 · LICENSE-APACHE（被 1 个包引用）
+### 文本 97 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
 Apache License
@@ -8659,7 +8777,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 97 · LICENSE-MIT（被 1 个包引用）
+### 文本 98 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2017 Maik Klein
@@ -8689,7 +8807,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 98 · LICENSE-MIT（被 1 个包引用）
+### 文本 99 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2016--2023
@@ -8719,7 +8837,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 99 · LICENSE-MIT（被 1 个包引用）
+### 文本 100 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2014 Chris Wong
@@ -8749,7 +8867,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 100 · LICENSE-APACHE（被 1 个包引用）
+### 文本 101 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                               Apache License
@@ -8930,7 +9048,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-### 文本 101 · LICENSE-MIT（被 1 个包引用）
+### 文本 102 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2023 Thomas Pendock
@@ -8960,7 +9078,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 102 · LICENSE-APACHE（被 20 个包引用）
+### 文本 103 · LICENSE-APACHE（被 20 个包引用）
 
 ```text
 
@@ -9142,7 +9260,7 @@ DEALINGS IN THE SOFTWARE.
    END OF TERMS AND CONDITIONS
 ```
 
-### 文本 103 · LICENSE-MIT（被 1 个包引用）
+### 文本 104 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -9172,7 +9290,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 104 · LICENSE（被 1 个包引用）
+### 文本 105 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2014-2017 David Ross
@@ -9184,7 +9302,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 105 · LICENSE-APACHE（被 1 个包引用）
+### 文本 106 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                               Apache License
@@ -9390,7 +9508,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 106 · LICENSE-MIT（被 1 个包引用）
+### 文本 107 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -9416,7 +9534,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 107 · LICENSE-APACHE（被 1 个包引用）
+### 文本 108 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                                  Apache License
@@ -9597,7 +9715,7 @@ THE SOFTWARE.
    END OF TERMS AND CONDITIONS
 ```
 
-### 文本 108 · LICENSE-MIT（被 1 个包引用）
+### 文本 109 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -9623,7 +9741,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 109 · LICENSE-MIT（被 1 个包引用）
+### 文本 110 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2014-2026 Alex Crichton
@@ -9653,7 +9771,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 110 · LICENSE-MIT（被 1 个包引用）
+### 文本 111 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2017 Contributors
@@ -9683,7 +9801,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 111 · LICENSE（被 1 个包引用）
+### 文本 112 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2024 Orson Peters
@@ -9707,7 +9825,7 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 文本 112 · LICENSE-MIT（被 3 个包引用）
+### 文本 113 · LICENSE-MIT（被 3 个包引用）
 
 ```text
 Copyright (c) 2017 The foreign-types Developers
@@ -9731,7 +9849,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 113 · LICENSE-MIT（被 1 个包引用）
+### 文本 114 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2013-2016 The rust-url developers
@@ -9761,7 +9879,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 114 · LICENSE-APACHE（被 1 个包引用）
+### 文本 115 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                               Apache License
@@ -9967,7 +10085,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 115 · LICENSE-MIT（被 1 个包引用）
+### 文本 116 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Permission is hereby granted, free of charge, to any
@@ -9995,7 +10113,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 116 · LICENSE-APACHE（被 9 个包引用）
+### 文本 117 · LICENSE-APACHE（被 9 个包引用）
 
 ```text
                               Apache License
@@ -10202,7 +10320,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 117 · LICENSE-MIT（被 9 个包引用）
+### 文本 118 · LICENSE-MIT（被 9 个包引用）
 
 ```text
 Copyright (c) 2016 Alex Crichton
@@ -10233,7 +10351,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 118 · LICENSE（被 1 个包引用）
+### 文本 119 · LICENSE（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -10259,7 +10377,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 119 · LICENSE-APACHE（被 3 个包引用）
+### 文本 120 · LICENSE-APACHE（被 3 个包引用）
 
 ```text
                               Apache License
@@ -10465,7 +10583,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 120 · LICENSE-MIT（被 1 个包引用）
+### 文本 121 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2018-2024 The rust-random Project Developers
@@ -10496,7 +10614,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 121 · LICENSE-MIT（被 1 个包引用）
+### 文本 122 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2018-2025 The rust-random Project Developers
@@ -10527,7 +10645,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 122 · LICENSE-MIT（被 1 个包引用）
+### 文本 123 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2018-2026 The rust-random Project Developers
@@ -10558,7 +10676,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 123 · LICENSE（被 1 个包引用）
+### 文本 124 · LICENSE（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -10584,7 +10702,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 124 · LICENSE-MIT（被 1 个包引用）
+### 文本 125 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2018 Jorge Aparicio
@@ -10614,7 +10732,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 125 · LICENSE-MIT（被 2 个包引用）
+### 文本 126 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 Copyright (c) 2016 Amanieu d'Antras
@@ -10644,7 +10762,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 126 · LICENSE-MIT（被 1 个包引用）
+### 文本 127 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2017 Jorge Aparicio
@@ -10674,7 +10792,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 127 · LICENSE-MIT（被 4 个包引用）
+### 文本 128 · LICENSE-MIT（被 4 个包引用）
 
 ```text
 Copyright (c) 2015 The Rust Project Developers
@@ -10704,7 +10822,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 128 · LICENSE-MIT（被 1 个包引用）
+### 文本 129 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2013-2014 The Rust Project Developers.
@@ -10729,7 +10847,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 129 · LICENSE-MIT（被 3 个包引用）
+### 文本 130 · LICENSE-MIT（被 3 个包引用）
 
 ```text
 Copyright (c) 2014 The html5ever Project Developers
@@ -10759,7 +10877,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 130 · LICENSE-APACHE（被 1 个包引用）
+### 文本 131 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                               Apache License
@@ -10965,7 +11083,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 131 · LICENSE-MIT（被 1 个包引用）
+### 文本 132 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2017 http-rs authors
@@ -10995,7 +11113,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 132 · LICENSE（被 2 个包引用）
+### 文本 133 · LICENSE（被 2 个包引用）
 
 ```text
 Copyright (c) 2019-2026 Sean McArthur & Hyper Contributors
@@ -11025,7 +11143,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 133 · LICENSE-MIT（被 1 个包引用）
+### 文本 134 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2015-2025 Sean McArthur
@@ -11049,7 +11167,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 134 · LICENSE（被 1 个包引用）
+### 文本 135 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2014-2026 Sean McArthur
@@ -11073,7 +11191,57 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 135 · LICENSE（被 1 个包引用）
+### 文本 136 · LICENSE-ISC（被 4 个包引用）
+
+```text
+ISC License (ISC)
+Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
+
+Permission to use, copy, modify, and/or distribute this software for
+any purpose with or without fee is hereby granted, provided that the
+above copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL
+WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE
+AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL
+DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR
+PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS
+ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+```
+
+### 文本 137 · LICENSE-MIT（被 4 个包引用）
+
+```text
+Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### 文本 138 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2023-2025 Sean McArthur
@@ -11097,7 +11265,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 136 · LICENSE-APACHE（被 2 个包引用）
+### 文本 139 · LICENSE-APACHE（被 2 个包引用）
 
 ```text
                               Apache License
@@ -11303,7 +11471,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 137 · LICENSE-MIT（被 2 个包引用）
+### 文本 140 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 Copyright (c) 2020 Andrew D. Straw
@@ -11333,7 +11501,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 138 · LICENSE（被 1 个包引用）
+### 文本 141 · LICENSE（被 1 个包引用）
 
 ```text
 MIT License
@@ -11359,7 +11527,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 139 · LICENSE（被 18 个包引用）
+### 文本 142 · LICENSE（被 18 个包引用）
 
 ```text
 UNICODE LICENSE V3
@@ -11410,7 +11578,7 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ```
 
-### 文本 140 · LICENSE（被 1 个包引用）
+### 文本 143 · LICENSE（被 1 个包引用）
 
 ```text
 MIT License
@@ -11434,7 +11602,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 141 · LICENSE-MIT（被 3 个包引用）
+### 文本 144 · LICENSE-MIT（被 3 个包引用）
 
 ```text
 Copyright (c) 2013-2025 The rust-url developers
@@ -11464,7 +11632,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 142 · LICENSE-MIT（被 1 个包引用）
+### 文本 145 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) The rust-url developers
@@ -11494,7 +11662,37 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 143 · LICENSE-MIT（被 2 个包引用）
+### 文本 146 · LICENSE-BSD（被 1 个包引用）
+
+```text
+Copyright 2018 MaidSafe.net limited.
+Copyright 2020 messense
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+### 文本 147 · LICENSE-MIT（被 1 个包引用）
+
+```text
+Copyright 2018 MaidSafe.net limited.
+Copyright 2020 messense
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+### 文本 148 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 Copyright (c) 2016--2017
@@ -11524,7 +11722,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 144 · LICENSE（被 1 个包引用）
+### 文本 149 · LICENSE（被 1 个包引用）
 
 ```text
 MIT License
@@ -11550,7 +11748,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 145 · LICENSE-APACHE（被 1 个包引用）
+### 文本 150 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                                  Apache License
@@ -11756,7 +11954,7 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### 文本 146 · LICENSE-MIT（被 1 个包引用）
+### 文本 151 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright 2017 Juniper Networks, Inc.
@@ -11768,7 +11966,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 147 · LICENSE（被 2 个包引用）
+### 文本 152 · LICENSE（被 2 个包引用）
 
 ```text
 MIT License
@@ -11794,7 +11992,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 148 · LICENSE（被 1 个包引用）
+### 文本 153 · LICENSE（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -11821,7 +12019,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 149 · LICENSE（被 3 个包引用）
+### 文本 154 · LICENSE（被 3 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -11847,7 +12045,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 150 · LICENSE-MIT（被 1 个包引用）
+### 文本 155 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -11873,7 +12071,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 151 · LICENSE-MIT（被 2 个包引用）
+### 文本 156 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 Copyright (c) 2015 The rust-jni-sys Developers
@@ -11897,7 +12095,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 152 · LICENSE-APACHE（被 3 个包引用）
+### 文本 157 · LICENSE-APACHE（被 3 个包引用）
 
 ```text
                                  Apache License
@@ -12103,7 +12301,7 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### 文本 153 · LICENSE-MIT（被 1 个包引用）
+### 文本 158 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -12129,7 +12327,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 154 · LICENSE-APACHE（被 1 个包引用）
+### 文本 159 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                                  Apache License
@@ -12335,7 +12533,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 155 · LICENSE-MIT（被 1 个包引用）
+### 文本 160 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -12361,7 +12559,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 156 · LICENSE-MIT（被 1 个包引用）
+### 文本 161 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2017 Pyfisch
@@ -12385,7 +12583,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 157 · LICENSE-MIT（被 1 个包引用）
+### 文本 162 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2010 The Rust Project Developers
@@ -12415,7 +12613,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 158 · LICENSE-MIT（被 1 个包引用）
+### 文本 163 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -12442,7 +12640,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 159 · LICENSE-MIT（被 1 个包引用）
+### 文本 164 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) The Rust Project Developers
@@ -12472,7 +12670,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 160 · LICENSE（被 1 个包引用）
+### 文本 165 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright © 2015, Simonas Kazlauskas
@@ -12489,7 +12687,7 @@ NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE US
 THIS SOFTWARE.
 ```
 
-### 文本 161 · LICENSE.txt（被 1 个包引用）
+### 文本 166 · LICENSE.txt（被 1 个包引用）
 
 ```text
 rust-lang/libm as a whole is available for use under the MIT license:
@@ -12752,7 +12950,7 @@ have been licensed under extremely permissive terms.
 Copyright notices are retained in src/* files where relevant.
 ```
 
-### 文本 162 · LICENSE（被 1 个包引用）
+### 文本 167 · LICENSE（被 1 个包引用）
 
 ```text
 MIT License
@@ -12778,7 +12976,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 163 · LICENSE-Apache-2.0_WITH_LLVM-exception（被 6 个包引用）
+### 文本 168 · LICENSE-Apache-2.0_WITH_LLVM-exception（被 6 个包引用）
 
 ```text
 
@@ -13002,7 +13200,7 @@ the License, but only in their entirety and only with respect to the Combined
 Software.
 ```
 
-### 文本 164 · LICENSE-MIT（被 4 个包引用）
+### 文本 169 · LICENSE-MIT（被 4 个包引用）
 
 ```text
 Copyright (c) 2016 The Rust Project Developers
@@ -13032,7 +13230,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 165 · LICENSE-MIT（被 1 个包引用）
+### 文本 170 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2024 The lru-slab Developers
@@ -13044,7 +13242,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 166 · LICENSE-ZLIB（被 1 个包引用）
+### 文本 171 · LICENSE-ZLIB（被 1 个包引用）
 
 ```text
 Copyright (c) 2024 The lru-slab Developers
@@ -13068,7 +13266,7 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 文本 167 · LICENSE（被 1 个包引用）
+### 文本 172 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2017 Gilad Naaman
@@ -13092,7 +13290,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 168 · LICENSE-MIT（被 1 个包引用）
+### 文本 173 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2014 Sean McArthur
@@ -13116,7 +13314,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 169 · LICENSE.md（被 1 个包引用）
+### 文本 174 · LICENSE.md（被 1 个包引用）
 
 ```text
 Minimal-lexical is dual licensed under the Apache 2.0 license as well as the MIT
@@ -13158,7 +13356,71 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 文本 170 · LICENSE（被 2 个包引用）
+### 文本 175 · LICENSE（被 1 个包引用）
+
+```text
+Copyright (c) 2019-2025 Frank Denis
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+--
+
+Code in the src/crypto folder is derived from the rust-crypto project:
+https://github.com/DaGenix/rust-crypto
+
+Original ISC license follows:
+
+Copyright (c) 2006-2009 Graydon Hoare
+Copyright (c) 2009-2013 Mozilla Foundation
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### 文本 176 · LICENSE（被 2 个包引用）
 
 ```text
 MIT License
@@ -13188,7 +13450,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 171 · LICENSE-MIT.md（被 2 个包引用）
+### 文本 177 · LICENSE-MIT.md（被 2 个包引用）
 
 ```text
 MIT License
@@ -13217,7 +13479,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 172 · LICENSE-ZLIB.md（被 2 个包引用）
+### 文本 178 · LICENSE-ZLIB.md（被 2 个包引用）
 
 ```text
 Copyright 2013-2014 RAD Game Tools and Valve Software
@@ -13236,7 +13498,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 文本 173 · LICENSE（被 1 个包引用）
+### 文本 179 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2014 Carl Lerche and other MIO contributors
@@ -13260,7 +13522,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 174 · LICENSE-MIT（被 2 个包引用）
+### 文本 180 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 MIT License
@@ -13286,7 +13548,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 175 · LICENSE.spdx（被 1 个包引用）
+### 文本 181 · LICENSE.spdx（被 1 个包引用）
 
 ```text
 SPDXVersion: SPDX-2.1
@@ -13310,7 +13572,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/muda.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### 文本 176 · LICENSE-MIT（被 1 个包引用）
+### 文本 182 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2015 Jonathan Reem
@@ -13340,7 +13602,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 177 · LICENSE（被 1 个包引用）
+### 文本 183 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2014-2019 Geoffroy Couprie
@@ -13365,7 +13627,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 178 · LICENSE-MIT（被 1 个包引用）
+### 文本 184 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -13391,7 +13653,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 179 · LICENSE-MIT（被 1 个包引用）
+### 文本 185 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) Jacob Pratt
@@ -13415,7 +13677,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 180 · LICENSE-BSD（被 2 个包引用）
+### 文本 186 · LICENSE-BSD（被 2 个包引用）
 
 ```text
 Copyright (c) 2018, Daniel Wagner-Hall
@@ -13447,7 +13709,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 文本 181 · LICENSE-Apache（被 1 个包引用）
+### 文本 187 · LICENSE-Apache（被 1 个包引用）
 
 ```text
 
@@ -13654,7 +13916,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
    limitations under the License.
 ```
 
-### 文本 182 · LICENSE-MIT（被 1 个包引用）
+### 文本 188 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2021 Jacob Pratt
@@ -13678,7 +13940,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 183 · LICENSE.md（被 1 个包引用）
+### 文本 189 · LICENSE.md（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -13708,7 +13970,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 184 · LICENSE.txt（被 1 个包引用）
+### 文本 190 · LICENSE.txt（被 1 个包引用）
 
 ```text
 Mozilla Public License Version 2.0
@@ -14086,7 +14348,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ```
 
-### 文本 185 · COPYING（被 1 个包引用）
+### 文本 191 · COPYING（被 1 个包引用）
 
 ```text
 
@@ -14138,7 +14400,37 @@ Broadcom Corporation:
 https://datatracker.ietf.org/ipr/1526/
 ```
 
-### 文本 186 · LICENSE-MIT（被 2 个包引用）
+### 文本 192 · LICENSE-MIT（被 1 个包引用）
+
+```text
+Copyright (c) 2024 Marat Dulin
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### 文本 193 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 Copyright (c) 2020-2023 RustCrypto Developers
@@ -14168,7 +14460,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 187 · LICENSE-THIRD-PARTY（被 1 个包引用）
+### 文本 194 · LICENSE-THIRD-PARTY（被 1 个包引用）
 
 ```text
 ===============================================================================
@@ -14182,7 +14474,7 @@ option. All files in the project carrying such notice may not be
 copied, modified, or distributed except according to those terms.
 ```
 
-### 文本 188 · LICENSE.md（被 1 个包引用）
+### 文本 195 · LICENSE.md（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -14208,7 +14500,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 189 · LICENSE（被 5 个包引用）
+### 文本 196 · LICENSE（被 5 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -14233,7 +14525,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 190 · LICENSE-MIT（被 1 个包引用）
+### 文本 197 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2017 Plain contributors
@@ -14263,7 +14555,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 191 · LICENCE（被 1 个包引用）
+### 文本 198 · LICENCE（被 1 个包引用）
 
 ```text
 Copyright (c) 2015 Edward Barnard
@@ -14287,7 +14579,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 192 · LICENSE-MIT（被 2 个包引用）
+### 文本 199 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 Copyright (c) 2015 nwin
@@ -14317,7 +14609,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 193 · LICENSE-MIT（被 1 个包引用）
+### 文本 200 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2019 Anthony James Munns
@@ -14347,7 +14639,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 194 · LICENSE-Apache（被 1 个包引用）
+### 文本 201 · LICENSE-Apache（被 1 个包引用）
 
 ```text
 
@@ -14554,7 +14846,7 @@ DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### 文本 195 · LICENSE-MIT（被 1 个包引用）
+### 文本 202 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2023 Jacob Pratt et al.
@@ -14578,7 +14870,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 196 · LICENSE-APACHE（被 1 个包引用）
+### 文本 203 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                               Apache License
@@ -14784,7 +15076,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 197 · LICENSE-MIT（被 1 个包引用）
+### 文本 204 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2019 The CryptoCorrosion Contributors
@@ -14814,7 +15106,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 198 · LICENSE（被 1 个包引用）
+### 文本 205 · LICENSE（被 1 个包引用）
 
 ```text
 MIT License
@@ -14840,7 +15132,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 199 · LICENSE-APACHE（被 1 个包引用）
+### 文本 206 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                               Apache License
@@ -15046,7 +15338,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 200 · LICENSE-MIT（被 2 个包引用）
+### 文本 207 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 MIT License
@@ -15072,7 +15364,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 201 · LICENSE-APACHE（被 1 个包引用）
+### 文本 208 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                               Apache License
@@ -15278,7 +15570,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 202 · LICENSE-MIT.md（被 1 个包引用）
+### 文本 209 · LICENSE-MIT.md（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -15306,7 +15598,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 203 · LICENSE-APACHE（被 6 个包引用）
+### 文本 210 · LICENSE-APACHE（被 6 个包引用）
 
 ```text
                                  Apache License
@@ -15512,7 +15804,7 @@ THE SOFTWARE.
    limitations under the License.
 ```
 
-### 文本 204 · LICENSE-MIT（被 3 个包引用）
+### 文本 211 · LICENSE-MIT（被 3 个包引用）
 
 ```text
 Copyright (c) 2018 The quinn Developers
@@ -15524,7 +15816,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 205 · LICENSE-APACHE（被 3 个包引用）
+### 文本 212 · LICENSE-APACHE（被 3 个包引用）
 
 ```text
                               Apache License
@@ -15705,7 +15997,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-### 文本 206 · LICENSE-MIT（被 5 个包引用）
+### 文本 213 · LICENSE-MIT（被 5 个包引用）
 
 ```text
 Copyright 2018 Developers of the Rand project
@@ -15736,7 +16028,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 207 · LICENSE-APACHE（被 4 个包引用）
+### 文本 214 · LICENSE-APACHE（被 4 个包引用）
 
 ```text
                               Apache License
@@ -15928,7 +16220,7 @@ APPENDIX: How to apply the Apache License to your work.
    identification within third-party archives.
 ```
 
-### 文本 208 · LICENSE-MIT（被 1 个包引用）
+### 文本 215 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2018-2026 The Rand Project Developers
@@ -15958,7 +16250,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 209 · LICENSE-MIT（被 1 个包引用）
+### 文本 216 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2014-2017 Melissa O'Neill and PCG Project contributors
@@ -15989,7 +16281,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 210 · LICENSE-MIT.md（被 1 个包引用）
+### 文本 217 · LICENSE-MIT.md（被 1 个包引用）
 
 ```text
 MIT License
@@ -16015,7 +16307,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 211 · LICENSE-ZLIB.md（被 1 个包引用）
+### 文本 218 · LICENSE-ZLIB.md（被 1 个包引用）
 
 ```text
 Copyright (c) 2020 Osspial
@@ -16031,7 +16323,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 文本 212 · LICENSE（被 1 个包引用）
+### 文本 219 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2019-2026 est31 <MTest31@outlook.com> and contributors
@@ -16250,7 +16542,7 @@ Apache License, version 2.0
    END OF TERMS AND CONDITIONS
 ```
 
-### 文本 213 · LICENSE（被 1 个包引用）
+### 文本 220 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2017 Redox OS Developers
@@ -16277,7 +16569,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 214 · LICENSE（被 2 个包引用）
+### 文本 221 · LICENSE（被 2 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -16303,7 +16595,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 215 · LICENSE-APACHE（被 1 个包引用）
+### 文本 222 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                               Apache License
@@ -16509,7 +16801,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 216 · LICENSE-MIT（被 1 个包引用）
+### 文本 223 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2016-2026 Sean McArthur
@@ -16533,7 +16825,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 217 · LICENSE（被 1 个包引用）
+### 文本 224 · LICENSE（被 1 个包引用）
 
 ```text
 *ring* uses an "ISC" license, like BoringSSL used to use, for new code
@@ -16547,7 +16839,7 @@ See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
 for the license to code that was sourced from the once_cell project.
 ```
 
-### 文本 218 · LICENSE-BoringSSL（被 1 个包引用）
+### 文本 225 · LICENSE-BoringSSL（被 1 个包引用）
 
 ```text
 
@@ -16824,7 +17116,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 文本 219 · LICENSE-other-bits（被 1 个包引用）
+### 文本 226 · LICENSE-other-bits（被 1 个包引用）
 
 ```text
 Copyright 2015-2025 Brian Smith.
@@ -16842,7 +17134,7 @@ OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 文本 220 · LICENSE-MIT（被 1 个包引用）
+### 文本 227 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2019 Alexey Gerasev
@@ -16872,7 +17164,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 221 · LICENSE-APACHE（被 1 个包引用）
+### 文本 228 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                               Apache License
@@ -17053,57 +17345,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-### 文本 222 · LICENSE-ISC（被 3 个包引用）
-
-```text
-ISC License (ISC)
-Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
-
-Permission to use, copy, modify, and/or distribute this software for
-any purpose with or without fee is hereby granted, provided that the
-above copyright notice and this permission notice appear in all copies.
-
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL
-WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE
-AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL
-DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR
-PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS
-ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
-THIS SOFTWARE.
-```
-
-### 文本 223 · LICENSE-MIT（被 3 个包引用）
-
-```text
-Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-```
-
-### 文本 224 · LICENSE（被 1 个包引用）
+### 文本 229 · LICENSE（被 1 个包引用）
 
 ```text
 Rustls is distributed under the following three licenses:
@@ -17117,7 +17359,7 @@ respectively.  You may use this software under the terms of any
 of these licenses, at your option.
 ```
 
-### 文本 225 · LICENSE（被 1 个包引用）
+### 文本 230 · LICENSE（被 1 个包引用）
 
 ```text
 rustls-pemfile is distributed under the following three licenses:
@@ -17131,7 +17373,7 @@ respectively.  You may use this software under the terms of any
 of these licenses, at your option.
 ```
 
-### 文本 226 · LICENSE-APACHE（被 1 个包引用）
+### 文本 231 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                               Apache License
@@ -17337,7 +17579,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 227 · LICENSE-MIT（被 1 个包引用）
+### 文本 232 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2023 Dirkjan Ochtman <dirkjan@ochtman.nl>
@@ -17367,7 +17609,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 228 · LICENSE-MIT（被 1 个包引用）
+### 文本 233 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -17393,7 +17635,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 229 · LICENSE（被 1 个包引用）
+### 文本 234 · LICENSE（被 1 个包引用）
 
 ```text
 Except as otherwise noted, this project is licensed under the following
@@ -17417,7 +17659,7 @@ The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
 ```
 
-### 文本 230 · LICENSE-MIT（被 2 个包引用）
+### 文本 235 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -17443,7 +17685,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 231 · LICENSE.md（被 1 个包引用）
+### 文本 236 · LICENSE.md（被 1 个包引用）
 
 ```text
 Copyright (c) 2015 steffengy
@@ -17455,7 +17697,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 232 · LICENSE（被 4 个包引用）
+### 文本 237 · LICENSE（被 4 个包引用）
 
 ```text
 MIT License
@@ -17481,7 +17723,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 233 · LICENSE-MIT（被 1 个包引用）
+### 文本 238 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2016-2019 Ulrik Sverdrup "bluss" and scopeguard developers
@@ -17511,7 +17753,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 234 · LICENSE（被 1 个包引用）
+### 文本 239 · LICENSE（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -17537,7 +17779,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 235 · LICENSE（被 1 个包引用）
+### 文本 240 · LICENSE（被 1 个包引用）
 
 ```text
 MIT License
@@ -17563,7 +17805,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 236 · LICENSE-MIT（被 1 个包引用）
+### 文本 241 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2021-2022 The RustCrypto Project Developers
@@ -17593,7 +17835,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 237 · LICENSE-MIT（被 2 个包引用）
+### 文本 242 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -17618,7 +17860,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 238 · LICENSE-MIT（被 2 个包引用）
+### 文本 243 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 Copyright (c) 2015
@@ -17648,7 +17890,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 239 · LICENSE-MIT（被 2 个包引用）
+### 文本 244 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 MIT License
@@ -17674,7 +17916,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 240 · LICENSE-MIT（被 1 个包引用）
+### 文本 245 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2006-2009 Graydon Hoare
@@ -17706,7 +17948,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 241 · LICENSE-APACHE（被 1 个包引用）
+### 文本 246 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
 Copyright 2015 Nicholas Allegra (comex).
@@ -17724,7 +17966,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 242 · LICENSE-MIT（被 1 个包引用）
+### 文本 247 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -17750,7 +17992,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 243 · LICENSE-MIT（被 1 个包引用）
+### 文本 248 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2017 tokio-jsonrpc developers
@@ -17780,7 +18022,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 244 · LICENSE-MIT（被 1 个包引用）
+### 文本 249 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2018-2023 RustCrypto Developers
@@ -17810,7 +18052,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 245 · LICENSE.md（被 1 个包引用）
+### 文本 250 · LICENSE.md（被 1 个包引用）
 
 ```text
 MIT License
@@ -17836,7 +18078,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 246 · LICENSE-Apache（被 8 个包引用）
+### 文本 251 · LICENSE-Apache（被 9 个包引用）
 
 ```text
 
@@ -18018,7 +18260,7 @@ SOFTWARE.
    END OF TERMS AND CONDITIONS
 ```
 
-### 文本 247 · LICENSE-MIT（被 1 个包引用）
+### 文本 252 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -18042,7 +18284,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 248 · COPYING（被 1 个包引用）
+### 文本 253 · COPYING（被 1 个包引用）
 
 ```text
 Copyright 2012-2016 The Rust Project Developers.
@@ -18054,7 +18296,7 @@ http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
 option.
 ```
 
-### 文本 249 · COPYING（被 1 个包引用）
+### 文本 254 · COPYING（被 1 个包引用）
 
 ```text
 Copyright 2012-2016 The Rust Project Developers.
@@ -18066,7 +18308,7 @@ http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
 option.
 ```
 
-### 文本 250 · LICENSE（被 1 个包引用）
+### 文本 255 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2019 Carl Lerche
@@ -18096,7 +18338,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 251 · LICENSE-MIT（被 1 个包引用）
+### 文本 256 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2018 The Servo Project Developers
@@ -18126,7 +18368,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 252 · LICENSE（被 1 个包引用）
+### 文本 257 · LICENSE（被 1 个包引用）
 
 ```text
 MIT License
@@ -18152,7 +18394,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 253 · LICENSE-APACHE（被 1 个包引用）
+### 文本 258 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
 Apache License
@@ -18358,7 +18600,7 @@ Apache License
    limitations under the License.
 ```
 
-### 文本 254 · LICENSE-MIT（被 1 个包引用）
+### 文本 259 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright 2022 Kirill Chibisov
@@ -18382,7 +18624,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 255 · LICENSE（被 1 个包引用）
+### 文本 260 · LICENSE（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -18408,7 +18650,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 256 · LICENSE-MIT（被 1 个包引用）
+### 文本 261 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2021-2023 The RustCrypto Project Developers
@@ -18438,7 +18680,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 257 · LICENSE-MIT（被 1 个包引用）
+### 文本 262 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2017 Robert Grosse
@@ -18468,7 +18710,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 258 · LICENSE-MIT（被 1 个包引用）
+### 文本 263 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -18494,7 +18736,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 259 · LICENSE（被 1 个包引用）
+### 文本 264 · LICENSE（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -18522,7 +18764,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 260 · LICENSE（被 1 个包引用）
+### 文本 265 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2016-2017 Isis Agora Lovecruft, Henry de Valence. All rights reserved.
@@ -18556,7 +18798,7 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 文本 261 · LICENSE-APACHE（被 1 个包引用）
+### 文本 266 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                                  Apache License
@@ -18762,7 +19004,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
    limitations under the License.
 ```
 
-### 文本 262 · LICENSE-MIT（被 1 个包引用）
+### 文本 267 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2023 The swift-rs Developers
@@ -18786,7 +19028,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 263 · LICENSE（被 1 个包引用）
+### 文本 268 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright 2016 Nika Layzell
@@ -18798,7 +19040,37 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 264 · LICENSE.spdx（被 1 个包引用）
+### 文本 269 · LICENSE-MIT（被 2 个包引用）
+
+```text
+Copyright (c) 2024 Mullvad VPN AB
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### 文本 270 · LICENSE.spdx（被 1 个包引用）
 
 ```text
 SPDXVersion: SPDX-2.1
@@ -18821,7 +19093,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tao.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### 文本 265 · LICENSE-MIT（被 1 个包引用）
+### 文本 271 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -18847,7 +19119,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 266 · LICENSE.spdx（被 1 个包引用）
+### 文本 272 · LICENSE.spdx（被 1 个包引用）
 
 ```text
 SPDXVersion: SPDX-2.1
@@ -18871,7 +19143,37 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tao.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### 文本 267 · LICENSE_MIT（被 8 个包引用）
+### 文本 273 · LICENSE-MIT（被 1 个包引用）
+
+```text
+Copyright (c) The tar-rs Project Contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### 文本 274 · LICENSE_MIT（被 8 个包引用）
 
 ```text
 MIT License
@@ -18897,7 +19199,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 268 · LICENSE.spdx（被 7 个包引用）
+### 文本 275 · LICENSE.spdx（被 8 个包引用）
 
 ```text
 SPDXVersion: SPDX-2.1
@@ -18922,7 +19224,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tauri.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### 文本 269 · LICENSE_MIT（被 6 个包引用）
+### 文本 276 · LICENSE_MIT（被 7 个包引用）
 
 ```text
 MIT License
@@ -18948,7 +19250,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 270 · LICENSE_MIT（被 1 个包引用）
+### 文本 277 · LICENSE_MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -18974,7 +19276,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 271 · LICENSE（被 1 个包引用）
+### 文本 278 · LICENSE（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -19007,7 +19309,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 272 · LICENSE.spdx（被 1 个包引用）
+### 文本 279 · LICENSE.spdx（被 1 个包引用）
 
 ```text
 SPDXVersion: SPDX-2.1
@@ -19031,7 +19333,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/winrt-notification.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### 文本 273 · LICENSE-MIT（被 1 个包引用）
+### 文本 280 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 Copyright (c) 2015 Steven Allen
@@ -19061,7 +19363,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 274 · LICENSE-MIT（被 1 个包引用）
+### 文本 281 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2015 Keegan McAllister
@@ -19091,7 +19393,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 275 · LICENSE（被 1 个包引用）
+### 文本 282 · LICENSE（被 1 个包引用）
 
 ```text
 MIT License
@@ -19117,7 +19419,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 276 · LICENSE-MIT（被 3 个包引用）
+### 文本 283 · LICENSE-MIT（被 3 个包引用）
 
 ```text
 Copyright (c) Jacob Pratt et al.
@@ -19141,7 +19443,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 277 · LICENSE-MIT.md（被 1 个包引用）
+### 文本 284 · LICENSE-MIT.md（被 1 个包引用）
 
 ```text
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
@@ -19151,7 +19453,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 278 · LICENSE-APACHE.md（被 1 个包引用）
+### 文本 285 · LICENSE-APACHE.md（被 1 个包引用）
 
 ```text
                                  Apache License
@@ -19357,7 +19659,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
    limitations under the License.
 ```
 
-### 文本 279 · LICENSE-MIT.md（被 1 个包引用）
+### 文本 286 · LICENSE-MIT.md（被 1 个包引用）
 
 ```text
 MIT License
@@ -19383,7 +19685,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 280 · LICENSE-ZLIB.md（被 1 个包引用）
+### 文本 287 · LICENSE-ZLIB.md（被 1 个包引用）
 
 ```text
 zlib License
@@ -19407,7 +19709,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-### 文本 281 · LICENSE（被 2 个包引用）
+### 文本 288 · LICENSE（被 2 个包引用）
 
 ```text
 MIT License
@@ -19433,7 +19735,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 282 · LICENSE（被 1 个包引用）
+### 文本 289 · LICENSE（被 1 个包引用）
 
 ```text
 MIT License
@@ -19460,7 +19762,243 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 283 · LICENSE（被 3 个包引用）
+### 文本 290 · LICENSE-APACHE（被 1 个包引用）
+
+```text
+                              Apache License
+                        Version 2.0, January 2004
+                     http://www.apache.org/licenses/
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+1. Definitions.
+
+   "License" shall mean the terms and conditions for use, reproduction,
+   and distribution as defined by Sections 1 through 9 of this document.
+
+   "Licensor" shall mean the copyright owner or entity authorized by
+   the copyright owner that is granting the License.
+
+   "Legal Entity" shall mean the union of the acting entity and all
+   other entities that control, are controlled by, or are under common
+   control with that entity. For the purposes of this definition,
+   "control" means (i) the power, direct or indirect, to cause the
+   direction or management of such entity, whether by contract or
+   otherwise, or (ii) ownership of fifty percent (50%) or more of the
+   outstanding shares, or (iii) beneficial ownership of such entity.
+
+   "You" (or "Your") shall mean an individual or Legal Entity
+   exercising permissions granted by this License.
+
+   "Source" form shall mean the preferred form for making modifications,
+   including but not limited to software source code, documentation
+   source, and configuration files.
+
+   "Object" form shall mean any form resulting from mechanical
+   transformation or translation of a Source form, including but
+   not limited to compiled object code, generated documentation,
+   and conversions to other media types.
+
+   "Work" shall mean the work of authorship, whether in Source or
+   Object form, made available under the License, as indicated by a
+   copyright notice that is included in or attached to the work
+   (an example is provided in the Appendix below).
+
+   "Derivative Works" shall mean any work, whether in Source or Object
+   form, that is based on (or derived from) the Work and for which the
+   editorial revisions, annotations, elaborations, or other modifications
+   represent, as a whole, an original work of authorship. For the purposes
+   of this License, Derivative Works shall not include works that remain
+   separable from, or merely link (or bind by name) to the interfaces of,
+   the Work and Derivative Works thereof.
+
+   "Contribution" shall mean any work of authorship, including
+   the original version of the Work and any modifications or additions
+   to that Work or Derivative Works thereof, that is intentionally
+   submitted to Licensor for inclusion in the Work by the copyright owner
+   or by an individual or Legal Entity authorized to submit on behalf of
+   the copyright owner. For the purposes of this definition, "submitted"
+   means any form of electronic, verbal, or written communication sent
+   to the Licensor or its representatives, including but not limited to
+   communication on electronic mailing lists, source code control systems,
+   and issue tracking systems that are managed by, or on behalf of, the
+   Licensor for the purpose of discussing and improving the Work, but
+   excluding communication that is conspicuously marked or otherwise
+   designated in writing by the copyright owner as "Not a Contribution."
+
+   "Contributor" shall mean Licensor and any individual or Legal Entity
+   on behalf of whom a Contribution has been received by Licensor and
+   subsequently incorporated within the Work.
+
+2. Grant of Copyright License. Subject to the terms and conditions of
+   this License, each Contributor hereby grants to You a perpetual,
+   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+   copyright license to reproduce, prepare Derivative Works of,
+   publicly display, publicly perform, sublicense, and distribute the
+   Work and such Derivative Works in Source or Object form.
+
+3. Grant of Patent License. Subject to the terms and conditions of
+   this License, each Contributor hereby grants to You a perpetual,
+   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+   (except as stated in this section) patent license to make, have made,
+   use, offer to sell, sell, import, and otherwise transfer the Work,
+   where such license applies only to those patent claims licensable
+   by such Contributor that are necessarily infringed by their
+   Contribution(s) alone or by combination of their Contribution(s)
+   with the Work to which such Contribution(s) was submitted. If You
+   institute patent litigation against any entity (including a
+   cross-claim or counterclaim in a lawsuit) alleging that the Work
+   or a Contribution incorporated within the Work constitutes direct
+   or contributory patent infringement, then any patent licenses
+   granted to You under this License for that Work shall terminate
+   as of the date such litigation is filed.
+
+4. Redistribution. You may reproduce and distribute copies of the
+   Work or Derivative Works thereof in any medium, with or without
+   modifications, and in Source or Object form, provided that You
+   meet the following conditions:
+
+   (a) You must give any other recipients of the Work or
+       Derivative Works a copy of this License; and
+
+   (b) You must cause any modified files to carry prominent notices
+       stating that You changed the files; and
+
+   (c) You must retain, in the Source form of any Derivative Works
+       that You distribute, all copyright, patent, trademark, and
+       attribution notices from the Source form of the Work,
+       excluding those notices that do not pertain to any part of
+       the Derivative Works; and
+
+   (d) If the Work includes a "NOTICE" text file as part of its
+       distribution, then any Derivative Works that You distribute must
+       include a readable copy of the attribution notices contained
+       within such NOTICE file, excluding those notices that do not
+       pertain to any part of the Derivative Works, in at least one
+       of the following places: within a NOTICE text file distributed
+       as part of the Derivative Works; within the Source form or
+       documentation, if provided along with the Derivative Works; or,
+       within a display generated by the Derivative Works, if and
+       wherever such third-party notices normally appear. The contents
+       of the NOTICE file are for informational purposes only and
+       do not modify the License. You may add Your own attribution
+       notices within Derivative Works that You distribute, alongside
+       or as an addendum to the NOTICE text from the Work, provided
+       that such additional attribution notices cannot be construed
+       as modifying the License.
+
+   You may add Your own copyright statement to Your modifications and
+   may provide additional or different license terms and conditions
+   for use, reproduction, or distribution of Your modifications, or
+   for any such Derivative Works as a whole, provided Your use,
+   reproduction, and distribution of the Work otherwise complies with
+   the conditions stated in this License.
+
+5. Submission of Contributions. Unless You explicitly state otherwise,
+   any Contribution intentionally submitted for inclusion in the Work
+   by You to the Licensor shall be under the terms and conditions of
+   this License, without any additional terms or conditions.
+   Notwithstanding the above, nothing herein shall supersede or modify
+   the terms of any separate license agreement you may have executed
+   with Licensor regarding such Contributions.
+
+6. Trademarks. This License does not grant permission to use the trade
+   names, trademarks, service marks, or product names of the Licensor,
+   except as required for reasonable and customary use in describing the
+   origin of the Work and reproducing the content of the NOTICE file.
+
+7. Disclaimer of Warranty. Unless required by applicable law or
+   agreed to in writing, Licensor provides the Work (and each
+   Contributor provides its Contributions) on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+   implied, including, without limitation, any warranties or conditions
+   of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+   PARTICULAR PURPOSE. You are solely responsible for determining the
+   appropriateness of using or redistributing the Work and assume any
+   risks associated with Your exercise of permissions under this License.
+
+8. Limitation of Liability. In no event and under no legal theory,
+   whether in tort (including negligence), contract, or otherwise,
+   unless required by applicable law (such as deliberate and grossly
+   negligent acts) or agreed to in writing, shall any Contributor be
+   liable to You for damages, including any direct, indirect, special,
+   incidental, or consequential damages of any character arising as a
+   result of this License or out of the use or inability to use the
+   Work (including but not limited to damages for loss of goodwill,
+   work stoppage, computer failure or malfunction, or any and all
+   other commercial damages or losses), even if such Contributor
+   has been advised of the possibility of such damages.
+
+9. Accepting Warranty or Additional Liability. While redistributing
+   the Work or Derivative Works thereof, You may choose to offer,
+   and charge a fee for, acceptance of support, warranty, indemnity,
+   or other liability obligations and/or rights consistent with this
+   License. However, in accepting such obligations, You may act only
+   on Your own behalf and on Your sole responsibility, not on behalf
+   of any other Contributor, and only if You agree to indemnify,
+   defend, and hold each Contributor harmless for any liability
+   incurred by, or claims asserted against, such Contributor by reason
+   of your accepting any such warranty or additional liability.
+
+END OF TERMS AND CONDITIONS
+
+APPENDIX: How to apply the Apache License to your work.
+
+   To apply the Apache License to your work, attach the following
+   boilerplate notice, with the fields enclosed by brackets "[]"
+   replaced with your own identifying information. (Don't include
+   the brackets!)  The text should be enclosed in the appropriate
+   comment syntax for the file format. We also recommend that a
+   file or class name and description of purpose be included on the
+   same "printed page" as the copyright notice for easier
+   identification within third-party archives.
+
+Copyright 2017 quininer kel
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+### 文本 291 · LICENSE-MIT（被 1 个包引用）
+
+```text
+Copyright (c) 2017 quininer kel
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### 文本 292 · LICENSE（被 3 个包引用）
 
 ```text
 Copyright (c) 2019 Tower Contributors
@@ -19490,7 +20028,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 284 · LICENSE（被 1 个包引用）
+### 文本 293 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2019-2021 Tower Contributors
@@ -19520,7 +20058,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 285 · LICENSE（被 3 个包引用）
+### 文本 294 · LICENSE（被 3 个包引用）
 
 ```text
 Copyright (c) 2019 Tokio Contributors
@@ -19550,7 +20088,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 286 · LICENSE.spdx（被 1 个包引用）
+### 文本 295 · LICENSE.spdx（被 1 个包引用）
 
 ```text
 SPDXVersion: SPDX-2.1
@@ -19574,7 +20112,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tray-icon.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### 文本 287 · LICENSE（被 1 个包引用）
+### 文本 296 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2018-2023 Sean McArthur
@@ -19599,13 +20137,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 288 · LICENSE（被 1 个包引用）
+### 文本 297 · LICENSE（被 1 个包引用）
 
 ```text
 MIT OR Apache-2.0
 ```
 
-### 文本 289 · LICENSE-APACHE（被 1 个包引用）
+### 文本 298 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                               Apache License
@@ -19811,7 +20349,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### 文本 290 · LICENSE-MIT（被 1 个包引用）
+### 文本 299 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -19837,7 +20375,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 291 · LICENSE（被 1 个包引用）
+### 文本 300 · LICENSE（被 1 个包引用）
 
 ```text
     MIT License
@@ -19863,7 +20401,7 @@ SOFTWARE.
     SOFTWARE
 ```
 
-### 文本 292 · LICENSE-UNICODE（被 1 个包引用）
+### 文本 301 · LICENSE-UNICODE（被 1 个包引用）
 
 ```text
 UNICODE LICENSE V3
@@ -19907,7 +20445,7 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ```
 
-### 文本 293 · LICENSE.txt（被 1 个包引用）
+### 文本 302 · LICENSE.txt（被 1 个包引用）
 
 ```text
 // Copyright 2015-2016 Brian Smith.
@@ -19925,7 +20463,7 @@ authorization of the copyright holder.
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### 文本 294 · LICENSE（被 1 个包引用）
+### 文本 303 · LICENSE（被 1 个包引用）
 
 ```text
 MIT License
@@ -19951,7 +20489,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 295 · LICENSE-MIT（被 1 个包引用）
+### 文本 304 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright Mozilla Foundation
@@ -19981,7 +20519,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 296 · LICENSE-MIT（被 1 个包引用）
+### 文本 305 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2014 The Rust Project Developers
@@ -20012,7 +20550,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 297 · LICENSE（被 1 个包引用）
+### 文本 306 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2017 Tim Visée
@@ -20036,7 +20574,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 298 · LICENSE-MIT（被 1 个包引用）
+### 文本 307 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -20060,7 +20598,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 299 · LICENSE（被 2 个包引用）
+### 文本 308 · LICENSE（被 2 个包引用）
 
 ```text
 The MIT License (MIT)
@@ -20086,7 +20624,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 300 · LICENSE（被 1 个包引用）
+### 文本 309 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2018-2019 Sean McArthur
@@ -20110,7 +20648,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 301 · LICENSE.txt（被 1 个包引用）
+### 文本 310 · LICENSE.txt（被 1 个包引用）
 
 ```text
 Copyright (c) 2020 Henrik Enquist
@@ -20134,7 +20672,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 302 · LICENSE-APACHE（被 1 个包引用）
+### 文本 311 · LICENSE-APACHE（被 1 个包引用）
 
 ```text
                                  Apache License
@@ -20340,7 +20878,7 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### 文本 303 · LICENSE-MIT（被 1 个包引用）
+### 文本 312 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -20366,7 +20904,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 304 · LICENSE（被 1 个包引用）
+### 文本 313 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2016 Boucher, Antoni <bouanto@zoho.com>
@@ -20391,7 +20929,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 305 · LICENSE（被 1 个包引用）
+### 文本 314 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2016 Boucher, Antoni <bouanto@zoho.com>
@@ -20414,7 +20952,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 306 · LICENSE（被 1 个包引用）
+### 文本 315 · LICENSE（被 1 个包引用）
 
 ```text
 # Community Data License Agreement - Permissive - Version 2.0
@@ -20480,7 +21018,7 @@ of Data, including for example machine learning models and models'
 insights.
 ```
 
-### 文本 307 · LICENSE.md（被 1 个包引用）
+### 文本 316 · LICENSE.md（被 1 个包引用）
 
 ```text
 Copyright 2018-Present Sharad Chand
@@ -20501,7 +21039,7 @@ CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFT
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 308 · LICENSE-MIT（被 1 个包引用）
+### 文本 317 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2015-2018 The winapi-rs Developers
@@ -20525,7 +21063,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 309 · LICENSE-MIT（被 1 个包引用）
+### 文本 318 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -20551,7 +21089,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 310 · LICENSE.spdx（被 1 个包引用）
+### 文本 319 · LICENSE.spdx（被 1 个包引用）
 
 ```text
 SPDXVersion: SPDX-2.1
@@ -20575,7 +21113,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/window-vibrancy.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### 文本 311 · license-apache-2.0（被 52 个包引用）
+### 文本 320 · license-apache-2.0（被 53 个包引用）
 
 ```text
                                  Apache License
@@ -20781,7 +21319,7 @@ Creator: Person: Daniel Thompson-Yvetot
    limitations under the License.
 ```
 
-### 文本 312 · license-mit（被 52 个包引用）
+### 文本 321 · license-mit（被 53 个包引用）
 
 ```text
     MIT License
@@ -20807,7 +21345,7 @@ Creator: Person: Daniel Thompson-Yvetot
     SOFTWARE
 ```
 
-### 文本 313 · LICENSE-MIT（被 3 个包引用）
+### 文本 322 · LICENSE-MIT（被 3 个包引用）
 
 ```text
 Permission is hereby granted, free of charge, to any person obtaining
@@ -20830,7 +21368,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 314 · LICENSE（被 2 个包引用）
+### 文本 323 · LICENSE（被 2 个包引用）
 
 ```text
 Copyright (c) 2015 Igor Shaula
@@ -20854,7 +21392,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### 文本 315 · LICENSE-MIT（被 1 个包引用）
+### 文本 324 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 MIT License
@@ -20880,7 +21418,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### 文本 316 · LICENSE.spdx（被 1 个包引用）
+### 文本 325 · LICENSE.spdx（被 1 个包引用）
 
 ```text
 SPDXVersion: SPDX-2.1
@@ -20905,7 +21443,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/wry.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### 文本 317 · LICENSE-MIT（被 1 个包引用）
+### 文本 326 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2016 Masaki Hara
@@ -20917,7 +21455,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 318 · LICENSE（被 5 个包引用）
+### 文本 327 · LICENSE（被 5 个包引用）
 
 ```text
 Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors
@@ -20947,7 +21485,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 319 · LICENSE（被 1 个包引用）
+### 文本 328 · LICENSE（被 1 个包引用）
 
 ```text
 Copyright (c) 2026 Zeeshan Ali Khan & zcheapstr contributors
@@ -20977,7 +21515,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 320 · LICENSE-APACHE（被 2 个包引用）
+### 文本 329 · LICENSE-APACHE（被 2 个包引用）
 
 ```text
                                  Apache License
@@ -21183,7 +21721,7 @@ DEALINGS IN THE SOFTWARE.
    limitations under the License.
 ```
 
-### 文本 321 · LICENSE-BSD（被 2 个包引用）
+### 文本 330 · LICENSE-BSD（被 2 个包引用）
 
 ```text
 Copyright 2019 The Fuchsia Authors.
@@ -21212,7 +21750,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### 文本 322 · LICENSE-MIT（被 2 个包引用）
+### 文本 331 · LICENSE-MIT（被 2 个包引用）
 
 ```text
 Copyright 2023 The Fuchsia Authors
@@ -21242,7 +21780,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 323 · LICENSE-MIT（被 1 个包引用）
+### 文本 332 · LICENSE-MIT（被 1 个包引用）
 
 ```text
 Copyright (c) 2018-2026 The RustCrypto Project Developers
@@ -21272,7 +21810,36 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### 文本 324 · LICENSE（被 1 个包引用）
+### 文本 333 · LICENSE（被 1 个包引用）
+
+```text
+The MIT License (MIT)
+
+Copyright (c) 2014 Mathijs van de Nes
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Some files in the "tests/data" subdirectory of this repository are under other
+licences; see files named LICENSE.*.txt for details.
+```
+
+### 文本 334 · LICENSE（被 1 个包引用）
 
 ```text
 (C) 2024 Trifecta Tech Foundation 
@@ -21296,7 +21863,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ```
 
-（共 324 份去重后的许可全文）
+（共 334 份去重后的许可全文）
 ## Android（Gradle/Maven）依赖
 
 > 采集：解析 `gradlew :app:dependencies` 的依赖树 + 读 Gradle 缓存里 POM 的 `<licenses>`；

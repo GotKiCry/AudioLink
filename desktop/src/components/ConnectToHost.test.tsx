@@ -11,6 +11,8 @@ import { describe, expect, it, vi } from "vitest";
 import { t } from "../i18n";
 import { ConnectToHost } from "./ConnectToHost";
 
+vi.mock("./DiscoveredHosts", () => ({ DiscoveredHosts: () => null }));
+
 function entry(over: { connecting?: boolean } = {}) {
   const onConnect = vi.fn(async () => true);
   const { container } = render(
@@ -23,7 +25,7 @@ describe("接收端入口：本机切换成接收端，而不是「添加设备�
   it("标题、角色标签、代价说明都在：一眼看出这是角色切换", () => {
     entry();
 
-    expect(screen.getByRole("heading", { name: t("connect.title") })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: t("connect.manual") })).toBeTruthy();
     expect(screen.getByText(t("connect.role"))).toBeTruthy();
     expect(screen.getByText(t("connect.hint"))).toBeTruthy();
   });
@@ -37,12 +39,10 @@ describe("接收端入口：本机切换成接收端，而不是「添加设备�
     expect(screen.queryByText(/手动添加/)).toBeNull();
   });
 
-  it("下沉一级：不是与「本机地址」平级的主卡片", () => {
-    // 设计契约：这一格是角色切换（.al-well），不是第二个主行动（.al-card）。
-    const { container } = entry();
-
-    expect(container.querySelector(".al-well")).toBeTruthy();
-    expect(container.querySelector(".al-card")).toBeNull();
+  it("空输入通过 Enter 提交也不会发出连接请求", () => {
+    const { onConnect } = entry();
+    fireEvent.submit(screen.getByRole("form", { name: t("connect.manual") }));
+    expect(onConnect).not.toHaveBeenCalled();
   });
 
   it("输入框的标签就是「主机地址」：方向写在明面上，不藏进 sr-only", () => {

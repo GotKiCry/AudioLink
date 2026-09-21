@@ -1,21 +1,4 @@
-/**
- * 本机地址卡：「音源即主机」架构里最重要的一块 ——
- * 主机不需要知道对方的地址，它只需要把自己的地址说清楚，让对方输进去。
- *
- * 所以这里把地址做得最大、最可复制，并给出下一步动作的人话（PRODUCT.md 原则 3）。
- *
- * 卡片上还写着一句 host.role_hint，把规则本身说白（"本机是主机：只等对方接入"）：
- * 它是"为什么这张卡上只有本机地址、没有对方地址输入框"的答案。规则要写在用户看得见的地方 ——
- * 不写，用户就会照着直觉（PC 得去连手机）去找一个并不存在的入口。
- *
- * 为什么不用 local.addr：那是**监听地址**（QUIC bind 的 0.0.0.0:58290）。
- * 0.0.0.0 在别人的手机上指的就是那部手机自己，照着输必然连不上 ——
- * 一张「教人输地址」的卡片印一个注定失败的地址，比承认没地址更糟：
- * 用户会先去怀疑 Wi-Fi、手机、防火墙，最后才怀疑界面。所以这里只显示后端的
- * displayAddr，一条都挑不出来就如实说「未检测到」。
- */
-
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { LocalStatus } from "../types";
 import { t } from "../i18n";
@@ -51,6 +34,9 @@ export function peerUsableAddr(raw: string | null | undefined): string {
 
 export function HostAddressCard({ local }: { local: LocalStatus | null }) {
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const copyTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(copyTimer.current), []);
   const address = peerUsableAddr(local?.displayAddr);
   const ready = address !== "";
   // 多地址提示只在「确实有得试」时出现：一条都没有的时候，它后面没有可试的对象。
@@ -61,53 +47,39 @@ export function HostAddressCard({ local }: { local: LocalStatus | null }) {
     try {
       await navigator.clipboard.writeText(address);
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
+      setCopyFailed(false);
+      window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopied(false), 1600);
     } catch {
-      // 剪贴板被拒（无权限 / 非安全上下文）：地址本来就印在屏幕上，用户可手抄。
+      setCopyFailed(true);
     }
   };
 
   return (
-    <section className="al-card flex flex-wrap items-center gap-x-4 gap-y-3 p-4" aria-labelledby="host-address-heading">
-      <div className="min-w-0">
-        <h2 id="host-address-heading" className="text-caption font-semibold text-text-secondary">{t("host.address")}</h2>
-        {/* 先规则、后动作：规则解释这张卡为什么长这样，动作才是用户接下来要做的事 */}
-        <p className="mt-1 text-caption leading-relaxed text-text-tertiary">{t("host.role_hint")}</p>
-        <p className="mt-1 text-caption leading-relaxed text-text-secondary">
-          {ready ? t("host.hint") : t("host.hint_missing")}
-        </p>
-        {multi ? (
-          <p className="mt-1 text-caption leading-relaxed text-text-tertiary">{t("host.multi_hint")}</p>
-        ) : null}
+    <section className="al-connect-panel" aria-labelledby="host-address-heading">
+      <div className="al-address-block">
+        <h2 id="host-address-heading" className="text-base font-semibold">{t("host.address")}</h2>
+        <p className="mt-2 text-caption leading-relaxed text-text-secondary">{t("host.role_hint")}</p>
+        <div className="al-address-value">
+          <span className={ready ? "num select-all break-all text-xl font-medium" : "text-body text-text-secondary"}>
+            {ready ? address : t("host.addr_missing")}
+          </span>
+          <button type="button" onClick={() => void copy()} disabled={!ready}
+            title={ready ? undefined : t("host.addr_missing")}
+            className="al-btn h-8 gap-1.5 px-3 text-caption">
+            <IconLink className="h-3.5 w-3.5" />
+            {copied && ready ? t("host.copied") : t("host.copy")}
+          </button>
+        </div>
+        {multi ? <p className="mt-2 text-caption leading-relaxed text-text-secondary">{t("host.multi_hint")}</p> : null}
+        <p role="status" className="text-caption text-caution">{copyFailed ? t("host.copy_failed") : null}</p>
       </div>
-
-      <div className="ml-auto flex items-center gap-2">
-        {/*
-          没地址时把大字号让给一句人话：num 是给地址串准备的数宽样式，
-          套在「未检测到局域网地址」上只会更难读。
-        */}
-        <span
-          className={
-            ready
-              ? "num select-all text-body tracking-tight text-text-primary"
-              : "max-w-[22rem] text-caption leading-relaxed text-text-tertiary"
-          }
-        >
-          {ready ? address : t("host.addr_missing")}
-        </span>
-        <button
-          type="button"
-          onClick={() => void copy()}
-          disabled={!ready}
-          // 禁用的按钮不可聚焦，鼠标悬停是它唯一能解释「为什么点不动」的渠道。
-          title={ready ? undefined : t("host.addr_missing")}
-          className="al-btn h-8 gap-1.5 px-3 text-caption"
-        >
-          <IconLink className="h-3.5 w-3.5" />
-          {/* 地址在 1.6 秒里失效（拔网线）时不该还挂着「已复制」 */}
-          {copied && ready ? t("host.copied") : t("host.copy")}
-        </button>
-      </div>
+      {ready ? (
+        <ol className="al-connect-steps">
+          <li><span aria-hidden="true">1</span><p>{t("host.hint")}</p></li>
+          <li><span aria-hidden="true">2</span><p>{t("host.pair_hint")}</p></li>
+        </ol>
+      ) : <p className="text-caption leading-relaxed text-caution">{t("host.hint_missing")}</p>}
     </section>
   );
 }

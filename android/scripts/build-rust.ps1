@@ -103,7 +103,9 @@ if (Test-Path $jniLibs) {
 }
 
 Write-Host "==> 交叉编译 Rust 内核 ($cargoProfile)：$($targets -join ', ')" -ForegroundColor Cyan
-$ndkArgs = @("ndk", "-o", $jniLibs)
+# 与 app 的 minSdk=26 对齐；发现层 getifaddrs 从 API 24 起可用。
+# cargo-ndk 默认 API 21 会让可执行探针链接失败，也无法正确校验库的系统符号版本。
+$ndkArgs = @("ndk", "--platform", "26", "-o", $jniLibs)
 foreach ($t in $targets) { $ndkArgs += @("-t", $t) }
 $ndkArgs += @("build", "-p", "audiolink-ffi", "--profile", $cargoProfile)
 

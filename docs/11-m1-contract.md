@@ -331,6 +331,7 @@ pub struct PeerStatus {
     pub id: NodeId,
     pub name: String,
     pub addr: SocketAddr,
+    pub initiated_locally: bool, // 本机会话角色：true = 发起连接的接收端
     /// 会话状态。**六态，不是五态** —— `Reconnecting` 是一个真实存在的状态
     /// （链路断了、正在退避重连），把它折叠进 `Degraded` 会让 UI 无法区分
     /// 「还能出声但质量差」与「已经断了」。见 [`SessionState`]。
@@ -401,6 +402,7 @@ pub enum SessionState { Idle, Handshaking, Streaming, Degraded, Reconnecting, Fa
 | `version` | — | `String`（已有） |
 | `local_status` | — | `{ id_short: string, name: string, addr: string, lanAddrs: string[], displayAddr: string \| null, platform: string }` |
 | `list_peers` | — | `PeerView[]` |
+| `discovered_hosts` | `refresh?: boolean` | `DiscoveredHost[]`；`refresh: true` 重建浏览器并清空旧结果（局域网发现扩展，见 docs/63-lan-discovery.md） |
 | `connect` | `{ addr: string }` | `PeerView` |
 | `list_capture_devices` | — | `CaptureDeviceView[]`（活动的 Windows 输出端点） |
 | `active_capture_device` | — | `CaptureDeviceView \| null`（实际正在采集的端点） |
@@ -416,6 +418,7 @@ type PeerView = {
   idShort: string; name: string; addr: string;
   state: "idle" | "handshaking" | "streaming" | "degraded" | "reconnecting" | "failed";
   trusted: boolean;
+  receiving: boolean; // 本机是该会话的连接发起方；接收模式不自动回传声音
 };
 type TelemetryView = {
   peers: number; rttUs: number; jitterUs: number; lossPct: number;

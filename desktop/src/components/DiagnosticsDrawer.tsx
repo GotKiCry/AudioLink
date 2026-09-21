@@ -54,7 +54,7 @@ function IdentityRow({ label, value }: { label: string; value: string }) {
   return (
     <>
       <dt className="font-semibold text-text-tertiary">{label}</dt>
-      <dd className="num min-w-0 truncate text-text-secondary">{value}</dd>
+      <dd className="num min-w-0 break-all text-text-secondary">{value}</dd>
     </>
   );
 }
@@ -99,7 +99,7 @@ export function DiagnosticsDrawer({ open, onClose, local, children }: Diagnostic
           <dl className="mt-2 grid grid-cols-[max-content_minmax(0,1fr)] items-baseline gap-x-4 gap-y-1 text-caption">
             <IdentityRow label={t("diag.identity_fp")} value={identityValue(local, (status) => status.idShort)} />
             <IdentityRow label={t("diag.identity_listen")} value={identityValue(local, (status) => status.addr)} />
-            <IdentityRow label={t("diag.identity_lan")} value={identityValue(local, (status) => status.displayAddr)} />
+            <IdentityRow label={t("diag.identity_lan")} value={identityValue(local, (status) => status.lanAddrs?.join(", ") || status.displayAddr)} />
           </dl>
         </section>
 

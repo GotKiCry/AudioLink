@@ -358,7 +358,9 @@ name = "audiolink-desktop"
 version = "0.1.1"
 dependencies = [
  "audiolink-audio",
+ "audiolink-discovery",
  "audiolink-engine",
+ "audiolink-proto",
  "audiolink-types",
  "base64 0.22.1",
  "minisign-verify",
@@ -382,7 +384,12 @@ dependencies = [
 name = "audiolink-discovery"
 version = "0.1.1"
 dependencies = [
+ "audiolink-proto",
  "audiolink-types",
+ "if-addrs",
+ "serde",
+ "socket2",
+ "tracing",
 ]
 
 [[package]]
@@ -411,6 +418,7 @@ name = "audiolink-ffi"
 version = "0.1.1"
 dependencies = [
  "audiolink-audio",
+ "audiolink-discovery",
  "audiolink-engine",
  "audiolink-proto",
  "audiolink-types",
@@ -2386,6 +2394,16 @@ checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
+]
+
+[[package]]
+name = "if-addrs"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf39cc0423ee66021dc5eccface85580e4a001e0c5288bae8bea7ecb69225e90"
+dependencies = [
+ "libc",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

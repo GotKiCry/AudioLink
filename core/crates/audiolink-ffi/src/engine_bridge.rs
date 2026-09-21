@@ -200,6 +200,7 @@ impl TelemetryView {
 struct EngineHandle {
     config: EngineStartConfig,
     engine: Arc<Engine>,
+    advertiser: Option<audiolink_discovery::Advertiser>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, FfiError> {
@@ -471,7 +472,28 @@ pub async fn engine_start(
         let status = local_status_of(&engine);
         // 接受循环和会话都由 Engine 跟踪；shutdown 会等它们全部退出。
         let _accept = engine.spawn_accept_loop();
-        *lock(&ENGINE)? = Some(EngineHandle { config, engine });
+        let info = engine.info();
+        let advertiser = if info.caps.contains(Caps::CAN_SEND) {
+            let beacon = audiolink_proto::discovery::DiscoveryBeacon::new(
+                info.id.short(),
+                info.name,
+                info.platform,
+                info.caps,
+                engine.local_addr().port(),
+            );
+            audiolink_discovery::Advertiser::start(beacon)
+                .map_err(|error| {
+                    tracing::warn!(%error, "LAN advertisement failed to start");
+                })
+                .ok()
+        } else {
+            None
+        };
+        *lock(&ENGINE)? = Some(EngineHandle {
+            config,
+            engine,
+            advertiser,
+        });
         Ok(status)
     })
     .await
@@ -484,6 +506,7 @@ pub async fn engine_stop() -> Result<(), FfiError> {
         let taken = lock(&ENGINE)?.take();
         // 同步查询立即看到未启动；生命周期锁继续拦住新启动，直到旧资源全部释放。
         if let Some(handle) = taken {
+            drop(handle.advertiser);
             handle.engine.shutdown().await;
         }
         Ok(())

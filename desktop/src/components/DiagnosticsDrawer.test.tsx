@@ -48,7 +48,7 @@ describe("本机身份在诊断区可得", () => {
   });
 
   it("可达地址取不到 → 写「未知」，不留空白格", () => {
-    drawer({ local: { ...local, displayAddr: null } });
+    drawer({ local: { ...local, displayAddr: null, lanAddrs: [] } });
 
     expect(screen.getByText(t("diag.identity_none"))).toBeTruthy();
   });

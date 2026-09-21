@@ -6,7 +6,7 @@
 
 | 来源 | 包数 | allowed | notice | denied |
 |---|---|---|---|---|
-| Rust（cargo metadata） | 651 | 636 | 15 | 0 |
+| Rust（cargo metadata） | 652 | 637 | 15 | 0 |
 | 前端（pnpm licenses） | 154 | 151 | 3 | 0 |
 
 **Rust：无 `denied` 依赖。**

@@ -103,17 +103,16 @@ export interface AudioLinkController {
   /** 单台推流（对端卡片上的按钮）—— 也是自动推流唯一允许走的入口，不另造旁路。 */
   startSend: (idShort: string) => Promise<void>;
   stopSend: () => Promise<void>;
-  /**
-   * 推流意图：发起过推流、且还没停止 —— 为真时侧栏主按钮就是可点的「停止推流」。
-   *
-   * 为什么必须是显式状态：界面曾用 streamingCount 推导"是否在广播"，没有设备在听时它恒为 0，
-   * 于是点了没反应、而且【永远没有停止入口】。自动推流同样要让这个意图如实成立 ——
-   * 否则自动拉起会话之后界面还停在「开始推流」，用户反而停不掉。
-   */
+  /** 已请求共享；只有真实的对端 streaming 状态才能代表正在发送。 */
   broadcastRequested: boolean;
-  /** 用户点了「开始推流」：逐台发起 + 立刻落意图（候选为空时也要切文案）。 */
+  /** 暂停整个共享会话，后续接入与重连都不能自行取消。 */
+  broadcastPaused: boolean;
+  broadcastStopping: boolean;
+  broadcastError: CommandError | null;
+  autoBroadcastReady: boolean;
+  /** 恢复共享。无设备时重新进入等待连接。 */
   startBroadcast: (idShorts: string[]) => void;
-  /** 用户点了「停止推流」：清意图、记下"用户拒绝过谁"，再停会话。 */
+  /** 暂停整个共享会话，保留设备连接。 */
   stopBroadcast: () => Promise<void>;
   /**
    * 「有人接入时自动开始推流」：默认开，存在设置文件里（关掉 = 完全回到手动模式）。
@@ -199,18 +198,21 @@ export function useAudioLink(): AudioLinkController {
   /** 「接入即自动推流」：默认开（用户明确要的默认行为），真实值随后端设置水合并覆盖。 */
   const [autoBroadcast, setAutoBroadcastState] = useState(true);
   const [autoBroadcastBusy, setAutoBroadcastBusy] = useState(false);
+  const [autoBroadcastReady, setAutoBroadcastReady] = useState(false);
+  const [broadcastPaused, setBroadcastPaused] = useState(false);
+  const [broadcastStopping, setBroadcastStopping] = useState(false);
+  const [broadcastError, setBroadcastError] = useState<CommandError | null>(null);
+  const pausedRef = useRef(false);
+  const sendPendingRef = useRef<Promise<void> | null>(null);
+  const stopPendingRef = useRef<Promise<void> | null>(null);
+  const activeSendRef = useRef<string | null>(null);
+  const reconnectsRef = useRef(new Map<string, number>());
+  const preferenceRevision = useRef(0);
   const captureRequest = useRef(0);
   const activeRequest = useRef(0);
   /** 这一轮里**已经自动发起过**的设备：同一台只发一次，事件抖动不再重复调 start_send。 */
   const autoStartedRef = useRef<Set<string>>(new Set());
-  /**
-   * "用户拒绝"集合：他手动停过的设备，这一轮不再被自动拉起。
-   *
-   * 自动行为的底线是**不打脸用户** —— 他按过停止的东西，绝不能被自动重启。
-   * 清空时机只有两个：他主动点「开始推流」、或在设置里重新打开自动开关（都是明确的重新授权）。
-   */
-  const autoRefusedRef = useRef<Set<string>>(new Set());
-  const captureLocked = busyPeer !== null || peers.some((peer) => peer.state === "streaming" || peer.state === "degraded");
+  const captureLocked = broadcastStopping || busyPeer !== null || peers.some((peer) => peer.state === "streaming" || peer.state === "degraded");
   const selectedCapture = captureDevices.find((device) => selectedCaptureId === "" ? device.isDefault : device.id === selectedCaptureId);
   const canStartCapture = !captureLoading && captureError === null && selectedCapture !== undefined && selectedCapture.unavailableReason === null;
 
@@ -261,10 +263,16 @@ export function useAudioLink(): AudioLinkController {
 
     // 自动推流开关同样存在设置文件里；读不到（老内核还没有这条命令）就保持默认开 ——
     // 自动推流在前端执行，不该因为一个持久化读不到就静默失效。
+    const revision = preferenceRevision.current;
+    let cancelled = false;
     void api
       .autoBroadcastState()
-      .then(setAutoBroadcastState)
-      .catch(() => undefined);
+      .then((enabled) => {
+        if (!cancelled && revision === preferenceRevision.current) setAutoBroadcastState(enabled);
+      })
+      .catch(() => undefined)
+      .finally(() => { if (!cancelled) setAutoBroadcastReady(true); });
+    return () => { cancelled = true; };
   }, []);
 
   const refreshAlignment = useCallback(async (): Promise<void> => {
@@ -287,6 +295,8 @@ export function useAudioLink(): AudioLinkController {
   }, [peers.length, refreshAlignment]);
 
   useEffect(() => {
+    let cancelled = false;
+    let peersUpdated = false;
     // 订阅必须在挂载时就绪：配对请求可能在用户还没做任何动作时由对端发起
     const unsubscribe = subscribeEvents({
       // §7 同步组变化（建组 / 成员加入退出）：顺手拉一次最新组列表。
@@ -297,6 +307,16 @@ export function useAudioLink(): AudioLinkController {
       // 对端列表变化时顺手收敛配对对话框：对端没了、或已经变成"已受信"，
       // 对话框就没有存在意义了（接收端场景下用户全程不点任何按钮，全靠这条规则关闭）。
       onPeers: (next) => {
+        peersUpdated = true;
+        // 断开或重连才重置本轮尝试；重复 idle/握手事件不能反复打开采集。
+        for (const id of autoStartedRef.current) {
+          const peer = next.find((item) => item.idShort === id);
+          if (!peer || peer.state === "failed" || (peer.reconnects ?? 0) > (reconnectsRef.current.get(id) ?? 0)) {
+            autoStartedRef.current.delete(id);
+            if (activeSendRef.current === id) activeSendRef.current = null;
+          }
+        }
+        reconnectsRef.current = new Map(next.map((peer) => [peer.idShort, peer.reconnects ?? 0]));
         setPeers(next);
         setPairRequest((current) => {
           if (current === null) {
@@ -342,16 +362,18 @@ export function useAudioLink(): AudioLinkController {
           api.listPeers(),
           api.telemetry(),
         ]);
+        if (cancelled) return;
         setVersion(ver);
         setLocal(status);
-        setPeers(peerList);
+        // 初始化请求可能晚于连接事件返回，旧快照不能抹掉刚接入的设备。
+        if (!peersUpdated) setPeers(peerList);
         setTelemetry(snapshot);
       } catch (raw) {
-        setError(toCommandError(raw));
+        if (!cancelled) setError(toCommandError(raw));
       }
     })();
 
-    return unsubscribe;
+    return () => { cancelled = true; unsubscribe(); };
   }, []);
 
   const connect = useCallback(async (addr: string): Promise<boolean> => {
@@ -376,112 +398,99 @@ export function useAudioLink(): AudioLinkController {
     }
   }, []);
 
-  const startSend = useCallback(async (idShort: string): Promise<void> => {
-    // 任何一次发起（人工点卡片、自动规则）都让"推流意图"成立：侧栏据此切到「停止推流」，
-    // 自动推流之后用户照样有停止入口。
+  // 桌面外壳当前只支持一路发送。同步占位防止同一帧的自动/手动操作重复启动。
+  const requestSend = useCallback((idShort: string): Promise<void> => {
+    if (sendPendingRef.current || stopPendingRef.current || activeSendRef.current || !canStartCapture) {
+      return Promise.resolve();
+    }
+    autoStartedRef.current.add(idShort);
     setBroadcastRequested(true);
+    setBroadcastError(null);
     setError(null);
     setBusyPeer(idShort);
-    try {
-      await api.startSend(idShort, selectedCaptureId === "" ? null : selectedCaptureId);
-      await refreshActiveCapture();
-    } catch (raw) {
-      setError(toCommandError(raw));
-    } finally {
-      setBusyPeer(null);
-    }
-  }, [selectedCaptureId, refreshActiveCapture]);
+    const operation = (async () => {
+      try {
+        await api.startSend(idShort, selectedCaptureId === "" ? null : selectedCaptureId);
+        activeSendRef.current = idShort;
+        await refreshActiveCapture();
+      } catch (raw) {
+        setBroadcastRequested(false);
+        setBroadcastError(toCommandError(raw));
+        setError(toCommandError(raw));
+      } finally {
+        sendPendingRef.current = null;
+        setBusyPeer(null);
+      }
+    })();
+    sendPendingRef.current = operation;
+    return operation;
+  }, [canStartCapture, selectedCaptureId, refreshActiveCapture]);
 
-  /**
-   * 停止推流。顺带记下**用户拒绝了谁**——自动推流不得把他们再拉起来。
-   *
-   * "谁"取此刻屏幕上会被推流的那批：正在推的（真的被停下了）；一台都没在推时取可信且空闲的 ——
-   * 那正是自动推流此刻会去拉的目标，所以用户在「推流中 · 等待设备接入」里按下的停止，
-   * 同样算一次明确的"不要"。
-   */
-  const stopSend = useCallback(async (): Promise<void> => {
-    setError(null);
-    const live = peers.filter((peer) => peer.state === "streaming" || peer.state === "degraded");
-    const refused = live.length > 0 ? live : peers.filter((peer) => peer.trusted && peer.state === "idle");
-    for (const peer of refused) autoRefusedRef.current.add(peer.idShort);
-    const sending = live[0];
-    setBusyPeer(sending?.idShort ?? null);
-    try {
-      await api.stopSend();
-      await refreshActiveCapture();
-    } catch (raw) {
-      setError(toCommandError(raw));
-    } finally {
-      setBusyPeer(null);
-    }
-  }, [peers, refreshActiveCapture]);
+  const startSend = useCallback((idShort: string): Promise<void> => {
+    if (stopPendingRef.current) return stopPendingRef.current;
+    pausedRef.current = false;
+    setBroadcastPaused(false);
+    return requestSend(idShort);
+  }, [requestSend]);
 
-  /**
-   * 用户点「开始推流」：逐台发起，并**先**把意图落下来。
-   *
-   * 顺序不能反：候选为空（一台设备都还没接入）时循环体一次都不执行，界面就会纹丝不动 ——
-   * 那正是当年"点了没反应、而且没有停止入口"的根因。先落意图，界面立刻切到「推流中」，
-   * 停止入口当场可用。
-   */
-  const startBroadcast = useCallback(
-    (idShorts: string[]): void => {
-      setBroadcastRequested(true);
-      for (const idShort of idShorts) void startSend(idShort);
-    },
-    [startSend],
-  );
-
-  /** 用户点「停止推流」：先落意图（stop_send 幂等，先改界面是安全的），再走 stopSend 记下拒绝名单。 */
-  const stopBroadcast = useCallback(async (): Promise<void> => {
+  const stopSend = useCallback((): Promise<void> => {
+    // 先关自动入口，再等待已经发出的 start 完成，最后 stop；慢握手不能越过用户的暂停。
+    pausedRef.current = true;
+    setBroadcastPaused(true);
     setBroadcastRequested(false);
-    await stopSend();
-  }, [stopSend]);
+    setBroadcastError(null);
+    if (stopPendingRef.current) return stopPendingRef.current;
+    setBroadcastStopping(true);
+    setError(null);
+    const operation = (async () => {
+      try {
+        await sendPendingRef.current;
+        await api.stopSend();
+        activeSendRef.current = null;
+        await refreshActiveCapture();
+      } catch (raw) {
+        // 保留暂停意图，禁止自动重启；真实对端状态仍提供再次暂停的入口。
+        setError(toCommandError(raw));
+      } finally {
+        // 停止可能已生效但回执失败；是否仍在发送以 peers 为准，不留下阻塞恢复的旧占位。
+        activeSendRef.current = null;
+        stopPendingRef.current = null;
+        setBroadcastStopping(false);
+      }
+    })();
+    stopPendingRef.current = operation;
+    return operation;
+  }, [refreshActiveCapture]);
 
-  /**
-   * 接入即自动推流（默认开）：设备接入并进入 idle，就替用户按下「开始推流」。
-   *
-   * 触发点选在**状态**（peers）而不是事件回调：状态才是真相，事件只是它的搬运工 ——
-   * 在事件回调里触发，会在"事件到了但状态没变"（idle → idle 的重复广播）时重复发起。
-   *
-   * 四条护栏，缺一条都会让自动行为打脸用户：
-   *   ① 只认 idle：failed 是"这条路走不通"，自动重试只会变成错误风暴；握手中 / PIN 流程等它自己走到 idle；
-   *   ② 去重：同一台这一轮只自动发起一次（autoStartedRef），事件抖动不再重复调 start_send；
-   *   ③ 用户拒绝过的不碰（autoRefusedRef，由 stopSend 写入）；
-   *   ④ 开关关掉时整段不执行 = 完全手动。
-   */
+  const startBroadcast = useCallback((idShorts: string[]): void => {
+    if (stopPendingRef.current || sendPendingRef.current || activeSendRef.current) return;
+    pausedRef.current = false;
+    setBroadcastPaused(false);
+    setBroadcastRequested(true);
+    setBroadcastError(null);
+    setError(null);
+    autoStartedRef.current.clear();
+    const target = idShorts[0];
+    if (target) void requestSend(target);
+  }, [requestSend]);
+
+  const stopBroadcast = stopSend;
+
   useEffect(() => {
-    if (!autoBroadcast) return;
-    const targets = peers.filter(
-      (peer) =>
-        peer.trusted &&
-        peer.state === "idle" &&
-        !autoStartedRef.current.has(peer.idShort) &&
-        !autoRefusedRef.current.has(peer.idShort),
-    );
-    if (targets.length === 0) return;
-    for (const peer of targets) {
-      autoStartedRef.current.add(peer.idShort);
-      // 复用唯一入口：意图、忙碌态、错误处理都跟着一起成立（不另造旁路）
-      void startSend(peer.idShort);
-    }
-  }, [peers, autoBroadcast, startSend]);
+    if (!autoBroadcastReady || (!autoBroadcast && !broadcastRequested) || pausedRef.current ||
+        !canStartCapture || captureLocked || activeSendRef.current) return;
+    const target = peers.find((peer) => !peer.receiving && peer.trusted && peer.state === "idle" &&
+      !autoStartedRef.current.has(peer.idShort));
+    if (target) void requestSend(target.idShort);
+  }, [peers, autoBroadcast, autoBroadcastReady, broadcastRequested, broadcastPaused,
+      canStartCapture, captureLocked, requestSend]);
 
-  /**
-   * 开关「有人接入时自动开始推流」。
-   *
-   * 先落界面再落盘（与语言切换同一顺序）：写盘失败也不该让用户觉得"点了没反应"，
-   * 真失败了错误横幅会说清楚。**开启时**顺手清掉拒绝名单与已发起名单 —— 那是用户一次
-   * 明确的重新授权；不清的话，"关掉再打开"看起来毫无作用（最容易当成 bug 的那种）。
-   */
   const setAutoBroadcastEnabled = useCallback((enabled: boolean): void => {
+    preferenceRevision.current += 1;
     setAutoBroadcastState(enabled);
-    if (enabled) {
-      autoRefusedRef.current.clear();
-      autoStartedRef.current.clear();
-    }
+    // 自动偏好与本次暂停独立：调整设置不会意外取消暂停。
     setAutoBroadcastBusy(true);
-    void api
-      .setAutoBroadcast(enabled)
+    void api.setAutoBroadcast(enabled)
       .catch((raw: unknown) => setError(toCommandError(raw)))
       .finally(() => setAutoBroadcastBusy(false));
   }, []);
@@ -696,6 +705,10 @@ export function useAudioLink(): AudioLinkController {
     startSend,
     stopSend,
     broadcastRequested,
+    broadcastPaused,
+    broadcastStopping,
+    broadcastError,
+    autoBroadcastReady,
     startBroadcast,
     stopBroadcast,
     autoBroadcast,

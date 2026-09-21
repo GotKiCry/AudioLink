@@ -8,6 +8,11 @@ license.workspace = true
 
 [dependencies]
 audiolink-types = { workspace = true }
+audiolink-proto = { workspace = true }
+if-addrs = { workspace = true }
+socket2 = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
 
 [lints]
 workspace = true

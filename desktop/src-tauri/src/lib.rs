@@ -20,6 +20,7 @@
 #![allow(clippy::expect_used)]
 
 mod capture;
+mod discovery;
 mod engine_bridge;
 mod error;
 mod settings;
@@ -331,6 +332,14 @@ async fn broadcast_epoch(
 ) -> Result<u32, CommandError> {
     bridge.broadcast_epoch(lead_ms).await
 }
+#[tauri::command]
+async fn discovered_hosts(
+    bridge: State<'_, EngineBridge>,
+    refresh: Option<bool>,
+) -> Result<Vec<audiolink_discovery::DiscoveredHost>, CommandError> {
+    bridge.discovered_hosts(refresh.unwrap_or(false)).await
+}
+
 pub fn run() {
     tauri::Builder::default()
         // 单实例：第二次启动时唤出已有窗口（旧版靠 Mutex + 命名管道手写）
@@ -357,6 +366,7 @@ pub fn run() {
             version,
             local_status,
             list_peers,
+            discovered_hosts,
             list_trusted_peers,
             list_capture_devices,
             active_capture_device,

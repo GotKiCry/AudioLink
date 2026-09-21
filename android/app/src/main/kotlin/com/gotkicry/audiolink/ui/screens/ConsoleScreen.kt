@@ -126,6 +126,7 @@ fun ConsoleScreen(
                             onConnect = onConnect,
                             onSubmitPin = onSubmitPin,
                             compact = connected,
+                            connectedIds = state.peers.map { it.idShort },
                         )
                         if (!connected && !state.sender.awaitingPin && !state.sender.connecting) {
                             ConnectionGuide()

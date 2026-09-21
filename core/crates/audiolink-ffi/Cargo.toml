@@ -15,6 +15,7 @@ audiolink-engine = { workspace = true }
 # golden vectors 直接来自 audiolink-proto（`protocolSelfTest` 的被执行对象；见 src/golden.rs）
 audiolink-proto = { workspace = true }
 audiolink-types = { workspace = true }
+audiolink-discovery = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

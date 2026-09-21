@@ -39,6 +39,8 @@ postcard = { version = "1", features = ["alloc"] }     # 控制面紧凑编码
 opus-rs = "0.1.33"                                    # 纯 Rust Opus（零 C 依赖，见 ADR-003）
 wasapi = "0.24"                                       # Windows WASAPI（loopback + render）
 mdns-sd = "0.21"                                      # 服务发现
+if-addrs = "0.14"                                     # IPv4 网卡及子网广播地址
+socket2 = "0.6"                                       # 发现监听的 SO_REUSEADDR
 ringbuf = "0.4"                                       # 无锁 SPSC 环形缓冲（实时路径）
 crossbeam-channel = "0.5"
 tracing = "0.1"

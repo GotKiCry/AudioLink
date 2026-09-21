@@ -82,6 +82,9 @@ export const IconStart = ({ className }: IconProps) => (
 export const IconStop = ({ className }: IconProps) => (
   <Base className={className}><rect x="5.5" y="5.5" width="9" height="9" /></Base>
 );
+export const IconPause = ({ className }: IconProps) => (
+  <Base className={className}><path d="M7 5v10M13 5v10" strokeWidth={3} /></Base>
+);
 export const IconMic = ({ className }: IconProps) => (
   <Base className={className}>
     <rect x="8" y="2.5" width="4" height="8.5" rx="2" />

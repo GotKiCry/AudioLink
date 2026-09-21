@@ -98,6 +98,8 @@ pub struct PeerView {
     pub state: PeerState,
     /// 是否已在信任库（`docs/02-architecture.md` §8：白名单命中 = 免交互直连）。
     pub trusted: bool,
+    /// 本机主动连接该主机，只收听，不自动回传声音。
+    pub receiving: bool,
     /// §13 能力协商结果；`None` = 还没走完能力交换（握手阶段的对端就是 `None`）。
     pub capabilities: Option<PeerCapabilitiesView>,
     /// 重连成功次数（FR-27 回执；0 表示从未重连）。界面据此显示已重连几次。
@@ -342,11 +344,12 @@ mod tests {
             addr: "192.168.1.23:58290".into(),
             state: PeerState::Handshaking,
             trusted: false,
+            receiving: false,
             capabilities: None,
         };
         assert_eq!(
             serde_json::to_string(&peer).expect("serialize"),
-            r#"{"idShort":"3f9a1c0b","name":"客厅 R1","addr":"192.168.1.23:58290","state":"handshaking","trusted":false,"capabilities":null,"reconnects":0}"#
+            r#"{"idShort":"3f9a1c0b","name":"客厅 R1","addr":"192.168.1.23:58290","state":"handshaking","trusted":false,"receiving":false,"capabilities":null,"reconnects":0}"#
         );
 
         // 协商完成后的形状：字段名与嵌套名都要钉住 —— 前端按 `agreedKeys` / `missingKeys`
@@ -364,7 +367,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_string(&negotiated).expect("serialize"),
-            r#"{"idShort":"3f9a1c0b","name":"客厅 R1","addr":"192.168.1.23:58290","state":"handshaking","trusted":false,"capabilities":{"local":"Opus 编码、音频采集","peer":"Opus 编码、音频播放","agreed":"Opus 编码","missingOnPeer":["音频采集"],"agreedKeys":["opus"],"missingKeys":["capture"]},"reconnects":0}"#
+            r#"{"idShort":"3f9a1c0b","name":"客厅 R1","addr":"192.168.1.23:58290","state":"handshaking","trusted":false,"receiving":false,"capabilities":{"local":"Opus 编码、音频采集","peer":"Opus 编码、音频播放","agreed":"Opus 编码","missingOnPeer":["音频采集"],"agreedKeys":["opus"],"missingKeys":["capture"]},"reconnects":0}"#
         );
 
         let local = LocalStatus {

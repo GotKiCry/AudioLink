@@ -66,6 +66,8 @@ async fn pin_submitted_after_the_handshake_deadline_still_pairs() {
 
     let mut events_b = engine_b.subscribe();
     let outcome = engine_a.connect(engine_b.local_addr()).await;
+    assert!(engine_a.peers().iter().all(|peer| peer.initiated_locally));
+    assert!(engine_b.peers().iter().all(|peer| !peer.initiated_locally));
     let error = match outcome {
         Ok(peer) => panic!("对端本应要求 PIN，却直接连上了：{peer:?}"),
         Err(error) => error,

@@ -30,8 +30,8 @@ export function CaptureSourcePanel({ devices, selectedId, active, loading, locke
       : selected?.unavailableReason ?? (!loading && selected === undefined ? t("cap.no_default") : null));
 
   return (
-    <section aria-labelledby="capture-heading" className="al-card p-3">
-      <h2 id="capture-heading" className="text-caption font-semibold text-text-secondary">{t("cap.title")}</h2>
+    <section aria-labelledby="capture-heading" className="al-capture-panel">
+      <h2 id="capture-heading" className="text-body font-semibold">{t("cap.title")}</h2>
       <p className="mt-1.5 text-caption leading-relaxed text-text-tertiary">{t("cap.hint")}</p>
 
       <label htmlFor="capture-device" className="text-caption font-semibold text-text-tertiary mt-3 block">{t("cap.device")}</label>

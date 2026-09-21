@@ -1,14 +1,3 @@
-/**
- * 设备行（Device Row）—— 一台对端占一行。
- *
- * 「音源即主机」把它从通道条改成行：主区要答的是「谁在听、听得怎么样」，
- * 一行一句话读完，比一列竖排的推子更适合这个答案。
- *
- * 契约不变（UI 规格 §2.2 的 DeviceCard）：名字 / 指纹 / 状态 / 是否受信 / 地址 /
- * 开始·停止推流 / 音量 / 两段式移除设备；断开后这一行**不消失**（规格 §2.2 微交互）。
- * 状态一律三通道：灯 + 图标 + 文字（规格 §5：不靠颜色单独传达）。
- */
-
 import { useState } from "react";
 import type { ComponentType, CSSProperties } from "react";
 
@@ -22,7 +11,8 @@ import {
   IconStateFailed,
   IconStateIdle,
   IconStateStreaming,
-  IconStop,
+  IconPause,
+  IconMonitor,
   IconUnplug,
 } from "./icons";
 
@@ -42,6 +32,7 @@ interface PeerCardProps {
   /** 该对端正在执行 start/stop（防连点）。 */
   busy: boolean;
   canStart: boolean;
+  paused?: boolean;
   /** 本机是否需要为这个对端**输入**配对码（即配对由本机发起）。 */
   canInputPin: boolean;
   onStart: (idShort: string) => Promise<void>;
@@ -55,6 +46,7 @@ export function PeerCard({
   peer,
   busy,
   canStart,
+  paused = false,
   canInputPin,
   onStart,
   onStop,
@@ -70,60 +62,27 @@ export function PeerCard({
   const [gain, setGain] = useState(1);
 
   return (
-    <article className="al-card flex flex-col gap-3 p-4">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <span className="al-lamp h-2.5 w-2.5" data-on={visual.lamp} />
-          <span className="truncate text-body font-medium text-text-primary">{peer.name}</span>
-          <span className={"inline-flex items-center gap-1.5 text-caption" + visual.ink}>
-            <visual.Icon className="h-3.5 w-3.5" />
-            {peerStateLabel(peer.state)}
-          </span>
-        </div>
-
-        <span className={peer.trusted ? "text-caption text-success" : "text-caption text-caution"}>
-          {peer.trusted ? t("peer.trusted") : t("peer.untrusted")}
-        </span>
-
-        <div className="num min-w-0 text-caption text-text-tertiary">
-          {t("peer.fingerprint")} {peer.idShort}
-          <span className="mx-1.5 text-stroke-control-strong">·</span>
-          {peer.addr}
-        </div>
-
-        {/*
-          FR-18「移除设备」：只对**已在信任库里**的对端出现 —— 未配对的对端没有信任记录可撤，
-          给它一个「移除」入口只会让人以为能撤销什么（真正该做的是不去配对）。
-        */}
-        {peer.trusted ? (
-          <div className="ml-auto">
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => setConfirmingRevoke(true)}
-              title={t("peer.revoke_hint")}
-              aria-label={t("peer.revoke")}
-              className="al-btn al-btn-danger h-8 w-8"
-            >
-              <IconUnplug className="h-4 w-4" />
-            </button>
-          </div>
-        ) : (
-          <div className="ml-auto" />
-        )}
-      </div>
-
-      {/* §13 能力协商：把「这一对能一起做什么」写在行上，缺什么也一眼看得出来 */}
-      {peer.capabilities === null ? null : (
-        <p className="text-caption leading-relaxed text-text-tertiary">
-          {t("peer.caps_agreed", { list: peer.capabilities.agreed })}
-          {peer.capabilities.missingOnPeer.length === 0 ? null : (
-            <span className="ml-1 text-caution">
-              {t("peer.caps_missing", { list: peer.capabilities.missingOnPeer.join("、") })}
+    <article className="al-device-row">
+      <div className="flex min-w-0 flex-wrap items-center gap-3">
+        <div className="al-device-icon"><IconMonitor className="h-5 w-5" /></div>
+        <div className="min-w-0 flex-1">
+          <h3 className="break-words text-body font-semibold">{peer.name}</h3>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-caption">
+            <span className={`inline-flex items-center gap-1.5 ${visual.ink}`}>
+              <visual.Icon className="h-3.5 w-3.5" />
+              {peer.receiving && peer.state === "idle" && peer.trusted ? t("peer.host_connected") : paused && peer.state === "idle" && peer.trusted ? t("peer.paused") : peerStateLabel(peer.state)}
             </span>
-          )}
-        </p>
-      )}
+            <span className="text-text-secondary">{peer.trusted ? t("peer.trusted") : t("peer.untrusted")}</span>
+          </div>
+        </div>
+        <span className="al-lamp h-2 w-2" data-on={visual.lamp} />
+        {peer.trusted ? (
+          <button type="button" disabled={busy} onClick={() => setConfirmingRevoke(true)}
+            title={t("peer.revoke_hint")} aria-label={t("peer.revoke")} className="al-btn h-8 w-8">
+            <IconUnplug className="h-4 w-4" />
+          </button>
+        ) : null}
+      </div>
 
       {peer.state === "degraded" ? (
         <p className="text-caption text-caution">{t("peer.degraded")}</p>
@@ -132,7 +91,7 @@ export function PeerCard({
       <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
         {/* §4.1 音量：只在推流中给入口（引擎侧 SET_GAIN 已生效，渐变 200 ms） */}
         {streaming ? (
-          <label className="flex min-w-[220px] flex-1 items-center gap-3">
+          <label className="flex min-w-0 basis-56 flex-1 items-center gap-3">
             <span className="text-caption font-semibold text-text-tertiary shrink-0">{t("peer.volume")}</span>
             <span className="al-fader flex-1">
               <input
@@ -181,29 +140,46 @@ export function PeerCard({
                 {t("peer.waiting")}
               </button>
             )
-          ) : streaming ? (
+          ) : peer.receiving ? <span className="text-caption text-text-secondary">{t("peer.receive_hint")}</span> : streaming ? (
             <button
               type="button"
               disabled={busy}
               onClick={() => void onStop()}
               className="al-btn h-9 gap-2 px-4 text-body"
             >
-              <IconStop className="h-4 w-4" />
+              <IconPause className="h-4 w-4" />
               {busy ? t("peer.stopping") : t("peer.stop")}
             </button>
           ) : (
             <button
               type="button"
-              disabled={busy || !canStart || peer.state === "failed"}
+              disabled={busy || !canStart || peer.state !== "idle"}
               onClick={() => void onStart(peer.idShort)}
-              className="al-btn al-btn-accent h-9 gap-2 px-4 text-body"
+              className="al-btn h-9 gap-2 px-4 text-body"
             >
               <IconStart className="h-4 w-4" />
-              {busy ? t("peer.starting") : t("peer.start")}
+              {busy ? t("peer.starting") : paused ? t("peer.resume") : t("peer.start")}
             </button>
           )}
         </div>
       </div>
+
+      <details className="al-peer-details">
+        <summary>{t("peer.details")}</summary>
+        <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-caption">
+          <dt>{t("peer.address")}</dt><dd className="num break-all">{peer.addr}</dd>
+          <dt>{t("peer.fingerprint")}</dt><dd className="num break-all">{peer.idShort}</dd>
+        </dl>
+        {peer.capabilities ? (
+          <p className="mt-2 text-caption leading-relaxed">
+            {t("peer.caps_agreed", { list: peer.capabilities.agreed })}
+            {peer.capabilities.missingOnPeer.length ? <span className="ml-1 text-caution">
+              {t("peer.caps_missing", { list: peer.capabilities.missingOnPeer.join(", ") })}
+            </span> : null}
+          </p>
+        ) : null}
+      </details>
+      {peer.state === "failed" ? <p className="text-caption text-text-secondary">{t("peer.disconnected_hint")}</p> : null}
 
       {confirmingRevoke ? (
         <div className="flex flex-wrap items-center gap-2 border-t border-stroke-control pt-3">

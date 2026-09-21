@@ -53,6 +53,7 @@ fun ReceiverEntryCard(
     onSubmitPin: (String) -> Unit,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
+    connectedIds: List<String> = emptyList(),
 ) {
     val strings = LocalStrings.current
     var expanded by rememberSaveable { mutableStateOf(false) }
@@ -103,6 +104,18 @@ fun ReceiverEntryCard(
                 ) { Text(if (sender.connecting) strings.actionConnecting else strings.actionSubmitPin) }
                 AlTextButton(onClick = { editAddress = true }, enabled = !sender.connecting) { Text(strings.changeHost) }
             } else {
+                DiscoveredHosts(
+                    connecting = sender.connecting,
+                    connectedIds = connectedIds,
+                    onConnect = { discoveredAddr ->
+                        if (SenderStateMapper.canConnect(sender, discoveredAddr) == SendGate.Allowed) {
+                            addr = discoveredAddr
+                            focus.clearFocus()
+                            editAddress = false
+                            onConnect(discoveredAddr)
+                        }
+                    },
+                )
                 FluentTextField(
                     value = addr,
                     onValueChange = { addr = it },

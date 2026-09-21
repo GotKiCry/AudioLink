@@ -32,17 +32,22 @@ telemetry leaves your machines.
 ## 3. First run: three steps
 
 1. **Put both devices on the same LAN** (same Wi-Fi, or the same router with a cable).
-2. **On the receiver, enter the host address**: open AudioLink on the phone (or the other PC) and type the
-   address shown on the host screen (like `192.168.1.23` or `192.168.1.23:58290`).
-   **The host enters no address at all** - it only waits to be connected to.
+2. **Choose the host on the receiver**: select the computer under "Local hosts" on your phone. On another PC,
+   first expand "Listen to another device". The host usually appears within a few seconds of opening AudioLink.
+   If it is missing, enter its displayed address manually, such as `192.168.1.23:58290`.
+   **The host enters no address**; it waits for the receiver to connect.
 3. **Pair**: the host screen shows 6 digits; type them on the receiver. When both sides show the same digits,
    no third device sits in between.
 
 After pairing, the device goes on the allow-list, so you will not need the code again.
 
-> There is only one direction: **the receiver connects to the host**. The side that listens (the phone, or the
-> second PC) is the one that types the address and the code; the side that provides the audio just shows its
-> address and waits. A host has no place to type a peer address.
+> **The receiver connects to the host.** Choose a host, enter a manual address, and type the pairing code on the listening device.
+
+Hosts remain discoverable while streaming or paused. Offline hosts disappear after about 10 seconds; discovery does not grant trust.
+Android scans while the receiving entry is visible and the app is in the foreground. Backgrounding stops discovery, while existing audio connections continue.
+Choose "Refresh hosts" to clear old results and restart scanning. To make a phone discoverable as a host, select an audio source under "Send audio" and start its service. Phones used only as receivers are not listed as hosts.
+If no host appears, check that both devices are on the same subnet, guest/client isolation is off, and Windows allows AudioLink on private networks.
+Discovery uses UDP 58280; audio connections use UDP 58290 by default. Manual address entry remains available.
 
 ---
 
@@ -50,24 +55,30 @@ After pairing, the device goes on the allow-list, so you will not need the code 
 
 | Goal | How |
 |---|---|
-| Send this device audio out | Click "Start streaming" on the peer card |
-| Stop | "Stop streaming" on the same card |
+| Send this device audio out | Streaming starts automatically once a device connects and pairs |
+| Pause / resume | Use "Pause streaming" / "Resume streaming" in the sidebar; pairing is retained |
 | Set the other side volume | The volume slider (0-200%); changes ramp over about 200 ms |
-| Send to several devices | Start streaming on each card. Capture happens once and all receivers share it |
+| Connect several devices | The desktop shell currently sends to one device at a time. Pause, then choose "Resume streaming" on another device row |
 | Receive | Nothing to do: playback starts when the other side starts streaming |
+
+The sidebar contains sharing controls and the audio source. The main area shows your address and connected devices.
+Expand "Listen to another device" to connect to another host. "Waiting for a device" means no audio is being sent;
+"Streaming audio" appears when sending begins. A manual pause applies to this sharing session: new connections,
+reconnections, and changes to the automatic streaming preference do not override it. Choose "Resume streaming" to continue.
+Restarting AudioLink uses your saved automatic streaming preference again. Pairing and audio source setup must finish
+before streaming starts. If startup fails, resolve the displayed error and retry.
 
 ---
 
 ## 5. Where the audio comes from (Windows capture)
 
-In "Capture audio" you pick an **output device** (speakers / headphones / virtual sound card) - AudioLink
+In "Audio source" in the sidebar you pick an **output device** (speakers / headphones / virtual sound card) - AudioLink
 captures what that device is currently playing.
 
 - "System default (used when streaming starts)" follows the current Windows default output;
 - Your player must send audio to **the same** device, otherwise AudioLink captures silence (for example if
   the player uses exclusive mode or a different sound card);
-- "Stop streaming before switching sources": switching while streaming would push misaligned audio to the
-  other side, so it is blocked;
+- Pause streaming to change sources; resuming uses the newly selected device;
 - After swapping headphones or a sound card, click "Refresh devices".
 
 ---
@@ -76,6 +87,7 @@ captures what that device is currently playing.
 
 | Setting | What it does |
 |---|---|
+| **Stream automatically when a device connects** | On by default; turn off to start manually. Manual pause is independent of this preference |
 | **Interface language** | 中文 / English, applied immediately and remembered across restarts |
 | **Start on sign-in** | Launch with Windows |
 | **Reconnect to the last device on launch** | Only remembers addresses that **connected successfully**; failures stay silent and show a short status hint |

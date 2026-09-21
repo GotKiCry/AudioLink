@@ -32,6 +32,7 @@
 uniffi::setup_scaffolding!();
 
 pub mod audio_bridge;
+pub mod discovery_bridge;
 pub mod engine_bridge;
 pub mod error;
 pub mod golden;

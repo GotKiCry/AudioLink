@@ -177,6 +177,7 @@ pub struct EngineBridge {
     state_rx: watch::Receiver<EngineState>,
     cache: Arc<Mutex<Cache>>,
     capture: SharedCapture,
+    discovery: Arc<Mutex<Option<crate::discovery::LanDiscovery>>>,
     /// 串行化开始/停止：更换端点与开流必须属于同一次操作。
     send_operation: tokio::sync::Mutex<()>,
 }
@@ -187,6 +188,7 @@ impl EngineBridge {
         let (state_tx, state_rx) = watch::channel(EngineState::Starting);
         let cache = Arc::new(Mutex::new(Cache::default()));
         let capture = SharedCapture::default();
+        let discovery = Arc::new(Mutex::new(None));
         // 发送端交给启动任务持有：它的生命周期就是应用的生命周期，
         // 命令层只在"还没就绪"时才会去等这个通道。
         tauri::async_runtime::spawn(boot(
@@ -194,14 +196,27 @@ impl EngineBridge {
             state_tx,
             Arc::clone(&cache),
             Arc::clone(&capture),
+            Arc::clone(&discovery),
         ));
         Self {
             app,
             state_rx,
             cache,
             capture,
+            discovery,
             send_operation: tokio::sync::Mutex::new(()),
         }
+    }
+
+    pub async fn discovered_hosts(
+        &self,
+        refresh: bool,
+    ) -> Result<Vec<audiolink_discovery::DiscoveredHost>, CommandError> {
+        let _engine = self.engine().await?;
+        lock(&self.discovery)
+            .as_mut()
+            .ok_or_else(|| CommandError::busy("正在准备局域网发现", "discovery not ready"))?
+            .hosts(refresh)
     }
 
     /// 本机身份（`local_status`）。
@@ -657,6 +672,7 @@ impl EngineBridge {
     /// 而它的代价落在**对端**身上（对方要多等一次超时才把会话判掉）。
     /// 内部带 3 s 上限：退出路径不能因为对端没响应就卡住用户。
     pub async fn shutdown_engine(&self) -> Result<(), CommandError> {
+        lock(&self.discovery).take();
         let engine = self.engine().await?;
         match tokio::time::timeout(std::time::Duration::from_secs(3), engine.shutdown()).await {
             Ok(()) => Ok(()),
@@ -833,6 +849,7 @@ async fn boot(
     state_tx: watch::Sender<EngineState>,
     cache: Arc<Mutex<Cache>>,
     capture: SharedCapture,
+    discovery: Arc<Mutex<Option<crate::discovery::LanDiscovery>>>,
 ) {
     let config = match engine_config(&app, capture) {
         Ok(config) => config,
@@ -862,6 +879,7 @@ async fn boot(
 
     // 入站监听：手机主动连过来时的入口（接收方向）。
     let _accept = engine.spawn_accept_loop();
+    *lock(&discovery) = Some(crate::discovery::LanDiscovery::start(&engine));
     tracing::info!(
         addr = %engine.local_addr(),
         id = %engine.info().id.short(),
@@ -1128,6 +1146,7 @@ fn peer_view(status: &PeerStatus, sending: Option<NodeId>) -> PeerView {
         addr: status.addr.to_string(),
         state: map_state(status.state, sending == Some(status.id)),
         trusted: status.trusted,
+        receiving: status.initiated_locally,
         capabilities: capabilities_view(status.capabilities),
         reconnects: status.reconnects,
     }
@@ -1762,6 +1781,7 @@ mod tests {
         let far = NodeId::from_bytes([2u8; 32]);
         let near = NodeId::from_bytes([1u8; 32]);
         let status = |id: NodeId, e2e: u32| PeerStatus {
+            initiated_locally: false,
             id,
             reconnects: 0,
             capabilities: None,
@@ -1797,6 +1817,7 @@ mod tests {
         let mut windows: HashMap<NodeId, VecDeque<u32>> = HashMap::new();
         let peer = NodeId::from_bytes([7u8; 32]);
         let sender_side = vec![PeerStatus {
+            initiated_locally: false,
             id: peer,
             reconnects: 0,
             name: "phone".to_string(),
@@ -1857,6 +1878,7 @@ mod tests {
     fn peer_view_uses_canonical_short_id() {
         let id = NodeId::from_bytes([0xab; 32]);
         let status = PeerStatus {
+            initiated_locally: true,
             id,
             reconnects: 0,
             name: "客厅 R1".to_string(),
@@ -1869,6 +1891,7 @@ mod tests {
 
         let view = peer_view(&status, Some(id));
         assert_eq!(view.id_short, id.short());
+        assert!(view.receiving);
         assert_eq!(view.id_short.len(), 16);
         assert!(
             id.short_matches(&view.id_short),

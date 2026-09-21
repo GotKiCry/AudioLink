@@ -319,6 +319,8 @@ pub struct PeerStatus {
     pub name: String,
     /// 对端地址。
     pub addr: std::net::SocketAddr,
+    /// 本机发起连接：外壳作为接收端，不自动回传声音。
+    pub initiated_locally: bool,
     /// 会话状态。
     pub state: SessionState,
     /// 是否已在信任库中。
@@ -518,6 +520,7 @@ enum SessionCommand {
 
 /// 会话表项：控制面与应用共享的句柄。
 struct PeerSession {
+    initiated_locally: bool,
     id: NodeId,
     name: Mutex<String>,
     addr: std::net::SocketAddr,
@@ -617,6 +620,7 @@ impl PeerSession {
     fn snapshot(&self) -> PeerStatus {
         PeerStatus {
             id: self.id,
+            initiated_locally: self.initiated_locally,
             name: self
                 .name
                 .lock()
@@ -1512,7 +1516,8 @@ impl Engine {
                             trusted,
                             "受理入站连接（Responder 会话即将建立）"
                         );
-                        let (session, commands) = create_session(&inner, peer_id, addr, trusted);
+                        let (session, commands) =
+                            create_session(&inner, peer_id, addr, trusted, false);
                         let _ = inner.spawn(run_session(
                             Arc::clone(&inner),
                             connection,
@@ -1591,7 +1596,7 @@ impl Engine {
         }
 
         let trusted = is_trusted(&self.inner, peer_id);
-        let (session, commands) = create_session(&self.inner, peer_id, addr, trusted);
+        let (session, commands) = create_session(&self.inner, peer_id, addr, trusted, true);
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         self.inner.spawn(run_session(
@@ -2732,9 +2737,11 @@ fn create_session(
     peer_id: NodeId,
     addr: std::net::SocketAddr,
     trusted: bool,
+    initiated_locally: bool,
 ) -> (Arc<PeerSession>, mpsc::Receiver<SessionCommand>) {
     let (commands, command_rx) = mpsc::channel(16);
     let session = Arc::new(PeerSession {
+        initiated_locally,
         id: peer_id,
         name: Mutex::new(peer_id.short()),
         addr,

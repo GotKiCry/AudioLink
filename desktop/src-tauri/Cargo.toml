@@ -36,6 +36,8 @@ audiolink-engine = { workspace = true }
 audiolink-audio = { workspace = true }
 # 内核类型：错误码 / NodeId / StreamStats。
 audiolink-types = { workspace = true }
+audiolink-discovery = { workspace = true }
+audiolink-proto = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }

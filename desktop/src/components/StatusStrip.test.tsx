@@ -1,10 +1,3 @@
-/**
- * 本机状态条（`StatusStrip`）—— 用户第一眼看的那一行。
- *
- * 钉三件容易糊掉的事：① 没在推流时**不**显示汇总数字（拿上一次遥测的旧值当"当前"很骗人）；
- * ② 点了开始但还没有设备接入时，与侧栏说同一句话 —— 一边"推流中"一边"未推流"比不说更糟；
- * ③ 指纹与监听地址不上这条带子（开发信息不占首屏，地址只在地址卡片里给一次）。
- */
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -27,14 +20,13 @@ const telemetry: TelemetryView = {
 };
 
 function strip(
-  over: { onAir?: boolean; waitingForDevice?: boolean; streamingCount?: number; telemetryOpen?: boolean } = {},
+  over: { streamingCount?: number; telemetryOpen?: boolean } = {},
 ) {
   const onToggleTelemetry = vi.fn();
   const streamingCount = over.streamingCount ?? 0;
   const { container } = render(
     <StatusStrip
-      onAir={over.onAir ?? streamingCount > 0}
-      waitingForDevice={over.waitingForDevice ?? false}
+      status={streamingCount > 0 ? "streaming" : "waiting"}
       telemetry={telemetry}
       streamingCount={streamingCount}
       telemetryOpen={over.telemetryOpen ?? true}
@@ -52,11 +44,11 @@ const summary = t("status.summary", {
 });
 
 describe("状态汇总", () => {
-  it("没有推流时只说「未推流」，不显示任何汇总数字", () => {
+  it("没有推流时只说「等待设备连接」，不显示任何汇总数字", () => {
     // 改坏：把 `streaming &&` 去掉 → 空闲时状态条上还挂着一串上一次会话的延迟/码率。
     strip({ streamingCount: 0 });
 
-    expect(screen.getByText(t("status.idle"))).toBeTruthy();
+    expect(screen.getByText(t("share.waiting"))).toBeTruthy();
     expect(screen.queryByText(summary)).toBeNull();
   });
 
@@ -67,15 +59,14 @@ describe("状态汇总", () => {
     expect(screen.getByText(summary)).toBeTruthy();
   });
 
-  it("已发起但还没有设备接入：说「推流中 · 等待设备接入」，且不把上一次的汇总当当前值报出来", () => {
+  it("没有设备接入时显示等待，且不把上一次的汇总当当前值报出来", () => {
     // 改坏：只认 streamingCount → 用户点了开始，状态条冷冷地说「未推流」，看起来像没反应。
-    const { container } = strip({ onAir: true, waitingForDevice: true, streamingCount: 0 });
+    const { container } = strip({ streamingCount: 0 });
 
     expect(screen.getByText(t("side.broadcasting_waiting"))).toBeTruthy();
-    expect(screen.queryByText(t("status.idle"))).toBeNull();
     expect(screen.queryByText(summary)).toBeNull();
-    // 黄灯 = 已开闸但还没有人接；红灯留给"真的有人在听"。
-    expect(container.querySelector(".al-lamp")?.getAttribute("data-on")).toBe("warn");
+    // 等待为中性色，不能显示正在发送的绿灯。
+    expect(container.querySelector(".al-lamp")?.getAttribute("data-on")).toBe("off");
   });
 
   it("指纹与监听地址不再出现在状态条上", () => {
