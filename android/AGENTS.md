@@ -45,4 +45,4 @@ pwsh core/crates/audiolink-ffi/bindings/check-so-symbols.ps1  # FFI 四环自检
 
 - `kotlin.code.style=official`;无 ktlint/detekt,静态检查靠 Android Lint + cargo 门禁。
 - 中文注释记「为什么」与踩坑日期;单点声明(ABI 只在 splits.abi、签名一次、版本号单一来源)。
-- Android 改动门禁 = 根四条 cargo 门禁 + `build-rust.ps1` + `assembleDebug`。
+- Android 改动门禁 = 根门禁全套(见根 `AGENTS.md`)+ `build-rust.ps1` + `assembleDebug`。

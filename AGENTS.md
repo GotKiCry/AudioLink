@@ -8,6 +8,7 @@
 | 路径 | 是什么 |
 |---|---|
 | `Cargo.toml` | Rust workspace 根(成员 = `core/crates/*` + `desktop/src-tauri`),版本单一来源 |
+| `core/` | Rust 内核 crate 集合 → 内部导航见 `core/AGENTS.md` |
 | `core/crates/audiolink-types` | 协议常量/枚举/错误码(零依赖) |
 | `core/crates/audiolink-proto` | ALP/2 编解码(L1 严格解码)+ golden vectors |
 | `core/crates/audiolink-audio` | 采集/播放、重采样、Opus、抖动缓冲、混音 |
@@ -19,8 +20,8 @@
 | `core/crates/audiolink-tools` | 开发 bins:`alp2-dump`、`latency-probe`、`self-loop`、`soak-runner` |
 | `desktop/` | Tauri 2 + React 桌面端 → 见 `desktop/AGENTS.md` |
 | `android/` | Compose + UniFFI 移动端 → 见 `android/AGENTS.md` |
-| `tools/` | PowerShell 运维脚本(gradlew 包装、版本校验、打包、许可审计) |
-| `docs/` | 契约文档体系,`00-overview.md` 是文档地图 |
+| `tools/` | PowerShell 运维脚本(gradlew 包装、版本校验、打包、许可审计)→ 脚本清单见 `tools/AGENTS.md` |
+| `docs/` | 契约文档体系,`00-overview.md` 是文档地图 → 写作约定见 `docs/AGENTS.md` |
 
 依赖方向单向:`types → proto → audio/net/discovery/identity → engine → ffi → {desktop, android}`;`audio`/`net` 互不依赖。
 
@@ -48,10 +49,11 @@ cd desktop; pnpm build
 - workspace lints 已 deny `unwrap_used`/`expect_used`/`panic`/`unsafe_code`;必需时局部 `allow` 并注明理由。
 - Android `targetSdk` 锁 36(ADR-009),`minSdk` 26;ABI 仅 arm64-v8a + armeabi-v7a。
 - 行尾一律 LF(仅 `*.bat/*.cmd/*.ps1` 用 CRLF);提交信息用 Conventional Commits。
+- wire 载荷是冻结 schema(postcard 严格解码,尾随字节即非法):`StreamStats` 等不许追加字段;进程内可见计数走 `Engine` 独立出口(先例 `depth_drops`,见 `core/crates/audiolink-engine/src/telemetry.rs`)。
 
 ## 环境速记(Windows)
 
 - Gradle 一律走 `pwsh tools/gradlew.ps1 <task>`(自动处理 JDK/ANDROID_HOME);JDK 路径禁写进 `android/gradle.properties`。
 - 设 `GRADLE_USER_HOME=C:\_Project\AudioLink\.gradle-home` 隔离全局凭证。
 - cargo 产物在根 `target/`;Android .so 输出到 `android/app/src/main/jniLibs/`(`target-android/` 是遗留)。
-- CI 只有 `.github/workflows/release.yml`;README/docs 中其他工作流描述已过时。
+- CI 只有 `.github/workflows/release.yml`;README/docs/CONTRIBUTING 中其他工作流描述(如 core-light、ci.yml)已过时。
