@@ -23,7 +23,7 @@ export function StatusStrip({ status, telemetry, streamingCount, telemetryOpen, 
       </span>
       {streaming && telemetry ? (
         <span className="al-status-metrics num text-text-secondary">
-          {t("status.summary", { e2e: usToMs(telemetry.e2eLatencyUs), rate: bpsToKbps(telemetry.bitrateBps), loss: telemetry.lossPct.toFixed(2) })}
+          {t("status.summary", { rtt: telemetry.rttUs > 0 ? usToMs(telemetry.rttUs) : "—", rate: bpsToKbps(telemetry.bitrateBps), loss: telemetry.receiverReport === false ? "—" : telemetry.lossPct.toFixed(2) })}
         </span>
       ) : null}
       <button type="button" onClick={onToggleTelemetry} aria-expanded={telemetryOpen}

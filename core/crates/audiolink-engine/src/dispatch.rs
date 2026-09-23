@@ -18,10 +18,9 @@
 use audiolink_types::{AudioLinkError, OpCode, StreamStats};
 
 use crate::payload::{
-    AuthChallengePayload, AuthResponsePayload, ByePayload, ClockResultPayload, CloseStreamPayload,
-    ErrorPayload, GroupCreatePayload, GroupEpochPayload, GroupJoinPayload, GroupLeavePayload,
-    HelloAckPayload, HelloPayload, OpenStreamAckPayload, OpenStreamPayload, PairRequiredPayload,
-    PairResultPayload, PairSubmitPayload, PingPayload, SetGainPayload, SetMutePayload,
+    ByePayload, ClockResultPayload, CloseStreamPayload, ErrorPayload, GroupCreatePayload,
+    GroupEpochPayload, GroupJoinPayload, GroupLeavePayload, HelloAckPayload, HelloPayload,
+    OpenStreamAckPayload, OpenStreamPayload, PingPayload, SetGainPayload, SetMutePayload,
     decode_payload, encode_payload,
 };
 
@@ -103,16 +102,6 @@ pub enum ControlRequest {
     Hello(HelloPayload),
     /// `0x02` 主机 → 接收端：连接应答。
     HelloAck(HelloAckPayload),
-    /// `0x03` 双方：挑战随机数。
-    AuthChallenge(AuthChallengePayload),
-    /// `0x04` 双方：挑战应答签名。
-    AuthResponse(AuthResponsePayload),
-    /// `0x05` 主机 → 接收端：需要 PIN 配对。
-    PairRequired(PairRequiredPayload),
-    /// `0x06` 接收端 → 主机：提交 PIN。
-    PairSubmit(PairSubmitPayload),
-    /// `0x07` 主机 → 接收端：配对结果。
-    PairResult(PairResultPayload),
     /// `0x10` 主机 → 接收端：开流协商。
     OpenStream(OpenStreamPayload),
     /// `0x11` 接收端 → 主机：开流应答。
@@ -153,11 +142,6 @@ impl ControlRequest {
         match self {
             Self::Hello(_) => OpCode::Hello,
             Self::HelloAck(_) => OpCode::HelloAck,
-            Self::AuthChallenge(_) => OpCode::AuthChallenge,
-            Self::AuthResponse(_) => OpCode::AuthResponse,
-            Self::PairRequired(_) => OpCode::PairRequired,
-            Self::PairSubmit(_) => OpCode::PairSubmit,
-            Self::PairResult(_) => OpCode::PairResult,
             Self::OpenStream(_) => OpCode::OpenStream,
             Self::OpenStreamAck(_) => OpCode::OpenStreamAck,
             Self::CloseStream(_) => OpCode::CloseStream,
@@ -185,11 +169,6 @@ impl ControlRequest {
         match self {
             Self::Hello(v) => encode_payload(v),
             Self::HelloAck(v) => encode_payload(v),
-            Self::AuthChallenge(v) => encode_payload(v),
-            Self::AuthResponse(v) => encode_payload(v),
-            Self::PairRequired(v) => encode_payload(v),
-            Self::PairSubmit(v) => encode_payload(v),
-            Self::PairResult(v) => encode_payload(v),
             Self::OpenStream(v) => encode_payload(v),
             Self::OpenStreamAck(v) => encode_payload(v),
             Self::CloseStream(v) => encode_payload(v),
@@ -291,11 +270,6 @@ fn decode_control(op: OpCode, payload: &[u8]) -> Result<ControlRequest, DecodeFa
     match op {
         OpCode::Hello => bad(decode_payload(payload)).map(ControlRequest::Hello),
         OpCode::HelloAck => bad(decode_payload(payload)).map(ControlRequest::HelloAck),
-        OpCode::AuthChallenge => bad(decode_payload(payload)).map(ControlRequest::AuthChallenge),
-        OpCode::AuthResponse => bad(decode_payload(payload)).map(ControlRequest::AuthResponse),
-        OpCode::PairRequired => bad(decode_payload(payload)).map(ControlRequest::PairRequired),
-        OpCode::PairSubmit => bad(decode_payload(payload)).map(ControlRequest::PairSubmit),
-        OpCode::PairResult => bad(decode_payload(payload)).map(ControlRequest::PairResult),
         OpCode::OpenStream => bad(decode_payload(payload)).map(ControlRequest::OpenStream),
         OpCode::OpenStreamAck => bad(decode_payload(payload)).map(ControlRequest::OpenStreamAck),
         OpCode::CloseStream => bad(decode_payload(payload)).map(ControlRequest::CloseStream),
@@ -366,21 +340,6 @@ mod tests {
                 caps: Capabilities::CURRENT,
                 agreed_caps: 0,
             }),
-            ControlRequest::AuthChallenge(AuthChallengePayload {
-                nonce: vec![2u8; 32],
-            }),
-            ControlRequest::AuthResponse(AuthResponsePayload {
-                signature: vec![3u8; 70],
-            }),
-            ControlRequest::PairRequired(PairRequiredPayload { pin_display: true }),
-            ControlRequest::PairSubmit(PairSubmitPayload {
-                pin: "123456".to_string(),
-            }),
-            ControlRequest::PairResult(PairResultPayload {
-                ok: true,
-                reason: "paired".to_string(),
-                persist: true,
-            }),
             ControlRequest::OpenStream(OpenStreamPayload {
                 session_id: 42,
                 source: SourceKind::SystemLoopback,
@@ -449,9 +408,9 @@ mod tests {
             ControlRequest::Ping(PingPayload { t1: 1, t2: 2 }),
             ControlRequest::Pong(PingPayload { t1: 1, t2: 2 }),
             ControlRequest::Error(ErrorPayload {
-                code: 1004,
-                message: "auth failed".to_string(),
-                context: Some("bad sig".to_string()),
+                code: 1008,
+                message: "bad frame".to_string(),
+                context: Some("truncated".to_string()),
             }),
             ControlRequest::Bye(ByePayload {
                 reason: "shutdown".to_string(),
@@ -556,55 +515,15 @@ mod tests {
     fn trailing_bytes_are_rejected_by_the_l1_rule() {
         // §4：postcard 载荷必须恰好消费全部字节 —— 尾随字节必须判非法（防 schema 漂移被静默接受）。
         let mut stats = DispatchStats::default();
-        let mut body = ControlRequest::PairSubmit(PairSubmitPayload {
-            pin: "123456".to_string(),
-        })
-        .encode_body()
-        .unwrap();
+        let mut body = ControlRequest::Ping(PingPayload { t1: 1, t2: 2 })
+            .encode_body()
+            .unwrap();
         body.push(0xAB);
 
-        let (request, outcome) = dispatch_into(Some(OpCode::PairSubmit), &body, &mut stats);
+        let (request, outcome) = dispatch_into(Some(OpCode::Ping), &body, &mut stats);
 
         assert_eq!(outcome, DispatchOutcome::IgnoredBadPayload);
         assert!(request.is_none());
-    }
-
-    #[test]
-    fn nonce_and_signature_survive_postcard_byte_for_byte() {
-        // 认证材料（nonce / 签名）是字节数组，postcard 编解码必须**逐字节**保真 ——
-        // 任何长度前缀或编码差异都会让签名校验在真机上必然失败。
-        let nonce: Vec<u8> = (0..32u8).collect();
-        let signature: Vec<u8> = (0..70u8).map(|i| i.wrapping_mul(3)).collect();
-
-        let challenge = ControlRequest::AuthChallenge(AuthChallengePayload {
-            nonce: nonce.clone(),
-        });
-        let body = challenge.encode_body().unwrap();
-        match dispatch(
-            Some(OpCode::AuthChallenge),
-            &body,
-            &mut DispatchStats::default(),
-        )
-        .unwrap()
-        {
-            ControlRequest::AuthChallenge(v) => assert_eq!(v.nonce, nonce),
-            other => panic!("命令码不匹配：{other:?}"),
-        }
-
-        let response = ControlRequest::AuthResponse(AuthResponsePayload {
-            signature: signature.clone(),
-        });
-        let body = response.encode_body().unwrap();
-        match dispatch(
-            Some(OpCode::AuthResponse),
-            &body,
-            &mut DispatchStats::default(),
-        )
-        .unwrap()
-        {
-            ControlRequest::AuthResponse(v) => assert_eq!(v.signature, signature),
-            other => panic!("命令码不匹配：{other:?}"),
-        }
     }
 
     #[test]

@@ -1,15 +1,14 @@
-//! 接缝假设的**运行时**验证：两个真实 `Engine` 经 127.0.0.1 真 QUIC 握手 + 真 PIN 配对。
+//! 接缝假设的**运行时**验证：两个真实 `Engine` 经 127.0.0.1 真 QUIC 握手。
 //!
 //! ## 这个测试在验什么（以及不验什么）
 //! `EngineBridge` 依赖引擎的几条行为约定，它们一旦变化，外壳会以很难查的方式坏掉
-//! （卡片不出现、PIN 输入框不弹出、配对结果永远显示"已提交"）：
-//! 1. `connect()` 在需要配对时返回 `1002 NOT_PAIRED`，**但对端已经进入 `peers()`** 且 `addr` 与请求一致
-//!    —— 外壳的去重与卡片渲染靠这条；
-//! 2. 同一时刻发起端收到 `PinNeeded`、接收端收到 `DisplayPin{pin}` —— 前端两种配对界面靠这条；
-//! 3. `submit_pin(peer, pin)` 之后，结果以 `PairCompleted{ok:true}` 事件回来（不是立即返回）
-//!    —— 外壳的"等结果"逻辑靠这条；
-//! 4. 配对成功后 `trusted == true`、会话状态进入 `Streaming` —— 外壳的状态映射靠这条；
-//! 5. `start_send` 之后确实有音频在流（遥测出现非零码率）。
+//! （卡片不出现、状态映射错位、开流失败被当成成功）：
+//! 1. `connect()` **成功即握手完成**（无认证：没有 PIN，也没有挑战应答），返回对端身份，
+//!    且对端已经进入 `peers()`、`addr` 与请求一致 —— 外壳的去重与卡片渲染靠这条；
+//! 2. 会话状态随即进入 `Streaming` —— 外壳的状态映射靠这条（它因此必须自己区分
+//!    「会话已建立」与「正在推流」）；
+//! 3. 响应方侧也把发起方登记进 `peers()` —— 接收端卡片靠这条；
+//! 4. `start_send` 之后确实有音频在流（遥测出现非零码率）。
 //!
 //! **不验**：Tauri 侧的事件翻译与前端渲染（那需要 AppHandle + WebView，属"未验证"清单）。
 //!
@@ -26,10 +25,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use audiolink_audio::{CaptureSource, NullPlayout, PlayoutSink, SyntheticCapture};
 use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::{ErrorCode, NodeId};
+use audiolink_types::ErrorCode;
 use tokio::sync::broadcast;
 
-/// 各自的落盘目录（身份材料 / 信任库），用进程 + 时间戳隔离，测完删掉。
+/// 各自的落盘目录（身份材料），用进程 + 时间戳隔离，测完删掉。
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -84,7 +83,7 @@ async fn next_matching(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn pairing_and_streaming_flow_matches_bridge_assumptions() {
+async fn connect_then_stream_flow_matches_bridge_assumptions() {
     // 总超时：任何一步卡住都要失败，而不是让 CI 挂在那里。
     let outcome = tokio::time::timeout(Duration::from_secs(60), async {
         let dir_a = temp_dir("a");
@@ -109,90 +108,36 @@ async fn pairing_and_streaming_flow_matches_bridge_assumptions() {
         let _accept_a = engine_a.spawn_accept_loop();
         let _accept_b = engine_b.spawn_accept_loop();
 
-        // 必须**先订阅**：事件是广播，订阅前的不会回放。
-        let mut events_a = engine_a.subscribe();
+        // 必须**先订阅**：事件是广播，订阅前的不会回放（接收端的遥测读数靠它）。
         let mut events_b = engine_b.subscribe();
 
         let addr_b = engine_b.local_addr();
 
-        // ---- 1) 首次连接必然要求配对，且错误码是 1002 ----
-        let error = engine_a
-            .connect(addr_b)
-            .await
-            .expect_err("首次连接应当返回 NotPaired");
-        assert_eq!(
-            error.code(),
-            ErrorCode::NotPaired,
-            "需要的是 1002，实际 {error:?}"
-        );
+        // ---- 1) 连接即成功：没有 PIN，也没有挑战应答 ----
+        let peer_id = engine_a.connect(addr_b).await.expect("连接应当直接成功");
 
         // ---- 2) 会话已经登记：外壳这时候就该把卡片画出来 ----
         let peers = engine_a.peers();
-        assert_eq!(peers.len(), 1, "配对中的对端也必须在 peers() 里");
+        assert_eq!(peers.len(), 1, "连接成功的对端必须在 peers() 里");
         let peer = peers.first().expect("peer").clone();
+        assert_eq!(peer.id, peer_id, "返回的身份与会话表里那条必须是同一个");
         assert_eq!(peer.addr, addr_b, "addr 必须与请求一致（外壳靠它去重）");
-        assert!(!peer.trusted, "还没配对，不能是已受信");
-        assert_eq!(peer.state, SessionState::Handshaking);
-        let peer_id: NodeId = peer.id;
-
-        // ---- 3) 两个方向各自的配对信号 ----
-        let needed = next_matching(&mut events_a, Duration::from_secs(10), |event| {
-            matches!(event, EngineEvent::PinNeeded { .. })
-        })
-        .await
-        .expect("发起端应当收到 PinNeeded");
-        match needed {
-            EngineEvent::PinNeeded { id, .. } => assert_eq!(id, peer_id),
-            other => panic!("期望 PinNeeded，实际 {other:?}"),
-        }
-
-        let pin = match next_matching(&mut events_b, Duration::from_secs(10), |event| {
-            matches!(event, EngineEvent::DisplayPin { .. })
-        })
-        .await
-        .expect("接收端应当收到 DisplayPin")
-        {
-            EngineEvent::DisplayPin { pin, .. } => pin,
-            other => panic!("期望 DisplayPin，实际 {other:?}"),
-        };
-        assert_eq!(pin.len(), 6, "PIN 必须是 6 位");
-        assert!(pin.chars().all(|c| c.is_ascii_digit()), "PIN 必须是数字");
-
-        // ---- 4) 提交 PIN：结果走 PairCompleted 事件（外壳正是这么等的）----
-        engine_a
-            .submit_pin(peer_id, &pin)
-            .await
-            .expect("submit_pin 应当被接受");
-
-        let completed = next_matching(&mut events_a, Duration::from_secs(15), |event| {
-            matches!(event, EngineEvent::PairCompleted { .. })
-        })
-        .await
-        .expect("应当收到 PairCompleted");
-        match completed {
-            EngineEvent::PairCompleted { id, ok, reason } => {
-                assert_eq!(id, peer_id);
-                assert!(ok, "配对应当成功，reason={reason}");
-            }
-            other => panic!("期望 PairCompleted，实际 {other:?}"),
-        }
-
-        // ---- 5) 配对后的状态：外壳据此把"等待配对"换成"开始推流"----
-        let after = engine_a.peers();
-        let after_peer = after.first().expect("peer after pairing");
-        assert!(after_peer.trusted, "配对成功后必须受信");
         assert_eq!(
-            after_peer.state,
+            peer.state,
             SessionState::Streaming,
             "引擎在握手完成后置 Streaming —— 外壳因此必须自己区分'会话已建立'与'正在推流'"
         );
-        // B 侧也应记下 A（白名单落盘）
-        assert!(
-            engine_b.peers().first().map(|p| p.trusted).unwrap_or(false),
-            "接收端也应把发起端写入信任库"
+
+        // ---- 3) 接收端侧也记下了发起方 ----
+        // 注意两侧的 id 是**各自的视角**：A 记录的是 B 的指纹，B 记录的是 A 的指纹。
+        let inbound = engine_b.peers();
+        assert_eq!(inbound.len(), 1, "响应方也要把入站会话登记进 peers()");
+        assert_eq!(
+            inbound.first().map(|status| status.id),
+            Some(engine_a.info().id)
         );
 
-        // ---- 6) 开流：合成采集 → Opus → QUIC → 空播放，应当真的流动起来 ----
+        // ---- 4) 开流：合成采集 → Opus → QUIC → 空播放，应当真的流动起来 ----
         // 驱动在采集线程里拒绝打开时，command 必须返回错误，不能把“已入队”当作成功。
         let error = engine_a
             .start_send(peer_id)

@@ -2,18 +2,59 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use audiolink_audio::{
-    AudioError, DeviceFormat, NullPlayout, PlayoutSink, PlayoutStats, SyntheticCapture,
+    AudioError, CaptureSource, CaptureStats, CapturedPacket, DeviceFormat, NullPlayout,
+    PlayoutSink, PlayoutStats, SyntheticCapture,
 };
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, MeasurementTap, SessionState};
+use audiolink_engine::{Engine, EngineConfig, MeasurementTap, SessionState};
 use tokio::sync::mpsc;
 
 struct PausingSink {
     inner: NullPlayout,
     writes: usize,
     events: mpsc::UnboundedSender<usize>,
+}
+
+struct PausingCapture {
+    inner: SyntheticCapture,
+    paused: Arc<AtomicBool>,
+}
+
+impl CaptureSource for PausingCapture {
+    fn device_format(&self) -> DeviceFormat {
+        self.inner.device_format()
+    }
+    fn requested_buffer_ms(&self) -> u32 {
+        self.inner.requested_buffer_ms()
+    }
+    fn effective_buffer_ms(&self) -> u32 {
+        self.inner.effective_buffer_ms()
+    }
+    fn read(
+        &mut self,
+        samples: &mut Vec<f32>,
+        timeout: Duration,
+    ) -> Result<Option<CapturedPacket>, AudioError> {
+        let packet = self.inner.read(samples, timeout)?;
+        if self.paused.load(Ordering::Relaxed) {
+            samples.clear();
+            Ok(None)
+        } else {
+            Ok(packet)
+        }
+    }
+    fn stats(&self) -> CaptureStats {
+        self.inner.stats()
+    }
+    fn stop(&mut self) {
+        self.inner.stop();
+    }
+    fn backend_name(&self) -> &'static str {
+        "pausing-synthetic"
+    }
 }
 
 impl PlayoutSink for PausingSink {
@@ -73,16 +114,9 @@ async fn receiver_pause_does_not_leave_permanent_playout_delay() {
     let sender = Engine::start(send_cfg).await.unwrap();
     let receiver = Engine::start(recv_cfg).await.unwrap();
     let accept = receiver.spawn_accept_loop();
-    let mut events = receiver.subscribe();
     let peer = receiver.info().id;
     let measured = tokio::time::timeout(Duration::from_secs(10), async {
-        assert!(sender.connect(receiver.local_addr()).await.is_err());
-        let pin = loop {
-            if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-                break pin;
-            }
-        };
-        sender.submit_pin(peer, &pin).await.unwrap();
+        sender.connect(receiver.local_addr()).await.unwrap();
         while !sender
             .peers()
             .iter()
@@ -101,7 +135,7 @@ async fn receiver_pause_does_not_leave_permanent_playout_delay() {
     sender.shutdown().await;
     receiver.shutdown().await;
     accept.await.unwrap();
-    let summary = measured.expect("10 s 内应完成配对和停顿后恢复");
+    let summary = measured.expect("10 s 内应完成连接和停顿后恢复");
     eprintln!("停顿后恢复样本：{summary:?}");
     assert!(
         summary.count >= 30,
@@ -111,4 +145,65 @@ async fn receiver_pause_does_not_leave_permanent_playout_delay() {
         summary.p95 < 100_000,
         "250 ms 停顿不能留下永久延迟：{summary:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sender_capture_pause_resumes_without_reconnecting() {
+    let dir = tempfile::tempdir().unwrap();
+    let tap = Arc::new(MeasurementTap::default());
+    let paused = Arc::new(AtomicBool::new(false));
+    let capture_paused = Arc::clone(&paused);
+    let mut send_cfg = EngineConfig::new("sender", dir.path().join("sender"));
+    send_cfg.listen = "127.0.0.1:0".parse().unwrap();
+    send_cfg.codec = audiolink_audio::CodecConfig::m1_low_delay_tight();
+    send_cfg.capture = Some(Arc::new(move || {
+        Ok(Box::new(PausingCapture {
+            inner: SyntheticCapture::new(10, 440.0)?,
+            paused: Arc::clone(&capture_paused),
+        }))
+    }));
+    send_cfg.measurement = Some(Arc::clone(&tap));
+
+    let mut recv_cfg = EngineConfig::new("receiver", dir.path().join("receiver"));
+    recv_cfg.listen = "127.0.0.1:0".parse().unwrap();
+    recv_cfg.codec = audiolink_audio::CodecConfig::m1_low_delay_tight();
+    recv_cfg.measurement = Some(Arc::clone(&tap));
+    recv_cfg.playout = Some(Arc::new(|| Ok(Box::new(NullPlayout::new(40)))));
+
+    let sender = Engine::start(send_cfg).await.unwrap();
+    let receiver = Engine::start(recv_cfg).await.unwrap();
+    let accept = receiver.spawn_accept_loop();
+    let peer = receiver.info().id;
+    let resumed = tokio::time::timeout(Duration::from_secs(8), async {
+        sender.connect(receiver.local_addr()).await.unwrap();
+        while !sender
+            .peers()
+            .iter()
+            .any(|status| status.id == peer && status.state == SessionState::Streaming)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        sender.start_send(peer).await.unwrap();
+        while tap.summary().is_none_or(|summary| summary.count < 10) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        paused.store(true, Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        tap.reset();
+        paused.store(false, Ordering::Relaxed);
+        while tap.summary().is_none_or(|summary| summary.count < 10) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        sender
+            .peers()
+            .iter()
+            .any(|status| status.id == peer && status.state == SessionState::Streaming)
+    })
+    .await;
+
+    sender.shutdown().await;
+    receiver.shutdown().await;
+    accept.await.unwrap();
+    assert!(resumed.expect("采集恢复后应在 8 秒内重新播放真实帧"));
 }

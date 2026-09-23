@@ -166,19 +166,13 @@ async fn wire_up(first_generation: Failure) -> Rig {
     let sender = Engine::start(send_cfg).await.unwrap();
     let receiver = Engine::start(recv_cfg).await.unwrap();
     let accept = receiver.spawn_accept_loop();
-    // PIN 由**主机**显示、由接收端输入（§5）。本测试里被连的 `receiver` 扮演的正是主机（Responder），
-    // 主动拨号的 `sender` 才是接收端 —— 变量名沿用旧口径，所以 DisplayPin 只会在 receiver 侧出现。
-    let mut events = receiver.subscribe();
+    let events = receiver.subscribe();
     let peer = receiver.info().id;
 
-    let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-            break pin;
-        }
-    };
-    sender.submit_pin(peer, &pin).await.unwrap();
+    sender
+        .connect(receiver.local_addr())
+        .await
+        .expect("连接应当直接成功（无认证）");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     while !sender
         .peers()

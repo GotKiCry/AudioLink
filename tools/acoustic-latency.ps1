@@ -1019,7 +1019,7 @@ function Invoke-SelfTest {
 
 # ============================ 人工清单与误差表 ============================
 function Show-SetupChecklist {
-    param([string]$MicName, [string]$PeerIp, [string]$PcDev, [string]$PinFile)
+param([string]$MicName, [string]$PeerIp, [string]$PcDev)
     Emit ''
     Emit '【现场摆位与操作清单】（docs/55 §2.3 / §2.10 —— 这些必须现场定，脚本定不了）' 'step'
     Emit '  1) 插上物理麦克风（USB 麦或 3.5 mm 麦）；本机 dshow 里只有两个虚拟端点，测不出声学信号。' 'info'
@@ -1032,7 +1032,7 @@ function Show-SetupChecklist {
     Emit ('  6) 系统默认输出端点必须就是 device-link 采集的端点（--device {0}）：' -f $PcDev) 'info'
     Emit '     ffplay 放到的就是系统默认输出端点；两者不一致 = 参考声与被测声不是同一路，前功尽弃。' 'info'
     Emit '     测完之前不要切换音频设备、不要插拔耳机。' 'info'
-    Emit ('  7) 手机侧配对：把手机屏幕上的 6 位 PIN 写进 {0}（脚本会轮询读取）。' -f $PinFile) 'info'
+    Emit '  7) 手机侧连接：本版本已无配对码 —— 手机 App 启动接收后会自动连上 device-link。' 'info'
     Emit ("  8) 记录到 notes.md：手机型号/系统/包名、PC 端点名（{0}）、两端距离、房间、音量、git hash、手机待播队列水位。" -f $PcDev) 'info'
     Emit ("  9) 目标 peer：{0}；本轮期间手机不要切后台、不要锁屏省电。" -f $PeerIp) 'info'
 }
@@ -1090,7 +1090,7 @@ function Invoke-DryRun {
     Emit '  1. 生成激励信号（48 kHz / 16-bit / 单声道 / 6 个 20 ms 宽带突发 / 间隔 500 ms / 总长 4000 ms，§2.2）' 'step'
     Emit '  2. 校验麦克风：枚举 dshow 输入端点 → 录 3 s 看电平；max_volume <= -80 dB 即判「拿不到声学信号」并退出' 'step'
     Emit '  3. 打印摆位清单（麦与两个声源的距离、音量匹配、关窗、同子网……）并等操作者确认' 'step'
-    Emit '  4. 启动 device-link（WASAPI loopback 采 PC 输出端点 → AudioLink → 手机）；用 pin.txt 送 PIN' 'step'
+    Emit '  4. 启动 device-link（WASAPI loopback 采 PC 输出端点 → AudioLink → 手机）；连上即推流，无需输码' 'step'
     Emit '  5. **先**启动 ffmpeg 录音（前导 >= 1.5 s），**后**播放激励（ffplay 到系统默认输出端点）' 'step'
     Emit '  6. 播放结束 + 尾巴静音后收录音；停止 device-link' 'step'
     Emit '  7. 分析这一段录音：包络 → 阈值穿越定位峰 → 按序号配对（参考峰 vs 被测峰）→ P50/P95（nearest-rank）→ 判读' 'step'
@@ -1105,7 +1105,7 @@ function Invoke-DryRun {
     # 预览必须与实际执行走同一条解析（Lead 复核补）：否则预演印 `cargo run`，实跑却在用 triple 下的 exe。
     $dlPreview = Resolve-DeviceLink -Explicit $DeviceLinkExePath
     $dlShown = if ($dlPreview) { ($dlPreview.Exe + ' ' + ($dlPreview.Prefix -join ' ')).Trim() } else { 'cargo run -q -p audiolink-tools --bin device-link --' }
-    Emit ('  推流：' + $dlShown + ' run --peer <手机IP> --seconds <观测秒数> --capture wasapi --device ' + $PcDev + ' --pin-file <证据目录>\pin.txt --json <证据目录>\device-link.json') 'info'
+    Emit ('  推流：' + $dlShown + ' run --peer <手机IP> --seconds <观测秒数> --capture wasapi --device ' + $PcDev + ' --json <证据目录>\device-link.json') 'info'
     Emit '  录音：ffmpeg -hide_banner -nostdin -y -f dshow -i "audio=<麦名>" -ar 48000 -ac 1 -t <录音秒数> -c:a pcm_s16le <证据目录>\rec.wav' 'info'
     Emit ('  播放：ffplay -nodisp -autoexit -hide_banner -loglevel warning ' + $stimBase + '   （每轮一次，共 ' + $Rounds + ' 轮）') 'info'
     Emit ('  分析：pwsh tools/acoustic-latency.ps1 -AnalyseWav <证据目录>\rec.wav') 'info'
@@ -1159,7 +1159,7 @@ function Invoke-DryRun {
         $micUsable = $true
     }
 
-    Show-SetupChecklist -MicName $Mic -PeerIp $PeerIp -PcDev $PcDev -PinFile (Join-Path (Join-Path $SCRIPT:EvidenceRoot $Stamp) 'pin.txt')
+    Show-SetupChecklist -MicName $Mic -PeerIp $PeerIp -PcDev $PcDev
     Show-ErrorBudget
 
     Emit ''
@@ -1242,7 +1242,7 @@ function Invoke-MeasurementRun {
         Emit '（-SkipMicProbe：跳过电平探测 —— 后果自负，静音录音会在分析阶段被明确判为失败）' 'warn'
     }
 
-    Show-SetupChecklist -MicName $mic -PeerIp $Peer -PcDev $PcDevice -PinFile (Join-Path $dir 'pin.txt')
+    Show-SetupChecklist -MicName $mic -PeerIp $Peer -PcDev $PcDevice
     if (-not $NonInteractive) {
         Emit ''
         Emit '按上面的清单摆好、手机 App 开始接收后，按回车开始测量（Ctrl+C 放弃）……' 'step'
@@ -1256,12 +1256,11 @@ function Invoke-MeasurementRun {
     $oneRound = $SCRIPT:Cfg.TotalMs / 1000.0 + 1.0
     $recSecs = if ($RecordSeconds -gt 0) { $RecordSeconds } else { [int][Math]::Ceiling(1.6 + $Rounds * $oneRound + 1.2) }
     $recPath = Join-Path $dir 'rec.wav'
-    $pinFile = Join-Path $dir 'pin.txt'
 
     # --- device-link ---
     $dlArgs = @($dl.Prefix) + @(
         'run', '--peer', $Peer, '--seconds', "$PeerSeconds", '--capture', 'wasapi',
-        '--device', $PcDevice, '--pin-file', $pinFile, '--json', (Join-Path $dir 'device-link.json')
+        '--device', $PcDevice, '--json', (Join-Path $dir 'device-link.json')
     )
     $dlArgLine = (($dlArgs | ForEach-Object { Quote-Arg $_ }) -join ' ')
     Emit ''
@@ -1269,12 +1268,12 @@ function Invoke-MeasurementRun {
     $dlOut = Join-Path $dir 'device-link.out.log'
     $dlErr = Join-Path $dir 'device-link.err.log'
     $dlProc = Start-Process -FilePath $dl.Exe -ArgumentList $dlArgLine -PassThru -NoNewWindow -RedirectStandardOutput $dlOut -RedirectStandardError $dlErr
-    Emit ("  它要把手机屏幕上的 6 位 PIN 写进：{0}（脚本每 300 ms 轮询；这一步由 device-link 自己做）" -f $pinFile) 'info'
+    Emit '  连接由手机 App 主动发起：启动接收后会自动连上 device-link（本版本没有配对码）。' 'info'
     if (-not $NonInteractive) {
         Emit '  等 device-link 打印出「已连接 / 开始推流」后按回车继续（若它报错，先解决再继续）……' 'step'
         Read-Host | Out-Null
     } else {
-        Emit '（-NonInteractive：等 20 s 让配对与推流建立）' 'warn'
+        Emit '（-NonInteractive：等 20 s 让连接与推流建立）' 'warn'
         Start-Sleep -Seconds 20
     }
     if ($dlProc.HasExited) {

@@ -1,7 +1,7 @@
 //! §6 时钟同步的**真 QUIC** 集成测试。
 //!
 //! 接法照抄 `core/crates/audiolink-tools/src/bin/link_loop.rs`：同一进程里起**两个真实 Engine**，
-//! 让它们走真实 QUIC（TLS 握手 + 证书指纹互认 + §5 握手 + PIN 配对实跑），
+//! 让它们走真实 QUIC（TLS 握手 + 证书指纹互认 + §5 握手实跑），
 //! 而不是拿假 Connection 去测。
 //!
 //! # 为什么断言 `|offset| ≤ 2 ms` 是有意义的
@@ -28,18 +28,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use audiolink_engine::runtime::DEFAULT_HANDSHAKE_TIMEOUT;
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState, now_monotonic_us};
+use audiolink_engine::{Engine, EngineConfig, SessionState, now_monotonic_us};
 use audiolink_identity::NodeIdentity;
 use audiolink_net::{AudioLinkEndpoint, Connection, EndpointConfig};
 use audiolink_proto::{AudioDatagram, ClockProbe, ClockReply};
-use audiolink_types::{ErrorCode, NodeId, StreamStats};
+use audiolink_types::{NodeId, StreamStats};
 
 /// 起一台**纯控制面**引擎（无采集 / 无播放）。
 async fn start_engine(dir: &Path, name: &str, frame_ms: u32) -> Arc<Engine> {
     start_engine_with_handshake(dir, name, frame_ms, DEFAULT_HANDSHAKE_TIMEOUT).await
 }
 
-/// 同上，但显式指定**非配对阶段**的握手死线。
+/// 同上，但显式指定握手死线。
 ///
 /// 测量连接那条用例要「越过死线还活着」，把 10 s 压到 1 s 就能秒级验完同一段逻辑
 /// （真实 I/O 下 tokio 时钟暂停不可靠，改常量比 pause/advance 诚实）。
@@ -58,32 +58,16 @@ async fn start_engine_with_handshake(
     Engine::start(config).await.expect("启动引擎")
 }
 
-/// 连接 + （必要时）走完 §5 的 PIN 配对，返回本端会话表里的对端 id。
-async fn connect_and_pair(engine_a: &Arc<Engine>, engine_b: &Arc<Engine>) -> NodeId {
-    // 第二个对端时 peers() 里已经有别的会话了，所以先记下「连之前有谁」，再认新面孔。
-    let before: Vec<NodeId> = engine_a.peers().into_iter().map(|peer| peer.id).collect();
-    let mut events = engine_b.subscribe();
+/// 连接对端（无认证：一次 `connect` 即完成握手），返回对端身份。
+async fn connect_peer(engine_a: &Arc<Engine>, engine_b: &Arc<Engine>) -> NodeId {
     let addr = engine_b.local_addr();
-
-    match engine_a.connect(addr).await {
-        Ok(peer) => peer,
-        Err(error) if error.code() == ErrorCode::NotPaired => {
-            let pin = wait_for_pin(&mut events, Duration::from_secs(5)).await;
-            let peer_on_a = engine_a
-                .peers()
-                .into_iter()
-                .map(|peer| peer.id)
-                .find(|id| !before.contains(id))
-                .expect("新会话必须已经登记进会话表");
-            engine_a
-                .submit_pin(peer_on_a, &pin)
-                .await
-                .expect("提交 PIN");
-            wait_for_streaming(engine_a, peer_on_a, Duration::from_secs(5)).await;
-            peer_on_a
-        }
-        Err(error) => panic!("连接失败（{} {}）", error.code().as_u16(), error.context()),
-    }
+    engine_a.connect(addr).await.unwrap_or_else(|error| {
+        panic!(
+            "连接 {addr} 失败（{} {}）",
+            error.code().as_u16(),
+            error.context()
+        )
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -94,7 +78,7 @@ async fn clock_sync_converges_over_real_quic_within_two_seconds() {
     let _accept_a = engine_a.spawn_accept_loop();
     let _accept_b = engine_b.spawn_accept_loop();
 
-    let peer_on_a = connect_and_pair(&engine_a, &engine_b).await;
+    let peer_on_a = connect_peer(&engine_a, &engine_b).await;
     let peer_on_b = engine_b
         .peers()
         .into_iter()
@@ -193,6 +177,16 @@ async fn clock_sync_converges_over_real_quic_within_two_seconds() {
     let peer_stats = wait_for_peer_stats(&engine_a, peer_on_a, Duration::from_secs(3)).await;
     assert_eq!(peer_stats.stream_id, 1);
     assert!(
+        engine_a
+            .fresh_peer_stats(peer_on_a, Duration::from_secs(3))
+            .is_some()
+    );
+    assert!(
+        engine_a
+            .fresh_peer_stats(peer_on_a, Duration::ZERO)
+            .is_none()
+    );
+    assert!(
         engine_a.peer_stats(peer_on_b).is_none(),
         "用本机自己的指纹查对端快照必须查不到"
     );
@@ -213,8 +207,8 @@ async fn peer_stats_is_isolated_per_peer() {
     let _accept_b = engine_b.spawn_accept_loop();
     let _accept_c = engine_c.spawn_accept_loop();
 
-    let peer_b = connect_and_pair(&engine_a, &engine_b).await;
-    let peer_c = connect_and_pair(&engine_a, &engine_c).await;
+    let peer_b = connect_peer(&engine_a, &engine_b).await;
+    let peer_c = connect_peer(&engine_a, &engine_c).await;
     assert_ne!(peer_b, peer_c, "两条会话必须是对端各异的");
 
     let stats_b = wait_for_peer_stats(&engine_a, peer_b, Duration::from_secs(3)).await;
@@ -341,37 +335,6 @@ async fn wait_for_peer_stats(engine: &Arc<Engine>, peer: NodeId, timeout: Durati
     }
 }
 
-async fn wait_for_pin(
-    events: &mut tokio::sync::broadcast::Receiver<EngineEvent>,
-    timeout: Duration,
-) -> String {
-    let deadline = Instant::now() + timeout;
-    loop {
-        assert!(Instant::now() < deadline, "等待对端展示 PIN 超时");
-        match tokio::time::timeout(Duration::from_millis(200), events.recv()).await {
-            Ok(Ok(EngineEvent::DisplayPin { pin, .. })) => return pin,
-            Ok(Ok(_)) => continue,
-            Ok(Err(error)) => panic!("事件订阅中断：{error}"),
-            Err(_) => continue,
-        }
-    }
-}
-
-async fn wait_for_streaming(engine: &Arc<Engine>, peer: NodeId, timeout: Duration) {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if engine
-            .peers()
-            .into_iter()
-            .any(|status| status.id == peer && status.state == SessionState::Streaming)
-        {
-            return;
-        }
-        assert!(Instant::now() < deadline, "等待会话进入 Streaming 超时");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
 /// M3 验收「时钟」的回环版本：**稳定后 offset 抖动 ≤ 2 ms**。
 ///
 /// 与上一条测试的分工很清楚：
@@ -388,7 +351,7 @@ async fn offset_jitter_stays_within_two_milliseconds_after_convergence() {
     let engine_b = start_engine(dir.path(), "node-b", 20).await;
     let _accept_a = engine_a.spawn_accept_loop();
     let _accept_b = engine_b.spawn_accept_loop();
-    let peer_on_a = connect_and_pair(&engine_a, &engine_b).await;
+    let peer_on_a = connect_peer(&engine_a, &engine_b).await;
 
     // 每 100 ms 采一次（探测间隔也是 100 ms，所以这等于「每个新估计采一次」）。
     let mut offsets: Vec<i64> = Vec::new();

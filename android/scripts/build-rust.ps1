@@ -24,6 +24,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Windows 上 pwsh 写**管道**用的是 [Console]::OutputEncoding（默认 OEM 码页 = GBK），而 Gradle /
+# Android Studio 按 UTF-8 解码子进程输出 —— 结果就是本脚本的中文在构建日志里全变成「?」。
+# 显式对齐到 UTF-8：交互式运行走 WriteConsoleW（本行不影响），被捕获时才是对的。
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 $androidDir = Split-Path -Parent $PSScriptRoot
 $repoRoot   = Split-Path -Parent $androidDir
 $jniLibs    = Join-Path $androidDir "app\src\main\jniLibs"
@@ -133,4 +138,21 @@ Write-Host "==> 产物：" -ForegroundColor Green
 foreach ($t in $targets) {
     Get-ChildItem (Join-Path $jniLibs $t) -Filter *.so -ErrorAction SilentlyContinue |
         ForEach-Object { "    {0}  ({1:N1} MB)" -f $_.FullName.Substring($repoRoot.Length + 1), ($_.Length / 1MB) }
+}
+
+Write-Host ""
+Write-Host "==> 清理 AGP 的 native 中间产物" -ForegroundColor Cyan
+# merged_native_libs / merged_jni_libs 会把上一轮的 .so **原样**送进 APK（实测：两天前的旧库就这样被
+# 装到手机上过）。删掉它们，merge 任务会因输出缺失而重跑，必然拿到刚编出来的这份。
+# 为什么放在这里、而不是 Gradle 任务里：Kotlin DSL 的 doLast 闭包会捕获脚本实例，配置缓存直接报
+# 「cannot serialize object of type DefaultProject」。本脚本是 Gradle 任务 / CI / 手工三种路径共享的
+# 唯一收尾点，放这里一处就够。
+foreach ($name in @("merged_native_libs", "merged_jni_libs")) {
+    $dir = Join-Path $androidDir "app\build\intermediates\$name"
+    if (Test-Path $dir) {
+        Remove-Item $dir -Recurse -Force
+        Write-Host "    已清理 $name" -ForegroundColor DarkYellow
+    } else {
+        Write-Host "    无需清理 $name（不存在）" -ForegroundColor DarkGray
+    }
 }

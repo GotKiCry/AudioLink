@@ -36,18 +36,33 @@ telemetry leaves your machines.
    first expand "Listen to another device". The host usually appears within a few seconds of opening AudioLink.
    If it is missing, enter its displayed address manually, such as `192.168.1.23:58290`.
    **The host enters no address**; it waits for the receiver to connect.
-3. **Pair**: the host screen shows 6 digits; type them on the receiver. When both sides show the same digits,
-   no third device sits in between.
+3. **Connect and go**: there is no pairing code and no approval step - pick the host on the receiver
+   (or type its address) and the connection is established directly.
 
-After pairing, the device goes on the allow-list, so you will not need the code again.
+> **The receiver connects to the host.** Choosing a host and entering a manual address both happen on the listening device.
 
-> **The receiver connects to the host.** Choose a host, enter a manual address, and type the pairing code on the listening device.
-
-Hosts remain discoverable while streaming or paused. Offline hosts disappear after about 10 seconds; discovery does not grant trust.
+Hosts remain discoverable while streaming or paused. Offline hosts disappear after about 10 seconds.
 Android scans while the receiving entry is visible and the app is in the foreground. Backgrounding stops discovery, while existing audio connections continue.
 Choose "Refresh hosts" to clear old results and restart scanning. To make a phone discoverable as a host, select an audio source under "Send audio" and start its service. Phones used only as receivers are not listed as hosts.
 If no host appears, check that both devices are on the same subnet, guest/client isolation is off, and Windows allows AudioLink on private networks.
 Discovery uses UDP 58280; audio connections use UDP 58290 by default. Manual address entry remains available.
+
+> **Why there is no pairing code any more**: AudioLink is meant for a local network, where no
+> "is this device trustworthy?" decision is needed any more, so the 6-digit pairing code and the trust
+> store (allow-list) were removed entirely. **TLS still proves "the peer is the certificate it presents",
+> it just no longer decides whether that certificate is worth trusting.** Audio stays encrypted with
+> TLS 1.3; what disappeared is the code entry and the allow-list in front of the connection.
+
+> ⚠️ **Who can connect now that there is no authentication?** Any device that can reach this machine on
+> the network can connect to the AudioLink QUIC port (UDP 58290 by default) and is treated as a normal peer.
+> Whether audio starts by itself **differs between the two ends today**:
+>
+> - **Desktop**: "Start streaming automatically when a device connects" is **on** by default, so at the moment a
+>   device connects, whatever this machine is playing may be sent to it. Turn that setting off if you do not want it.
+> - **Android**: streaming does **not** start by itself - you still have to tap "Start sending". This is the current
+>   implementation and it differs from the desktop behaviour (see `docs/72-remove-pairing.md`).
+>
+> Either way: do not expose the QUIC port on networks you do not trust.
 
 ---
 
@@ -55,8 +70,8 @@ Discovery uses UDP 58280; audio connections use UDP 58290 by default. Manual add
 
 | Goal | How |
 |---|---|
-| Send this device audio out | Streaming starts automatically once a device connects and pairs |
-| Pause / resume | Use "Pause streaming" / "Resume streaming" in the sidebar; pairing is retained |
+| Send this device audio out | Streaming starts automatically as soon as a device connects |
+| Pause / resume | Use "Pause streaming" / "Resume streaming" in the sidebar; the pause is independent of which devices are online |
 | Set the other side volume | The volume slider (0-200%); changes ramp over about 200 ms |
 | Connect several devices | The desktop shell currently sends to one device at a time. Pause, then choose "Resume streaming" on another device row |
 | Receive | Nothing to do: playback starts when the other side starts streaming |
@@ -65,7 +80,7 @@ The sidebar contains sharing controls and the audio source. The main area shows 
 Expand "Listen to another device" to connect to another host. "Waiting for a device" means no audio is being sent;
 "Streaming audio" appears when sending begins. A manual pause applies to this sharing session: new connections,
 reconnections, and changes to the automatic streaming preference do not override it. Choose "Resume streaming" to continue.
-Restarting AudioLink uses your saved automatic streaming preference again. Pairing and audio source setup must finish
+Restarting AudioLink uses your saved automatic streaming preference again. Audio source setup must finish
 before streaming starts. If startup fails, resolve the displayed error and retry.
 
 ---
@@ -137,17 +152,17 @@ All of it is in your **user profile**, not next to the executable:
 ```text
 %APPDATA%\com.gotkicry.audiolink\
   settings.json         language / start on sign-in / last device
-  trust.json            paired-device allow-list
-  identity\             this device self-signed certificate and key (the basis of pairing trust)
+  trust.json            leftover trust-store file from an older build (this version neither reads nor writes it; safe to delete)
+  identity\             this device self-signed certificate and key (presented during the TLS handshake to identify this device)
   .window-state.json    window position and size
   logs                  look here when something goes wrong
 ```
 
 The portable build **shares** this profile with the installer: install first, switch to portable later, and
-your settings and allow-list are still there. To start over, quit the app and delete the whole
+your settings are still there. To start over, quit the app and delete the whole
 `com.gotkicry.audiolink` folder.
 
-> Deleting `identity\` is the same as changing your identity - previously paired devices must pair again.
+> Deleting `identity\` is the same as changing your identity - the other side will see it as a different device next time (new name and short code).
 
 ---
 
@@ -206,6 +221,7 @@ unreliable on your network, simply retry later.
 
 ### Android console
 
-- **Receive** opens by default. Enter the host address, then the pairing code on your first connection. Once connected, playback status, media volume and disconnect controls appear. Each device also has its own mute, gain and disconnect controls.
+- **Receive** opens by default. Enter the host address (or pick one from the discovered list) and the connection is made - there is no pairing code. Once connected, playback status and disconnect are shown; multiple devices can each be muted, volume-adjusted and disconnected.
+- **There is no master volume in the app**: use the phone's volume keys (media volume). The slider in the device row only changes how loud *that one host* is (0-200%) and leaves other apps alone.
 - **Send** shows this device's address, the listener control and audio source. Switching views does not start or stop audio; changing the capture source still restarts the service and interrupts sessions.
 - **Settings** contains appearance, background activity, updates, open-source licences and collapsed diagnostics. Back returns through each page and preserves your address and scroll position.

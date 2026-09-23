@@ -38,7 +38,7 @@ function strip(
 
 /** 汇总行的期望文案：换算函数与组件共用，避免测试自己抄一遍公式。 */
 const summary = t("status.summary", {
-  e2e: usToMs(telemetry.e2eLatencyUs),
+  rtt: usToMs(telemetry.rttUs),
   rate: bpsToKbps(telemetry.bitrateBps),
   loss: telemetry.lossPct.toFixed(2),
 });

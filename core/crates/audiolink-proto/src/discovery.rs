@@ -173,13 +173,11 @@ pub struct DiscoveryTxt {
     pub platform: Platform,
     /// 能力位图。
     pub caps: Caps,
-    /// 是否已与「我」配对（仅 UI 提示，不携带敏感信息）。
-    pub paired: bool,
 }
 
 impl DiscoveryTxt {
     /// 以当前协议版本构造。
-    pub fn new(id: String, name: String, platform: Platform, caps: Caps, paired: bool) -> Self {
+    pub fn new(id: String, name: String, platform: Platform, caps: Caps) -> Self {
         Self {
             v: DISCOVERY_VERSION,
             proto: PROTO_VERSION,
@@ -187,7 +185,6 @@ impl DiscoveryTxt {
             name,
             platform,
             caps,
-            paired,
         }
     }
 
@@ -200,10 +197,6 @@ impl DiscoveryTxt {
             ("name".to_string(), self.name.clone()),
             ("platform".to_string(), self.platform.as_str().to_string()),
             ("caps".to_string(), self.caps.to_hex()),
-            (
-                "paired".to_string(),
-                if self.paired { "1" } else { "0" }.to_string(),
-            ),
         ]
     }
 
@@ -215,7 +208,6 @@ impl DiscoveryTxt {
         let mut name: Option<String> = None;
         let mut platform: Option<Platform> = None;
         let mut caps: Option<Caps> = None;
-        let mut paired = false;
 
         for (key, value) in pairs {
             match key.as_str() {
@@ -251,17 +243,6 @@ impl DiscoveryTxt {
                         "discovery caps is not valid hex",
                     ))?);
                 }
-                "paired" => {
-                    paired = match value.as_str() {
-                        "0" => false,
-                        "1" => true,
-                        _ => {
-                            return Err(AudioLinkError::bad_request(
-                                "discovery paired must be 0 or 1",
-                            ));
-                        }
-                    };
-                }
                 // 未知 Key 一律忽略（§9.2 向前兼容）
                 _ => {}
             }
@@ -277,7 +258,6 @@ impl DiscoveryTxt {
             name: name.ok_or_else(|| missing("name"))?,
             platform: platform.ok_or_else(|| missing("platform"))?,
             caps: caps.ok_or_else(|| missing("caps"))?,
-            paired,
         })
     }
 }

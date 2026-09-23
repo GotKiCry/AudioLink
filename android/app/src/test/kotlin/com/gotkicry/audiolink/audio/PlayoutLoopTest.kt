@@ -51,6 +51,20 @@ class PlayoutLoopTest {
     }
 
     @Test
+    fun feedbackIncludesPartialWritePendingUntilDeviceAcceptsIt() {
+        val ring = PcmRingBuffer(8, CHANNELS)
+        ring.write(FloatArray(16) { 0.4f }, 8)
+        val sink = FakeSink { minOf(it, 2) }
+        val loop = PlayoutLoop(ring, sink, CHANNELS, CHUNK_FRAMES, PlaybackCounters())
+        assertTrue(loop.pumpOnce())
+        assertEquals(4, ring.sizeFrames)
+        assertEquals(2, loop.bufferedFrames)
+        assertTrue(loop.pumpOnce())
+        assertEquals(4, ring.sizeFrames)
+        assertEquals(0, loop.bufferedFrames)
+    }
+
+    @Test
     fun fullChunkIsWrittenThroughAndCountedAsAudio() {
         val counters = PlaybackCounters()
         val source = FakeSource { dst -> fillRamp(dst); dst.size }

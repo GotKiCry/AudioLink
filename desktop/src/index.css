@@ -877,7 +877,7 @@
   .al-content-inner { padding: 24px; gap: 24px; }
   .al-connect-panel { grid-template-columns: 1fr; gap: 20px; padding: 20px; }
   .al-connect-steps { gap: 8px; }
-  .al-status-metrics { display: none; }
+  .al-status-metrics { flex-basis: 100%; }
 }
 
 @media (max-width: 760px) {

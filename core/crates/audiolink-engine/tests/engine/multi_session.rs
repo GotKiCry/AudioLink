@@ -54,19 +54,11 @@ async fn one_capture_feeds_three_receivers() {
     let outcome = tokio::time::timeout(Duration::from_secs(90), async {
         let mut ids = Vec::new();
         for (receiver, _accept) in &receivers {
-            let mut events = receiver.subscribe();
             let receiver_id = receiver.info().id;
-            let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-            assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-            let pin = loop {
-                if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-                    break pin;
-                }
-            };
             sender
-                .submit_pin(receiver_id, &pin)
+                .connect(receiver.local_addr())
                 .await
-                .expect("PIN 配对");
+                .expect("连接应当直接成功（无认证）");
             ids.push(receiver_id);
         }
 
@@ -115,7 +107,7 @@ async fn one_capture_feeds_three_receivers() {
     })
     .await;
 
-    let rates = outcome.expect("90 s 内必须完成三台配对与批量开流");
+    let rates = outcome.expect("90 s 内必须完成三台连接与批量开流");
 
     for (_receiver, accept) in receivers.iter() {
         accept.abort();
@@ -260,19 +252,12 @@ async fn one_capture_feeds_eight_receivers() {
 
     let outcome = tokio::time::timeout(Duration::from_secs(120), async {
         let mut ids = Vec::new();
-        for ((receiver, _), event_rx) in receivers.iter().zip(events.iter_mut()) {
+        for (receiver, _) in receivers.iter() {
             let receiver_id = receiver.info().id;
-            let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-            assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-            let pin = loop {
-                if let EngineEvent::DisplayPin { pin, .. } = event_rx.recv().await.unwrap() {
-                    break pin;
-                }
-            };
             sender
-                .submit_pin(receiver_id, &pin)
+                .connect(receiver.local_addr())
                 .await
-                .expect("PIN 配对");
+                .expect("连接应当直接成功（无认证）");
             ids.push(receiver_id);
         }
 
@@ -303,7 +288,7 @@ async fn one_capture_feeds_eight_receivers() {
         ids
     })
     .await;
-    let ids = outcome.expect("120 s 内必须完成 8 台配对与批量开流");
+    let ids = outcome.expect("120 s 内必须完成 8 台连接与批量开流");
 
     let audible: Vec<usize> = counters
         .iter()
@@ -398,7 +383,7 @@ fn delta_since(now: &[usize], before: &[usize]) -> Vec<usize> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_receiver_failure_does_not_stall_the_others() {
     const COUNT: usize = 4;
-    /// 被断开的接收端：取中间那台，避开「首台/末台」在配对与批量开流里的特殊位置。
+    /// 被断开的接收端：取中间那台，避开「首台/末台」在连接与批量开流里的特殊位置。
     const VICTIM: usize = 1;
     const WINDOW: Duration = Duration::from_secs(4);
     /// 4 s 窗口的绝对下限：满额 384000 的四分之一（= 96000）。
@@ -440,27 +425,15 @@ async fn one_receiver_failure_does_not_stall_the_others() {
         receivers.push((receiver, accept));
     }
 
-    let mut events: Vec<_> = receivers
-        .iter()
-        .map(|(receiver, _)| receiver.subscribe())
-        .collect();
-
-    // 配对 + 批量开流 + 两段采样。整体包一个总超时，避免任何一步挂死把测试变成吊死。
+    // 连接 + 批量开流 + 两段采样。整体包一个总超时，避免任何一步挂死把测试变成吊死。
     let outcome = tokio::time::timeout(Duration::from_secs(120), async {
         let mut ids = Vec::new();
-        for ((receiver, _), event_rx) in receivers.iter().zip(events.iter_mut()) {
+        for (receiver, _) in receivers.iter() {
             let receiver_id = receiver.info().id;
-            let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-            assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-            let pin = loop {
-                if let EngineEvent::DisplayPin { pin, .. } = event_rx.recv().await.unwrap() {
-                    break pin;
-                }
-            };
             sender
-                .submit_pin(receiver_id, &pin)
+                .connect(receiver.local_addr())
                 .await
-                .expect("PIN 配对");
+                .expect("连接应当直接成功（无认证）");
             ids.push(receiver_id);
         }
 
@@ -547,7 +520,7 @@ async fn one_receiver_failure_does_not_stall_the_others() {
         )
     })
     .await
-    .expect("120 s 内必须跑完四台配对、开流与两段采样");
+    .expect("120 s 内必须跑完四台连接、开流与两段采样");
 
     let (ids, first_window, second_window, sender_peer_ids, survivor_states, peers_settle_ms) =
         outcome;
@@ -744,31 +717,23 @@ fn mix_sender_config(dir: &Path, index: usize, frequency: f32, frame_ms: u32) ->
     config
 }
 
-/// 与接收端走完 PIN 配对，返回接收端 id。
-async fn pair_source(sender: &Arc<Engine>, receiver: &Arc<Engine>) -> NodeId {
+/// 连接接收端（无认证：一次 connect 即完成握手），返回接收端 id。
+async fn connect_source(sender: &Arc<Engine>, receiver: &Arc<Engine>) -> NodeId {
     let receiver_id = receiver.info().id;
-    let mut events = receiver.subscribe();
-    let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-            break pin;
-        }
-    };
     sender
-        .submit_pin(receiver_id, &pin)
+        .connect(receiver.local_addr())
         .await
-        .expect("PIN 配对");
+        .expect("连接应当直接成功（无认证）");
     // 用 `is_streaming()`（含 Degraded）而不是 `== Streaming`：8 路同时跑时个别路短时降级
     // 是正常现象，不该让等待超时变成假回归。
-    let paired = wait_for(Duration::from_secs(20), || {
+    let streaming = wait_for(Duration::from_secs(20), || {
         sender
             .peers()
             .iter()
             .any(|peer| peer.id == receiver_id && peer.state.is_streaming())
     })
     .await;
-    assert!(paired, "发送侧没有在 20 s 内进入 Streaming/Degraded");
+    assert!(streaming, "发送侧没有在 20 s 内进入 Streaming/Degraded");
     receiver_id
 }
 
@@ -875,7 +840,7 @@ async fn eight_sources_share_one_playout_device() {
             ))
             .await
             .expect("发送引擎");
-            pair_source(&sender, &engine).await;
+            connect_source(&sender, &engine).await;
             senders.push(sender);
         }
         // 逐路开流：第 0 路最先 → 它就是 owner。
@@ -946,7 +911,7 @@ async fn eight_sources_share_one_playout_device() {
         let extra = Engine::start(mix_sender_config(dir.path(), SOURCES, 900.0, frame_ms))
             .await
             .expect("第 9 路发送引擎");
-        pair_source(&extra, &engine).await;
+        connect_source(&extra, &engine).await;
         extra.start_send(receiver_id).await.expect("第 9 路开流");
         ninth = Some(extra);
         let errors = collect_errors(&mut events, Duration::from_secs(5)).await;
@@ -1035,7 +1000,7 @@ async fn eight_sources_share_one_playout_device() {
     .await;
 
     let (all, one, after_leaver, after_owner, opens_after_owner, frames, partial, errors) =
-        outcome.expect("180 s 内必须跑完 8 路配对、开流、退出与第 9 路拒绝");
+        outcome.expect("180 s 内必须跑完 8 路连接、开流、退出与第 9 路拒绝");
 
     for sender in &senders {
         sender.shutdown().await;

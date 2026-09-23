@@ -29,7 +29,7 @@ internal fun gainLabel(strings: UiStrings, gain: UInt?): String = when {
  * （`source?.name ?: receiverSourceNone`）—— 多台同时接入时会**少报**：
  * 用户看到的只有一台，实际两台都在放。宁可说"2 台设备（A）"也不要漏。
  *
- * 名字缺失时回落到短指纹（与 PairingStateMapper.displayName 同口径）。
+ * 名字缺失时回落到短指纹（与 PeerStateMapper.displayName 同口径）。
  */
 internal fun receiverSourceText(strings: UiStrings, peers: List<PeerUi>): String = when {
     peers.isEmpty() -> strings.receiverSourceNone

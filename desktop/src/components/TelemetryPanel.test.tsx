@@ -73,6 +73,14 @@ describe("sparklinePoints（曲线唯一的数学）", () => {
 });
 
 describe("遥测面板的关键路径", () => {
+  it("端到端尚未测量不应隐藏已测到的网络延迟与音频丢包率", () => {
+    panel({ telemetry: view({ e2eLatencyUs: 0, e2eP50Us: 0, e2eP95Us: 0, receiverReport: true }) });
+    expect(screen.getByText("12.0")).toBeTruthy();
+    expect(screen.getByText("0.15")).toBeTruthy();
+    expect(screen.getByText(t("quality.e2e_unavailable"))).toBeTruthy();
+    expect(screen.queryByText(t("tm.idle"))).toBeNull();
+  });
+
   it("没有会话（peers=0）→ 显示「未推流」提示，且数字格子给「—」而不是 0.0 ms 的假数字", () => {
     // 改坏：去掉 idle 判断 → 空闲时显示 "0.0 ms / 0 kbps"，看着像"链路完美"，
     // 而实际上根本没有会话（这正是遥测面板最容易骗人的地方）。

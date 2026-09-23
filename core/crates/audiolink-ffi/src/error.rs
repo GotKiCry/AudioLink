@@ -37,14 +37,14 @@ use audiolink_types::{AudioLinkError, ErrorCode};
 /// ```
 ///
 /// 所以字段改名为 `message_text`（Kotlin 侧自动转成 `messageText`）。**语义不变**：
-/// 契约 §1 里那一格还是「§11 错误码短名」（如 `NOT_PAIRED`），
-/// 完整人话串由 `Throwable.message` 给出（`1002 NOT_PAIRED: peer requires pin pairing`）。
+/// 契约 §1 里那一格还是「§11 错误码短名」（如 `NO_PEER`），
+/// 完整人话串由 `Throwable.message` 给出（`1002 NO_PEER: no such peer session`）。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, uniffi::Error)]
 pub enum FfiError {
     /// 统一失败形态。
     ///
-    /// - `code`：`docs/03-protocol.md` §11 错误码的数值形式（如 `1002` = `NOT_PAIRED`）；
-    /// - `message_text`：错误码短名（如 `NOT_PAIRED`），供日志 / UI 查找与展示；
+    /// - `code`：`docs/03-protocol.md` §11 错误码的数值形式（如 `1002` = `NO_PEER`）；
+    /// - `message_text`：错误码短名（如 `NO_PEER`），供日志 / UI 查找与展示；
     /// - `context`：出错细节（谁、在哪、什么值）。
     #[error("{code} {message_text}: {context}")]
     Failure {
@@ -118,17 +118,14 @@ mod tests {
 
     #[test]
     fn 内核错误转换保留错误码与上下文() {
-        let error = AudioLinkError::not_paired("peer requires pin pairing");
+        let error = AudioLinkError::no_peer("no such peer session");
         let ffi = FfiError::from_audio_link(&error);
 
         assert_eq!(ffi.code(), 1002);
-        assert_eq!(ffi.message_text(), "NOT_PAIRED");
-        assert_eq!(ffi.context(), "peer requires pin pairing");
+        assert_eq!(ffi.message_text(), "NO_PEER");
+        assert_eq!(ffi.context(), "no such peer session");
         // 展示形式同时带齐三要素（Kotlin 侧 `Throwable.message` 就是这一串）
-        assert_eq!(
-            ffi.to_string(),
-            "1002 NOT_PAIRED: peer requires pin pairing"
-        );
+        assert_eq!(ffi.to_string(), "1002 NO_PEER: no such peer session");
     }
 
     #[test]

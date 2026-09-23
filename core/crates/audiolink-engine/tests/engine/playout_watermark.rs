@@ -22,8 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use audiolink_audio::{NullPlayout, PlayoutSink, SyntheticCapture};
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::ErrorCode;
+use audiolink_engine::{Engine, EngineConfig, SessionState};
 
 /// 中位数（就地排序后取中点；样本数是几十个，不值得上分位库）。
 fn median(values: &mut [u32]) -> u32 {
@@ -66,18 +65,10 @@ async fn playout_watermark_does_not_back_up_over_a_short_run() {
     let sender_id = sender.info().id;
 
     let outcome = tokio::time::timeout(Duration::from_secs(90), async {
-        let mut events = receiver.subscribe();
-        let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-        assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-        let pin = loop {
-            if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-                break pin;
-            }
-        };
         sender
-            .submit_pin(receiver_id, &pin)
+            .connect(receiver.local_addr())
             .await
-            .expect("PIN 配对");
+            .expect("连接应当直接成功（无认证）");
         while !sender
             .peers()
             .iter()
@@ -109,7 +100,7 @@ async fn playout_watermark_does_not_back_up_over_a_short_run() {
     .await;
 
     let (samples, late_delta, underrun_delta) =
-        outcome.expect("90 s 内必须完成配对、开流与 20 s 水位采样");
+        outcome.expect("90 s 内必须完成连接、开流与 20 s 水位采样");
 
     sender.shutdown().await;
     accept.abort();

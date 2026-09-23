@@ -63,6 +63,41 @@ fn telemetry() -> Arc<Mutex<TelemetryAggregator>> {
 }
 
 #[test]
+fn idle_mixer_rebuilds_when_stream_frame_length_changes() {
+    let format = MixFormat {
+        sample_rate: 48_000,
+        channels: 2,
+    };
+    let mut slot = None;
+    let tight = mixer_slot_for_frame(&mut slot, format, 480).unwrap();
+    {
+        let mut mixer = tight.mixer.lock().unwrap();
+        mixer.add_source(1).unwrap();
+        mixer.push(1, &vec![0.25; 960]).unwrap();
+        let mut output = Vec::new();
+        mixer.mix_frame(&mut output);
+        assert_eq!(output.len(), 960);
+    }
+    assert!(mixer_slot_for_frame(&mut slot, format, 960).is_err());
+    tight.mixer.lock().unwrap().remove_source(1);
+
+    let standard = mixer_slot_for_frame(&mut slot, format, 960).unwrap();
+    assert!(!Arc::ptr_eq(&tight, &standard));
+    {
+        let mut mixer = standard.mixer.lock().unwrap();
+        mixer.add_source(2).unwrap();
+        mixer.push(2, &vec![0.25; 1_920]).unwrap();
+        let mut output = Vec::new();
+        mixer.mix_frame(&mut output);
+        assert_eq!(output.len(), 1_920);
+        mixer.remove_source(2);
+    }
+
+    let tight_again = mixer_slot_for_frame(&mut slot, format, 480).unwrap();
+    assert!(!Arc::ptr_eq(&standard, &tight_again));
+}
+
+#[test]
 fn missing_tick_advances_cursor_and_late_frame_is_never_played() {
     let (tx, rx) = crossbeam_channel::bounded(4);
     let stats = telemetry();
@@ -90,6 +125,69 @@ fn missing_tick_advances_cursor_and_late_frame_is_never_played() {
 }
 
 #[test]
+fn short_empty_gap_keeps_late_frame_detection() {
+    let (tx, rx) = crossbeam_channel::bounded(4);
+    let stats = telemetry();
+    let mut pending = None;
+    let mut expected = Some(7);
+    let mut gap = PlayoutGapState::default();
+    let now = Instant::now();
+
+    for beat in 0..2 {
+        assert!(matches!(
+            take_due_frame(&rx, &mut pending, &mut expected, &stats),
+            DueFrame::Missing
+        ));
+        let action = gap.on_missing(now + Duration::from_millis(beat * 20), true);
+        assert_eq!(action.raise_depth, beat == 0);
+        assert!(!action.resync_cursor);
+    }
+
+    tx.send(frame(7)).unwrap();
+    tx.send(frame(9)).unwrap();
+    assert!(matches!(
+        take_due_frame(&rx, &mut pending, &mut expected, &stats),
+        DueFrame::Ready(PlaybackFrame { seq: 9, .. })
+    ));
+    assert_eq!(stats.lock().unwrap().snapshot().late_drops, 1);
+}
+
+#[test]
+fn capture_pause_resyncs_playout_cursor_without_repeated_depth_raises() {
+    let (tx, rx) = crossbeam_channel::bounded(4);
+    let stats = telemetry();
+    let mut pending = None;
+    let mut expected = Some(7);
+    let mut gap = PlayoutGapState::default();
+    let now = Instant::now();
+
+    for beat in 0..=12 {
+        assert!(matches!(
+            take_due_frame(&rx, &mut pending, &mut expected, &stats),
+            DueFrame::Missing
+        ));
+        let action = gap.on_missing(now + Duration::from_millis(beat * 10), true);
+        assert_eq!(action.raise_depth, beat == 0);
+        if action.resync_cursor {
+            expected = None;
+        }
+    }
+
+    assert_eq!(expected, None);
+    tx.send(frame(7)).unwrap();
+    assert!(matches!(
+        take_due_frame(&rx, &mut pending, &mut expected, &stats),
+        DueFrame::Ready(PlaybackFrame { seq: 7, .. })
+    ));
+    gap.on_ready();
+    assert!(
+        gap.on_missing(now + Duration::from_secs(1), true)
+            .raise_depth
+    );
+    assert_eq!(stats.lock().unwrap().snapshot().late_drops, 0);
+}
+
+#[test]
 fn sequence_cursor_and_stale_detection_cross_u32_wrap() {
     let (tx, rx) = crossbeam_channel::bounded(4);
     let stats = telemetry();
@@ -108,6 +206,150 @@ fn sequence_cursor_and_stale_detection_cross_u32_wrap() {
     }
     assert_eq!(expected, Some(2));
     assert_eq!(stats.lock().unwrap().snapshot().late_drops, 1);
+}
+
+/// 帧长标志：10 ms 档的**所有**音频包类型都带 `FRAME_10MS`（bit2），其它档不带。
+///
+/// # 为什么按「调用点」逐条覆盖
+///
+/// 这条位的语义是「**该流**使用 10 ms 帧长」（见 `Flags::FRAME_10MS` 的文档），
+/// 它描述的是流而不是单个包。发送侧有三个组包点：主包、冗余副本、NACK 重传 —— 漏掉任何一个，
+/// 接收端的交叉校验就会对「本来正确的那一半包」报不一致，而重传包恰恰是丢包时唯一还在到的东西。
+/// 所以这里对三个点各断言一次，而不是只测「辅助函数返回了什么」。
+#[test]
+fn ten_ms_profile_sets_frame_flag_on_every_audio_copy() {
+    let tight = CodecConfig::m1_low_delay_tight();
+    let standard = CodecConfig::m1_default();
+
+    // 基础位：10 ms 档置位，其它档不置。
+    assert!(stream_flags(&tight).contains(Flags::FRAME_10MS));
+    assert!(!stream_flags(&standard).contains(Flags::FRAME_10MS));
+
+    // 三个组包点：主包 / 冗余副本 / NACK 重传。
+    // 主包与重传用基础位，副本再叠 `FEC_REDUNDANT`。
+    let primary = with_copy(stream_flags(&tight), AudioCopy::Primary);
+    let redundant = with_copy(stream_flags(&tight), AudioCopy::Redundant);
+    let retransmit = stream_flags(&tight);
+
+    for (name, flags) in [
+        ("主包", primary),
+        ("冗余副本", redundant),
+        ("NACK 重传", retransmit),
+    ] {
+        assert!(
+            flags.contains(Flags::FRAME_10MS),
+            "{name}在 10 ms 档必须带 FRAME_10MS —— 漏掉它会让接收端的交叉校验对正确的包报错"
+        );
+    }
+
+    // 冗余副本还要保住自己的位：叠加不能把 `FEC_REDUNDANT` 吃掉。
+    assert!(redundant.contains(Flags::FEC_REDUNDANT));
+    assert!(!primary.contains(Flags::FEC_REDUNDANT));
+
+    // 标准档：三个点都不带 `FRAME_10MS`。
+    for (name, flags) in [
+        (
+            "主包",
+            with_copy(stream_flags(&standard), AudioCopy::Primary),
+        ),
+        (
+            "冗余副本",
+            with_copy(stream_flags(&standard), AudioCopy::Redundant),
+        ),
+        ("NACK 重传", stream_flags(&standard)),
+    ] {
+        assert!(
+            !flags.contains(Flags::FRAME_10MS),
+            "{name}在标准档不该带 FRAME_10MS"
+        );
+    }
+}
+
+/// 接收侧交叉校验：位与有效帧长自洽时不计数，不符时**只计数**（不断流）。
+#[test]
+fn frame_flag_mismatch_is_counted_but_never_fatal() {
+    let codec = CodecConfig::m1_default();
+    let mut tight = StreamRxState::new(codec, 10).unwrap();
+    let mut standard = StreamRxState::new(codec, 20).unwrap();
+
+    // 10 ms 有效帧长：带位 == 自洽；不带位 == 不符。
+    assert!(tight.observe_frame_flag(Flags::FRAME_10MS));
+    assert_eq!(tight.flag_mismatches, 0);
+    assert!(!tight.observe_frame_flag(Flags::NONE));
+    assert_eq!(tight.flag_mismatches, 1, "不符必须留痕");
+    // 连来三个：计数累计，没有任何 panic / 提前返回。
+    let _ = tight.observe_frame_flag(Flags::NONE);
+    let _ = tight.observe_frame_flag(Flags::NONE);
+    assert_eq!(tight.flag_mismatches, 3);
+
+    // 20 ms 有效帧长：不带位 == 自洽；带位 == 不符。
+    assert!(standard.observe_frame_flag(Flags::NONE));
+    assert_eq!(standard.flag_mismatches, 0);
+    assert!(!standard.observe_frame_flag(Flags::FRAME_10MS));
+    assert_eq!(standard.flag_mismatches, 1);
+
+    // 副本位不该干扰帧长判定（`contains` 是「全部包含」语义）。
+    assert!(standard.observe_frame_flag(Flags::FEC_REDUNDANT));
+    assert_eq!(standard.flag_mismatches, 1);
+}
+
+/// 协商选取：第一个 `Opus` 项的帧长说了算；非法 / 非 Opus 一律回退本地档。
+#[test]
+fn negotiated_frame_ms_picks_the_first_opus_pref_or_falls_back() {
+    let local = 20u32;
+    let opus = |frame_ms: u8| CodecPref::Opus {
+        frame_ms,
+        bitrate_kbps: 160,
+        fec: false,
+        vbr: true,
+    };
+
+    // 合法值逐个认。
+    for wanted in [10u8, 20, 40, 60] {
+        assert_eq!(
+            negotiated_frame_ms(&[opus(wanted)], local),
+            u32::from(wanted)
+        );
+    }
+    // 取**第一个** `Opus` 项（prefs 按优先级降序）。
+    assert_eq!(negotiated_frame_ms(&[opus(10), opus(20)], local), 10);
+    // 非 Opus 项跳过，继续找后面的 Opus。
+    assert_eq!(
+        negotiated_frame_ms(&[CodecPref::Pcm16, opus(40)], local),
+        40
+    );
+    // 没有 Opus 项 → 本地档。
+    assert_eq!(negotiated_frame_ms(&[CodecPref::Pcm16], local), local);
+    assert_eq!(negotiated_frame_ms(&[], local), local);
+    // 非法帧长 → 本地档（**不**继续往后找：首选非法说明协商前提已坏）。
+    assert_eq!(negotiated_frame_ms(&[opus(15)], local), local);
+    assert_eq!(negotiated_frame_ms(&[opus(15), opus(10)], local), local);
+    assert_eq!(negotiated_frame_ms(&[opus(0)], local), local);
+}
+
+/// 换档：只有帧长真的变了才重建，且派生量一起换（漏一个就是「半换档」）。
+#[test]
+fn retarget_rebuilds_every_frame_ms_derived_value() {
+    let codec = CodecConfig::m1_default();
+    let mut state = StreamRxState::new(codec, 20).unwrap();
+    assert_eq!(state.frame_ms, 20);
+    assert_eq!(state.frame_us, 20_000);
+    assert_eq!(state.frame_period, Duration::from_millis(20));
+
+    state.retarget(codec, 10).unwrap();
+    assert_eq!(state.frame_ms, 10);
+    assert_eq!(state.frame_us, 10_000, "自适应抖动的换算基准必须跟着换");
+    assert_eq!(state.frame_period, Duration::from_millis(10));
+
+    // 同帧长再调一次是幂等的（协商重复到达不该白重建解码器）。
+    state.retarget(codec, 10).unwrap();
+    assert_eq!(state.frame_ms, 10);
+
+    // 10 → 20：反向同样要换全。
+    state.retarget(codec, 20).unwrap();
+    assert_eq!(state.frame_ms, 20);
+    assert_eq!(state.frame_us, 20_000);
+    assert_eq!(state.frame_period, Duration::from_millis(20));
 }
 
 #[test]
@@ -374,7 +616,7 @@ fn redundant_copy_recovers_a_missing_primary_without_duplicate_decode() {
     let packets = encoded_packets(4);
     let now = Instant::now();
     let mut reorder = PacketReorderBuffer::new(Duration::from_millis(20));
-    reorder.set_target_frames(3);
+    // 默认低延迟档也必须接住紧随下一主包到达的副本，不能靠事先升到 60 ms 才修复。
     let mut receiver = AudioReceiver::new(CodecConfig::m1_default()).unwrap();
     let mut output = Vec::new();
     let mut total = ReceiveReport::default();
@@ -403,6 +645,379 @@ fn redundant_copy_recovers_a_missing_primary_without_duplicate_decode() {
     assert_eq!(
         output.iter().map(|frame| frame.seq).collect::<Vec<_>>(),
         [0, 1, 2, 3]
+    );
+}
+
+/// 直接驱动生产播放循环：按已写出的拍数注入帧，不依赖网络/线程间 sleep 的相对时序。
+fn scripted_playout(
+    after_write: impl Fn(usize, &Sender<PlaybackFrame>) + Send + Sync + 'static,
+    writes: usize,
+    local_gain: Arc<Mutex<GainState>>,
+) -> (Vec<Vec<f32>>, StreamStats) {
+    scripted_playout_at_depth(after_write, writes, local_gain, 1)
+}
+
+fn scripted_playout_at_depth(
+    after_write: impl Fn(usize, &Sender<PlaybackFrame>) + Send + Sync + 'static,
+    writes: usize,
+    local_gain: Arc<Mutex<GainState>>,
+    initial_depth: usize,
+) -> (Vec<Vec<f32>>, StreamStats) {
+    struct ScriptedSink {
+        inner: audiolink_audio::NullPlayout,
+        output: Arc<Mutex<Vec<Vec<f32>>>>,
+        after_write: Arc<dyn Fn(usize) + Send + Sync>,
+    }
+    impl PlayoutSink for ScriptedSink {
+        fn device_format(&self) -> audiolink_audio::DeviceFormat {
+            self.inner.device_format()
+        }
+        fn requested_buffer_ms(&self) -> u32 {
+            self.inner.requested_buffer_ms()
+        }
+        fn effective_buffer_ms(&self) -> u32 {
+            self.inner.effective_buffer_ms()
+        }
+        fn buffered_frames(&mut self) -> u32 {
+            self.inner.buffered_frames()
+        }
+        fn write(&mut self, samples: &[f32]) -> Result<(), AudioError> {
+            self.inner.write(samples)?;
+            let count = {
+                let mut output = self.output.lock().unwrap();
+                output.push(samples.to_vec());
+                output.len()
+            };
+            (self.after_write)(count);
+            Ok(())
+        }
+        fn stats(&self) -> audiolink_audio::PlayoutStats {
+            self.inner.stats()
+        }
+        fn stop(&mut self) {
+            self.inner.stop();
+        }
+        fn backend_name(&self) -> &'static str {
+            "scripted-null"
+        }
+    }
+    let config = CodecConfig::m1_default();
+    let (tx, rx) = crossbeam_channel::bounded(32);
+    for seq in 0..initial_depth as u32 {
+        tx.send(PlaybackFrame {
+            seq,
+            samples: vec![0.4; config.interleaved_frame()],
+        })
+        .unwrap();
+    }
+    let stop = new_stop_flag();
+    let script_stop = stop.clone();
+    let script = Arc::new(move |count| {
+        after_write(count, &tx);
+        if count >= writes {
+            script_stop.store(true, Ordering::Relaxed);
+        }
+    });
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let factory = || -> Result<Box<dyn PlayoutSink>, AudioError> {
+        Ok(Box::new(ScriptedSink {
+            inner: audiolink_audio::NullPlayout::new(60),
+            output: output.clone(),
+            after_write: script.clone(),
+        }))
+    };
+    let stats = telemetry();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let mixer = Arc::new(Mutex::new(PcmMixer::new(
+        MixFormat {
+            sample_rate: 48_000,
+            channels: 2,
+        },
+        config.frame_samples(),
+        8,
+    )));
+    playout_main(
+        &factory,
+        20,
+        config.interleaved_frame(),
+        stats.clone(),
+        None,
+        stop,
+        Arc::new(AtomicUsize::new(initial_depth)),
+        Arc::new(Mutex::new(PlayoutSync::default())),
+        broadcast::channel(16).0,
+        NodeId([0; 32]),
+        Arc::new(Mutex::new(GainState::new(1_000))),
+        local_gain,
+        None,
+        1,
+        Arc::new(PlayoutMixSlot {
+            mixer,
+            frame_samples: config.frame_samples(),
+            owner: AtomicU32::new(0),
+        }),
+        rx,
+        ready_tx,
+    );
+    ready_rx.recv().unwrap().unwrap();
+    let recorded = output.lock().unwrap().clone();
+    let snapshot = stats.lock().unwrap().snapshot();
+    (recorded, snapshot)
+}
+
+#[test]
+fn larger_buffer_preserves_audio_during_repeated_eighty_ms_delivery_bursts() {
+    let run = |depth| {
+        scripted_playout_at_depth(
+            move |count, tx| {
+                if count % 4 == 0 {
+                    for offset in 0..4 {
+                        tx.send(PlaybackFrame {
+                            seq: (depth + count - 4 + offset) as u32,
+                            samples: vec![0.4; CodecConfig::m1_default().interleaved_frame()],
+                        })
+                        .unwrap();
+                    }
+                }
+            },
+            16,
+            Arc::new(Mutex::new(GainState::new(1_000))),
+            depth,
+        )
+    };
+    let (_, shallow) = run(3);
+    assert!(
+        shallow.underruns > 0,
+        "旧 60 ms 上限不能吸收 80 ms 成批到达"
+    );
+    let (output, protected) = run(6);
+    assert_eq!(protected.underruns, 0);
+    assert!(
+        output
+            .iter()
+            .flatten()
+            .all(|sample| (*sample - 0.4).abs() < 1e-6)
+    );
+}
+
+#[test]
+fn android_backlog_feedback_reduces_total_queue_without_output_underruns() {
+    // 运行真实播放循环，模拟独立按 48 kHz 消费的 Android 输出链。
+    // 到包由每拍的反馈读取驱动，不依赖 write 次数，因此停写一拍不会让声源也停止。
+    #[derive(Default)]
+    struct Model {
+        ticks: u32,
+        output_frames: u32,
+        min_total: u32,
+        first_total: u32,
+        last_total: u32,
+        device_underruns: u32,
+    }
+    struct AndroidSink {
+        inner: audiolink_audio::NullPlayout,
+        model: Arc<Mutex<Model>>,
+        tx: Sender<PlaybackFrame>,
+        stop: Arc<AtomicBool>,
+    }
+    impl PlayoutSink for AndroidSink {
+        fn device_format(&self) -> audiolink_audio::DeviceFormat {
+            self.inner.device_format()
+        }
+        fn requested_buffer_ms(&self) -> u32 {
+            30
+        }
+        fn effective_buffer_ms(&self) -> u32 {
+            80
+        }
+        fn buffered_frames(&mut self) -> u32 {
+            self.model.lock().unwrap().output_frames
+        }
+        fn buffer_state(&mut self) -> Option<audiolink_audio::PlayoutBufferState> {
+            let mut model = self.model.lock().unwrap();
+            if model.output_frames < 960 {
+                model.device_underruns += 1;
+            }
+            model.output_frames = model.output_frames.saturating_sub(960);
+            self.tx
+                .try_send(PlaybackFrame {
+                    seq: 8 + model.ticks,
+                    samples: vec![0.4; 1920],
+                })
+                .unwrap();
+            model.ticks += 1;
+            let total = self.tx.len() as u32 * 960 + model.output_frames;
+            if model.ticks == 1 {
+                model.first_total = total;
+                model.min_total = total;
+            }
+            model.min_total = model.min_total.min(total);
+            model.last_total = total;
+            if model.ticks >= 300 {
+                self.stop.store(true, Ordering::Relaxed);
+            }
+            Some(audiolink_audio::PlayoutBufferState {
+                queued_frames: model.output_frames,
+                target_frames: 1440,
+            })
+        }
+        fn write(&mut self, samples: &[f32]) -> Result<(), AudioError> {
+            // 常量声源不应在回收边界生成静音或尖峰。
+            assert!(samples.iter().all(|value| (*value - 0.4).abs() < 1e-6));
+            self.model.lock().unwrap().output_frames += (samples.len() / 2) as u32;
+            self.inner.write(samples)
+        }
+        fn stats(&self) -> audiolink_audio::PlayoutStats {
+            self.inner.stats()
+        }
+        fn stop(&mut self) {
+            self.inner.stop();
+        }
+        fn backend_name(&self) -> &'static str {
+            "simulated-android"
+        }
+    }
+    let (tx, rx) = crossbeam_channel::bounded(32);
+    for seq in 0..8 {
+        tx.send(PlaybackFrame {
+            seq,
+            samples: vec![0.4; 1920],
+        })
+        .unwrap();
+    }
+    let model = Arc::new(Mutex::new(Model {
+        output_frames: 3840,
+        ..Model::default()
+    }));
+    let stop = new_stop_flag();
+    let factory = || -> Result<Box<dyn PlayoutSink>, AudioError> {
+        Ok(Box::new(AndroidSink {
+            inner: audiolink_audio::NullPlayout::new(80),
+            model: model.clone(),
+            tx: tx.clone(),
+            stop: stop.clone(),
+        }))
+    };
+    let stats = telemetry();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let mixer = Arc::new(Mutex::new(PcmMixer::new(
+        MixFormat {
+            sample_rate: 48000,
+            channels: 2,
+        },
+        960,
+        8,
+    )));
+    playout_main(
+        &factory,
+        20,
+        1920,
+        stats.clone(),
+        None,
+        stop.clone(),
+        Arc::new(AtomicUsize::new(1)),
+        Arc::new(Mutex::new(PlayoutSync::default())),
+        broadcast::channel(16).0,
+        NodeId([0; 32]),
+        Arc::new(Mutex::new(GainState::new(1000))),
+        Arc::new(Mutex::new(GainState::new(1000))),
+        None,
+        1,
+        Arc::new(PlayoutMixSlot {
+            mixer,
+            frame_samples: 960,
+            owner: AtomicU32::new(0),
+        }),
+        rx,
+        ready_tx,
+    );
+    ready_rx.recv().unwrap().unwrap();
+    let model = model.lock().unwrap();
+    eprintln!(
+        "simulated Android total queue: {} -> {} ms; min {} ms; device underruns {}",
+        model.first_total / 48,
+        model.last_total / 48,
+        model.min_total / 48,
+        model.device_underruns
+    );
+    assert!(model.first_total >= 200 * 48);
+    assert!(model.last_total <= 70 * 48, "水位不得只在队列间搬家");
+    assert!(model.min_total >= 30 * 48, "不能抽干输出链");
+    assert_eq!(model.device_underruns, 0);
+    let stats = stats.lock().unwrap();
+    assert_eq!(stats.snapshot().underruns, 0);
+    assert_eq!(
+        stats.snapshot().late_drops,
+        0,
+        "主动回收不得制造接收序号缺口"
+    );
+    assert!(stats.depth_drops() > 0);
+}
+
+#[test]
+fn wifi_gap_and_refill_are_concealed_at_the_playback_deadline() {
+    let config = CodecConfig::m1_default();
+    let (output, stats) = scripted_playout(
+        move |count, tx| {
+            // 第一拍之后断流一拍；第二拍之后恢复，第三拍需 Hold 以补足两帧水位。
+            if count == 2 || count == 3 {
+                tx.send(PlaybackFrame {
+                    seq: count as u32,
+                    samples: vec![-0.4; config.interleaved_frame()],
+                })
+                .unwrap();
+            }
+        },
+        4,
+        Arc::new(Mutex::new(GainState::new(1_000))),
+    );
+    assert_eq!(stats.underruns, 1, "主动补水不能被当作新的网络欠载");
+    assert!(
+        rms(&output[1]) > 0.1,
+        "后续包尚未到达时就必须掩盖，不能硬静音"
+    );
+    assert!(rms(&output[2]) > 0.1, "重缓冲等待也不能硬静音");
+    assert!(
+        (output[3][0] - output[2].last().unwrap()).abs() < 0.02,
+        "恢复时必须从实际已播放的掩盖尾部交叉淡入"
+    );
+    assert_eq!(*output[3].last().unwrap(), -0.4, "缓冲补齐后继续播放真实帧");
+}
+
+#[test]
+fn prolonged_wifi_gap_fades_out_instead_of_looping_old_audio() {
+    let (output, _) = scripted_playout(|_, _| {}, 10, Arc::new(Mutex::new(GainState::new(1_000))));
+    let levels: Vec<_> = output.iter().map(|samples| rms(samples)).collect();
+    assert!(levels[1] > 0.1, "短断流必须先掩盖：{levels:?}");
+    assert!(
+        levels.windows(2).all(|pair| pair[1] <= pair[0]),
+        "连续断流必须逐步淡出：{levels:?}"
+    );
+    assert!(
+        levels[7..].iter().all(|level| *level < 1e-6),
+        "120 ms 后不再重复旧音频：{levels:?}"
+    );
+}
+
+#[test]
+fn muting_during_wifi_gap_also_mutes_concealed_audio() {
+    let gain = Arc::new(Mutex::new(GainState::new(1_000)));
+    let script_gain = gain.clone();
+    let (output, _) = scripted_playout(
+        move |count, _| {
+            if count == 2 {
+                script_gain.lock().unwrap().set_target(0, 0, 20).unwrap();
+            }
+        },
+        4,
+        gain,
+    );
+    assert!(rms(&output[1]) > 0.1, "静音前应先有掩盖音频");
+    assert!(
+        output[2..]
+            .iter()
+            .flatten()
+            .all(|sample| sample.abs() < 1e-6),
+        "欠载期间音量控制也必须生效，不能重播静音前的音量"
     );
 }
 

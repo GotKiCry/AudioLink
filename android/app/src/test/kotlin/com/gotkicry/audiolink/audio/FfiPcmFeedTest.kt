@@ -3,6 +3,7 @@ package com.gotkicry.audiolink.audio
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.gotkicry.audiolink.core.PcmBufferState
 
 /**
  * [FfiPcmFeed] 的 JVM 测试。
@@ -28,6 +29,17 @@ class FfiPcmFeedTest {
         val out = FloatArray(samples)
         assertEquals("期望能读满", samples, ring.readInto(out))
         return out
+    }
+
+    @Test
+    fun feedbackIncludesRingAndPendingOutputWithoutChangingDeviceTarget() {
+        val ring = PcmRingBuffer(2880, CHANNELS)
+        val feed = FfiPcmFeed(ring, outputBufferState = { PcmBufferState(1920u, 1440u) })
+        feed.feedPcm(interleaved(960), 960)
+        assertEquals(PcmBufferState(2880u, 1440u), feed.playoutBufferState())
+        ring.readInto(FloatArray(960))
+        assertEquals(PcmBufferState(2400u, 1440u), feed.playoutBufferState())
+        assertEquals(null, FfiPcmFeed(ring).playoutBufferState())
     }
 
     @Test

@@ -189,10 +189,13 @@ jobs:
           keyAlias=$ANDROID_KEY_ALIAS
           keyPassword=$ANDROID_KEY_PASSWORD
           EOF
-            ./gradlew assembleRelease --no-daemon
+            # -PskipRust=true：本 job 上面已用 cargo ndk 编好 .so（release、双 ABI），Gradle 里挂的
+            # buildRustCore 再编一遍纯属浪费 runner 时间；runner 是干净工作区，也没有需要清理的
+            # native 中间产物缓存（跳过的是任务挂接，.so 同步由上面的 cargo ndk 负责）。
+            ./gradlew assembleRelease --no-daemon -PskipRust=true
           else
             echo "::warning::未配置 Android keystore：本次只出 debug APK（不是发布物）"
-            ./gradlew assembleDebug --no-daemon
+            ./gradlew assembleDebug --no-daemon -PskipRust=true
           fi
       # 第三方声明里的 Android 一栏在这里采集（只有本 job 有 Gradle）。
       # 采集脚本读「依赖树报告 + Gradle 缓存里的 POM」——CI 的缓存在 ~/.gradle（不是本地的 .gradle-home）。

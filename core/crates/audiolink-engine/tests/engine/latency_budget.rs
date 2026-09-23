@@ -14,8 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use audiolink_audio::{NullPlayout, PlayoutSink, SyntheticCapture};
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, MeasurementTap, SessionState};
-use audiolink_types::ErrorCode;
+use audiolink_engine::{Engine, EngineConfig, MeasurementTap, SessionState};
 
 /// 回环下的回归上限（µs）。
 ///
@@ -54,23 +53,15 @@ async fn loopback_end_to_end_latency_stays_within_budget() {
 
     let receiver = Engine::start(recv_config).await.expect("接收引擎");
     let _accept = receiver.spawn_accept_loop();
-    let mut events = receiver.subscribe();
     let receiver_id = receiver.info().id;
 
     let sender = Engine::start(send_config).await.expect("发送引擎");
 
-    // 首次连接必须先走 PIN 配对（§5）。
-    let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-            break pin;
-        }
-    };
+    // 无认证：一次 connect 即完成握手。
     sender
-        .submit_pin(receiver_id, &pin)
+        .connect(receiver.local_addr())
         .await
-        .expect("PIN 配对");
+        .expect("连接应当直接成功（无认证）");
 
     let deadline = Instant::now() + Duration::from_secs(15);
     while !sender

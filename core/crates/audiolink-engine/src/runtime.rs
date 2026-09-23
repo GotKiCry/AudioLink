@@ -50,7 +50,7 @@ use audiolink_audio::{
     AudioError, CONCEAL_FADE_MS, CaptureSource, CodecConfig, FrameChunker, OpusDecoder,
     OpusEncoder, PcmConcealer, PlayoutSink, SampleStats,
 };
-use audiolink_identity::{IdentityError, NodeIdentity, PIN_TTL, TrustEntry, TrustStore};
+use audiolink_identity::{IdentityError, NodeIdentity};
 use audiolink_net::{
     AudioLinkEndpoint, ClockEstimate, Connection, ControlChannel, EndpointConfig, NetError,
 };
@@ -77,10 +77,11 @@ use crate::payload::{
     CloseStreamPayload, CodecPref, GroupCreatePayload, GroupEpochPayload, GroupJoinPayload,
     GroupLeavePayload, OpenStreamAckPayload, OpenStreamPayload, SetGainPayload, SourceKind,
 };
+use crate::runtime::backlog::{BacklogAction, PlayoutBacklog};
 use crate::runtime::jitter::{
-    AdaptiveJitterDepth, EncodedAudioPacket, INITIAL_TARGET_FRAMES, MAX_TARGET_FRAMES,
-    MIN_TARGET_FRAMES, PacketReorderBuffer, PlayoutDepthAction, PlayoutDepthState, ReorderBatch,
-    publish_target,
+    AdaptiveJitterDepth, EncodedAudioPacket, INITIAL_TARGET_MS, MAX_TARGET_MS, MIN_TARGET_MS,
+    PacketReorderBuffer, PlayoutDepthAction, PlayoutDepthState, ReorderBatch, frames_for_ms,
+    publish_target, rescale_depth_frames,
 };
 use crate::runtime::nack::{
     MissingTracker, NACK_MAX_RTT_US, NACK_RETRANSMIT_GRACE, RetransmitBuffer,
@@ -124,30 +125,8 @@ const ENCODE_QUEUE_FRAMES: usize = 8;
 
 /// §5 握手的**非配对阶段**死线：10 s（[`EngineConfig::handshake_timeout`] 的默认值）。
 ///
-/// 对端要是连 `HELLO` / `AUTH_RESPONSE` 都发不全，就不值得占着一条会话 —— 半开连接必须能被回收。
+/// 对端要是连 `HELLO` 都发不全，就不值得占着一条会话 —— 半开连接必须能被回收。
 pub const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// 等人工输入 PIN 的窗口余量（秒）。
-///
-/// 作用是让「PIN 到期」与「连接被抽掉」**不在同一瞬间发生**：否则用户看到的会是
-/// `1002 NOT_PAIRED（unknown peer）`，而不是「PIN 已过期」。前者会让人以为配对功能坏了。
-const PIN_WAIT_MARGIN_SECS: u64 = 15;
-
-/// 等人工输入 PIN 的窗口：§5 的 PIN 有效期 + 余量（[`EngineConfig::pin_wait_timeout`] 的默认值）。
-///
-/// # 为什么是 60 s 而不是 10 s（task-10 真机阻断项）
-///
-/// `docs/03-protocol.md` §5 规定 PIN **60 s 有效、最多 5 次尝试**，而「把手机屏幕上的 6 位数字
-/// 读到 PC 上敲进去」是**唯一的真实配对流程**（FR-17 手工配对）。原来的 10 s 握手死线对这段
-/// 人工流程必然超时 —— 真机现场实测：device-link 连上真机、手机上 PIN 显示出来之后 30–40 s
-/// 才提交，拿到 `1002 NOT_PAIRED（unknown peer）`（会话已被死线回收，见 `target/evidence/`
-/// 下 device-link 的真机记录）。
-///
-/// 所以：**进入配对等待时把死线顺延到本值**（从顺延那一刻起算），配对窗口的权威留在
-/// [`audiolink_identity::PinGate`]（60 s 过期 / 5 次锁定 / 锁 5 min），引擎**不再另立一套语义**。
-/// 非配对阶段仍按 [`DEFAULT_HANDSHAKE_TIMEOUT`] 回收 —— 安全底线没有被放宽。
-pub const DEFAULT_PIN_WAIT_TIMEOUT: Duration =
-    Duration::from_secs(PIN_TTL.as_secs() + PIN_WAIT_MARGIN_SECS);
 
 /// QUIC 空闲超时的默认值（[`EngineConfig::idle_timeout`]）。
 ///
@@ -220,8 +199,6 @@ pub struct EngineConfig {
     pub node_name: String,
     /// 身份材料目录（`cert.pem` / `key.pem`）。
     pub identity_dir: std::path::PathBuf,
-    /// 信任库路径（`trust.json`）。
-    pub trust_store_path: std::path::PathBuf,
     /// QUIC 监听地址（`0.0.0.0:DEFAULT_QUIC_PORT` 即全网卡）。
     pub listen: std::net::SocketAddr,
     /// 编码参数（默认 20 ms / 160 kbps / VBR / 48 kHz）。
@@ -232,15 +209,10 @@ pub struct EngineConfig {
     pub playout: Option<PlayoutFactory>,
     /// 端到端测量探针；仅本机验收使用（见 [`MeasurementTap`] 的文档 —— 跨机不适用）。
     pub measurement: Option<Arc<MeasurementTap>>,
-    /// §5 握手的**非配对阶段**死线；默认 [`DEFAULT_HANDSHAKE_TIMEOUT`]（10 s）。
+    /// §5 握手死线；默认 [`DEFAULT_HANDSHAKE_TIMEOUT`]（10 s）。
     ///
     /// 测试可以调小它（真实 I/O 下 tokio 的时钟暂停不可靠，改常量比 pause/advance 更诚实）。
     pub handshake_timeout: Duration,
-    /// 等人工输入 PIN 的窗口；默认 [`DEFAULT_PIN_WAIT_TIMEOUT`]（PIN 有效期 60 s + 15 s 余量）。
-    ///
-    /// 进入配对等待（发出 / 收到 `PAIR_REQUIRED`）后，握手死线顺延到本值**从此刻起算**
-    /// —— 理由见 [`DEFAULT_PIN_WAIT_TIMEOUT`] 的文档。
-    pub pin_wait_timeout: Duration,
     /// §13 能力协商：本端声明的能力位图；默认 [`audiolink_types::Capabilities::CURRENT`]。
     ///
     /// **为什么要可注入**：`CURRENT` 说的是「**内核**能做到什么」，而真实设备还有平台差异 ——
@@ -259,15 +231,29 @@ pub struct EngineConfig {
     /// 拔网期间没有任何包能出去，插回后链路要等**下一次保活探测**才被重新点亮 ——
     /// 恢复延迟的上界就是它。`Duration::ZERO` = 关闭保活。
     pub keep_alive: Duration,
+    /// **仅测试用**：覆盖 `OPEN_STREAM.codec_prefs` 里报出的帧长。
+    ///
+    /// # 为什么要有它
+    ///
+    /// 生产路径上 `codec_prefs` 恒等于本端 `codec`（见 `open_stream_payload`），所以
+    /// 「对端报了一个**非法**帧长」这个分支在真链路上永远走不到 —— 但它正是版本错配
+    /// （对端比我们新）与载荷损坏时的真实处境，必须被测到。
+    ///
+    /// 只覆盖**报出去的值**，不影响本端实际编码帧长（采集与编码仍按 `codec`）——
+    /// 那样才构成「发送端声称 15 ms、实际 20 ms」这种最坏输入。
+    ///
+    /// 用 `#[doc(hidden)]` + 单独命名而不是 `cfg(test)`：集成测试是**另一个 crate**，
+    /// `cfg(test)` 的字段在那里看不见。它不出现在任何文档与契约里，生产调用点不设置即为 `None`。
+    #[doc(hidden)]
+    pub test_advertised_frame_ms: Option<u8>,
 }
 
 impl EngineConfig {
-    /// 常用默认值（身份与信任库都落在 `dir` 下，监听全网卡默认端口）。
+    /// 常用默认值（身份材料落在 `dir` 下，监听全网卡默认端口）。
     pub fn new(node_name: impl Into<String>, dir: impl Into<std::path::PathBuf>) -> Self {
         let dir = dir.into();
         Self {
             node_name: node_name.into(),
-            trust_store_path: dir.join("trust.json"),
             identity_dir: dir,
             listen: std::net::SocketAddr::from(([0, 0, 0, 0], DEFAULT_QUIC_PORT)),
             codec: CodecConfig::m1_default(),
@@ -275,10 +261,10 @@ impl EngineConfig {
             playout: None,
             measurement: None,
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
-            pin_wait_timeout: DEFAULT_PIN_WAIT_TIMEOUT,
             capabilities: audiolink_types::Capabilities::CURRENT,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
             keep_alive: DEFAULT_KEEP_ALIVE,
+            test_advertised_frame_ms: None,
         }
     }
 
@@ -286,6 +272,21 @@ impl EngineConfig {
     #[must_use]
     pub const fn with_capabilities(mut self, capabilities: u32) -> Self {
         self.capabilities = capabilities;
+        self
+    }
+
+    /// 覆盖编码档位（标准 20 ms / 低延迟 10 ms，见 [`CodecConfig`] 的两个预设）。
+    ///
+    /// 这是**发送方向**的档位：本机推流时用它编码，`OPEN_STREAM.codec_prefs` 里报出的也是它。
+    /// **接收方向**已经按帧长联动跟随发送端（见 [`Engine::negotiated_frame_ms`]）——
+    /// 两端不同档也能正常工作，本地档只决定「本机作为发送端时用什么帧长」。
+    ///
+    /// 为什么做成 builder 而不是让调用方直接改字段：字段是 `pub`，直接赋值当然也行，
+    /// 但「档位」是与 `with_capabilities` / `with_link_timeouts` 同级的**策略选择**，
+    /// 用同一个形状表达，调用点（FFI 层）读起来才知道自己选的是档位而不是随手塞了个参数。
+    #[must_use]
+    pub const fn with_codec(mut self, codec: CodecConfig) -> Self {
+        self.codec = codec;
         self
     }
 
@@ -313,9 +314,9 @@ fn quic_ms(value: Duration) -> u32 {
 /// 对端会话快照（UI 与验收报告的数据源）。
 #[derive(Debug, Clone)]
 pub struct PeerStatus {
-    /// 对端身份（证书指纹）—— 信任判定的唯一依据。
+    /// 对端身份（证书指纹）。
     pub id: NodeId,
-    /// 对端展示名（对端自报，**不参与信任判定**）。
+    /// 对端展示名（对端自报，**不参与身份判定**）。
     pub name: String,
     /// 对端地址。
     pub addr: std::net::SocketAddr,
@@ -323,8 +324,6 @@ pub struct PeerStatus {
     pub initiated_locally: bool,
     /// 会话状态。
     pub state: SessionState,
-    /// 是否已在信任库中。
-    pub trusted: bool,
     /// 遥测快照。
     pub stats: StreamStats,
     /// §13 能力协商结果；`None` = 还没走完能力交换。
@@ -396,33 +395,6 @@ pub enum EngineEvent {
         /// 断开原因。
         reason: String,
     },
-    /// 本机是主机：请把 6 位码显示给用户（接收端要照着念）。
-    DisplayPin {
-        /// 申请配对的对端。
-        from: NodeId,
-        /// 对端展示名。
-        name: String,
-        /// 6 位码。
-        pin: String,
-        /// 剩余尝试次数。
-        remaining_attempts: u8,
-    },
-    /// 本机是接收端：需要用户输入主机屏幕上显示的 6 位码。
-    PinNeeded {
-        /// 对端身份。
-        id: NodeId,
-        /// 对端展示名。
-        name: String,
-    },
-    /// 配对结果。
-    PairCompleted {
-        /// 对端身份。
-        id: NodeId,
-        /// 是否成功。
-        ok: bool,
-        /// 详情（失败时含剩余次数）。
-        reason: String,
-    },
     /// 遥测（约 1 Hz 产出）。
     Telemetry(Box<StreamStats>),
     /// §8 自适应码率生效（降级 / 恢复）—— 验收「自适应生效」就看这条时间线。
@@ -490,8 +462,6 @@ enum SessionCommand {
         /// 关闭原因。
         reason: String,
     },
-    /// 提交 PIN（接收端）。
-    SubmitPin(String),
     /// 关闭整个会话。
     Shutdown,
     /// §7：向对端广播组基准（发送方 → `GROUP_EPOCH`）。
@@ -529,12 +499,9 @@ struct PeerSession {
     /// §6 的时钟探测状态（估计器 + 未决探测表 + 计数 + RTT 环）。**每个对端一份**。
     clock: Mutex<ClockProbeState>,
     /// 对端最近一次 1 Hz `STREAM_STATS` 快照（**对端视角**）。按 `peer` 隔离，多对端不串流。
-    peer_stats: Mutex<Option<StreamStats>>,
+    peer_stats: Mutex<Option<(StreamStats, Instant)>>,
     commands: mpsc::Sender<SessionCommand>,
-    trusted: AtomicBool,
     state: Mutex<SessionState>,
-    /// 会话任务在控制帧写出之前更新；UI 查询不依赖可丢失的广播事件。
-    pairing: Mutex<PairingState>,
     /// M4 观测：最近一帧的（到达毫秒 << 32 | 编号）。一次 64 位原子写，读者不会读到撕裂组合。
     rx_axis: Arc<AtomicU64>,
     /// FR-27：对端最近一次「有任何包到达」的本机单调时刻（µs）。0 = 还没听到过。
@@ -557,12 +524,11 @@ struct PeerSession {
     /// 而那一分支原先只在 `playback` 已存在时才 `set_schedule`，否则静默跳过 —— 排播从未生效，
     /// 接收端退回本地游标，组内同步形同虚设。
     pending_schedule: Mutex<Option<EpochSchedule>>,
-}
-
-#[derive(Default)]
-struct PairingState {
-    displayed: Option<(String, Instant)>,
-    needs_pin: bool,
+    /// 本端作为**接收端**时本条流协商生效的帧长（ms）；`None` = 尚未开流 / 尚未协商。
+    ///
+    /// 用互斥量而不是原子：读它的只有快照与 UI（秒级频率），写它的只有 `OPEN_STREAM`
+    /// 那一处；原子反而要为「`Option<u8>` 怎么塞进整数」编一套哨兵值，得不偿失。
+    negotiated_frame_ms: Mutex<Option<u8>>,
 }
 
 impl PeerSession {
@@ -589,6 +555,23 @@ impl PeerSession {
         );
     }
 
+    /// 记下本条流的协商帧长（帧长联动契约）。
+    ///
+    /// `None` = 本条流还没开 / 已关闭（关流时清空，免得 UI 把上一次的读数当成当前值）。
+    fn set_negotiated_frame_ms(&self, frame_ms: Option<u8>) {
+        if let Ok(mut slot) = self.negotiated_frame_ms.lock() {
+            *slot = frame_ms;
+        }
+    }
+
+    /// 本条流协商生效的帧长（ms）；`None` = 尚未协商 / 已关流。
+    fn negotiated_frame_ms(&self) -> Option<u8> {
+        self.negotiated_frame_ms
+            .lock()
+            .map(|value| *value)
+            .unwrap_or(None)
+    }
+
     /// 记下一次能力协商结果（§13）。
     fn set_capabilities(&self, local: u32, peer: u32, agreed: u32) {
         if let Ok(mut slot) = self.capabilities.lock() {
@@ -597,23 +580,6 @@ impl PeerSession {
                 peer,
                 agreed,
             });
-        }
-    }
-
-    fn update_pairing(&self, handshake: &Handshake, event: &HandshakeEvent) {
-        if let Ok(mut pairing) = self.pairing.lock() {
-            pairing.displayed = handshake
-                .display_pin_state()
-                .map(|(pin, expires_at)| (pin.to_string(), expires_at));
-            match event {
-                HandshakeEvent::NeedPin { .. } | HandshakeEvent::PinRejected { .. } => {
-                    pairing.needs_pin = true;
-                }
-                HandshakeEvent::Established { .. } | HandshakeEvent::Rejected { .. } => {
-                    pairing.needs_pin = false;
-                }
-                _ => {}
-            }
         }
     }
 
@@ -632,7 +598,6 @@ impl PeerSession {
                 .lock()
                 .map(|s| *s)
                 .unwrap_or(SessionState::Failed),
-            trusted: self.trusted.load(Ordering::Relaxed),
             capabilities: self.capabilities.lock().map(|caps| *caps).unwrap_or(None),
             reconnects: self
                 .machine
@@ -682,8 +647,6 @@ impl PeerSession {
 /// 引擎内部共享状态。
 struct Inner {
     local: NodeInfo,
-    identity: NodeIdentity,
-    trust: Mutex<TrustStore>,
     endpoint: AudioLinkEndpoint,
     config: EngineConfig,
     peers: Mutex<HashMap<NodeId, Arc<PeerSession>>>,
@@ -809,7 +772,6 @@ impl Engine {
     pub async fn start(config: EngineConfig) -> Result<Arc<Self>, AudioLinkError> {
         let identity = NodeIdentity::load_or_create(&config.identity_dir, &config.node_name)
             .map_err(|e| identity_error(&e))?;
-        let trust = TrustStore::load(&config.trust_store_path).map_err(|e| identity_error(&e))?;
 
         let endpoint = AudioLinkEndpoint::bind(EndpointConfig {
             bind: config.listen,
@@ -846,8 +808,6 @@ impl Engine {
         let engine = Arc::new(Self {
             inner: Arc::new(Inner {
                 local,
-                identity,
-                trust: Mutex::new(trust),
                 endpoint,
                 config,
                 peers: Mutex::new(HashMap::new()),
@@ -1388,34 +1348,29 @@ impl Engine {
             .unwrap_or_default()
     }
 
-    /// 当前有效的主机 PIN（本机作为主机时亮给接收端看的 6 位码）；无需订阅事件。多条配对请求时优先显示最新的一条。
-    /// 成功、锁定、断开或引擎停止后清除；到期判断使用 PinGate 原始失效时刻。
-    pub fn displayed_pin(&self) -> Option<String> {
-        self.displayed_pin_at(Instant::now())
-    }
-
-    fn displayed_pin_at(&self, now: Instant) -> Option<String> {
-        if self.inner.shutdown.load(Ordering::Relaxed) {
-            return None;
-        }
-        let peers = self.inner.peers.lock().ok()?;
-        peers
-            .values()
-            .filter_map(|session| session.pairing.lock().ok()?.displayed.clone())
-            .filter(|(_, expires_at)| now < *expires_at)
-            .max_by_key(|(_, expires_at)| *expires_at)
-            .map(|(pin, _)| pin)
-    }
-
-    /// 本机作为接收端（发起连接的一方）正在等待输入 PIN 的对端；与连接同生命周期，无事件缓存。
-    pub fn pending_pin_peer(&self) -> Option<NodeId> {
-        if self.inner.shutdown.load(Ordering::Relaxed) {
-            return None;
-        }
-        let peers = self.inner.peers.lock().ok()?;
-        peers
-            .values()
-            .find_map(|session| session.pairing.lock().ok()?.needs_pin.then_some(session.id))
+    /// 指定对端**本条流协商生效**的 Opus 帧长（ms）；`None` = 还没开流 / 还没协商 / 对端不存在。
+    ///
+    /// # 契约（帧长联动）
+    ///
+    /// 本端作为**接收端**时，这个值由发送端 `OPEN_STREAM.codec_prefs` 里的第一个 `Opus` 项
+    /// 决定，接收端跟随它解码；非法 / 缺失时回退本地档。本端作为**发送端**时它恒为 `None`
+    /// —— 发送方向永远用本地 `EngineConfig.codec`（采集是引擎级共享的，见 `start_send_pipeline`）。
+    ///
+    /// # 为什么不放进 `PeerStatus`
+    ///
+    /// `PeerStatus` 是**所有字段都 pub** 的结构体，外部（desktop 侧）用它做测试夹具的结构体字面量；
+    /// 加字段会让那些字面量编译失败，而帧长联动不该强迫外壳改一行代码。这个值只对
+    /// 「接收端的这一路流」有意义，做成**按 peer 查询**的访问器反而更贴合它的语义。
+    ///
+    /// 界面上它是「协商到底生效了没有」的唯一直接读数：帧长不一致的典型症状是听感发闷/断续
+    /// 而遥测全绿，光看 `telemetry.frame_ms`（本端**本地**档位）分辨不出来。
+    pub fn negotiated_frame_ms(&self, peer: NodeId) -> Option<u8> {
+        self.inner
+            .peers
+            .lock()
+            .ok()?
+            .get(&peer)
+            .and_then(|session| session.negotiated_frame_ms())
     }
 
     /// 指定对端的遥测（**本机视角**：本机聚合的 1 Hz 快照，含本机算出的时钟估计）。
@@ -1474,7 +1429,19 @@ impl Engine {
     pub fn peer_stats(&self, peer: NodeId) -> Option<StreamStats> {
         let peers = self.inner.peers.lock().ok()?;
         let session = peers.get(&peer)?;
-        *session.peer_stats.lock().ok()?
+        session.peer_stats.lock().ok()?.map(|(stats, _)| stats)
+    }
+
+    /// 指定对端的新鲜反馈；过期与尚未上报都返回 None，不能冒充零丢包。
+    pub fn fresh_peer_stats(&self, peer: NodeId, max_age: Duration) -> Option<StreamStats> {
+        let peers = self.inner.peers.lock().ok()?;
+        let session = peers.get(&peer)?;
+        session
+            .peer_stats
+            .lock()
+            .ok()?
+            .filter(|(_, at)| at.elapsed() < max_age)
+            .map(|(stats, _)| stats)
     }
 
     /// §6 探针收发计数 + RTT 分位数（对端不存在 → `None`；会话刚建立 → 全 0 / 分位数 `None`）。
@@ -1506,18 +1473,15 @@ impl Engine {
                                 continue;
                             }
                         };
-                        let trusted = is_trusted(&inner, peer_id);
                         // 可观测性（2026-09-18 真机定位的真缺陷）：这一行之前**不存在**，
                         // 于是「入站连接到底有没有被受理」在日志里无法区分 —— 空转的接受循环
                         // 与正常工作的接受循环长得一模一样。任何入站会话问题的排查都要先看它。
                         tracing::info!(
                             addr = %addr,
                             peer = %peer_id.short(),
-                            trusted,
                             "受理入站连接（Responder 会话即将建立）"
                         );
-                        let (session, commands) =
-                            create_session(&inner, peer_id, addr, trusted, false);
+                        let (session, commands) = create_session(&inner, peer_id, addr, false);
                         let _ = inner.spawn(run_session(
                             Arc::clone(&inner),
                             connection,
@@ -1548,14 +1512,10 @@ impl Engine {
         }
     }
 
-    /// 主动连接（`docs/03-protocol.md` §5）：QUIC + 握手 + （必要时）PIN 配对。
+    /// 主动连接（`docs/03-protocol.md` §5）：QUIC + 握手。
     ///
-    /// 成功返回对端身份。
-    ///
-    /// 对端要求 PIN 配对时本方法返回 `1002 NOT_PAIRED`，但**会话与命令通道已经建立**：
-    /// UI 收到 [`EngineEvent::PinNeeded`] 后调 [`Engine::submit_pin`] 即可继续同一条连接。
-    /// 这是刻意的 —— 把「需要 PIN」当成连接失败会让 UI 只能整条重连，白白丢掉已完成的
-    /// QUIC 握手与 HELLO 交换。
+    /// 成功返回对端身份。无认证之后**连接成功即握手完成**（`HELLO` / `HELLO_ACK` 一次往返），
+    /// 没有后续的 PIN 提交或挑战应答要推进。
     pub async fn connect(
         self: &Arc<Self>,
         addr: std::net::SocketAddr,
@@ -1595,8 +1555,7 @@ impl Engine {
             ));
         }
 
-        let trusted = is_trusted(&self.inner, peer_id);
-        let (session, commands) = create_session(&self.inner, peer_id, addr, trusted, true);
+        let (session, commands) = create_session(&self.inner, peer_id, addr, true);
 
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         self.inner.spawn(run_session(
@@ -1642,28 +1601,16 @@ impl Engine {
         .await
     }
 
-    /// 断开与某台设备的会话（**保留信任**）—— 与 [`Engine::revoke_trust`] 只差「动不动信任库」，
-    /// 但那一步决定了用户下次要不要重新配对。
-    ///
-    /// # 与 `revoke_trust` 的差异（顺序、后果、幂等）
-    ///
-    /// | | `disconnect`（本函数） | `revoke_trust` |
-    /// |---|---|---|
-    /// | 断会话 | 立刻（同一个 `drop_session` 路径） | 立刻（同一个路径） |
-    /// | 信任库 | **不读、不写、不落盘** | 撤销并原子落盘 |
-    /// | 该设备下次连进来 | 白名单里还有它 → 免交互直连（架构 §8） | 必须重新走 PIN 配对 |
-    /// | 顺序 | 只有一步，不存在顺序问题 | **必须先断会话、再撤信任**：反过来的话，活会话下一次
-    ///   握手成功会 `remember_peer` 把记录写回白名单，用户的撤销会「自己回来」（见 `revoke_trust` 的文档） |
+    /// 断开与某台设备的会话（无认证后这是「断开某设备」的唯一入口）。
     ///
     /// # 对端会看到什么（别承诺做不到的事）
     ///
     /// 本机结束会话、连接随之关闭，对端按**链路丢失**处理。因此**不能**保证「对方从此安静」：
     /// 若对端是**发起方且正在推流**，它有自己的 FR-27 重拨逻辑（判据见 `report_peer_gone`），
-    /// 会重新连回来 —— 而本机信任库还留着它，于是握手直接通过。**要它别再回来，得用
-    /// `revoke_trust`**（那才是「我不想再信任这台设备」的表达）。
+    /// 会重新连回来 —— 无认证之后它会直接连上，本端没有「拒绝它再连」的手段。
     ///
-    /// 幂等：没有这条会话时返回 `Ok(false)`（调用方的意图「现在别连着」已成立），
-    /// 与 `revoke_trust` 的 `Ok(false)` 口径一致 —— UI 不必先查会话表。
+    /// 幂等：没有这条会话时返回 `Ok(false)`（调用方的意图「现在别连着」已成立）——
+    /// UI 不必先查会话表。
     pub async fn disconnect(&self, peer: NodeId) -> Result<bool, AudioLinkError> {
         let existing = self
             .inner
@@ -1674,79 +1621,11 @@ impl Engine {
         let Some(session) = existing else {
             return Ok(false);
         };
-        // 顺序与 `revoke_trust` 的第一段一致：**先请会话任务收尾（停流、让出播放 owner），
-        // 再摘表并广播 `PeerDisconnected`** —— UI 从事件里读到「断开」时，那条连接的资源
-        // 已经在回收路上了。
+        // **先请会话任务收尾（停流、让出播放 owner），再摘表并广播 `PeerDisconnected`** ——
+        // UI 从事件里读到「断开」时，那条连接的资源已经在回收路上了。
         let _ = session.commands.send(SessionCommand::Shutdown).await;
         drop_session(&self.inner, &session, "local disconnect");
         Ok(true)
-    }
-
-    /// 全部**已配对设备**（信任库快照）。
-    ///
-    /// # 为什么需要它与 `peers()` 并存
-    ///
-    /// `peers()` 读的是**会话表**（当前连着或在握手的对端）；这里是**白名单**。两者的差集正是
-    /// 最典型的清理场景 —— 换机后残留的旧信任记录、很久没连过的设备：它们只在这一侧，
-    /// 而那正是「取消配对」承诺要覆盖的对象。
-    ///
-    /// 返回的 `id` 是**完整指纹**，可以直接喂给 [Engine::revoke_trust]；其余字段仅供展示
-    /// （信任判定只看指纹，见 `audiolink-identity` 的模块文档）。
-    pub fn trusted_peers(&self) -> Vec<TrustEntry> {
-        self.inner
-            .trust
-            .lock()
-            .map(|trust| trust.entries().to_vec())
-            .unwrap_or_default()
-    }
-
-    /// 移除设备（FR-18）：**先断会话、再撤信任** —— 顺序不能反。
-    ///
-    /// # 为什么是这个顺序（两条都不是口味问题）
-    ///
-    /// 1. **信任只在握手期判定一次**（`is_trusted`）：撤信任不会让任何已建立的会话自行结束。
-    ///    若只撤信任不断会话，用户看到的是「已移除」而音频还在流 —— 隐私说明里那句
-    ///    「你可以取消配对」的行为没有兑现。
-    /// 2. 更要紧的是**写回**：握手成功时引擎会 `remember_peer` 并把会话标为受信，也就是把记录
-    ///    重新写进白名单。先撤信任、后断会话的话，那条活会话下一次成功握手就会**撤销这次移除**
-    ///    —— 用户以为移除了，其实它自己回来了。
-    ///
-    /// 因此顺序固定为：断该对端会话（`SessionCommand::Shutdown` + 摘表，由 `drop_session` 广播
-    /// `PeerDisconnected` 让 UI 立刻刷新）→ 撤销内存信任并落盘。
-    ///
-    /// 返回「是否真的从信任库里删掉了」：本来就不在 → `Ok(false)`，与
-    /// `audiolink_identity::TrustStore::revoke` 的幂等语义一致（**照样会断会话**）。
-    ///
-    /// 只影响这一个对端：其它会话与它们的信任记录都不动。
-    pub async fn revoke_trust(&self, peer: NodeId) -> Result<bool, AudioLinkError> {
-        // ① 先断开这条会话（若有）。**不能**挪到撤信任之后：见函数文档第 2 条。
-        let existing = self
-            .inner
-            .peers
-            .lock()
-            .ok()
-            .and_then(|peers| peers.get(&peer).cloned());
-        if let Some(session) = existing.as_ref() {
-            let _ = session.commands.send(SessionCommand::Shutdown).await;
-            drop_session(&self.inner, session, "trust revoked");
-        }
-
-        // ② 撤内存信任并落盘（`TrustStore::revoke` 自己就是「有变化才原子写」）。
-        let revoked = {
-            let mut trust = self
-                .inner
-                .trust
-                .lock()
-                .map_err(|_| AudioLinkError::bad_request("trust store poisoned"))?;
-            trust.revoke(peer).map_err(|error| identity_error(&error))?
-        };
-        Ok(revoked)
-    }
-
-    /// 提交主机显示的 6 位码（本机是接收端时）。
-    pub async fn submit_pin(&self, peer: NodeId, pin: &str) -> Result<(), AudioLinkError> {
-        self.send_command(peer, SessionCommand::SubmitPin(pin.to_string()))
-            .await
     }
 
     /// 关闭引擎（幂等），等待接受/连接/会话任务、音频线程和 UDP 套接字释放。
@@ -1795,7 +1674,7 @@ impl Engine {
                 .map_err(|_| AudioLinkError::bad_request("peer table poisoned"))?;
             peers
                 .get(&peer)
-                .ok_or_else(|| AudioLinkError::not_paired("unknown peer"))?
+                .ok_or_else(|| AudioLinkError::no_peer("unknown peer"))?
                 .commands
                 .clone()
         };
@@ -1829,13 +1708,7 @@ fn identity_error(error: &IdentityError) -> AudioLinkError {
 
 /// 会话任务：**握手阶段 + 会话阶段**合成一个任务。
 ///
-/// # 为什么不能把握手单独做成一个函数
-///
-/// 握手期间用户可能被要求输入 PIN（[`EngineEvent::PinNeeded`]）。如果握手跑在一个
-/// 独立函数里、命令通道在握手**之后**才建立，那么用户在 PIN 弹窗里敲的那 6 位数字
-/// 就无处可去 —— UI 只能整条重连，白白丢掉已完成的 QUIC 握手与 `HELLO` 交换。
-///
-/// 所以会话任务从第一帧 `HELLO` 起就同时监听控制流与命令通道；
+/// 会话任务从第一帧 `HELLO` 起就同时监听控制流与命令通道（会话期的指令走同一个通道）；
 /// [`Engine::connect`] 通过 `ready` 一次性拿到「握手成了没有」的结果。
 async fn run_session(
     inner: Arc<Inner>,
@@ -1847,8 +1720,22 @@ async fn run_session(
 ) {
     let peer_id = session.id;
     let mut ready = ready;
+    // 本地档位（发送方向**永远**用它；接收方向只借用它的其余参数，帧长跟随对端）。
     let codec = inner.config.codec;
-    let frame_ms = u64::from(codec.frame_ms.max(1));
+    // 本条流的**有效帧长**（接收方向）。
+    //
+    // # 契约（帧长联动）
+    //
+    // 发送方向永远用本地 `codec` —— 采集是引擎级共享的，同一引擎内所有会话必须同帧长
+    // （见 `start_send_pipeline` 的校验），所以本端推流时不跟随对端。
+    // 接收方向则**跟随发送端**：`OPEN_STREAM.codec_prefs` 里第一个 `Opus` 项的 `frame_ms`
+    // 就是本条流真实使用的帧长，协商结果写回这里。
+    //
+    // 为什么这是必须的：解码器、掩盖器、PCM 缓冲长度、重排窗口周期全都由帧长派生。
+    // 一端 10 ms、另一端 20 ms 时，每个真实包对解码器来说都「不是它期望的那一帧」，
+    // 会被当作 PLC 掩盖 —— 链路上一切正常（会话 Streaming、包也在到），**只有听感是坏的**。
+    // 这是「发闷 / 断续且不报错」的根本原因。
+    //
 
     // **状态机的起点**：会话任务开始跑，就代表「连接已发起（本端是发起方）」或
     // 「入站连接已被接受（本端是应答方）」。
@@ -1865,14 +1752,6 @@ async fn run_session(
         Role::Responder => SessionEvent::AcceptedInbound,
     });
 
-    let peer_cert = match connection.peer_cert_der() {
-        Ok(cert) => cert,
-        Err(error) => {
-            finish_ready(&mut ready, Err(net_error(&error)));
-            drop_session(&inner, &session, "no peer certificate");
-            return;
-        }
-    };
     // §6：控制流 #0 的获取在**服务端**是 `accept_bi()` —— 对端必须先往 #0 写第一个字节
     // （QUIC 的 `open_bi()` 是惰性的，见 `audiolink-net::Connection::open_control` 的文档）。
     // 而纯数据报的测量客户端（`audiolink-tools` 的 `latency-probe`）**永远不会**开控制流。
@@ -1881,11 +1760,9 @@ async fn run_session(
     let mut opening = Box::pin(connection.open_control());
 
     let mut rx_buf = vec![0u8; DATAGRAM_MAX_LEN];
-    // 握手死线：**非配对阶段**按 handshake_timeout（默认 10 s）回收半开连接；
-    // 一旦进入「等人工输入 PIN」的窗口，就顺延到 pin_wait_timeout（默认 75 s），
-    // 而且**从顺延那一刻起算** —— 配对等待不吃握手死线（真机 1002 的根因，
-    // 理由见 DEFAULT_PIN_WAIT_TIMEOUT 的文档）。
-    let mut deadline = tokio::time::Instant::now() + inner.config.handshake_timeout;
+    // 握手死线：按 handshake_timeout（默认 10 s）回收半开连接。
+    // 无认证之后握手只有 `HELLO` / `HELLO_ACK` 一次往返（机器时间），10 s 绰绰有余。
+    let deadline = tokio::time::Instant::now() + inner.config.handshake_timeout;
     // 握手死线到点、但这条连接已经在应答时钟探测时，死线不再收回连接（测量连接专用，见下）。
     let mut serving_probes = false;
     let mut probes_answered: u64 = 0;
@@ -1902,7 +1779,7 @@ async fn run_session(
                         drop_session(&inner, &session, "shutdown before the control stream");
                         return;
                     }
-                    // 握手还没开始，PIN 无处可去（控制流起来之后才轮得到它）。
+                    // 握手还没开始，其余指令（开流、增益…）都要等控制流起来之后才轮得到。
                     _ => {}
                 }
             }
@@ -1952,9 +1829,8 @@ async fn run_session(
         }
     };
 
-    let trusted_before = session.trusted.load(Ordering::Relaxed);
     // §13：握手带上**本机声明的**能力（默认是内核能力，平台侧可覆写，见 `EngineConfig::capabilities`）。
-    let mut handshake = Handshake::new(role, inner.local.clone(), peer_id, trusted_before)
+    let mut handshake = Handshake::new(role, inner.local.clone(), peer_id)
         .with_capabilities(inner.config.capabilities);
     let mut queue: VecDeque<Outgoing> = VecDeque::new();
     enqueue(&mut queue, handshake.start());
@@ -1965,21 +1841,12 @@ async fn run_session(
     }
 
     // ---------------------------------------------------------------
-    // 阶段一：握手与配对（期间继续应答 §6 的时钟探测）
+    // 阶段一：握手（期间继续应答 §6 的时钟探测）
     // ---------------------------------------------------------------
     loop {
         tokio::select! {
             command = commands.recv() => {
                 match command {
-                    Some(SessionCommand::SubmitPin(pin)) => {
-                        let step = handshake.on_pin_input(&pin);
-                        enqueue(&mut queue, step);
-                        if let Err(error) = flush_control(&mut control, &mut queue).await {
-                            finish_ready(&mut ready, Err(error));
-                            drop_session(&inner, &session, "control stream failed");
-                            return;
-                        }
-                    }
                     Some(SessionCommand::Shutdown) | None => {
                         finish_ready(&mut ready, Err(AudioLinkError::bad_request("cancelled by local side")));
                         drop_session(&inner, &session, "shutdown during handshake");
@@ -2006,8 +1873,7 @@ async fn run_session(
                     continue; // §1.1：未知 / 载荷非法的帧忽略并计数，不断流
                 };
 
-                let step = handshake.on_control(&request, &inner.identity, &peer_cert, Instant::now());
-                session.update_pairing(&handshake, &step.event);
+                let step = handshake.on_control(&request);
                 if let Some(peer) = handshake.peer() {
                     session.set_name(&peer.name);
                 }
@@ -2021,26 +1887,14 @@ async fn run_session(
                 match step.event {
                     HandshakeEvent::Established {
                         peer,
-                        persist,
                         local_caps,
                         peer_caps,
                         agreed_caps,
                     } => {
                         // §13：把能力协商结果落到会话上 —— 界面要能回答「这台对端能做什么」。
                         session.set_capabilities(local_caps, peer_caps, agreed_caps);
-                        if persist {
-                            if let Err(error) = remember_peer(&inner, &peer) {
-                                report_error(&inner, &session, &error);
-                            }
-                            session.trusted.store(true, Ordering::Relaxed);
-                        }
                         session.set_name(&peer.name);
                         mark_streaming(&inner, &session);
-                        let _ = inner.events.send(EngineEvent::PairCompleted {
-                            id: peer_id,
-                            ok: true,
-                            reason: if persist { "paired".into() } else { "already trusted".into() },
-                        });
                         finish_ready(&mut ready, Ok(()));
                         break;
                     }
@@ -2049,43 +1903,6 @@ async fn run_session(
                         report_peer_gone(&inner, &session, &error, false);
                         drop_session(&inner, &session, error.context());
                         return;
-                    }
-                    HandshakeEvent::NeedPin { peer } => {
-                        session.set_name(&peer.name);
-                        let _ = inner.events.send(EngineEvent::PinNeeded {
-                            id: peer_id,
-                            name: peer.name,
-                        });
-                        // 「需要 PIN」不是失败：会话仍活着，UI 输入后会走上面的 SubmitPin 分支。
-                        finish_ready(
-                            &mut ready,
-                            Err(AudioLinkError::not_paired("peer requires pin pairing")),
-                        );
-                        // 从这一刻起是**人工时间**：死线顺延到 PIN 窗口（真机现场 30–40 s 才提交）。
-                        arm_pin_wait(&mut deadline, inner.config.pin_wait_timeout);
-                    }
-                    HandshakeEvent::DisplayPin { pin, remaining_attempts } => {
-                        let _ = inner.events.send(EngineEvent::DisplayPin {
-                            from: peer_id,
-                            name: session
-                                .name
-                                .lock()
-                                .map(|n| n.clone())
-                                .unwrap_or_else(|_| "unknown".into()),
-                            pin,
-                            remaining_attempts,
-                        });
-                        // 本端是响应方：现在轮到**对端**的用户看屏幕输数字，同样是人工时间。
-                        // 顺延只做这一处（PIN 输错时**不**重算）：PIN 能不能用、还能试几次，
-                        // 权威判据在 PinGate（60 s / 5 次 / 锁 5 min），引擎不另立一套语义。
-                        arm_pin_wait(&mut deadline, inner.config.pin_wait_timeout);
-                    }
-                    HandshakeEvent::PinRejected { reason } => {
-                        let _ = inner.events.send(EngineEvent::PairCompleted {
-                            id: peer_id,
-                            ok: false,
-                            reason,
-                        });
                     }
                     _ => {}
                 }
@@ -2117,8 +1934,30 @@ async fn run_session(
     // ---------------------------------------------------------------
     // 阶段二：会话（控制面 + 音频收发 + 应用指令）
     // ---------------------------------------------------------------
-    let mut audio_receiver = match AudioReceiver::new(codec) {
-        Ok(receiver) => receiver,
+    // ------------------------------------------------------------------
+    // 接收态的「帧长派生量」：一律按**有效帧长**建，而不是本地档
+    // ------------------------------------------------------------------
+    //
+    // # 时序取舍（为什么先按本地档建、协商后重建）
+    //
+    // 接收态的创建点有两个候选：
+    //
+    // (a) 推迟到 `OPEN_STREAM` 到达之后再建；
+    // (b) 现在先按本地档建，协商时按新帧长重建（本实现选的这条）。
+    //
+    // 选 (b) 的理由是**竞态**：`OPEN_STREAM` 走控制流，音频走数据报，两者不保证先后 ——
+    // 发送端先发出第一批音频包、控制帧后到是完全正常的。若选 (a)，那段先到数据报的处置只剩
+    // 「丢弃并计数」，而丢掉的正是**开流瞬间的头几帧**（听感上就是每次开流都缺一声）。
+    // 选 (b) 时先到的那几帧按本地档解掉：如果帧长本来就一致（绝大多数情况）它们是完全正确的音频；
+    // 即使真的混档，最坏也只是把几帧解成噪声/PLC，随后重建解码态即可 —— 「可能有一点杂音」明显
+    // 优于「稳定地丢开头」。
+    //
+    // 重建的正确性依据：`AudioReceiver::new` 只依赖 `CodecConfig`，Opus 解码器与掩盖器都能
+    // 从零重建；重排窗口重建后序号游标退回「下一包即基准」，与中途换档的语义一致（见
+    // `PacketReorderBuffer::new` 的文档）。重建点见 `negotiate_stream_frame_ms`。
+    // 初始按本地档建；`OPEN_STREAM` 协商后整体重建（理由见上面时序取舍那段）。
+    let mut rx_state = match StreamRxState::new(codec, codec.frame_ms) {
+        Ok(state) => state,
         Err(error) => {
             report_error(&inner, &session, &audio_error(&error));
             drop_session(&inner, &session, "decoder init failed");
@@ -2129,13 +1968,13 @@ async fn run_session(
     let mut dispatch_stats = DispatchStats::default();
 
     let mut last_datagram_at: Option<Instant> = None;
-    let frame_period = Duration::from_millis(u64::from(codec.frame_ms.max(1)));
-    let frame_us = codec.frame_ms.max(1).saturating_mul(1_000);
-    // 共享抖动目标的**起步**值 = 起步档（见 jitter.rs 的 INITIAL_TARGET_FRAMES）。
-    let jitter_depth = Arc::new(AtomicUsize::new(INITIAL_TARGET_FRAMES));
-    let mut adaptive_jitter = AdaptiveJitterDepth::new();
+    // 共享抖动目标的**起步**值 = 起步档（见 jitter.rs 的 INITIAL_TARGET_MS）。
+    let jitter_depth = Arc::new(AtomicUsize::new(frames_for_ms(
+        INITIAL_TARGET_MS,
+        rx_state.frame_ms,
+    )));
+    let mut adaptive_jitter = AdaptiveJitterDepth::new(rx_state.frame_ms);
     let mut arrival_jitter = SampleStats::new(256);
-    let mut packet_reorder = PacketReorderBuffer::new(frame_period);
     let mut last_adaptive_underruns = 0u32;
     let mut playback: Option<PlayoutHandle> = None;
     let mut next_stream_id: u32 = 1;
@@ -2163,7 +2002,8 @@ async fn run_session(
     let mut probe_deadline = tokio::time::Instant::now();
 
     loop {
-        let reorder_deadline = packet_reorder
+        let reorder_deadline = rx_state
+            .packet_reorder
             .next_deadline()
             .map(tokio::time::Instant::from_std);
         tokio::select! {
@@ -2191,7 +2031,10 @@ async fn run_session(
                                 retransmit.clear();
                                 let result = send_control(
                                     &mut control,
-                                    &ControlRequest::OpenStream(open_stream_payload(&codec)),
+                                    &ControlRequest::OpenStream(open_stream_payload(
+                                        &codec,
+                                        inner.config.test_advertised_frame_ms,
+                                    )),
                                 ).await;
                                 if let Err(error) = &result {
                                     stop_capture(&mut capture).await;
@@ -2220,12 +2063,6 @@ async fn run_session(
                         pending_redundant = None;
                         missing.clear();
                         retransmit.clear();
-                    }
-                    SessionCommand::SubmitPin(pin) => {
-                        let _ = send_control(
-                            &mut control,
-                            &ControlRequest::PairSubmit(crate::payload::PairSubmitPayload { pin }),
-                        ).await;
                     }
                     SessionCommand::AnnounceGroupEpoch(payload) => {
                         // §7：epoch_local_us 由调用方取「本机单调时刻」，接收端各自换算到本机轴。
@@ -2282,8 +2119,7 @@ async fn run_session(
                         // （第 58 轮定位的真缺陷）。
                         let result = match schedule {
                             Some(schedule) => {
-                                let frame_ms_u32 = u32::try_from(frame_ms).unwrap_or(20);
-                                if apply_schedule(&session, &playback, schedule, frame_ms_u32) {
+                                if apply_schedule(&session, &playback, schedule, rx_state.frame_ms) {
                                     Ok(())
                                 } else {
                                     stash_schedule(&session, schedule);
@@ -2296,8 +2132,7 @@ async fn run_session(
                                     let offset_us = clock_estimate_of(&session)
                                         .map(|estimate| estimate.offset_us)
                                         .unwrap_or(0);
-                                    let frame_samples =
-                                        u32::try_from(frame_ms).unwrap_or(20).max(1) * 48;
+                                    let frame_samples = rx_state.frame_ms.max(1) * 48;
                                     let _ = handle.set_schedule(None, offset_us, frame_samples);
                                 }
                                 Ok(())
@@ -2335,6 +2170,8 @@ async fn run_session(
                     &mut next_stream_id,
                     &codec,
                     &jitter_depth,
+                    &mut adaptive_jitter,
+                    &mut rx_state,
                 ).await;
             }
 
@@ -2357,6 +2194,23 @@ async fn run_session(
                                 // M4 观测：记下「最近一帧的编号 ↔ 到达时刻」。放在分派最前面，
                                 // 因为这里才是「包真的到了」的时刻 —— 后面的重排窗口会等、也会丢。
                                 session.note_rx_axis(datagram.header.sample_index);
+                                // 帧长交叉校验：包的 `FRAME_10MS` 位与本条流有效帧长是否自洽。
+                                // 未开流 / 未协商时有效帧长 = 本地档（`StreamRxState::new` 的起点）。
+                                //
+                                // 处置口径：**只计数 + warn，不中断、不断流、不报错给用户**。
+                                // 帧长是软约定 —— 一旦不一致，硬断开只会把一条本来还能听的流
+                                // 变成彻底没声音；而这两项到底谁对，接收端从单包上看不出来。
+                                if !rx_state.observe_frame_flag(datagram.header.flags) {
+                                    tracing::warn!(
+                                        peer = %session.id.short(),
+                                        stream_frame_ms = rx_state.frame_ms,
+                                        declared_10ms = datagram.header
+                                            .flags
+                                            .contains(Flags::FRAME_10MS),
+                                        mismatches = rx_state.flag_mismatches,
+                                        "音频包的 FRAME_10MS 与协商帧长不符（已计数，不断流）"
+                                    );
+                                }
                             }
                             Ptype::ClockProbe => {
                                 match respond_clock_probe(&connection, &session, &datagram).await {
@@ -2398,6 +2252,9 @@ async fn run_session(
                                         continue; // 窗口外 / 从未发过这个序号
                                     };
 
+                                    // NACK 重传走的是**同一条流**，所以帧长标志必须与主包一致：
+                                    // 重传是丢包时唯一还在到的东西，它要是漏了 `FRAME_10MS`，
+                                    // 接收端的交叉校验就会对「本来正确的那一半包」报不一致。
                                     if let Err(error) = send_audio_frame(
                                         &connection,
                                         id,
@@ -2405,7 +2262,7 @@ async fn run_session(
                                         *seq,
                                         sample_index,
                                         &payload,
-                                        Flags::NONE,
+                                        stream_flags(&codec),
                                     )
                                     .await
                                     {
@@ -2423,13 +2280,17 @@ async fn run_session(
                         // 到达（主包与冗余副本都算）即视为该序号已补上；新出现的洞据此建立（§8.1）。
                         missing.observe(datagram.header.seq, now);
                         // 有洞才开「等重传」窗口，而且必须先问两个问题：
-                        //   1. 播放队列还有余量吗？等待期间队列只出不进，空着等就是硬静音；
+                        //   1. 播放队列还有余量吗？等待期间队列只出不进，空着等就是硬静音 ——
+                        //      余量按墙钟 ≥ 40 ms 判（20 ms 档 = 2 帧；10 ms 档中等档 4 帧才启用）；
                         //   2. 这点预算够重传回来吗？取「两个 RTT + 5 ms」，上限 30 ms（§8.1 的 RTT 门槛）。
-                        // 两个问题任一为否 → 窗口为 0，按原策略交付，由 PCM 掩盖兜底。
-                        let grace = if missing.pending() > 0
-                            && playback
-                                .as_ref()
-                                .is_some_and(|handle| handle.depth_frames() >= 2)
+                        // RTT 不满足发送 NACK 的门槛时也不等重传；仍保留冗余副本的短暂重排窗口。
+                        let grace = if connection.rtt_us() < NACK_MAX_RTT_US
+                            && missing.pending() > 0
+                            && playback.as_ref().is_some_and(|handle| {
+                                handle.depth_frames()
+                                    * usize::try_from(rx_state.frame_ms).unwrap_or(1)
+                                    >= 40
+                            })
                         {
                             let budget_us = connection.rtt_us().saturating_mul(2).saturating_add(5_000);
                             let cap_us = u64::try_from(NACK_RETRANSMIT_GRACE.as_micros()).unwrap_or(u64::MAX);
@@ -2437,11 +2298,11 @@ async fn run_session(
                         } else {
                             Duration::ZERO
                         };
-                        packet_reorder.set_retransmit_grace(grace);
+                        rx_state.packet_reorder.set_retransmit_grace(grace);
                         if let Ok(mut telemetry) = session.telemetry.lock() {
                             telemetry.record_received(datagram.payload.len());
                         }
-                        packet_reorder.set_target_frames(
+                        rx_state.packet_reorder.set_target_frames(
                             jitter_depth.load(Ordering::Relaxed),
                         );
                         if let Some(handle) = playback.as_ref() {
@@ -2450,7 +2311,7 @@ async fn run_session(
                                 datagram.header.sample_index,
                             );
                         }
-                        let batch = packet_reorder.push(
+                        let batch = rx_state.packet_reorder.push(
                             datagram.header.seq,
                             datagram.payload.to_vec(),
                             now,
@@ -2464,7 +2325,7 @@ async fn run_session(
                             let interval_us =
                                 u32::try_from(now.saturating_duration_since(previous).as_micros())
                                     .unwrap_or(u32::MAX);
-                            let nominal_us = u32::try_from(frame_ms).unwrap_or(20) * 1_000;
+                            let nominal_us = rx_state.frame_ms.saturating_mul(1_000);
                             let jitter_us = interval_us.abs_diff(nominal_us);
                             arrival_jitter.push(jitter_us);
                             if let Ok(mut telemetry) = session.telemetry.lock() {
@@ -2473,7 +2334,7 @@ async fn run_session(
                         }
                         deliver_reordered_audio(
                             &session,
-                            &mut audio_receiver,
+                            &mut rx_state.audio_receiver,
                             &playback,
                             batch,
                         );
@@ -2513,10 +2374,10 @@ async fn run_session(
             }
 
             _ = wait_for_optional_deadline(reorder_deadline) => {
-                let batch = packet_reorder.flush_expired(Instant::now());
+                let batch = rx_state.packet_reorder.flush_expired(Instant::now());
                 deliver_reordered_audio(
                     &session,
-                    &mut audio_receiver,
+                    &mut rx_state.audio_receiver,
                     &playback,
                     batch,
                 );
@@ -2538,6 +2399,7 @@ async fn run_session(
                     &frame,
                     &session,
                     AudioCopy::Primary,
+                    &codec,
                 ).await;
                 match primary {
                     Ok(()) => {
@@ -2554,6 +2416,7 @@ async fn run_session(
                         &redundant,
                         &session,
                         AudioCopy::Redundant,
+                        &codec,
                     ).await
                 {
                     report_error(&inner, &session, &error);
@@ -2619,7 +2482,7 @@ async fn run_session(
                         if let Some(handle) = playback.as_ref() {
                             let depth = u32::try_from(handle.depth_frames()).unwrap_or(u32::MAX);
                             telemetry.set_buffer_level_us(
-                                depth.saturating_mul(codec.frame_ms).saturating_mul(1_000),
+                                depth.saturating_mul(rx_state.frame_ms).saturating_mul(1_000),
                             );
                         }
                         telemetry.roll();
@@ -2635,26 +2498,30 @@ async fn run_session(
                 let desired_target = adaptive_jitter.observe(
                     adaptive_jitter_p95,
                     new_underruns,
-                    frame_us,
+                    rx_state.frame_us,
                 );
                 let target_frames = publish_target(
                     &jitter_depth,
                     observed_target,
                     desired_target,
+                    rx_state.frame_ms,
                 );
                 adaptive_jitter.raise_to(target_frames);
-                packet_reorder.set_target_frames(target_frames);
-                let batch = packet_reorder.flush_expired(Instant::now());
+                rx_state.packet_reorder.set_target_frames(target_frames);
+                let batch = rx_state.packet_reorder.flush_expired(Instant::now());
                 deliver_reordered_audio(
                     &session,
-                    &mut audio_receiver,
+                    &mut rx_state.audio_receiver,
                     &playback,
                     batch,
                 );
 
                 // §8 自适应码率：判据必须用**对端**的遥测 —— 丢包与欠载只有接收侧看得见，
                 // 它 1 Hz 用 `STREAM_STATS` 把数字送过来，这里是发送侧唯一能看到真实链路的地方。
-                let peer_view = session.peer_stats.lock().ok().and_then(|slot| *slot);
+                let peer_view = session.peer_stats.lock().ok().and_then(|slot| {
+                    slot.filter(|(_, at)| at.elapsed() < Duration::from_secs(3))
+                        .map(|(stats, _)| stats)
+                });
                 if let Some(peer_stats) = peer_view
                     && let Some(change) = adaptive_bitrate.observe(
                         session_started.elapsed(),
@@ -2704,7 +2571,7 @@ fn finish_ready(
 /// 从会话表里摘掉，并广播断开。
 fn drop_session(inner: &Arc<Inner>, session: &Arc<PeerSession>, reason: &str) {
     if let Ok(mut peers) = inner.peers.lock() {
-        // 重连可能已换成同一身份的新会话；旧任务退出不能摘掉新 PIN 或广播假断开。
+        // 重连可能已换成同一身份的新会话；旧任务退出不能摘掉新会话或广播假断开。
         if !peers
             .get(&session.id)
             .is_some_and(|current| Arc::ptr_eq(current, session))
@@ -2719,11 +2586,33 @@ fn drop_session(inner: &Arc<Inner>, session: &Arc<PeerSession>, reason: &str) {
     });
 }
 
-fn open_stream_payload(codec: &CodecConfig) -> OpenStreamPayload {
+/// 组一条 `OPEN_STREAM`。
+///
+/// `advertised_frame_ms` 只被测试用来构造「对端报了一个非法帧长」的输入
+/// （见 [`EngineConfig::test_advertised_frame_ms`]）；生产路径恒为 `None`，
+/// 此时报出去的就是本端 `codec` 的真实帧长。
+fn open_stream_payload(codec: &CodecConfig, advertised_frame_ms: Option<u8>) -> OpenStreamPayload {
+    let pref = match advertised_frame_ms {
+        Some(frame_ms) => match codec_pref(codec) {
+            CodecPref::Opus {
+                bitrate_kbps,
+                fec,
+                vbr,
+                ..
+            } => CodecPref::Opus {
+                frame_ms,
+                bitrate_kbps,
+                fec,
+                vbr,
+            },
+            other => other,
+        },
+        None => codec_pref(codec),
+    };
     OpenStreamPayload {
         session_id: 1,
         source: SourceKind::SystemLoopback,
-        codec_prefs: vec![codec_pref(codec)],
+        codec_prefs: vec![pref],
         target_rate_kbps: u32::try_from(codec.bitrate_bps / 1_000).unwrap_or(160),
         channels: 2,
         group: None,
@@ -2736,7 +2625,6 @@ fn create_session(
     inner: &Arc<Inner>,
     peer_id: NodeId,
     addr: std::net::SocketAddr,
-    trusted: bool,
     initiated_locally: bool,
 ) -> (Arc<PeerSession>, mpsc::Receiver<SessionCommand>) {
     let (commands, command_rx) = mpsc::channel(16);
@@ -2753,14 +2641,13 @@ fn create_session(
         clock: Mutex::new(ClockProbeState::new()),
         peer_stats: Mutex::new(None),
         commands,
-        trusted: AtomicBool::new(trusted),
         state: Mutex::new(SessionState::Handshaking),
-        pairing: Mutex::new(PairingState::default()),
         rx_axis: Arc::new(AtomicU64::new(u64::MAX)),
         last_rx_us: AtomicU64::new(0),
         reconnect_in_flight: AtomicBool::new(false),
         capabilities: Mutex::new(None),
         pending_schedule: Mutex::new(None),
+        negotiated_frame_ms: Mutex::new(None),
     });
 
     let previous = inner
@@ -2782,36 +2669,6 @@ fn mark_streaming(inner: &Arc<Inner>, session: &Arc<PeerSession>) {
     let _ = inner
         .events
         .send(EngineEvent::PeerUpdated(Box::new(session.snapshot())));
-}
-
-fn is_trusted(inner: &Arc<Inner>, id: NodeId) -> bool {
-    inner
-        .trust
-        .lock()
-        .map(|trust| trust.is_trusted(id))
-        .unwrap_or(false)
-}
-
-fn remember_peer(inner: &Arc<Inner>, peer: &NodeInfo) -> Result<(), AudioLinkError> {
-    let mut trust = inner
-        .trust
-        .lock()
-        .map_err(|_| AudioLinkError::bad_request("trust store poisoned"))?;
-    trust
-        .trust(TrustEntry {
-            id: peer.id,
-            name: peer.name.clone(),
-            platform: peer.platform,
-            paired_at_unix: unix_now(),
-        })
-        .map_err(|e| identity_error(&e))
-}
-
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 fn enqueue(queue: &mut VecDeque<Outgoing>, step: HandshakeStep) {
@@ -3523,11 +3380,10 @@ async fn transmit_audio(
     frame: &EncodedFrame,
     session: &Arc<PeerSession>,
     copy: AudioCopy,
+    codec: &CodecConfig,
 ) -> Result<(), AudioLinkError> {
-    let flags = match copy {
-        AudioCopy::Primary => Flags::NONE,
-        AudioCopy::Redundant => Flags::FEC_REDUNDANT,
-    };
+    // flags 由**本端档位**决定（发送方向永远用本地 codec，见 `stream_flags` 的契约）。
+    let flags = with_copy(stream_flags(codec), copy);
     send_audio_frame(
         connection,
         stream_id,
@@ -3560,6 +3416,145 @@ struct ReceiveReport {
     lost: u32,
     plc: u32,
     late_drops: u32,
+}
+
+/// 接收方向**由帧长派生**的全部状态，打包成一个可以整体重建的单元。
+///
+/// # 为什么要打包（而不是散在会话循环里的局部变量）
+///
+/// 帧长联动要求「协商出新的帧长后，下面这些**同时**换档」：
+///
+/// - `audio_receiver`：解码器 / 掩盖器 / PCM 缓冲长度 / 最大掩盖帧数；
+/// - `packet_reorder`：重排窗口的等待周期就是帧长；
+/// - `frame_period` / `frame_us`：播放节奏与自适应抖动的换算基准。
+///
+/// 散着写时「换档」要改五个变量，漏一个就是**半换档** —— 那种状态比不换更隐蔽：
+/// 解码按新帧长、重排窗口还按旧帧长等，症状是「偶发丢帧」而不是整段发闷。
+/// 打包之后只有一条路径能换档（[Self::retarget]），漏改在这种形状下写不出来。
+struct StreamRxState {
+    /// 有效帧长（ms）：本条流**真实使用**的帧长，由 `OPEN_STREAM` 协商得到。
+    frame_ms: u32,
+    /// 一拍的长度（重排窗口 / 播放节奏）。
+    frame_period: Duration,
+    /// 一拍的长度（µs，自适应抖动的换算基准）。
+    frame_us: u32,
+    /// 接收解码态（解码器 + 掩盖器 + 缓冲）。
+    audio_receiver: AudioReceiver,
+    /// 一帧有界重排窗口。
+    packet_reorder: PacketReorderBuffer,
+    /// `FRAME_10MS` 标志位与有效帧长**不符**的音频包数（本会话累计）。
+    ///
+    /// 为什么要有这个计数：这项不一致**不中断、不断流、不报错给用户**（帧长是软约定，
+    /// 硬断开只会把一条本来还能听的流变成彻底没声音），但「两端档位不一致」必须留下可查的
+    /// 证据 —— 否则它又是一个「只有听感是坏的、遥测全绿」的坑。形状沿用现有累计计数。
+    flag_mismatches: u64,
+}
+
+impl StreamRxState {
+    /// 按给定有效帧长建一整套接收态。
+    fn new(codec: CodecConfig, frame_ms: u32) -> Result<Self, AudioError> {
+        let frame_ms = frame_ms.max(1);
+        let effective = effective_codec(codec, frame_ms);
+        Ok(Self {
+            frame_ms,
+            frame_period: Duration::from_millis(u64::from(frame_ms)),
+            frame_us: frame_ms.saturating_mul(1_000),
+            audio_receiver: AudioReceiver::new(effective)?,
+            packet_reorder: PacketReorderBuffer::new(Duration::from_millis(u64::from(frame_ms))),
+            flag_mismatches: 0,
+        })
+    }
+
+    /// 换到新的有效帧长：全部派生量**一起**重建。
+    ///
+    /// 重建而不是「改字段」：`OpusDecoder` 的帧长在构造时就固定了，中途改长度只会让解码
+    /// 失败并静默走掩盖 —— 那正是本次要根治的症状。返回错误时解码态保持原样（帧长没变），
+    /// 调用方据此决定是否降级处理。
+    fn retarget(&mut self, codec: CodecConfig, frame_ms: u32) -> Result<(), AudioError> {
+        let frame_ms = frame_ms.max(1);
+        if frame_ms == self.frame_ms {
+            return Ok(());
+        }
+        let effective = effective_codec(codec, frame_ms);
+        let receiver = AudioReceiver::new(effective)?;
+        self.audio_receiver = receiver;
+        self.packet_reorder = PacketReorderBuffer::new(Duration::from_millis(u64::from(frame_ms)));
+        self.frame_ms = frame_ms;
+        self.frame_period = Duration::from_millis(u64::from(frame_ms));
+        self.frame_us = frame_ms.saturating_mul(1_000);
+        // 计数不清零：它是「这一段会话里发生过多少次不一致」的累计口径，
+        // 换档之后仍然该看得到换档前的那些。
+        Ok(())
+    }
+
+    /// 本包 `FRAME_10MS` 位与有效帧长是否一致；不一致时计数。
+    ///
+    /// # 契约
+    ///
+    /// `FRAME_10MS`（bit2）冻结的语义是「**该流**使用 10 ms 帧长」，它描述的是**流**而不是
+    /// 单个包。所以校验口径是「这一位 ⇔ 本条流的有效帧长是 10 ms」，两边必须同真同假：
+    ///
+    /// - 有效帧长 10 ms + 位已置 → 一致；
+    /// - 有效帧长 ≠ 10 ms + 位未置 → 一致；
+    /// - 其余两种组合 → 不一致（记数 + `warn`，**不断流**）。
+    ///
+    /// 用 `Flags::contains` 而不是 `bits() & 4`：它是「全部包含」语义，与本仓库其它
+    /// flags 判定（`FEC_REDUNDANT`）保持同一读法。
+    fn observe_frame_flag(&mut self, flags: Flags) -> bool {
+        let expects_10ms = self.frame_ms == 10;
+        let declared_10ms = flags.contains(Flags::FRAME_10MS);
+        if declared_10ms == expects_10ms {
+            return true;
+        }
+        self.flag_mismatches = self.flag_mismatches.saturating_add(1);
+        false
+    }
+}
+
+/// 把「本地档位」与「本条流的有效帧长」合成接收侧真正要用的 codec。
+///
+/// # 契约
+///
+/// **只有 `frame_ms` 跟随发送端**，其余参数（码率 / 复杂度 / 应用模式 / FEC / VBR）保持本地 ——
+/// 它们描述的是**本端**的解码能力与偏好，不是对端的编码选择；把它们一起改了等于让对端悄悄
+/// 决定本端的解码配置，那不在「帧长联动」的契约里。
+fn effective_codec(local: CodecConfig, frame_ms: u32) -> CodecConfig {
+    CodecConfig {
+        frame_ms: frame_ms.max(1),
+        ..local
+    }
+}
+
+/// 从 `OPEN_STREAM.codec_prefs` 选出本条流的有效帧长（ms）。
+///
+/// # 契约
+///
+/// 取**第一个** `Opus` 项的 `frame_ms`（prefs 按优先级降序，见 `OpenStreamPayload` 的文档）；
+/// 合法值 ∈ {10, 20, 40, 60}（`is_supported_frame_ms`）。以下情况**一律回退本地档**：
+///
+/// - prefs 里没有 `Opus` 项（只有 `Pcm16`，或干脆是空的）；
+/// - 第一个 `Opus` 项的 `frame_ms` 不在合法集合里（对端版本更新 / 载荷损坏）。
+///
+/// 回退而不是拒绝：帧长不合法时最可能的解释是「对端比我们新」，而本地档一定自洽，
+/// 继续用本地档解出来的音频至少有声音；拒绝开流则会让用户完全听不到。
+fn negotiated_frame_ms(prefs: &[CodecPref], local_frame_ms: u32) -> u32 {
+    for pref in prefs {
+        if let CodecPref::Opus { frame_ms, .. } = pref {
+            let candidate = u32::from(*frame_ms);
+            if audiolink_audio::is_supported_frame_ms(candidate) {
+                return candidate;
+            }
+            // 第一个 Opus 项就是非法的：**不再往后找**。继续找等于用第二优先级覆盖发送端的
+            // 首选，而首选非法本身就说明这次协商的前提已经坏了 —— 回退本地档是更诚实的处置。
+            tracing::warn!(
+                frame_ms = candidate,
+                local_frame_ms,
+                "OPEN_STREAM 的帧长非法，回退本地档"
+            );
+            return local_frame_ms.max(1);
+        }
+    }
+    local_frame_ms.max(1)
 }
 
 /// 单路接收解码状态：序号时间轴、Opus 状态与 PCM 掩盖历史必须一起推进。
@@ -3758,15 +3753,6 @@ async fn answer_probe_datagram(
     }
 }
 
-/// 进入「等人工输入 PIN」的窗口：把握手死线顺延到 `pin_wait`（**从此刻起算**）。
-///
-/// 为什么是「顺延」而不是「把总死线放宽」：§5 的握手本身（HELLO / AUTH 往返）是**机器时间**，
-/// 毫秒级就该走完；把总死线放宽会让「对端发一半就装死」这种半开连接一起被容忍。
-/// 顺延只发生在**确实有真人在看屏幕输数字**的那一刻（收到 / 发出 `PAIR_REQUIRED` 之后）。
-fn arm_pin_wait(deadline: &mut tokio::time::Instant, pin_wait: Duration) {
-    *deadline = tokio::time::Instant::now() + pin_wait;
-}
-
 /// 握手死线到点的统一处置（阶段零与阶段一共用，两处判据必须一致）。
 ///
 /// 返回 `false` = 调用方应立刻放弃这条连接（既没握手、也没探测：10 s 无事发生的连接不值得留着）；
@@ -3900,6 +3886,8 @@ async fn handle_control(
     next_stream_id: &mut u32,
     codec: &CodecConfig,
     jitter_depth: &Arc<AtomicUsize>,
+    adaptive_jitter: &mut AdaptiveJitterDepth,
+    rx_state: &mut StreamRxState,
 ) {
     match request {
         ControlRequest::OpenStream(open) => {
@@ -3922,7 +3910,66 @@ async fn handle_control(
             *next_stream_id = next_stream_id.saturating_add(1);
             *stream_id = Some(id);
 
-            match spawn_playout_thread(inner, session, codec, Arc::clone(jitter_depth)) {
+            // ---------------------------------------------------------------
+            // 帧长协商（本条流）
+            // ---------------------------------------------------------------
+            //
+            // 发送端在 `codec_prefs` 里给出它**真正会用**的帧长；接收端的解码态必须跟着它走，
+            // 否则每个真实包对解码器来说都「不是它期望的那一帧」，会被当 PLC 掩盖 ——
+            // 链路上一切正常、只有听感是发闷/断续的，正是本契约要根治的那个坑。
+            //
+            // 只跟随帧长，其余保持本地（见 `effective_codec`）；非法/缺失回退本地档并记 warn
+            // （见 `negotiated_frame_ms`），绝不因此拒绝开流。
+            let negotiated = negotiated_frame_ms(&open.codec_prefs, codec.frame_ms);
+            let switched = negotiated != rx_state.frame_ms;
+            if switched {
+                let previous_frame_ms = rx_state.frame_ms;
+                match rx_state.retarget(*codec, negotiated) {
+                    Ok(()) => {
+                        tracing::info!(
+                            negotiated_frame_ms = rx_state.frame_ms,
+                            local_frame_ms = codec.frame_ms,
+                            "OPEN_STREAM：本条流按发送端帧长解码"
+                        );
+                        // 换档后抖动深度按墙钟水位重换算到新帧长（20 ms ↔ 10 ms 互切时
+                        // 帧数余量不跟着帧长缩水/翻倍出错）。
+                        adaptive_jitter.set_frame_ms(rx_state.frame_ms);
+                        // 此刻播放线程还没建（playback 为 None 才会走到这里），store 不与
+                        // 播放线程的欠载升档竞争；1 Hz 控制器与本分支同属会话任务，也不穿插。
+                        jitter_depth.store(
+                            rescale_depth_frames(
+                                jitter_depth.load(Ordering::Relaxed),
+                                previous_frame_ms,
+                                rx_state.frame_ms,
+                            ),
+                            Ordering::Relaxed,
+                        );
+                    }
+                    Err(error) => {
+                        // 协商出的帧长**建不出解码器**（例如 40/60 ms 与本地 RESTRICTED_LOWDELAY
+                        // 冲突，见 `CodecConfig::validate`）：保持本地档继续，**不断流** ——
+                        // 用本地档至少还能解出一部分声音，拒绝开流则会让用户完全没声音。
+                        // `retarget` 失败时接收态按约定保持不变，这里只需如实报错。
+                        report_error(inner, session, &audio_error(&error));
+                        tracing::warn!(
+                            requested_frame_ms = negotiated,
+                            local_frame_ms = rx_state.frame_ms,
+                            "协商帧长无法解码，保持本地档"
+                        );
+                    }
+                }
+            }
+
+            // 遥测里的 `codec` 也必须换成**有效**档位：它是用户与验收报告读到的帧长，
+            // 停在本地档会让「协商到底生效了没有」在唯一能看见的数字上撒谎
+            // （听感已经跟着对端走了，遥测还写着本地档）。
+            let effective = effective_codec(*codec, rx_state.frame_ms);
+            if let Ok(mut telemetry) = session.telemetry.lock() {
+                telemetry.set_codec(effective.telemetry());
+            }
+
+            // 播放线程用**有效帧长**建：它的排队深度、掩盖器、PCM 长度同样由帧长派生。
+            match spawn_playout_thread(inner, session, &effective, Arc::clone(jitter_depth)) {
                 Ok(handle) => *playback = Some(handle),
                 Err(error) => {
                     report_error(inner, session, &error);
@@ -3932,7 +3979,7 @@ async fn handle_control(
 
             // §7：流开之前收到的组基准在这里补上 —— 否则那次 `GROUP_EPOCH` 就被静默丢掉了。
             if let Some(schedule) = take_stashed_schedule(session) {
-                let applied = apply_schedule(session, playback, schedule, codec.frame_ms);
+                let applied = apply_schedule(session, playback, schedule, rx_state.frame_ms);
                 tracing::info!(
                     epoch_id = schedule.epoch_id,
                     lead_ms = schedule.lead_ms,
@@ -3941,14 +3988,25 @@ async fn handle_control(
                 );
             }
 
+            // 协商结果写进快照：本端作为**接收端**时「本条流协商生效的帧长」就是它。
+            // 未开流时快照里这个字段是 `None`（见 `PeerSession::snapshot`），
+            // 所以这里必须显式写入 —— 否则 FFI 侧永远看不到协商结果。
+            session
+                .set_negotiated_frame_ms(Some(u8::try_from(rx_state.frame_ms).unwrap_or(u8::MAX)));
+
             let ack = ControlRequest::OpenStreamAck(OpenStreamAckPayload {
                 session_id: open.session_id,
                 stream_id: id,
-                codec_chosen: codec_pref(codec),
+                // 回给发送端的是**实际生效**的档位，而不是本地配置：帧长联动之后这两个值
+                // 可能不同（本端跟随了发送端的帧长），回错会让发送端以为对端没跟上。
+                codec_chosen: codec_pref(&effective),
                 epoch_id: 1,
                 epoch_local_us: 0,
             });
             let _ = send_control(control, &ack).await;
+            let _ = inner
+                .events
+                .send(EngineEvent::PeerUpdated(Box::new(session.snapshot())));
         }
 
         ControlRequest::OpenStreamAck(ack) => {
@@ -4048,6 +4106,12 @@ async fn handle_control(
             stop_capture(capture).await;
             stop_playout(playback).await;
             *stream_id = None;
+            // 流没了，「本条流协商生效的帧长」也就不存在了 —— 留着它会让 UI 显示一个
+            // 已经不成立的读数（下一个 `OPEN_STREAM` 会重新写入）。
+            session.set_negotiated_frame_ms(None);
+            let _ = inner
+                .events
+                .send(EngineEvent::PeerUpdated(Box::new(session.snapshot())));
         }
 
         ControlRequest::Bye(_) => {
@@ -4063,7 +4127,7 @@ async fn handle_control(
             // 存储必须按 peer 分开：EngineEvent::Telemetry **不带对端 id**（契约 §5 的已知局限，
             // M3 修），事件本身区分不了来源，多对端时共用一份快照就会串流。
             if let Ok(mut slot) = session.peer_stats.lock() {
-                *slot = Some(stats);
+                *slot = Some((stats, Instant::now()));
             }
             let _ = inner.events.send(EngineEvent::Telemetry(Box::new(stats)));
         }
@@ -4219,8 +4283,8 @@ async fn discard_stale_session(engine: &Arc<Engine>, peer: NodeId) {
 ///
 /// 1. **旧会话必须先摘掉**：`connect_inner` 会按地址查重，对同地址的第二次连接直接回 1009 BUSY，
 ///    不摘就是「重连必然失败」。
-/// 2. **重拨必须走完整的 `connect_inner`**：它内部的 `is_trusted(peer_id)` 决定是否要求 PIN ——
-///    重连**不绕过信任库**，已配对过的对端凭指纹免 PIN，陌生人一样要 PIN。
+/// 2. **重拨必须走完整的 `connect_inner`**：连接建立、握手、摘表的路径与首次连接完全一致，
+///    重连不允许有首次连接没有的捷径。
 /// 3. **预算用尽要明确落 `ReconnectFailed`**：绝不留一条「看起来在重连」的僵尸状态。
 /// 4. **接流失败不能吞**：上一版用 `let _ =` 吞掉，队友指出那会让「重连成功但没声音」变成静默故障。
 /// 5. **回执必须落在表里当前那条会话上**：重连会把表项**换成人**（旧会话摘表 + Shutdown、
@@ -4418,6 +4482,7 @@ const MIXER_FULL: &str = "mixer is full (FR-12 allows 8 sources)";
 struct PlayoutMixSlot {
     /// 多路汇聚的混音器（owner 与 guest 共用这一个对象）。
     mixer: PlayoutMix,
+    frame_samples: usize,
     /// 当前 owner 的**源号**（0 = 无人持有播放设备）。
     ///
     /// 用源号当世代、而不是一个裸布尔：源号由 `NEXT_MIX_SOURCE` 全局单调分配、永不重复，
@@ -4473,22 +4538,7 @@ fn acquire_playout_mixer(
         sample_rate: 48_000,
         channels: 2,
     };
-    // 槽里已有混音器就复用（M4 语义），没有才新建。
-    let slot = match slot.as_ref() {
-        Some(existing) => Arc::clone(existing),
-        None => {
-            let fresh = Arc::new(PlayoutMixSlot {
-                mixer: Arc::new(Mutex::new(PcmMixer::new(
-                    format,
-                    codec.frame_samples(),
-                    PLAYBACK_QUEUE_FRAMES,
-                ))),
-                owner: AtomicU32::new(0),
-            });
-            *slot = Some(Arc::clone(&fresh));
-            fresh
-        }
-    };
+    let slot = mixer_slot_for_frame(&mut slot, format, codec.frame_samples())?;
     {
         let mut guard = slot.mixer.lock().unwrap_or_else(|e| e.into_inner());
         guard
@@ -4500,6 +4550,39 @@ fn acquire_playout_mixer(
         source,
         slot,
     })
+}
+
+fn mixer_slot_for_frame(
+    slot: &mut Option<Arc<PlayoutMixSlot>>,
+    format: MixFormat,
+    frame_samples: usize,
+) -> Result<Arc<PlayoutMixSlot>, AudioLinkError> {
+    if let Some(existing) = slot.as_ref() {
+        if existing.frame_samples == frame_samples {
+            return Ok(Arc::clone(existing));
+        }
+        let guard = existing
+            .mixer
+            .lock()
+            .map_err(|_| AudioLinkError::bad_request("playout mixer poisoned"))?;
+        if guard.source_count() != 0 {
+            return Err(AudioLinkError::cap_unsupported(
+                "simultaneous streams with different frame lengths are not supported",
+            ));
+        }
+    }
+
+    let fresh = Arc::new(PlayoutMixSlot {
+        mixer: Arc::new(Mutex::new(PcmMixer::new(
+            format,
+            frame_samples,
+            PLAYBACK_QUEUE_FRAMES,
+        ))),
+        frame_samples,
+        owner: AtomicU32::new(0),
+    });
+    *slot = Some(Arc::clone(&fresh));
+    Ok(fresh)
 }
 
 /// 设备打开失败后的重试间隔（M4/FR-27 懒接管）。
@@ -4600,7 +4683,7 @@ fn sink_written_frames(sink: &Option<Box<dyn PlayoutSink>>) -> u64 {
 
 /// 把「这一拍写出去的 PCM」喂给连续静音统计，并在**一段连续静音结束**时发事件。
 ///
-/// `synthetic = true` 表示这一拍是引擎补的静音（排播等待 / 过期丢弃 / 升档 Hold / 欠载），
+/// `synthetic = true` 表示引擎生成的输出（排播静音 / 升档 Hold 与欠载的掩盖），
 /// `false` 表示这是真实帧内容 —— 后者才是「有流但没声音」，也是现有遥测看不到的那一半。
 fn note_playout_beat(
     telemetry: &Arc<Mutex<TelemetryAggregator>>,
@@ -4758,6 +4841,34 @@ fn spawn_playout_thread(
     }
 }
 
+/// 播放节拍期间把 Windows 系统定时器粒度提到 1 ms：默认 15.6 ms 粒度下
+/// `std::thread::sleep` 的误差会超过一整个 10 ms 帧（见 docs/70）。离开作用域即还原。
+#[cfg(windows)]
+struct TimerResolutionGuard;
+
+#[cfg(windows)]
+impl TimerResolutionGuard {
+    fn new() -> Self {
+        // 播放节拍 1 ms 定时器粒度，见 docs/70。无指针参数，与 Drop 里的 timeEndPeriod 成对。
+        #[allow(unsafe_code)]
+        unsafe {
+            windows::Win32::Media::timeBeginPeriod(1);
+        }
+        Self
+    }
+}
+
+#[cfg(windows)]
+impl Drop for TimerResolutionGuard {
+    fn drop(&mut self) {
+        // 播放节拍 1 ms 定时器粒度，见 docs/70。与 new() 里的 timeBeginPeriod(1) 对称。
+        #[allow(unsafe_code)]
+        unsafe {
+            windows::Win32::Media::timeEndPeriod(1);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn playout_main(
     factory: &(dyn Fn() -> Result<Box<dyn PlayoutSink>, AudioError> + Send + Sync),
@@ -4780,6 +4891,19 @@ fn playout_main(
     frames: Receiver<PlaybackFrame>,
     ready_tx: std::sync::mpsc::Sender<Result<(), AudioLinkError>>,
 ) {
+    #[cfg(windows)]
+    let _timer_resolution = TimerResolutionGuard::new();
+    let frame_ms_u32 = u32::try_from(frame_ms).unwrap_or(20);
+    // 接收侧掩盖要等后续包到达才能发现洞；WiFi 暂停送包时，必须在播放截止时刻兜底。
+    // 历史保存于增益之前，欠载时也重新应用当前音量，避免静音命令被旧音频绕过。
+    let mut playout_concealer = match PcmConcealer::new(frame_ms_u32) {
+        Ok(concealer) => concealer,
+        Err(error) => {
+            let _ = ready_tx.send(Err(audio_error(&error)));
+            return;
+        }
+    };
+    let mut concealed_pcm = vec![0.0; pcm_len];
     // M4 懒接管：本路有没有设备**不是**建会话时定下的，而是运行期抢来的 —— 所以这里
     // 一开始可以是 None，循环里再抢（见下方的接管块）。
     let mut sink: Option<Box<dyn PlayoutSink>> = None;
@@ -4807,15 +4931,15 @@ fn playout_main(
     let _ = ready_tx.send(Ok(()));
 
     let period = Duration::from_millis(frame_ms);
-    // 帧长在协议里是 u32（10 / 20 / 40 / 60 ms）；配置路径已经保证它非 0，这里的兜底只为
-    // 「不可能发生的 0」不 panic（静音账宁愿记 20 ms，也不愿整条播放线程倒下）。
-    let frame_ms_u32 = u32::try_from(frame_ms).unwrap_or(20);
     let silence = vec![0f32; pcm_len];
     let mut primed = false;
-    let mut depth_state = PlayoutDepthState::new(jitter_depth.load(Ordering::Relaxed));
+    let mut depth_state =
+        PlayoutDepthState::new(jitter_depth.load(Ordering::Relaxed), frame_ms_u32);
+    let mut backlog = PlayoutBacklog::default();
     let mut next_write = Instant::now();
     let mut expected_seq: Option<u32> = None;
     let mut pending: Option<PlaybackFrame> = None;
+    let mut playout_gap = PlayoutGapState::default();
     let mut refill_after_underrun = false;
     let mut scheduled_reported = false;
     let mut mixed: Vec<f32> = Vec::new();
@@ -4826,7 +4950,15 @@ fn playout_main(
         // 变成出声时间抖动，§7 的「由 epoch 驱动而非到达时间驱动」就落空了。
         let now = Instant::now();
         if next_write > now {
-            std::thread::sleep(next_write - now);
+            // sleep 的精度不兜底（Windows 默认定时器粒度 15.6 ms，超过一整个 10 ms 帧）：
+            // 先睡到死线前 1 ms，再自旋校准到准确时刻。
+            let remaining = next_write - now;
+            if remaining > Duration::from_millis(1) {
+                std::thread::sleep(remaining - Duration::from_millis(1));
+            }
+            while Instant::now() < next_write {
+                std::hint::spin_loop();
+            }
         }
 
         // 后端阻塞或系统抢占超过一帧时，那些播放拍已经过去，不能通过随后慢慢提交旧帧来
@@ -4889,11 +5021,12 @@ fn playout_main(
         // 起步攒帧：不足当前目标深度就继续等。这一拍**不补静音也不算欠载** ——
         // 还没开始播，谈不上「欠」；把攒帧期算成欠载会让欠载率失去意义。
         if !primed {
-            let target = jitter_depth
-                .load(Ordering::Relaxed)
-                .clamp(MIN_TARGET_FRAMES, MAX_TARGET_FRAMES);
+            let target = jitter_depth.load(Ordering::Relaxed).clamp(
+                frames_for_ms(MIN_TARGET_MS, frame_ms_u32),
+                frames_for_ms(MAX_TARGET_MS, frame_ms_u32),
+            );
             if frames.len() >= target {
-                depth_state = PlayoutDepthState::new(target);
+                depth_state = PlayoutDepthState::new(target, frame_ms_u32);
                 primed = true;
                 // §7 起播对齐：有排播时**首拍直接落在该帧的 target 上**，没有排播时才退回全局帧网格。
                 //
@@ -4967,6 +5100,9 @@ fn playout_main(
                 while frames.try_recv().is_ok() {}
                 pending = None;
                 expected_seq = None;
+                playout_gap.on_ready();
+                playout_concealer.reset();
+                backlog.reset();
                 // 新 sink 的队列是空的：按当前抖动目标重新攒出余量，否则刚重建就连着欠载。
                 refill_after_underrun = true;
                 // 重建本身耗时（打开设备通常几十毫秒）：把节奏拉回「现在 + 一拍」，
@@ -4975,11 +5111,12 @@ fn playout_main(
             }
         }
 
-        // 升档必须真的建立出额外余量。若队列还没攒到新目标，这一拍写静音但不推进序号；
-        // 最多从 20/40 ms 升到 60 ms，因此重缓冲有严格上界，不会恢复成永久增长。
-        let requested_target = jitter_depth
-            .load(Ordering::Relaxed)
-            .clamp(MIN_TARGET_FRAMES, MAX_TARGET_FRAMES);
+        // 升档必须真的建立出额外余量。若队列还没攒到新目标，这一拍写掩盖音频但不推进序号；
+        // 弱网最多升到 120 ms；重缓冲有严格上界，不会恢复成永久增长。
+        let requested_target = jitter_depth.load(Ordering::Relaxed).clamp(
+            frames_for_ms(MIN_TARGET_MS, frame_ms_u32),
+            frames_for_ms(MAX_TARGET_MS, frame_ms_u32),
+        );
         let buffered_frames = frames.len() + usize::from(pending.is_some());
         // 最高档位无法再靠“升档”触发补水。欠载后等到至少一个新帧到达，再按当前目标
         // 重新建立余量；完全断流时不进入 Hold，播放游标仍按真实时间推进。
@@ -4989,13 +5126,14 @@ fn playout_main(
         }
         // §7 预约播放：有组基准时，起播时刻由 epoch 决定，而不是「队列攒够就播」。
         // 等待与丢弃都补静音（保持时间轴推进），但等待**不**推进游标 —— 那帧还要在目标时刻播。
-        let mut scheduled_mode = false;
+        // 队列为空时也仍然受 epoch 约束，不能把暂时取不到帧误判成自由播放并升档。
+        let scheduled_mode = sync.lock().is_ok_and(|state| state.schedule.is_some());
         if let Some((action, sample_index)) =
             schedule_action(&sync, peek_frame(&frames, &mut pending))
         {
-            scheduled_mode = true;
             match action {
                 PlayoutAction::Wait { wait_us } => {
+                    playout_concealer.reset();
                     report_playout_scheduled(
                         &events,
                         &sync,
@@ -5012,6 +5150,7 @@ fn playout_main(
                     continue;
                 }
                 PlayoutAction::Drop { late_us } => {
+                    playout_concealer.reset();
                     if let Some(frame) = pending.take()
                         && let Some(seq) = expected_seq.as_mut()
                     {
@@ -5039,29 +5178,41 @@ fn playout_main(
             }
         }
 
-        // §7：**有排播时不参与**抖动缓冲的「升档补余量」。
+        // §7：有排播时不参与抖动深度升降，时间轴只能由 epoch 决定。
         //
         // 为什么（2026-09-17 第四次定位）：`Hold` 会「写一拍静音、不推进序号」—— 在本地游标模式下这
         // 是建立余量的正当手段，但在排播模式下它等于把这一端**整条时间轴后移一帧**。两端各自自适应升档，
         // 只要一端触发、另一端没触发，就出现「组内偏差不是 0 就是整整一帧」的失败样本
         // （实测 P50 20.03 ms、P95 20.38 ms，扣帧后 0.00 / 0.03 ms）。排播模式下时间轴由 epoch 说了算，
         // 余量该由协议 §7 的 lead_ms 提供，不该靠插入静音。
-        let depth_action = depth_state.action(requested_target, buffered_frames);
+        let depth_action = if scheduled_mode {
+            PlayoutDepthAction::Play
+        } else {
+            depth_state.action(requested_target, buffered_frames)
+        };
         match depth_action {
-            PlayoutDepthAction::Hold if scheduled_mode => {} // 排播模式：不 Hold，落到下面的正常取帧
             PlayoutDepthAction::Hold => {
-                if let Ok(mut telemetry) = telemetry.lock() {
-                    telemetry.record_underrun();
-                }
-                if write_frame(&mut sink, &mixer, mix_source, &silence, &mut mixed)
+                backlog.reset();
+                // 主动补水不算新欠载，否则 1 Hz 控制器会被自己的 Hold 反复触发升档。
+                conceal_playout_frame(&mut playout_concealer, &mut concealed_pcm);
+                apply_playout_gain(&mut concealed_pcm, &gain_state, &local_gain_state);
+                if write_frame(&mut sink, &mixer, mix_source, &concealed_pcm, &mut mixed)
                     == FrameWrite::Fatal
                 {
                     break 'playout;
                 }
-                note_playout_beat(&telemetry, &events, peer, &silence, frame_ms_u32, true);
+                note_playout_beat(
+                    &telemetry,
+                    &events,
+                    peer,
+                    &concealed_pcm,
+                    frame_ms_u32,
+                    true,
+                );
                 continue;
             }
             PlayoutDepthAction::DropOldest(count) => {
+                backlog.reset();
                 if !drop_oldest_due_frames(
                     &frames,
                     &mut pending,
@@ -5071,29 +5222,51 @@ fn playout_main(
                 ) {
                     break 'playout;
                 }
+                playout_concealer.note_discontinuity();
             }
             PlayoutDepthAction::Play => {}
         }
 
+        // 多源共享一个设备，预约播放则共享 epoch；不能用某一路的水位
+        // 改写其他路的时间轴。仅单源普通播放使用平台确认的输出快照。
+        let single_source = mixer
+            .as_ref()
+            .is_none_or(|mixer| mixer.lock().is_ok_and(|mixer| mixer.source_count() == 1));
+        if !scheduled_mode && single_source && depth_action == PlayoutDepthAction::Play {
+            let output = sink.as_mut().and_then(|open| open.buffer_state());
+            let action = backlog.observe(
+                Instant::now(),
+                frames.len() + usize::from(pending.is_some()),
+                requested_target,
+                (pcm_len / audiolink_audio::CHANNELS as usize) as u32,
+                output,
+            );
+            if action != BacklogAction::Play {
+                if !drop_oldest_due_frames(&frames, &mut pending, &mut expected_seq, &telemetry, 1)
+                {
+                    break 'playout;
+                }
+                playout_concealer.note_discontinuity();
+                tracing::debug!(
+                    ?action,
+                    ?output,
+                    requested_target,
+                    "playout backlog recovery"
+                );
+                if action == BacklogAction::DrainOutput {
+                    // 下游已有足够音频：停写一拍让它消耗，不能补静音把同一段水位灌回去。
+                    continue;
+                }
+            }
+        } else {
+            backlog.reset();
+        }
+
         match take_due_frame(&frames, &mut pending, &mut expected_seq, &telemetry) {
             DueFrame::Ready(mut frame) => {
-                // §4.1：音量在**播放前**应用，并按帧走一个步长（硬切增益就是爆音）。
-                // §4.1 + FR-12：两层增益**各自走自己的 ramp**，在播放前合成为一次乘法
-                // （本地 × 对端下发）。这是全链路唯一的增益乘法点，也是「相乘」语义的落点。
-                let remote_gain = gain_state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .next_frame_gain();
-                let local_gain = local_gain_state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .next_frame_gain();
-                let gain = combine_local_and_remote(remote_gain, local_gain);
-                if (gain - 1.0).abs() > f32::EPSILON {
-                    for sample in frame.samples.iter_mut() {
-                        *sample *= gain;
-                    }
-                }
+                playout_gap.on_ready();
+                let _ = playout_concealer.process_good(&mut frame.samples);
+                apply_playout_gain(&mut frame.samples, &gain_state, &local_gain_state);
                 if let Some(watchdog) = watchdog.as_mut() {
                     watchdog.note_ready_frame(Instant::now());
                 }
@@ -5126,25 +5299,41 @@ fn playout_main(
                 }
             }
             DueFrame::Missing => {
-                // 欠载（§7 第 4 条）：补齐静音并计数。**不**静默忽略 ——
-                // 「能听出卡顿」与「遥测显示欠载」必须是同一件事。
+                backlog.reset();
+                let gap =
+                    playout_gap.on_missing(Instant::now(), frames.is_empty() && pending.is_none());
+                if !scheduled_mode && gap.resync_cursor {
+                    expected_seq = None;
+                }
+                // 欠载仍按原口径计数；实际输出在 120 ms 内淡出，不能等后续包才开始掩盖。
+                // plc_count 保留接收解码侧的序号缺口口径，避免迟到包到达时重复计数。
                 if let Ok(mut telemetry) = telemetry.lock() {
                     telemetry.record_underrun();
                 }
                 // §7：排播模式下不升档 —— 升档会引入「Hold 一拍」，而那会把整条时间轴后移一帧。
-                if !scheduled_mode {
+                if !scheduled_mode && gap.raise_depth {
+                    let max_target = frames_for_ms(MAX_TARGET_MS, frame_ms_u32);
                     let _ =
                         jitter_depth.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
-                            Some((depth + 1).min(MAX_TARGET_FRAMES))
+                            Some((depth + 1).min(max_target))
                         });
                     refill_after_underrun = true;
                 }
-                if write_frame(&mut sink, &mixer, mix_source, &silence, &mut mixed)
+                conceal_playout_frame(&mut playout_concealer, &mut concealed_pcm);
+                apply_playout_gain(&mut concealed_pcm, &gain_state, &local_gain_state);
+                if write_frame(&mut sink, &mixer, mix_source, &concealed_pcm, &mut mixed)
                     == FrameWrite::Fatal
                 {
                     break 'playout;
                 }
-                note_playout_beat(&telemetry, &events, peer, &silence, frame_ms_u32, true);
+                note_playout_beat(
+                    &telemetry,
+                    &events,
+                    peer,
+                    &concealed_pcm,
+                    frame_ms_u32,
+                    true,
+                );
             }
             DueFrame::Disconnected => break,
         }
@@ -5162,6 +5351,34 @@ fn playout_main(
 
     if let Some(open) = sink.as_mut() {
         open.stop();
+    }
+}
+
+fn conceal_playout_frame(concealer: &mut PcmConcealer, samples: &mut [f32]) {
+    if concealer.conceal_into(samples).is_err() {
+        samples.fill(0.0);
+    }
+}
+
+/// 真帧与播放端掩盖共用增益路径；两层 ramp 每个输出拍各前进一步，历史不重复乘增益。
+fn apply_playout_gain(
+    samples: &mut [f32],
+    remote: &Arc<Mutex<GainState>>,
+    local: &Arc<Mutex<GainState>>,
+) {
+    let remote_gain = remote
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .next_frame_gain();
+    let local_gain = local
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .next_frame_gain();
+    let gain = combine_local_and_remote(remote_gain, local_gain);
+    if (gain - 1.0).abs() > f32::EPSILON {
+        for sample in samples {
+            *sample *= gain;
+        }
     }
 }
 
@@ -5200,6 +5417,40 @@ enum DueFrame {
     Ready(PlaybackFrame),
     Missing,
     Disconnected,
+}
+
+#[derive(Default)]
+struct PlayoutGapState {
+    in_gap: bool,
+    empty_since: Option<Instant>,
+}
+
+struct PlayoutGapAction {
+    raise_depth: bool,
+    resync_cursor: bool,
+}
+
+impl PlayoutGapState {
+    fn on_ready(&mut self) {
+        self.in_gap = false;
+        self.empty_since = None;
+    }
+
+    fn on_missing(&mut self, now: Instant, empty: bool) -> PlayoutGapAction {
+        let raise_depth = !self.in_gap;
+        self.in_gap = true;
+        let resync_cursor = if empty {
+            let since = *self.empty_since.get_or_insert(now);
+            now.saturating_duration_since(since) >= Duration::from_millis(CONCEAL_FADE_MS as u64)
+        } else {
+            self.empty_since = None;
+            false
+        };
+        PlayoutGapAction {
+            raise_depth,
+            resync_cursor,
+        }
+    }
 }
 
 /// 取当前播放拍对应的帧；迟到帧直接丢弃，未来帧留到它自己的播放拍。
@@ -5332,6 +5583,37 @@ fn report_playout_scheduled(
     });
 }
 
+/// 一条流的基础 `flags`：帧长相关的位由**本端档位**决定（发送方向永远用本地 codec）。
+///
+/// # 契约（`FRAME_10MS`, bit2）
+///
+/// 本端 `codec.frame_ms == 10` 时，本会话发出的**每个**音频数据报都要带这一位 ——
+/// 主包、冗余副本、NACK 重传三者一视同仁。理由：这一位的语义是「**该流**使用 10 ms 帧长」
+/// （见 `Flags::FRAME_10MS` 的文档），它描述的是流而不是单个包；只在主包上置位会让
+/// 接收端对重传包做出相反的判定，而重传包恰恰是丢包时唯一还在到的东西。
+///
+/// 接收端据此交叉校验协商结果（`StreamRxState::observe_frame_flag`）：位与有效帧长不符时
+/// 只计数 + `warn`，**不断流**。
+fn stream_flags(codec: &CodecConfig) -> Flags {
+    if codec.frame_ms == 10 {
+        Flags::FRAME_10MS
+    } else {
+        Flags::NONE
+    }
+}
+
+/// 在基础位图上叠加本次发送的副本类型标志。
+///
+/// 用 `from_bits` + `|` 而不是「各自写死一个常量」：`Flags` 的构造器是私有的，
+/// 而位图叠加本来就是这个类型要表达的意思（协议 §3 的 flags 是**位**集合）。
+fn with_copy(base: Flags, copy: AudioCopy) -> Flags {
+    let copy_bits = match copy {
+        AudioCopy::Primary => Flags::NONE,
+        AudioCopy::Redundant => Flags::FEC_REDUNDANT,
+    };
+    Flags::from_bits(base.bits() | copy_bits.bits())
+}
+
 fn codec_pref(config: &CodecConfig) -> CodecPref {
     CodecPref::Opus {
         frame_ms: u8::try_from(config.frame_ms).unwrap_or(20),
@@ -5354,12 +5636,9 @@ fn new_stop_flag() -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
+mod backlog;
 mod jitter;
 mod nack;
 #[cfg(test)]
-mod pairing_tests;
-#[cfg(test)]
 mod playout_tests;
-#[cfg(test)]
-mod revoke_tests;
 mod sink_watchdog;

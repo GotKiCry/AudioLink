@@ -40,7 +40,7 @@ import com.gotkicry.audiolink.ui.i18n.sendGateText
  * 主机 —— 本机提供声音、被连接的一方：**采集源 + 推流控制**。
  *
  * 为什么只管这两件事（归位）：本机也可以当**接收端**（去听另一台主机），但那部分已经搬到
- * [ReceiverEntryCard] —— 填地址、输码是接收端的动作，和采集源、推流并排在一张卡里，
+ * [ReceiverEntryCard] —— 填地址、连接是接收端的动作，和采集源、推流并排在一张卡里，
  * 用户会不知道"我该填还是该等"。拆开之后每张卡只讲一个角色，而且各连着对应的面板：
  * 接收端 = [ReceiverEntryCard] → [ReceiverDeck]；主机 = [HostAddressCard] → 本卡。
  *
@@ -196,7 +196,7 @@ fun SenderDeck(
             }
         }
 
-        // 主机路径的提示与错误：输码、断开那两类已经归了接收端入口卡（见 [hostPathNote] /
+        // 主机路径的提示与错误：断开那一类已经归了接收端入口卡（见 [hostPathNote] /
         // [hostPathError]），这里只说推流这一侧的事 —— 两张卡各管一段，同一句话不会出现两遍，
         // 也不会两边都不出现。
         hostPathNote(sender)?.let { hint ->

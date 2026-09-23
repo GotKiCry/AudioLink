@@ -185,36 +185,29 @@ fn discovery_txt_round_trip() {
         "客厅 PC".to_string(),
         Platform::Android,
         Caps::from_bits(0x3),
-        true,
     );
     let pairs = txt.to_pairs();
-    assert_eq!(pairs.len(), 7);
+    assert_eq!(pairs.len(), 6);
     assert_eq!(pairs[0].1, "1");
     assert_eq!(pairs[1].1, "0x0201");
     assert_eq!(pairs[2].1, "3f9a1c0b8e77d2a4"); // 规范化小写（§9.2）
     assert_eq!(pairs[3].1, "客厅 PC");
     assert_eq!(pairs[4].1, "android");
     assert_eq!(pairs[5].1, "3");
-    assert_eq!(pairs[6].1, "1");
 
     let expected = DiscoveryTxt::new(
         "3f9a1c0b8e77d2a4".to_string(),
         "客厅 PC".to_string(),
         Platform::Android,
         Caps::from_bits(0x3),
-        true,
     );
     assert_eq!(DiscoveryTxt::from_pairs(&pairs).unwrap(), expected);
 
-    // 未知 Key 忽略；`paired` 缺失按 false（§9.2 向前兼容）
-    let mut relaxed: Vec<(String, String)> = pairs
-        .iter()
-        .filter(|(key, _)| key != "paired")
-        .cloned()
-        .collect();
+    // 未知 Key 忽略（§9.2 向前兼容）：旧版 TXT 里的 `paired` 如今也只是一条未知 Key。
+    let mut relaxed: Vec<(String, String)> = pairs.clone();
+    relaxed.push(("paired".to_string(), "1".to_string()));
     relaxed.push(("vendor_x".to_string(), "whatever".to_string()));
     let parsed = DiscoveryTxt::from_pairs(&relaxed).unwrap();
-    assert!(!parsed.paired);
     assert_eq!(parsed.id, "3f9a1c0b8e77d2a4");
 
     // 缺任一必需 Key → BadRequest
@@ -227,11 +220,6 @@ fn discovery_txt_round_trip() {
         let err = DiscoveryTxt::from_pairs(&partial).unwrap_err();
         assert_eq!(err.code(), ErrorCode::BadRequest, "缺 {missing} 必须拒绝");
     }
-
-    // 非法字段值
-    let mut bad = pairs.clone();
-    bad.push(("paired".to_string(), "yes".to_string()));
-    assert!(DiscoveryTxt::from_pairs(&bad).is_err());
 
     // §9.2：`v` 只接受 ASCII 数字（`+1` / `-1` / 空串必须拒绝）
     for value in ["+1", "-1", "", "1.0"] {
@@ -306,9 +294,9 @@ fn enum_tables_are_consistent() {
 
     // 命令码：同上
     let op_known: Vec<u8> = OpCode::ALL.iter().map(|op| op.as_u8()).collect();
-    // M4 新增 RECEIVER_EPOCH（0x44）后是 25 项。改这个数字必须是有意的 ——
-    // 它存在的意义就是让「协议表变了」这件事无法悄悄溜过去。
-    assert_eq!(op_known.len(), 25);
+    // M4 新增 RECEIVER_EPOCH（0x44）、再删掉配对用的 0x03–0x07 五条之后是 20 项。
+    // 改这个数字必须是有意的 —— 它存在的意义就是让「协议表变了」这件事无法悄悄溜过去。
+    assert_eq!(op_known.len(), 20);
     for raw in 0..=u8::MAX {
         match OpCode::from_u8(raw) {
             Some(op) => assert!(op_known.contains(&raw) && op.as_u8() == raw),
@@ -318,13 +306,25 @@ fn enum_tables_are_consistent() {
 
     // 错误码：§11 全表自洽 + 未分配值必须为 None
     for code in [
-        1001u16, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 2001, 2002, 2003, 3001,
+        1001u16, 1002, 1005, 1006, 1007, 1008, 1009, 2001, 2002, 2003, 3001,
     ] {
         let parsed = ErrorCode::from_u16(code).unwrap();
         assert_eq!(parsed.as_u16(), code);
         assert!(!parsed.name().is_empty());
     }
-    for unknown in [0u16, 1000, 1010, 2000, 2004, 3000, 3002, u16::MAX] {
+    // 1003 / 1004（旧 PAIR_REJECTED / AUTH_FAILED）随配对机制一起删除 → 现在是未分配值。
+    for unknown in [
+        0u16,
+        1000,
+        1003,
+        1004,
+        1010,
+        2000,
+        2004,
+        3000,
+        3002,
+        u16::MAX,
+    ] {
         assert!(
             ErrorCode::from_u16(unknown).is_none(),
             "{unknown} 应为未分配"

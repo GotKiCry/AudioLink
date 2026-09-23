@@ -3,6 +3,6 @@
 // 约束：compileSdk = 37（Compose 1.12+ 强制）、targetSdk = 36（ADR-009：升 37 会强制
 //       ACCESS_LOCAL_NETWORK 运行时权限，导致局域网收发 EPERM）
 plugins {
-    id("com.android.application") version "9.4.0" apply false
+    id("com.android.application") version "9.1.1" apply false
     id("org.jetbrains.kotlin.plugin.compose") version "2.4.20" apply false
 }

@@ -17,8 +17,7 @@ use std::time::Duration;
 use audiolink_audio::{
     AudioError, DeviceFormat, NullPlayout, PlayoutSink, PlayoutStats, SyntheticCapture,
 };
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::ErrorCode;
+use audiolink_engine::{Engine, EngineConfig, SessionState};
 use tokio::sync::mpsc;
 
 struct RecordingSink {
@@ -94,18 +93,10 @@ async fn two_aligned_sources_keep_feeding_the_mixer() {
 
     let outcome = tokio::time::timeout(Duration::from_secs(90), async {
         for sender in &senders {
-            let mut events = receiver.subscribe();
-            let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-            assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-            let pin = loop {
-                if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-                    break pin;
-                }
-            };
             sender
-                .submit_pin(receiver_id, &pin)
+                .connect(receiver.local_addr())
                 .await
-                .expect("PIN 配对");
+                .expect("连接应当直接成功（无认证）");
             while !sender
                 .peers()
                 .iter()
@@ -122,7 +113,7 @@ async fn two_aligned_sources_keep_feeding_the_mixer() {
     })
     .await;
 
-    let stats = outcome.expect("90 s 内必须完成配对与开流");
+    let stats = outcome.expect("90 s 内必须完成连接与开流");
 
     for sender in &senders {
         sender.shutdown().await;

@@ -38,8 +38,7 @@ use audiolink_audio::{
     AudioError, CaptureSource, CaptureStats, CapturedPacket, DeviceFormat, NullPlayout,
     PlayoutSink, PlayoutStats, SyntheticCapture,
 };
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::ErrorCode;
+use audiolink_engine::{Engine, EngineConfig, SessionState};
 
 /// 判据（先写死，避免事后解释）：后段水位中位数比前段高出这么多 ⇒ 判「复现成功」。
 const REPRO_TOLERANCE_US: u32 = 20_000;
@@ -216,24 +215,16 @@ async fn water_level_growth_repro() {
 
     let receiver = Engine::start(recv_config).await.expect("接收引擎");
     let accept = receiver.spawn_accept_loop();
-    let mut events = receiver.subscribe();
     let receiver_id = receiver.info().id;
 
     let sender = Engine::start(send_config).await.expect("发送引擎");
     let sender_id = sender.info().id;
 
-    // §5 首次连接必须走 PIN 配对。
-    let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-            break pin;
-        }
-    };
+    // 无认证：一次 connect 即完成握手。
     sender
-        .submit_pin(receiver_id, &pin)
+        .connect(receiver.local_addr())
         .await
-        .expect("PIN 配对");
+        .expect("连接应当直接成功（无认证）");
 
     let deadline = Instant::now() + Duration::from_secs(15);
     while !sender

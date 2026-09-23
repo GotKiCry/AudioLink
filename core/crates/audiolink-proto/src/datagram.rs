@@ -263,7 +263,7 @@ fn auxiliary_datagram_bytes(ptype: Ptype, payload: &[u8]) -> Result<Vec<u8>, Aud
 /// 时钟探测请求载荷（§3 载荷表：恰 12 B）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClockProbe {
-    /// 探测序号（应答中回填，用于配对请求/应答）。
+    /// 探测序号（应答中回填，用于把请求与应答对上）。
     pub probe_seq: u32,
     /// 发送时刻（本地单调时钟，µs）。
     pub t1: i64,

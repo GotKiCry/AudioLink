@@ -4,6 +4,8 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Process
+import android.os.Build
+import com.gotkicry.audiolink.core.PcmBufferState
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -80,17 +82,28 @@ class LowLatencyPlayer(
         const val SHRINK_NOT_ATTEMPTED = -1
 
         /**
-         * **默认队列目标 = [QUEUE_TARGET_UNLIMITED]（满灌）**：保持 task-3/5 以来的既有行为。
+         * 标准档默认保留 30 ms 输出余量；与内核的全链积压回收配套，避免延迟搬到上游。
          *
-         * 为什么默认不改（Lead 裁决 + 我的复核一致）：本轮 A/B 显示 **30 ms 档确实严格更优**
-         * （flinger Latency 101 → 51 ms，系统欠载与静音填充都没升），但——
-         * 设备侧省下的这 50 ms **不会改变端到端总量**：实测播放环在持续溢出
-         * （清零后 78 s 溢出 3 791 040 帧 ≈ **1.01× 实时率**，读空 +0），环始终是满的，
-         * 延迟由「内核推送速率 ≈ 2× 实时」这条失配主导，属 M2 抖动缓冲/漂移补偿的输入。
-         * 在总量没降之前改默认行为，只会让 soak 的对照条件漂移 —— 所以默认留满灌，
-         * 档位留成 UI 上的 chip（20/30/40/60 ms），要启用一行常量或点一下即可。
+         * **契约：这个常量恒为 1440，不随「低延迟档」开关变化**（低延迟档用它自己的常量）。
+         * 理由：这是播放器暴露给外界的「标准档」定义，被 `AudioLinkService` 的初始值与
+         * `DiagnosticsDeck` 的滑杆选项（"30ms"）各自引用。让它随全局设置浮动，会让同一个名字
+         * 在不同时刻代表不同的毫秒数 —— 诊断读数与滑杆高亮会跟着飘，这类"值是活的"最容易被误读。
          */
-        const val DEFAULT_QUEUE_TARGET_FRAMES = QUEUE_TARGET_UNLIMITED
+        const val DEFAULT_QUEUE_TARGET_FRAMES = 1_440
+
+        /**
+         * 低延迟档的播放目标（20 ms）。10 ms 写入块下，实际水位在 10–20 ms 间。
+         *
+         * 出处：内核 `CodecConfig::m1_low_delay_tight()` 的帧长就是 10 ms（见
+         * `core/crates/audiolink-audio/src/codec.rs`）。水位按同样的粒度取值，是为了让
+         * 「帧长缩短」与「缓冲变浅」同时发生，但不能把目标压到一整块：
+         * 水位门控在 `target - chunk` 才补写，一块的目标意味着队列耗尽才补，调度抖动必然欠载。
+         *
+         * 为什么不放进 `DEFAULT_QUEUE_TARGET_FRAMES` 里做条件：那是**编译期常量**，
+         * 档位是**运行期**的用户设置，两者不能互相赋值。档位 → 水位的映射由
+         * `service/LowLatencyDefaults.queueTargetFor` 负责（那边有单测钉住）。
+         */
+        const val LOW_LATENCY_QUEUE_TARGET_FRAMES = 960
 
         /** 纳秒换算常量（实时路径上不用 `TimeUnit` —— 那个会装箱）。 */
         private const val NANOS_PER_MILLI = 1_000_000L
@@ -168,6 +181,10 @@ class LowLatencyPlayer(
     /** 设备队列当前水位（帧）：播放线程写、任意线程读快照。 */
     @Volatile
     private var queuedFrames: Int = 0
+
+    /** 播放线程发布的 AudioTrack + 未写完块水位，不从 FFI 线程访问设备。 */
+    @Volatile
+    private var outputBufferedFrames: Int = 0
 
     /** 设备容量上限（帧）；`buildAudioTrack` + `play()` 之后填。 */
     @Volatile
@@ -258,6 +275,11 @@ class LowLatencyPlayer(
             var localTrack: AudioTrack? = null
             try {
                 localTrack = buildAudioTrack()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    localTrack.setStartThresholdInFrames(
+                        chunkFrames.coerceAtMost(localTrack.bufferCapacityInFrames),
+                    )
+                }
                 // play() 之后才采设备读数：缓冲大小与性能模式都以"已进入播放态"的值为准。
                 localTrack.play()
                 val mode = localTrack.performanceMode
@@ -286,6 +308,7 @@ class LowLatencyPlayer(
                 ready.countDown()
             } finally {
                 releaseTrack(localTrack)
+                outputBufferedFrames = 0
                 running = false
             }
         }, THREAD_NAME)
@@ -371,6 +394,15 @@ class LowLatencyPlayer(
         }
     }
 
+    /** FFI 使用的轻量快照；停止或尚未建好设备时不提供控制反馈。 */
+    fun bufferState(): PcmBufferState? {
+        if (!running || track == null) return null
+        return PcmBufferState(
+            queuedFrames = outputBufferedFrames.coerceAtLeast(0).toUInt(),
+            targetFrames = queueTargetFrames.coerceAtLeast(0).toUInt(),
+        )
+    }
+
     /** 统计快照（线程安全，可从任意线程调用）。 */
     fun stats(): PlaybackStats = PlaybackStats(
         running = running,
@@ -436,6 +468,8 @@ class LowLatencyPlayer(
      */
     private fun runPlayoutLoop(localTrack: AudioTrack) {
         val loop = PlayoutLoop(source, this, channelCount, chunkFrames, counters)
+        val startGate = PlaybackStartGate()
+        var startThreshold = startThresholdFrames(localTrack)
         watermark.reset()
         var ticks = 0
 
@@ -450,13 +484,20 @@ class LowLatencyPlayer(
             // 队列水位：每轮采一次 head position —— 廉价 JNI，且是门控的唯一依据。
             watermark.advanceHead(localTrack.playbackHeadPosition)
             queuedFrames = watermark.queuedFrames.toInt()
+            outputBufferedFrames = queuedFrames + loop.bufferedFrames
 
             val target = queueTargetFrames
-            if (target <= 0) {
+            val needsPriming = startGate.shouldPrime(
+                watermark.consumedFrames, watermark.queuedFrames,
+                startThreshold, System.nanoTime(),
+            )
+            if (target <= 0 || needsPriming) {
                 val progressed = loop.pumpOnce()
+                outputBufferedFrames = watermark.queuedFrames.toInt() + loop.bufferedFrames
                 trackUnderruns = localTrack.underrunCount
                 if (++ticks % BUFFER_SNAPSHOT_INTERVAL == 0) {
                     actualBufferFrames = localTrack.bufferSizeInFrames
+                    startThreshold = startThresholdFrames(localTrack)
                 }
                 if (!progressed && !sleepNanos(IDLE_SLEEP_MS * NANOS_PER_MILLI)) return
             } else {
@@ -470,6 +511,7 @@ class LowLatencyPlayer(
                 // 1 ms 的唤醒代价与旧的满灌路径完全相同（那条路径写不进时也是睡 1 ms）。
                 if (watermark.shouldWrite(target, chunkFrames)) {
                     loop.pumpOnce()
+                    outputBufferedFrames = watermark.queuedFrames.toInt() + loop.bufferedFrames
                 } else if (!sleepNanos(IDLE_SLEEP_MS * NANOS_PER_MILLI)) {
                     return
                 }
@@ -477,6 +519,7 @@ class LowLatencyPlayer(
                 if (++ticks % BUFFER_SNAPSHOT_INTERVAL == 0) {
                     actualBufferFrames = localTrack.bufferSizeInFrames
                     bufferCapacityFrames = localTrack.bufferCapacityInFrames
+                    startThreshold = startThresholdFrames(localTrack)
                 }
             }
         }
@@ -498,6 +541,13 @@ class LowLatencyPlayer(
         // 收缩后框架**可能把性能模式改掉**（丢了 FAST 就白搭）；如实重采，UI 上看得到。
         performanceMode = localTrack.performanceMode
     }
+
+    private fun startThresholdFrames(localTrack: AudioTrack): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            minOf(localTrack.startThresholdInFrames, localTrack.bufferSizeInFrames)
+        } else {
+            localTrack.bufferSizeInFrames
+        }
 
     /**
      * 睡 [nanos] 纳秒；被中断时记下原因并返回 `false`（调用方据此退出播放循环）。

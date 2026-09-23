@@ -1,8 +1,8 @@
-//! 节点身份：自签证书 + 私钥 + 指纹（`docs/03-protocol.md` §5、`docs/02-architecture.md` §9）
+//! 节点身份：自签证书 + 私钥 + 指纹（`docs/03-protocol.md` §2、`docs/02-architecture.md` §9）
 //!
-//! 身份 = 证书 DER 的 SHA-256（[`NodeId`]），这是 AudioLink 的**唯一身份**：TLS 已保证通道
-//! 加密与「对端持有私钥」，控制面 `AUTH_CHALLENGE` / `AUTH_RESPONSE` 再证明「私钥持有者 =
-//! 证书主体」（§5「认证强度」）。因此证书与私钥必须同时存在、必须互相匹配，且必须原子落盘。
+//! 身份 = 证书 DER 的 SHA-256（[`NodeId`]），这是 AudioLink 的**唯一身份**：TLS 1.3 握手
+//! （双方互相出示证书）已经保证「对端持有该证书的私钥」，指纹只用于区分设备、展示短码。
+//! 证书与私钥必须同时存在、必须互相匹配，且必须原子落盘。
 
 use std::fs;
 use std::path::Path;
@@ -26,7 +26,7 @@ pub const KEY_FILE_NAME: &str = "key.pem";
 /// 故证书里的人类可读标识就这一个）。
 ///
 /// 必须与 `docs/11-m1-contract.md` §3 里 net 侧连接用的 `server_name` 一致（`"audiolink"`）：
-/// 自签场景下 SNI 不参与信任判定（判定只看指纹），但两者保持一致才不会在将来启用真正的
+/// 自签场景下 SNI 不参与任何判定（身份只看证书指纹），但两者保持一致才不会在将来启用真正的
 /// 证书校验时埋雷。
 ///
 /// **为什么不把 [`NodeIdentity::node_name`] 写进证书**：SAN 是 `dNSName`（IA5String，仅 ASCII），
@@ -35,14 +35,15 @@ pub const KEY_FILE_NAME: &str = "key.pem";
 /// 改个名字就要换身份、非 ASCII 名字直接生成失败。
 pub const CERT_SUBJECT_ALT_NAME: &str = "audiolink";
 
-/// 挑战串长度：`nonce(32) ‖ fp_local(32) ‖ fp_peer(32)`。
-const CHALLENGE_LEN: usize = 32 * 3;
-
 /// 加载身份时的自检消息：固定常量，只用来证实「证书里的公钥 = 这把私钥的公钥」。
-/// 它不参与任何协议语义 —— 协议签名一律经 [`NodeIdentity::sign_challenge`] 绑定 nonce 与双方指纹。
+/// 它不参与任何协议语义，也不出网 —— 只在 [`NodeIdentity::from_pem`] 里签一次、验一次。
 const SELF_CHECK_MESSAGE: &[u8] = b"audiolink-identity/self-check";
 
 /// 本节点身份。
+///
+/// 只持有**落盘形式的字节**（[`NodeIdentity::cert_der`] / [`NodeIdentity::key_der_pkcs8`]）：
+/// net 建 QUIC 端点时直接用它们装载密钥，本层不需要在内存里另留一份解析后的 `SigningKey`
+/// （解析只在 [`NodeIdentity::from_pem`] 的自检里临时发生）。
 pub struct NodeIdentity {
     /// SHA-256(cert DER)：构造时算一次（握手路径不做重复哈希）。
     id: NodeId,
@@ -50,15 +51,14 @@ pub struct NodeIdentity {
     cert_pem: String,
     key_der_pkcs8: Vec<u8>,
     node_name: String,
-    signing_key: SigningKey,
 }
 
 impl NodeIdentity {
     /// 从 `dir` 加载 `cert.pem` + `key.pem`；两者都不存在则生成一对并**原子落盘**
     /// （临时文件 + rename，架构 §9）。
     ///
-    /// **只存在其中一个时返回 Err，不静默重新生成**：重新生成会让指纹变化，对端白名单里
-    /// 还留着旧指纹 —— 那等于悄悄把已有信任关系变成「未配对」，比拒绝启动危险得多。
+    /// **只存在其中一个时返回 Err，不静默重新生成**：重新生成会换掉指纹，让对端眼里的
+    /// 「同一台设备」变成另一台，比拒绝启动危险得多。
     pub fn load_or_create(dir: impl AsRef<Path>, node_name: &str) -> Result<Self, IdentityError> {
         let dir = dir.as_ref();
         let cert_path = dir.join(CERT_FILE_NAME);
@@ -90,12 +90,12 @@ impl NodeIdentity {
                 Self::from_pem(&cert_pem, &key_pem, node_name)
             }
             (true, false) => Err(IdentityError::io_owned(format!(
-                "身份文件不完整：{} 存在但 {} 缺失（拒绝重新生成，重新生成会改变指纹并作废已有信任）",
+                "身份文件不完整：{} 存在但 {} 缺失（拒绝重新生成，重新生成会更换本机指纹）",
                 cert_path.display(),
                 key_path.display()
             ))),
             (false, true) => Err(IdentityError::io_owned(format!(
-                "身份文件不完整：{} 存在但 {} 缺失（拒绝重新生成，重新生成会改变指纹并作废已有信任）",
+                "身份文件不完整：{} 存在但 {} 缺失（拒绝重新生成，重新生成会更换本机指纹）",
                 key_path.display(),
                 cert_path.display()
             ))),
@@ -104,8 +104,8 @@ impl NodeIdentity {
 
     /// 由 PEM 文本构造身份（不落盘）。
     ///
-    /// 加载即自检「证书公钥 == 私钥公钥」：不匹配的身份永远无法通过对端校验（对端用**证书里的
-    /// 公钥**验签），必须在加载时就失败，而不是等握手时才暴露成 `1004`。
+    /// 加载即自检「证书公钥 == 私钥公钥」：不匹配的身份在 TLS 握手时就立不住（对端会拿
+    /// **证书里的公钥**验证本机出示的密钥），必须在加载时就失败，而不是等握手时才暴露。
     pub fn from_pem(cert_pem: &str, key_pem: &str, node_name: &str) -> Result<Self, IdentityError> {
         if node_name.trim().is_empty() {
             return Err(IdentityError::invalid_config("节点名不能为空"));
@@ -136,11 +136,10 @@ impl NodeIdentity {
             cert_pem: cert_pem.to_owned(),
             key_der_pkcs8,
             node_name: node_name.to_owned(),
-            signing_key,
         })
     }
 
-    /// 本节点指纹 = SHA-256(cert DER)（§5：信任判定的唯一依据）。
+    /// 本节点指纹 = SHA-256(cert DER)（架构 §9：设备身份的唯一依据）。
     pub fn id(&self) -> NodeId {
         self.id
     }
@@ -155,7 +154,7 @@ impl NodeIdentity {
         &self.key_der_pkcs8
     }
 
-    /// 展示名（**仅展示**，不参与任何身份 / 信任判定，也不写进证书 —— 见
+    /// 展示名（**仅展示**，不参与任何身份判定，也不写进证书 —— 见
     /// [`CERT_SUBJECT_ALT_NAME`] 的说明）。
     pub fn node_name(&self) -> &str {
         &self.node_name
@@ -164,45 +163,6 @@ impl NodeIdentity {
     /// 证书 PEM 原文（落盘内容原样返回）。
     pub fn cert_pem(&self) -> &str {
         &self.cert_pem
-    }
-
-    /// §5 `AUTH_RESPONSE` 的签名：`ECDSA-P256-SHA256(privkey, nonce ‖ fp_local ‖ fp_peer)`，
-    /// 返回 **DER** 签名。
-    pub fn sign_challenge(&self, nonce: &[u8; 32], peer: NodeId) -> Result<Vec<u8>, IdentityError> {
-        // 签名者视角：先自己、后对端。
-        let message = challenge_message(nonce, self.id.as_bytes(), peer.as_bytes());
-        let signature: Signature = self
-            .signing_key
-            .try_sign(&message)
-            .map_err(|error| IdentityError::key_owned(format!("AUTH 签名失败：{error}")))?;
-        Ok(signature.to_der().as_bytes().to_vec())
-    }
-
-    /// 用**对端证书**验签。失败 → `AuthFailed`（`1004`，§5：可能是中间人）。
-    ///
-    /// `local` / `peer` 是**验签者视角**：`local` = 本机指纹，`peer` = 声称发来签名的对端指纹。
-    /// 对端签名时按「自己在前、对端在后」排布，故这里必须按 `peer ‖ local` 还原报文
-    /// （见 [`challenge_message`]），否则两个诚实节点互相验签必然失败。
-    pub fn verify_challenge(
-        peer_cert_der: &[u8],
-        nonce: &[u8; 32],
-        local: NodeId,
-        peer: NodeId,
-        signature: &[u8],
-    ) -> Result<(), IdentityError> {
-        let spki = subject_public_key_info(peer_cert_der)?;
-        let peer_public = VerifyingKey::from_public_key_der(spki).map_err(|error| {
-            IdentityError::certificate_owned(format!("对端证书公钥不是合法的 P-256 公钥：{error}"))
-        })?;
-        let signature = Signature::from_der(signature).map_err(|error| {
-            IdentityError::auth_failed_owned(format!("对端签名不是合法 DER：{error}"))
-        })?;
-        let message = challenge_message(nonce, peer.as_bytes(), local.as_bytes());
-        peer_public.verify(&message, &signature).map_err(|_| {
-            IdentityError::auth_failed(
-                "对端签名校验失败（nonce / 指纹 / 签名不匹配，可能是中间人）",
-            )
-        })
     }
 }
 
@@ -216,22 +176,6 @@ impl std::fmt::Debug for NodeIdentity {
             .field("key_der_pkcs8", &"<redacted>")
             .finish_non_exhaustive()
     }
-}
-
-/// §5 `AUTH_RESPONSE` 的报文：`nonce ‖ 签名者指纹 ‖ 对端指纹`（96 B）。
-///
-/// 顺序**按签名者视角**固定，验签方把 `peer` 放到 `signer` 的位置。绑定双方指纹是 §5
-/// 「PIN 安全：绑定双方指纹（防转发）」的落点 —— 把 A→B 的签名原样转发给 C，验签必然失败。
-fn challenge_message(
-    nonce: &[u8; 32],
-    signer: &[u8; 32],
-    audience: &[u8; 32],
-) -> [u8; CHALLENGE_LEN] {
-    let mut message = [0u8; CHALLENGE_LEN];
-    message[..32].copy_from_slice(nonce);
-    message[32..64].copy_from_slice(signer);
-    message[64..].copy_from_slice(audience);
-    message
 }
 
 /// `NodeId` = SHA-256(cert DER)。
@@ -286,19 +230,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 挑战报文按签名者视角排布() {
-        let nonce = [1u8; 32];
-        let signer = [2u8; 32];
-        let audience = [3u8; 32];
-        let message = challenge_message(&nonce, &signer, &audience);
-
-        assert_eq!(message.len(), 96);
-        assert_eq!(&message[..32], &nonce);
-        assert_eq!(&message[32..64], &signer);
-        assert_eq!(&message[64..], &audience);
-    }
-
-    #[test]
     fn 空节点名被拒() {
         assert!(NodeIdentity::from_pem("x", "y", "  ").is_err());
     }
@@ -331,7 +262,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         NodeIdentity::load_or_create(dir.path(), "solo").unwrap();
 
-        // 删掉私钥：必须报错，而不是「重新生成一份新身份」（那会改变指纹、作废已有信任）。
+        // 删掉私钥：必须报错，而不是「重新生成一份新身份」（那会换掉本机指纹）。
         fs::remove_file(dir.path().join(KEY_FILE_NAME)).unwrap();
         let outcome = NodeIdentity::load_or_create(dir.path(), "solo");
         assert!(

@@ -6,6 +6,15 @@
 use crate::error::AudioError;
 use crate::format::DeviceFormat;
 
+/// 平台播放链的真实待播水位与设备目标；单位为每声道采样帧。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayoutBufferState {
+    /// 包含平台软件环、尚未写完的块、设备已接收但未消费的帧。
+    pub queued_frames: u32,
+    /// 设备输出目标水位，不包含引擎的网络抖动余量。
+    pub target_frames: u32,
+}
+
 /// 播放统计（遥测口径）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PlayoutStats {
@@ -37,6 +46,11 @@ pub trait PlayoutSink {
 
     /// 当前水位：已提交但尚未播出的帧数（延迟分解「播放缓冲」一段的实测值）。
     fn buffered_frames(&mut self) -> u32;
+
+    /// 可用于闭环调节的输出水位。未知时返回 None，不能用容量冒充水位。
+    fn buffer_state(&mut self) -> Option<PlayoutBufferState> {
+        None
+    }
 
     /// 提交一帧内部格式（48k / f32 / 2ch 交错）样本。
     fn write(&mut self, samples: &[f32]) -> Result<(), AudioError>;

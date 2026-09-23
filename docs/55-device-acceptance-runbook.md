@@ -1,5 +1,9 @@
 # 真机验收手册（device acceptance runbook）
 
+> ⚠️ **历史记录说明（2026-09-22 补）**：本文记录的是 **PIN 配对 / 信任库时代**的交付事实与证据。
+> 该认证机制已在本轮整体移除（现在连上即用：没有配对码、没有白名单），本文中的配对步骤、PIN 验收数字与
+> 信任判定均**不再对应当前实现**，只作为当时的交付记账保留 —— 现状见 `docs/72-remove-pairing.md`。
+
 > 日期 **2026-09-17** ｜ 事实基线：写这份手册时的 HEAD 工作区（**没有真机在场**：`adb devices` 为空）
 > 用途：真机到位后**照着做就能出结论**，不必现场再设计量法。本手册把「方法」这一半做完，把「设备」那一半留给现场。
 > 上游：`docs/05-roadmap.md` §M1/§M3/§M4 验收表 · `docs/12-m1-device-acceptance.md`（M1 真机报告）· `docs/16`（PHK110 复测）·
@@ -59,7 +63,7 @@ pwsh tools/gradlew.ps1 -JavaHome '<JDK 17 根目录>' assembleDebug
 
 # 3) 装 + 启动
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n com.gotkicry.audiolink.debug/com.gotkicry.audiolink.MainActivity
+adb shell am start -n com.gotkicry.audiolink/com.gotkicry.audiolink.MainActivity
 # 手机界面上点「启动并开始接收」；等服务起来后确认监听 58290
 adb shell ss -lun 2>/dev/null | grep 58290   # ⚠️ 部分机型受限；更稳的是直接看 App 界面上的监听状态
 ```
@@ -127,7 +131,7 @@ cargo run -q -p audiolink-tools --bin sync-measure -- --self-test --write target
   # ⚠️ 未经实机验证。要点：--capture wasapi 采集的就是「PC 正在播放的那一路」，
   # 所以「送给手机的音频」与「PC 喇叭放出的声音」是同一路、同一启动时刻（这是本方案能对消误差的前提）。
   cargo run -q -p audiolink-tools --bin device-link -- run ^
-      --peer <手机IP> --seconds 60 --capture wasapi --device id:<PC 输出端点 id> --pin-file target/evidence/pin.txt
+      --peer <手机IP> --seconds 60 --capture wasapi --device id:<PC 输出端点 id>
   ```
   端点怎么查：`cargo run -q -p audiolink-tools --bin self-loop -- list`（`docs/06` §4.2 点名的复测入口），或桌面端「采集端点选择器」（`docs/13`）。
   `--device` 的选择器形式：`default | id:<子串> | name:<友好名>`（`self_loop.rs` 的 usage）。
@@ -291,7 +295,7 @@ pwsh target/evidence/acceptance/soak-30min.ps1 -Seconds 1800 -Dir target/device-
 
 # 替代（脚本不在时）：
 cargo run -q -p audiolink-tools --bin device-link -- run --peer <手机IP> --seconds 1800 ^
-    --capture synth --pin-file target/evidence/pin.txt --json target/evidence/m1-device/soak30.json
+    --capture synth --json target/evidence/m1-device/soak30.json
 ```
 
 **判据（全部要，缺一不算过）**：

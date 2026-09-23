@@ -12,8 +12,8 @@
 %APPDATA%\com.gotkicry.audiolink\
 ```
 
-It contains `settings.json` (language / start on sign-in / last device), `trust.json` (pairing allow-list),
-`identity\` (this device certificate and key), `.window-state.json` and the logs.
+It contains `settings.json` (language / start on sign-in / last device), `identity\` (this device certificate
+and key), `.window-state.json` and the logs. A `trust.json` left behind by an older build is no longer read or written.
 
 **When reporting a problem, attach**: (1) the version from the About panel, (2) the log file, (3) the first
 three numbers of each device address, (4) the network type (cable / Wi-Fi / hotspot), (5) a telemetry
@@ -49,6 +49,7 @@ screenshot or exported CSV. Without these we can only guess.
 ## 4. Choppy, stuttering or noisy audio
 
 - Read the telemetry panel in this order: **loss, jitter p95, buffer level, underruns**;
+- Brief Wi-Fi disruptions trigger redundancy recovery and smooth concealment during missing playback frames or rebuffering. If audio remains unavailable, concealment fades out within 120 ms. Underruns still count missing frames even when concealment avoids silence;
 - 2.4 GHz congestion is the usual culprit: switch to 5 GHz or put both ends behind one router;
 - Buffer level pinned at the cap (about 120 ms) means heavy jitter; steadily growing underruns mean the link
   cannot keep up;
@@ -86,8 +87,8 @@ screenshot or exported CSV. Without these we can only guess.
   corporate networks may block it).
 - **Manual update**: installers simply overwrite (settings survive); for the portable build, close the app and
   replace the exe.
-- **Does the allow-list survive an update?** Yes - settings live in the user profile (section 1), independent of
-  the install shape.
+- **Do my settings survive an update?** Yes - they live in the user profile (section 1), independent of
+  the install shape. (An old `trust.json` is no longer used; you may delete it.)
 
 ---
 
@@ -105,3 +106,14 @@ screenshot or exported CSV. Without these we can only guess.
 
 Open an issue in the repository and attach the material from section 1. With that, almost every problem can
 be located in one pass.
+
+
+### Reading audio quality
+
+Desktop device cards show network latency (RTT), audio packet loss, cumulative underruns and queued audio. Android's receiver readouts show network RTT and audio packet loss. RTT excludes capture and playback buffering; it is not end-to-end audio latency.
+
+Loss is the receiver's latest one-second percentage of missing audio packets after redundancy/retransmission recovery. Late arrivals and playback underruns are separate: 0.00% loss can still accompany audible gaps. A dash means no valid data; desktop receiver reports expire after three seconds.
+
+With the default 20 ms frames, Wi-Fi jitter can raise the buffer target up to 120 ms. This trades latency for continuity. The target falls one step after five consecutive stable seconds; recovery from the highest to the lowest target takes about 25 continuously stable seconds. Concealment softens short gaps but cannot reconstruct the original missing sound.
+
+Android defaults to a 30 ms output queue target. Single-source playback without an epoch schedule also reclaims sustained backlog across the engine and Android output queues, smoothing the next audio boundary. The diagnostic Full setting disables this backlog control for comparison. Neither the output target nor network RTT measures total audible latency.

@@ -76,3 +76,8 @@ opt-level = 1                 # 开发期音频回调也需要基本性能
 
 [profile.dev.package."*"]
 opt-level = 2                 # 依赖（含 opus）在 dev 下也优化，否则实时测试无意义
+
+[profile.dev.package.audiolink-desktop]
+# Windows/MSVC 下桌面库的增量对象出现 anon.*.llvm.* 未解析符号（LNK2001/2019/1120）。
+# 将验证过的禁用增量编译方案固化到日常 tauri dev 与继承 dev 的 test profile。
+incremental = false

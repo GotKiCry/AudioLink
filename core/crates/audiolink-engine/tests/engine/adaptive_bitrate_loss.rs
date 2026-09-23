@@ -38,7 +38,6 @@ use std::time::Duration;
 use audiolink_audio::{NullPlayout, PlayoutSink, SyntheticCapture};
 use audiolink_engine::adaptive::MAX_BITRATE_BPS;
 use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::ErrorCode;
 use tokio::net::UdpSocket;
 
 /// 可开关的高比例丢包中继：客户端（发送端）连它，它把字节原样转给服务端（接收端）。
@@ -152,7 +151,6 @@ async fn injected_loss_downgrades_the_target_and_clearing_it_recovers() {
 
     let receiver = Engine::start(recv_config).await.expect("接收引擎");
     let accept = receiver.spawn_accept_loop();
-    let mut receiver_events = receiver.subscribe();
     let receiver_id = receiver.info().id;
 
     // 每 4 个包放行 1 个 ≈ 75% 丢包（双向都在，只有发送端 → 接收端那半边被丢）。
@@ -185,17 +183,10 @@ async fn injected_loss_downgrades_the_target_and_clearing_it_recovers() {
     };
 
     let outcome = tokio::time::timeout(Duration::from_secs(90), async {
-        let error = sender.connect(relay.addr).await.unwrap_err();
-        assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-        let pin = loop {
-            if let EngineEvent::DisplayPin { pin, .. } = receiver_events.recv().await.unwrap() {
-                break pin;
-            }
-        };
         sender
-            .submit_pin(receiver_id, &pin)
+            .connect(relay.addr)
             .await
-            .expect("PIN 配对");
+            .expect("连接应当直接成功（无认证）");
         while !sender
             .peers()
             .iter()
@@ -243,7 +234,7 @@ async fn injected_loss_downgrades_the_target_and_clearing_it_recovers() {
     })
     .await;
 
-    let (peak_loss, during, cleared_loss) = outcome.expect("90 s 内必须完成配对、注入、降级与恢复");
+    let (peak_loss, during, cleared_loss) = outcome.expect("90 s 内必须完成连接、注入、降级与恢复");
     let timeline = snapshot(&timeline);
 
     sender.shutdown().await;

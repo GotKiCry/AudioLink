@@ -10,8 +10,9 @@
 //! 2. **net 只做传输，不懂协议语义**：控制帧载荷是不透明的 postcard 字节
 //!    （[`ControlMessage::payload`]），net 不解释它的 schema；帧的“未知命令码”也只做透传，
 //!    由 engine 按 §1.1 忽略并计数。
-//! 3. **信任判定不在 net**：TLS 层只证明「对端持有该证书的私钥」，
-//!    指纹（[`Connection::peer_id`]）值不值得信任由 engine 查 `audiolink-identity` 的信任库决定。
+//! 3. **net 不做信任裁决**：TLS 层只证明「对端持有该证书的私钥」，
+//!    [`Connection::peer_id`] 给出的指纹只是身份标识（区分设备），不含任何「值不值得信任」的判断
+//!    —— 局域网内任何节点直连即可（`docs/71-remove-pairing.md`）。
 //!
 //! # 模块
 //!
@@ -50,7 +51,7 @@ pub use endpoint::{
 pub use error::NetError;
 pub use local_addr::{local_endpoints, reachable_endpoints};
 
-/// 回环 / 测试用：`server_name` 的固定取值（自签证书下 SNI 不参与信任判定，§2）。
+/// 回环 / 测试用：`server_name` 的固定取值（自签证书下 SNI 不参与任何判定，身份只看证书指纹）。
 pub const TLS_SERVER_NAME: &str = "audiolink";
 
 #[cfg(test)]

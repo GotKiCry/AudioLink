@@ -199,6 +199,16 @@ fun DiagnosticsDeck(
             KeyValueRow(strings.diagChannels, state.channelCount.toString())
             KeyValueRow(strings.diagBufferRequested, "${state.requestedBufferFrames} ${strings.diagFramesUnit}")
             KeyValueRow(strings.diagBufferActual, "${state.actualBufferFrames} ${strings.diagFramesUnit}")
+            // 协商帧长（帧长联动）：本端作为**接收端**时跟随发送端生效的帧长。
+            // 数据通道是现成的（peers 快照 → PeerUi.negotiatedFrameMs），没有为它新开通道。
+            // 为什么放在这一区：与上面的「低延迟」并排才能一眼看出两者的差别 ——
+            // 那个是本端档位（发送方向），这个是跟随结果（接收方向）。
+            KeyValueRow(
+                label = strings.diagNegotiatedFrame,
+                value = state.peers.firstNotNullOfOrNull { it.negotiatedFrameMs }
+                    ?.let { "$it ms" }
+                    ?: strings.diagFrameNone,
+            )
         }
 
         // ── 统计 ───────────────────────────────────────────────────

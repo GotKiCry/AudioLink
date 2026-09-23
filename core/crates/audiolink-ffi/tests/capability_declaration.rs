@@ -23,8 +23,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use audiolink_engine::{Engine, EngineConfig};
-use audiolink_ffi::{EngineStartConfig, displayed_pin, engine_start, engine_stop};
-use audiolink_types::{Capabilities, ErrorCode, NodeId};
+use audiolink_ffi::{EngineStartConfig, engine_start, engine_stop};
+use audiolink_types::{Capabilities, NodeId};
 
 /// 有界等待：条件在 5 s 内成立即可，否则 panic 并说明卡在哪一步。
 async fn until(what: &str, mut condition: impl FnMut() -> bool) {
@@ -54,24 +54,12 @@ async fn peer_engine(dir: &Path, name: &str) -> Arc<Engine> {
     Engine::start(config).await.unwrap()
 }
 
-/// 与 FFI 引擎走完配对（首次要 PIN；已受信则直接建立）。
+/// 与 FFI 引擎建立连接（**连上即通**：没有 PIN 交互，没有等待用户输码的中间态）。
 async fn pair(peer: &Arc<Engine>, addr: SocketAddr, ffi_id: NodeId) {
-    match peer.connect(addr).await {
-        Ok(_) => {}
-        Err(error) if error.code() == ErrorCode::NotPaired => {
-            until("FFI 引擎显示 PIN", || {
-                displayed_pin().unwrap().is_some()
-            })
-            .await;
-            let pin = displayed_pin().unwrap().unwrap();
-            peer.submit_pin(ffi_id, &pin).await.expect("PIN 配对");
-        }
-        Err(error) => panic!("连接 FFI 引擎失败：{error:?}"),
-    }
-    until("对端把 FFI 引擎标为受信", || {
-        peer.peers()
-            .iter()
-            .any(|status| status.id == ffi_id && status.trusted)
+    peer.connect(addr).await.expect("连接 FFI 引擎");
+
+    until("对端把 FFI 引擎记进会话表", || {
+        peer.peers().iter().any(|status| status.id == ffi_id)
     })
     .await;
 }
@@ -95,6 +83,7 @@ async fn run_case(dir: &Path, name: &str, declared: u32) -> (u32, u32) {
         data_dir: dir.join("phone").to_string_lossy().into(),
         listen_port: port,
         capabilities: declared,
+        low_latency: false,
     };
     let local = engine_start(config, None, None).await.unwrap();
     let addr = SocketAddr::from(([127, 0, 0, 1], port));

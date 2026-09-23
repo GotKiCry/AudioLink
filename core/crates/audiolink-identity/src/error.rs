@@ -6,14 +6,14 @@
 //!
 //! **错误码取舍（一处刻意的映射决定）**：§11 的表里没有「本地持久化 / 证书解析」这类码。
 //! 它们不是对端发了坏包，而是本机自身的问题，因此统一收敛到 `1008 BAD_REQUEST` —— 表里唯一
-//! 中性的「本端拒绝」码；engine 侧不得据此判定对端异常。真正的协议级失败只有
-//! [`IdentityError::AuthFailed`]（`1004`，§5「认证强度」：对端证书与签名不匹配，可能是中间人）。
+//! 中性的「本端拒绝」码；engine 侧不得据此判定对端异常。协议级的 `1004 AUTH_FAILED` 已随挑战
+//! 应答一起删除（`docs/71-remove-pairing.md` §4），本 crate 不再产出任何协议级失败码。
 
 use std::borrow::Cow;
 
 use audiolink_types::ErrorCode;
 
-/// 身份 / 证书 / 信任库 / 配对路径上的错误。
+/// 身份 / 证书路径上的错误。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IdentityError {
     /// 证书生成、PEM/DER 解析失败，或证书与私钥不匹配。
@@ -22,7 +22,7 @@ pub enum IdentityError {
         /// 失败细节。
         context: Cow<'static, str>,
     },
-    /// 私钥解析或签名运算失败。
+    /// 私钥解析失败。
     #[error("{} {}: {context}", self.code().as_u16(), self.code().name())]
     Key {
         /// 失败细节。
@@ -31,20 +31,6 @@ pub enum IdentityError {
     /// 文件系统交互失败（读取身份文件、原子落盘、建目录）。
     #[error("{} {}: {context}", self.code().as_u16(), self.code().name())]
     Io {
-        /// 失败细节。
-        context: Cow<'static, str>,
-    },
-    /// 信任库文件损坏或结构非法。
-    ///
-    /// 这是**必须暴露**的错误：静默重置信任库等于悄悄清空信任边界，比拒绝启动危险得多。
-    #[error("{} {}: {context}", self.code().as_u16(), self.code().name())]
-    TrustStore {
-        /// 失败细节。
-        context: Cow<'static, str>,
-    },
-    /// 对端签名校验失败 → `1004 AUTH_FAILED`（§5：可能是中间人）。
-    #[error("{} {}: {context}", self.code().as_u16(), self.code().name())]
-    AuthFailed {
         /// 失败细节。
         context: Cow<'static, str>,
     },
@@ -99,34 +85,6 @@ impl IdentityError {
         }
     }
 
-    /// 静态上下文的「信任库损坏」。
-    pub const fn trust_store(context: &'static str) -> Self {
-        Self::TrustStore {
-            context: Cow::Borrowed(context),
-        }
-    }
-
-    /// 动态上下文的「信任库损坏」。
-    pub fn trust_store_owned(context: String) -> Self {
-        Self::TrustStore {
-            context: Cow::Owned(context),
-        }
-    }
-
-    /// 静态上下文的「签名校验失败」。
-    pub const fn auth_failed(context: &'static str) -> Self {
-        Self::AuthFailed {
-            context: Cow::Borrowed(context),
-        }
-    }
-
-    /// 动态上下文的「签名校验失败」。
-    pub fn auth_failed_owned(context: String) -> Self {
-        Self::AuthFailed {
-            context: Cow::Owned(context),
-        }
-    }
-
     /// 静态上下文的「参数非法」。
     pub const fn invalid_config(context: &'static str) -> Self {
         Self::InvalidConfig {
@@ -141,14 +99,12 @@ impl IdentityError {
         }
     }
 
-    /// 映射到协议错误码（§11 表）；只有验签失败是协议级失败。
+    /// 映射到协议错误码（§11 表）：本 crate 的失败都是本机侧问题 → 一律 `1008`。
     pub fn code(&self) -> ErrorCode {
         match self {
-            Self::AuthFailed { .. } => ErrorCode::AuthFailed,
             Self::Certificate { .. }
             | Self::Key { .. }
             | Self::Io { .. }
-            | Self::TrustStore { .. }
             | Self::InvalidConfig { .. } => ErrorCode::BadRequest,
         }
     }
@@ -159,24 +115,19 @@ impl IdentityError {
             Self::Certificate { context }
             | Self::Key { context }
             | Self::Io { context }
-            | Self::TrustStore { context }
-            | Self::AuthFailed { context }
             | Self::InvalidConfig { context } => context.as_ref(),
         }
     }
 
     /// 是否**统计类**（不致命）。
     ///
-    /// 恒为 `false`：身份与认证失败绝不能「计数后继续」。签名不匹配意味着对端身份不可信
-    /// （§5「认证强度」明确指向中间人），信任库损坏意味着信任边界状态不可知 —— 二者都必须
-    /// 停下来，而不是像欠载那样记一笔就接着跑。
+    /// 恒为 `false`：身份失败绝不能「计数后继续」。证书与私钥不匹配、证书解析不出公钥，
+    /// 都意味着本机身份立不住（对端在 TLS 握手里就会把本机拒掉），必须停下来而不是记一笔就接着跑。
     pub fn is_statistical(&self) -> bool {
         match self {
             Self::Certificate { .. }
             | Self::Key { .. }
             | Self::Io { .. }
-            | Self::TrustStore { .. }
-            | Self::AuthFailed { .. }
             | Self::InvalidConfig { .. } => false,
         }
     }
@@ -189,22 +140,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 只有验签失败是协议级错误码() {
-        // §11：1004 是「签名校验失败（可能是中间人）」；其余本机问题收敛到 1008。
-        assert_eq!(
-            IdentityError::auth_failed("x").code(),
-            ErrorCode::AuthFailed
-        );
+    fn 身份错误一律映射到_1008() {
+        // §11：表里唯一中性的「本端拒绝」码；本 crate 不再有协议级失败码。
         assert_eq!(
             IdentityError::certificate("x").code(),
             ErrorCode::BadRequest
         );
         assert_eq!(IdentityError::key("x").code(), ErrorCode::BadRequest);
         assert_eq!(IdentityError::io("x").code(), ErrorCode::BadRequest);
-        assert_eq!(
-            IdentityError::trust_store("x").code(),
-            ErrorCode::BadRequest
-        );
         assert_eq!(
             IdentityError::invalid_config("x").code(),
             ErrorCode::BadRequest
@@ -213,9 +156,9 @@ mod tests {
 
     #[test]
     fn 显示格式与统一错误类型一致() {
-        let text = IdentityError::auth_failed("对端签名校验失败").to_string();
-        assert!(text.starts_with("1004 AUTH_FAILED"), "{text}");
-        assert!(text.ends_with("对端签名校验失败"), "{text}");
+        let text = IdentityError::certificate("证书与私钥不匹配").to_string();
+        assert!(text.starts_with("1008 BAD_REQUEST"), "{text}");
+        assert!(text.ends_with("证书与私钥不匹配"), "{text}");
     }
 
     #[test]
@@ -223,8 +166,6 @@ mod tests {
         assert!(!IdentityError::certificate("x").is_statistical());
         assert!(!IdentityError::key("x").is_statistical());
         assert!(!IdentityError::io("x").is_statistical());
-        assert!(!IdentityError::trust_store("x").is_statistical());
-        assert!(!IdentityError::auth_failed("x").is_statistical());
         assert!(!IdentityError::invalid_config("x").is_statistical());
     }
 }

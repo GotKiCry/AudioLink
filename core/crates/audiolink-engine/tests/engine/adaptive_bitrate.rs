@@ -21,7 +21,6 @@ use std::time::Duration;
 use audiolink_audio::{NullPlayout, PlayoutSink, SyntheticCapture};
 use audiolink_engine::adaptive::MIN_BITRATE_BPS;
 use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::ErrorCode;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn healthy_link_recovers_from_the_floor_and_the_change_reaches_the_wire() {
@@ -46,7 +45,6 @@ async fn healthy_link_recovers_from_the_floor_and_the_change_reaches_the_wire() 
 
     let receiver = Engine::start(recv_config).await.expect("接收引擎");
     let accept = receiver.spawn_accept_loop();
-    let mut events = receiver.subscribe();
     let receiver_id = receiver.info().id;
 
     let sender = Engine::start(send_config).await.expect("发送引擎");
@@ -75,17 +73,10 @@ async fn healthy_link_recovers_from_the_floor_and_the_change_reaches_the_wire() 
     });
 
     let outcome = tokio::time::timeout(Duration::from_secs(45), async {
-        let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-        assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-        let pin = loop {
-            if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-                break pin;
-            }
-        };
         sender
-            .submit_pin(receiver_id, &pin)
+            .connect(receiver.local_addr())
             .await
-            .expect("PIN 配对");
+            .expect("连接应当直接成功（无认证）");
         while !sender
             .peers()
             .iter()
@@ -106,7 +97,7 @@ async fn healthy_link_recovers_from_the_floor_and_the_change_reaches_the_wire() 
     })
     .await;
 
-    let (before, after) = outcome.expect("45 s 内必须完成配对、开流并观察到一次恢复");
+    let (before, after) = outcome.expect("45 s 内必须完成连接、开流并观察到一次恢复");
     let captured = changes.lock().map(|slot| slot.clone()).unwrap_or_default();
 
     sender.shutdown().await;

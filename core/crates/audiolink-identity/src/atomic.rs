@@ -31,7 +31,7 @@ fn parent_dir(path: &Path) -> Result<PathBuf, IdentityError> {
 
 /// 原子地把 `contents` 写到 `path`：先写同目录临时文件，再 rename 覆盖。
 ///
-/// 权限：临时文件在 Unix 上以 `0600` 创建（证书、私钥、信任库都是用户私有数据）；
+/// 权限：临时文件在 Unix 上以 `0600` 创建（证书与私钥都是用户私有数据）；
 /// Windows 侧不额外设 ACL，依赖 `%APPDATA%` / 应用私有目录本身的用户级 ACL
 /// （架构 §9 提到的 DPAPI 保护属 M2）。
 pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), IdentityError> {
@@ -76,7 +76,7 @@ fn write_temp_then_rename(temp_path: &Path, target: &Path, contents: &[u8]) -> s
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        // 临时文件是私钥/证书/信任库的载体：从创建那一刻起就只有本用户可读写。
+        // 临时文件是私钥/证书的载体：从创建那一刻起就只有本用户可读写。
         options.mode(0o600);
     }
 
@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn 首次写入与覆盖写入都成功() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("trust.json");
+        let path = dir.path().join("cert.pem");
 
         write_atomic(&path, b"v1").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"v1");

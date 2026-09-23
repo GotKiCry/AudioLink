@@ -23,6 +23,10 @@ rand = { workspace = true }               # §5 握手 nonce
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+# 播放节拍需要 1 ms 定时器粒度（timeBeginPeriod）；与 wasapi 0.24 依赖的 windows 0.62.2 对齐。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Media"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 

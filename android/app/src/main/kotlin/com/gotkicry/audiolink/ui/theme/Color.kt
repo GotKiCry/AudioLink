@@ -34,8 +34,8 @@ private val DarkPrimary = Color(0xFF4CC2FF) // accent
 private val DarkOnPrimary = Color(0xFF003A5C) // accent-on
 private val DarkPrimaryContainer = Color(0xFF0F548C) // brandWeb[60]
 // brandWeb[110] 原值 #62ABF5 在 primaryContainer(#0F548C) 上只有 3.25:1 —— 而这一对
-// 是配对卡与省电白名单卡的正文（见 DESIGN.md §Colors「配对法则（血泪）」）。
-// 按实际配对取 brandWeb 浅档 #9CD3FF → 4.94:1，过正文门槛。
+// 是连接卡片与省电白名单卡的正文（见 DESIGN.md §Colors「配对法则（血泪）」）。
+// 按实际色对取 brandWeb 浅档 #9CD3FF → 4.94:1，过正文门槛。
 private val DarkOnPrimaryContainer = Color(0xFF9CD3FF)
 private val DarkSecondary = Color(0xFFC5C5C5) // text-2
 private val DarkOnSecondary = Color(0xFF003A5C) // accent-on

@@ -29,7 +29,7 @@ import com.gotkicry.audiolink.ui.theme.ThemePreference
  * 单页信息架构（docs/08-ui-spec.md §3.1）：M1 落地「本机状态」这一半 ——
  * 服务启停 + 播放可观测项（低延迟是否生效 / 采样率 / 声道 / 缓冲帧数 / 欠载）；
  * 发送方向（连接电脑 + 推流，FR-17/§8）与发送源切换（FR-06/07）已接线，
- * 接收入口在前台扫描局域网主机，选择后复用服务的连接与 PIN 配对流程。
+ * 接收入口在前台扫描局域网主机，选中后直接走服务的连接流程（连上即开始接收）。
  *
  * 注意：Activity 只负责 UI。前台服务（AudioLinkService）由用户操作显式启动，
  * 不存在「必须先打开 App 才能工作」的隐式依赖；状态经 `AudioLinkService.state` 收流，
@@ -118,7 +118,7 @@ class MainActivity : ComponentActivity() {
                         AudioLinkService.stop(this)
                     }
                 },
-                // 发送方向：四个动作分别对应内核的 connect / submitPin / startSend / stopSend。
+                // 发送方向：三个动作分别对应内核的 connect / startSend / stopSend。
                 // 这里只把「用户点了什么」转成服务请求；能不能连、能不能发由 service 判定并回写状态。
                 // 连接会顺带把前台服务拉起来（真机评审 P0：用户不该先去找另一个按钮），
                 // 所以通知权限也在这一步问 —— 与「开始接收」那条路径同一套处理。
@@ -131,7 +131,6 @@ class MainActivity : ComponentActivity() {
                     }
                     AudioLinkService.connect(this, addr)
                 },
-                onSubmitPin = { pin -> AudioLinkService.submitPin(this, pin) },
                 onStartSend = { AudioLinkService.startSend(this) },
                 onStopSend = { AudioLinkService.stopSend(this) },
                 // 发送源（FR-06/07）：三个分支各自把「还差什么前置」补齐再交给服务。

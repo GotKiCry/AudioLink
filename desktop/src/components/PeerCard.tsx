@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { ComponentType, CSSProperties } from "react";
 
 import type { PeerState, PeerView } from "../types";
-import { peerStateLabel } from "../types";
+import { peerStateLabel, usToMs } from "../types";
 import { t } from "../i18n";
 import {
   IconStart,
@@ -13,7 +13,6 @@ import {
   IconStateStreaming,
   IconPause,
   IconMonitor,
-  IconUnplug,
 } from "./icons";
 
 const STATE_VISUAL: Record<
@@ -33,13 +32,9 @@ interface PeerCardProps {
   busy: boolean;
   canStart: boolean;
   paused?: boolean;
-  /** 本机是否需要为这个对端**输入**配对码（即配对由本机发起）。 */
-  canInputPin: boolean;
   onStart: (idShort: string) => Promise<void>;
   onStop: () => Promise<void>;
-  onBeginPair: (idShort: string) => void;
   onGain: (gain: number) => void;
-  onRevoke: (idShort: string) => Promise<void>;
 }
 
 export function PeerCard({
@@ -47,17 +42,12 @@ export function PeerCard({
   busy,
   canStart,
   paused = false,
-  canInputPin,
   onStart,
   onStop,
-  onBeginPair,
   onGain,
-  onRevoke,
 }: PeerCardProps) {
   const visual = STATE_VISUAL[peer.state];
   const streaming = peer.state === "streaming" || peer.state === "degraded";
-  /** 两段式确认：默认收起，避免误点这个不可逆动作（FR-18 代价不对称）。 */
-  const [confirmingRevoke, setConfirmingRevoke] = useState(false);
   /** 推子受控：原来是非受控的 defaultValue，既显示不出真实增益，重连后也回不到真值。 */
   const [gain, setGain] = useState(1);
 
@@ -70,19 +60,45 @@ export function PeerCard({
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-caption">
             <span className={`inline-flex items-center gap-1.5 ${visual.ink}`}>
               <visual.Icon className="h-3.5 w-3.5" />
-              {peer.receiving && peer.state === "idle" && peer.trusted ? t("peer.host_connected") : paused && peer.state === "idle" && peer.trusted ? t("peer.paused") : peerStateLabel(peer.state)}
+              {peer.receiving && peer.state === "idle" ? t("peer.host_connected") : paused && peer.state === "idle" ? t("peer.paused") : peerStateLabel(peer.state)}
             </span>
-            <span className="text-text-secondary">{peer.trusted ? t("peer.trusted") : t("peer.untrusted")}</span>
           </div>
         </div>
         <span className="al-lamp h-2 w-2" data-on={visual.lamp} />
-        {peer.trusted ? (
-          <button type="button" disabled={busy} onClick={() => setConfirmingRevoke(true)}
-            title={t("peer.revoke_hint")} aria-label={t("peer.revoke")} className="al-btn h-8 w-8">
-            <IconUnplug className="h-4 w-4" />
-          </button>
-        ) : null}
       </div>
+
+      {peer.quality ? (
+        <div>
+          <dl className="flex flex-wrap gap-x-6 gap-y-2 text-caption" aria-label={t("quality.title")}>
+            <div title={t("quality.rtt_hint")}>
+              <dt className="text-text-secondary">{t("quality.rtt")}</dt>
+              <dd className="num mt-1">{peer.quality.rttUs == null ? "—" : `${usToMs(peer.quality.rttUs)} ms`}</dd>
+            </div>
+            <div title={t("quality.loss_hint")}>
+              <dt className="text-text-secondary">{t("quality.loss")}</dt>
+              <dd className={`num mt-1 ${(peer.quality.lossPctX100 ?? 0) > 0 ? "text-caution" : ""}`}>
+                {peer.quality.lossPctX100 == null ? "—" : `${(peer.quality.lossPctX100 / 100).toFixed(2)}%`}
+              </dd>
+            </div>
+            <div title={t("quality.underruns_hint")}>
+              <dt className="text-text-secondary">{t("tm.underruns")}</dt>
+              <dd className="num mt-1">{peer.quality.underruns ?? "—"}</dd>
+            </div>
+            <div>
+              <dt className="text-text-secondary">{t("tm.buffer")}</dt>
+              <dd className="num mt-1">{peer.quality.bufferLevelUs == null ? "—" : `${usToMs(peer.quality.bufferLevelUs)} ms`}</dd>
+            </div>
+            <div title={t("diag.frame_ms_hint")}>
+              <dt className="text-text-secondary">{t("diag.frame_ms")}</dt>
+              {/* null = 还没开流 / 还没协商 / 本机是发送端：显示占位符，**不要**回退成
+                  "20 ms" —— 帧长不一致的症状是「声音发闷但遥测全绿」，一个假数字
+                  正好把唯一的直接读数变成误导。 */}
+              <dd className="num mt-1">{peer.negotiatedFrameMs == null ? "—" : `${peer.negotiatedFrameMs} ms`}</dd>
+            </div>
+          </dl>
+          {peer.quality.lossPctX100 == null ? <p className="mt-2 text-caption text-text-tertiary">{t("quality.waiting")}</p> : null}
+        </div>
+      ) : null}
 
       {peer.state === "degraded" ? (
         <p className="text-caption text-caution">{t("peer.degraded")}</p>
@@ -119,28 +135,7 @@ export function PeerCard({
         ) : null}
 
         <div className="ml-auto flex items-center gap-2">
-          {!peer.trusted ? (
-            canInputPin ? (
-              // 本机发起配对：给一条"重新打开输入框"的路 —— 配对请求事件只发一次，
-              // 用户如果把弹窗关掉了，不该被迫整条重连（重连还会被去重拦下）。
-              <button
-                type="button"
-                onClick={() => onBeginPair(peer.idShort)}
-                className="al-btn al-btn-accent h-9 px-4 text-body"
-              >
-                {t("peer.pin_entry")}
-              </button>
-            ) : (
-              <button
-                type="button"
-                disabled
-                title={t("peer.pin_hint")}
-                className="al-btn h-9 px-4 text-body"
-              >
-                {t("peer.waiting")}
-              </button>
-            )
-          ) : peer.receiving ? <span className="text-caption text-text-secondary">{t("peer.receive_hint")}</span> : streaming ? (
+          {peer.receiving ? <span className="text-caption text-text-secondary">{t("peer.receive_hint")}</span> : streaming ? (
             <button
               type="button"
               disabled={busy}
@@ -180,32 +175,6 @@ export function PeerCard({
         ) : null}
       </details>
       {peer.state === "failed" ? <p className="text-caption text-text-secondary">{t("peer.disconnected_hint")}</p> : null}
-
-      {confirmingRevoke ? (
-        <div className="flex flex-wrap items-center gap-2 border-t border-stroke-control pt-3">
-          <span className="text-caption text-critical">{t("peer.revoke_hint")}</span>
-          <div className="ml-auto flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setConfirmingRevoke(false)}
-              className="al-btn h-9 px-3 text-caption"
-            >
-              {t("peer.revoke_cancel")}
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                setConfirmingRevoke(false);
-                void onRevoke(peer.idShort);
-              }}
-              className="al-btn al-btn-danger h-9 px-4 text-caption"
-            >
-              {busy ? t("peer.revoking") : t("peer.revoke_confirm")}
-            </button>
-          </div>
-        </div>
-      ) : null}
     </article>
   );
 }

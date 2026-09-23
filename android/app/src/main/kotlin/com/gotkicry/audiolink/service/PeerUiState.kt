@@ -1,27 +1,26 @@
 package com.gotkicry.audiolink.service
 
 /**
- * 配对相关的 UI 状态（PIN + 对端列表）。
+ * 对端列表的 UI 状态（内核 `peers()` 当前会话表的容器）。
  *
  * 为什么单独建一个模型而不是直接把 FFI 的 `PeerView` 塞进 [PlaybackUiState]：
  * 1. `PeerView` 里嵌着一个 15+ 字段的 `TelemetryView`，把它拖进 UI 状态会让
- *    "PIN 有没有、对端受不受信"这两个最简单的判断也要先构造一整棵遥测树；
+ *    「有没有对端、它在什么状态」这两个最简单的判断也要先构造一整棵遥测树；
  * 2. 生成物（`audiolink_ffi.kt`）会随内核重新生成而变字段，UI 状态跟着抖；
  * 3. 映射逻辑必须能在**没有 `.so`、没有 Android** 的纯 JVM 上被单测钉住
  *    （同 [com.gotkicry.audiolink.diagnostics.ProtocolSelfTest] 的分层立场）。
  *
- * 所以：FFI → [PeerSnapshot]（窄输入）→ [PairingStateMapper] → [PeerUi]（UI 输出），三层各自可测。
+ * 所以：FFI → [PeerSnapshot]（窄输入）→ [PeerStateMapper] → [PeerUi]（UI 输出），三层各自可测。
  */
 
 /**
  * 一个对端的 UI 快照。
  *
- * @param idShort 指纹短码（展示用，**不变**：信任判定的锚点）。
- * @param name 对端自报名（对端可随便写，**不参与信任判定**，所以不能只显示它）。
+ * @param idShort 指纹短码（展示用；完整指纹见 [idHex]）。
+ * @param name 对端自报名（对端可留空，缺失时由 [PeerStateMapper.displayName] 回落到短码）。
  * @param addr 对端地址 `ip:port`。
  * @param state 会话状态原始字面量（`idle`/`handshaking`/`streaming`/...，内核口径）。
  * @param stateLabel 会话状态的中文标签（未知状态原样透传，不吞）。
- * @param trusted 是否已在信任库中 —— 验收时判断"配对是否真的落盘"就看它。
  */
 data class PeerUi(
     val idShort: String,
@@ -29,14 +28,13 @@ data class PeerUi(
     val addr: String,
     val state: String,
     val stateLabel: String,
-    val trusted: Boolean,
     /**
      * 估算端到端延迟（us）；0 = 还没有遥测（未推流）。
      *
-     * 为什么在 UiState 上补这三个字段（本次唯一的 service 侧改动，只加字段、不改任何行为）：
+     * 为什么在 UiState 上补这三个字段（只加字段、不改任何行为）：
      * 产品真相要求首屏回答“在推什么、给谁、质量如何”，其中“质量如何”就是这三个读数 ——
      * 它们本来就在 FFI 的 PeerView.telemetry 里，但旧的 PeerSnapshot 映射把它们剥掉了，
-     * UI 拿不到（UI 不许碰 FFI 类型，那是 PairingUiState 类注释里定下的分层）。
+     * UI 拿不到（UI 不许碰 FFI 类型，那是本文件类注释里定下的分层）。
      */
     val e2eLatencyUs: Long = 0L,
     /** 实际编码码率（bps）；0 = 还没有遥测。 */
@@ -56,6 +54,16 @@ data class PeerUi(
      * `null` 与「设成了 1000」是两件事：界面据此决定要不要打「已调整」标记（FFI 的 KDoc 明说）。
      */
     val localGain: UInt? = null,
+    /** QUIC 往返延迟；0 表示尚未采样，不是端到端音频延迟。 */
+    val rttUs: Long = 0L,
+    /**
+     * 本条流协商生效的 Opus 帧长（ms）；`null` = 未协商/未知（口径见 [PeerSnapshot.negotiatedFrameMs]）。
+     *
+     * 与 [AudioLinkService] 里那个**本端档位**（`lowLatency`）是两件事：那个管**发送方向**，
+     * 这个说的是**接收方向**对端定了什么。诊断面板据此回答「跟随到底生效了没有」——
+     * 帧长不一致的典型症状是听感发闷/断续而遥测全绿，只看本端档位看不出来。
+     */
+    val negotiatedFrameMs: Int? = null,
 )
 
 /**
@@ -69,7 +77,6 @@ data class PeerSnapshot(
     val name: String,
     val addr: String,
     val state: String,
-    val trusted: Boolean,
     /** 估算端到端延迟（us）；0 = 无遥测。理由见 [PeerUi.e2eLatencyUs]。 */
     val e2eLatencyUs: Long = 0L,
     /** 实际编码码率（bps）；0 = 无遥测。 */
@@ -81,63 +88,48 @@ data class PeerSnapshot(
      * **必须留在末尾**：构造点里有按位置传参的调用，插在中间会把后面所有字段挪位。
      */
     val idHex: String = "",
+    val rttUs: Long = 0L,
+    /**
+     * 本端作为**接收端**时，本条流协商生效的 Opus 帧长（ms）；**`null` = 未协商/未知**。
+     *
+     * 为什么在这一层就用可空（而不是拿 0 当哨兵）：「没有值」要**原样穿过纯逻辑层** ——
+     * [LowLatencyDefaults.shouldResetForNegotiatedFrame] 的 `previous`/`next` 都用 null 表意，
+     * 而「断流时变回 null」正是它必须区分的一条。让 0 兼职「没协商」，会把「0 ms 帧」这个
+     * 不存在的档和「没协商」混成一件事 —— 而那两者恰恰必须分开。
+     *
+     * `Int?` 而非`UByte?`：本字段只做「等不等于 10 / 20」的比较，且要跨层传给纯逻辑对象 ——
+     * 无符号类型在这里不带来任何表达能力（帧长不可能超过 255，0–255 在 Int 里没有歧义），
+     * 只会给 JVM 单测添麻烦。窄化发生在**服务侧映射**那一行（离 FFI 最近的地方），
+     * 那里用 `?.toInt()` 把 `UByte?` 落成 `Int?`。
+     *
+     * **末尾字段**：与 [idHex] 同样的约定 —— 前面几个字段有按位置传参的调用点，
+     * 往后加字段不会挪位，插在中间会。
+     */
+    val negotiatedFrameMs: Int? = null,
 )
 
 /**
- * 配对面板的状态。
+ * 对端列表 + 取数失败原因的不可变快照（FFI `peers()` 的一次查询产物）。
  *
- * @param pin 当前要展示给用户的 6 位配对 PIN；`null` = 当前没有配对在进行（UI 不占位）。
- * @param peers 已连接对端（可能为空）。
- * @param note 取 PIN / 对端列表失败时的人话原因；`null` = 没有错误。
+ * 为什么把 `peers` 与 `note` 装进**同一个**不可变对象：它们是同一次调用的产物，
+ * 必须同拍发布 —— 拆成两个字段分别赋值，会出现「列表已经更新、错误提示还挂着上一拍」
+ * 这种自相矛盾的中间态，而读它的主线程无法分辨哪一半才是新的。
+ *
+ * @param peers 当前会话表（可能为空）。
+ * @param note 取对端列表失败时的人话原因；`null` = 没有错误。
  */
-data class PairingUiState(
-    val pin: String? = null,
+data class PeerUiState(
     val peers: List<PeerUi> = emptyList(),
     val note: String? = null,
-) {
-    /** 是否有任何值得渲染的内容 —— UI 用它决定要不要占位。 */
-    val hasAnything: Boolean get() = pin != null || peers.isNotEmpty()
-
-    /**
-     * 这个 PIN 是否**已经没有对应的活跃配对会话**（= 显示出来就会骗人）。
-     *
-     * 旧版 FFI 曾在断开后残留 PIN；现已改为读取当前连接快照，成功、断开、锁定或到期后清除。
-     * 这里保留防御性提示：PIN 与 peers 是两次独立查询，连接恰好结束时可能短暂不一致。
-     *
-     * 代理信号为什么用"还有没有未授信的对端会话"：配对待提交时，内核一定有一个
-     * `handshaking` 的未授信会话（真机实测 `peers()` 此时会列出它，`trusted=false`）；
-     * 会话没了就说明 PinGate 也没了。这是外壳能拿到的最接近 PinGate 生死的信号。
-     */
-    val pinIsStale: Boolean get() = PairingStateMapper.pinIsStale(pin, peers)
-}
+)
 
 /**
- * [PeerSnapshot] → [PairingUiState] 的纯映射。
+ * [PeerSnapshot] → [PeerUi] 的纯映射。
  *
- * 全部是纯函数：不碰 Android、不碰 FFI、不碰时间 —— 因此"PIN 有无两态"、
- * "对端没名字时显示什么"、"未知状态怎么显示"都能在 JVM 单测里逐条钉死。
+ * 全部是纯函数：不碰 Android、不碰 FFI、不碰时间 —— 因此「对端没名字时显示什么」、
+ * 「未知状态怎么显示」都能在 JVM 单测里逐条钉死。
  */
-object PairingStateMapper {
-
-    /**
-     * PIN 是否已经没有对应的活跃配对会话（口径与理由见 [PairingUiState.pinIsStale]）。
-     *
-     * 抽成公开函数是为了让 [PairingUiState] 与 [PlaybackUiState] 用**同一份**规则 ——
-     * 两处各写一遍 `none { !it.trusted }` 迟早会漂移。
-     */
-    fun pinIsStale(pin: String?, peers: List<PeerUi>): Boolean = pin != null && peers.none { !it.trusted }
-
-    /**
-     * PIN 归一化。
-     *
-     * 口径：只去首尾空白；**不做**"必须 6 位数字"的校验 —— 格式的权威在内核（`PinGate`），
-     * 外壳再判一次只会在内核换了长度时把真 PIN 藏起来（"看不见的 PIN"比"格式不标准的 PIN"更糟）。
-     * 空白串按"没有 PIN"处理，避免渲染出一个空的大字号框。
-     */
-    fun normalizePin(raw: String?): String? {
-        val trimmed = raw?.trim().orEmpty()
-        return trimmed.ifEmpty { null }
-    }
+object PeerStateMapper {
 
     /** 会话状态字面量 → 中文标签；未知值**原样返回**（不吞、不假装认识）。 */
     fun stateLabel(state: String): String = when (state.trim().lowercase()) {
@@ -153,11 +145,18 @@ object PairingStateMapper {
     /**
      * 对端名缺失时的显示口径：回落到指纹短码。
      *
-     * 对端名是对端自报的、可留空；短指纹是信任判定的锚点，永远有值 —— 所以回落方向是
+     * 对端名是对端自报的、可留空；指纹短码由本端从对端证书现算，永远有值 —— 所以回落方向是
      * 「名字 → 短码」，而不是显示一个空行。
      */
     fun displayName(snapshot: PeerSnapshot): String =
         snapshot.name.trim().ifEmpty { snapshot.idShort.ifEmpty { "（未知对端）" } }
+
+    /**
+     * 总映射：内核 `peers()` 的原始返回值 → UI 状态。
+     *
+     * @param snapshots 内核 `peers()` 的原始返回值（取失败时传空表）。
+     */
+    fun map(snapshots: List<PeerSnapshot>): PeerUiState = PeerUiState(peers = peers(snapshots))
 
     /** 对端列表映射（保持内核给出的顺序）。 */
     fun peers(snapshots: List<PeerSnapshot>): List<PeerUi> = snapshots.map { snapshot ->
@@ -168,27 +167,11 @@ object PairingStateMapper {
             addr = snapshot.addr,
             state = snapshot.state,
             stateLabel = stateLabel(snapshot.state),
-            trusted = snapshot.trusted,
             e2eLatencyUs = snapshot.e2eLatencyUs,
+            rttUs = snapshot.rttUs,
             bitrateBps = snapshot.bitrateBps,
             lossPct = snapshot.lossPct,
+            negotiatedFrameMs = snapshot.negotiatedFrameMs,
         )
     }
-
-    /**
-     * 总映射。
-     *
-     * @param pin 内核 `displayedPin()` 的原始返回值。
-     * @param snapshots 内核 `peers()` 的原始返回值（取失败时传空表）。
-     * @param error 取数失败时的人话原因（成功传 `null`）。
-     */
-    fun map(
-        pin: String?,
-        snapshots: List<PeerSnapshot>,
-        error: String? = null,
-    ): PairingUiState = PairingUiState(
-        pin = normalizePin(pin),
-        peers = peers(snapshots),
-        note = error,
-    )
 }

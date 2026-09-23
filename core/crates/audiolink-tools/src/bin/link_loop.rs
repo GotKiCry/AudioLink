@@ -6,7 +6,7 @@
 //!
 //! `self-loop` 量的是**单进程内**的采集 → 编码 → 解码 → 播放，没有任何网络。
 //! 本工具在同一台机器上起**两个真实的 `Engine` 实例**，让它们之间跑真实的 QUIC 会话：
-//! 真实的 TLS 握手、真实的证书指纹互认、真实的 PIN 配对、真实的数据报收发、真实的会话状态机。
+//! 真实的 TLS 握手、真实的证书指纹互认、真实的数据报收发、真实的会话状态机（连接即建立，没有配对步骤）。
 //! 换句话说，除了「对端是另一台设备」这一件事，M1 的整条链路都在被测。
 //!
 //! # 端到端延迟的口径（重要：别把模型值读成实测值）
@@ -17,7 +17,7 @@
 //!
 //! # 本机可测 vs 不可测
 //!
-//! - **可测**：PC↔PC 全链路（含真实 QUIC 网络栈、真实 Opus、真实会话与配对）。
+//! - **可测**：PC↔PC 全链路（含真实 QUIC 网络栈、真实 Opus、真实会话）。
 //! - **不可测**：PC→Android。本机 `adb devices` 为空、也没有可用的 AVD；
 //!   因此 `getPerformanceMode()`、Android 出声延迟、30 min 无断流**本轮无法验证**。
 //!
@@ -29,10 +29,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use audiolink_audio::{CaptureSource, NullPlayout, PlayoutSink, Summary, SyntheticCapture};
 use audiolink_engine::session::SessionState;
-use audiolink_engine::{
-    CaptureFactory, Engine, EngineConfig, EngineEvent, MeasurementTap, PlayoutFactory,
-};
-use audiolink_types::ErrorCode;
+use audiolink_engine::{CaptureFactory, Engine, EngineConfig, MeasurementTap, PlayoutFactory};
 
 const USAGE: &str = "\
 link-loop —— PC↔PC 真 QUIC 端到端验收
@@ -47,7 +44,7 @@ link-loop —— PC↔PC 真 QUIC 端到端验收
 
 说明：
   本工具在同一进程里起两个真实 Engine（node-a / node-b），走 127.0.0.1 上的真实 QUIC。
-  node-b 之前不认识 node-a，因此会实跑一遍 §5 的 PIN 配对流程。
+  连接即建立：一次 connect 就完成 §5 握手，没有任何配对步骤。
 ";
 
 fn main() -> Result<()> {
@@ -157,41 +154,22 @@ async fn run(seconds: u64, frame_ms: u32, prime_ms: u32) -> Result<()> {
     let _accept_b = engine_b.spawn_accept_loop();
 
     // ------------------------------------------------------------------
-    // [3] §5 握手 + PIN 配对
+    // [3] §5 握手（连接即建立，没有配对步骤）
     // ------------------------------------------------------------------
-    println!("\n[3] 握手与配对（§5）");
-    let mut events_b = engine_b.subscribe();
-    let mut events_a = engine_a.subscribe();
+    println!("\n[3] 握手与连接建立（§5）");
 
-    let connect_outcome = engine_a.connect(addr_b).await;
+    engine_a
+        .connect(addr_b)
+        .await
+        .map_err(link_error)
+        .context("连接 node-b 失败")?;
     let peer_on_a = first_peer(&engine_a).ok_or_else(|| anyhow!("node-a 侧没有建立会话"))?;
-
-    match connect_outcome {
-        Ok(_) => {
-            println!("    两端已在同一信任库中，直接走 AUTH_CHALLENGE/RESPONSE 分支");
-        }
-        Err(error) if error.code() == ErrorCode::NotPaired => {
-            println!("    node-b 不认识 node-a → 进入 PIN 配对分支");
-            let pin = wait_for_pin(&mut events_b, Duration::from_secs(5)).await?;
-            println!("    node-b 屏幕显示 PIN: {pin}");
-
-            engine_a
-                .submit_pin(peer_on_a, &pin)
-                .await
-                .map_err(link_error)
-                .context("提交 PIN 失败")?;
-
-            wait_for_streaming(&engine_a, peer_on_a, Duration::from_secs(5)).await?;
-            println!("    PIN 校验通过，双方已写入信任库");
-        }
-        Err(error) => {
-            return Err(link_error(error)).context("连接 node-b 失败");
-        }
-    }
-
-    // 配对结果事件（两边各应收到一条）
-    drain_pair_events(&mut events_a, "node-a");
-    drain_pair_events(&mut events_b, "node-b");
+    wait_for_streaming(&engine_a, peer_on_a, Duration::from_secs(5)).await?;
+    println!(
+        "    已连接：node-a {} ↔ node-b {}",
+        peer_on_a.short(),
+        addr_b
+    );
 
     // ------------------------------------------------------------------
     // [4] 推流
@@ -296,25 +274,6 @@ fn peer_stats(engine: &Arc<Engine>) -> Option<audiolink_types::StreamStats> {
     first_peer(engine).and_then(|id| engine.telemetry(id))
 }
 
-async fn wait_for_pin(
-    events: &mut tokio::sync::broadcast::Receiver<EngineEvent>,
-    timeout: Duration,
-) -> Result<String> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            bail!("等待对端展示 PIN 超时");
-        }
-        match tokio::time::timeout(remaining, events.recv()).await {
-            Ok(Ok(EngineEvent::DisplayPin { pin, .. })) => return Ok(pin),
-            Ok(Ok(_)) => continue,
-            Ok(Err(error)) => bail!("事件订阅中断：{error}"),
-            Err(_) => bail!("等待对端展示 PIN 超时"),
-        }
-    }
-}
-
 async fn wait_for_streaming(
     engine: &Arc<Engine>,
     peer: audiolink_types::NodeId,
@@ -333,34 +292,6 @@ async fn wait_for_streaming(
             bail!("等待会话进入 Streaming 超时");
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-fn drain_pair_events(events: &mut tokio::sync::broadcast::Receiver<EngineEvent>, who: &str) {
-    let mut seen = 0;
-    while let Ok(event) = events.try_recv() {
-        match event {
-            EngineEvent::PairCompleted { ok, reason, .. } => {
-                println!("    {who} 配对结果：ok={ok}（{reason}）");
-                seen += 1;
-            }
-            EngineEvent::DisplayPin { pin, .. } => {
-                println!("    {who} 展示过 PIN：{pin}");
-                seen += 1;
-            }
-            EngineEvent::PinNeeded { name, .. } => {
-                println!("    {who} 提示需要输入 PIN（对端 {name}）");
-                seen += 1;
-            }
-            EngineEvent::Error { code, context } => {
-                println!("    {who} 会话错误 {code}：{context}");
-                seen += 1;
-            }
-            _ => {}
-        }
-        if seen >= 8 {
-            break;
-        }
     }
 }
 

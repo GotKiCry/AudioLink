@@ -53,11 +53,9 @@ pub use format_guard::{require_unified_format, require_unified_link};
 pub use handshake::{Handshake, HandshakeEvent, HandshakePhase, HandshakeStep, Outgoing, Role};
 pub use measure::MeasurementTap;
 pub use payload::{
-    AuthChallengePayload, AuthResponsePayload, ByePayload, ClockResultPayload, CloseStreamPayload,
-    CodecPref, ErrorPayload, HelloAckPayload, HelloPayload, OpenStreamAckPayload,
-    OpenStreamPayload, PairRequiredPayload, PairResultPayload, PairSubmitPayload, PingPayload,
-    STREAM_ID_ALL, SetGainPayload, SetMutePayload, SourceKind, StreamStatsPayload, decode_payload,
-    encode_payload,
+    ByePayload, ClockResultPayload, CloseStreamPayload, CodecPref, ErrorPayload, HelloAckPayload,
+    HelloPayload, OpenStreamAckPayload, OpenStreamPayload, PingPayload, STREAM_ID_ALL,
+    SetGainPayload, SetMutePayload, SourceKind, StreamStatsPayload, decode_payload, encode_payload,
 };
 pub use runtime::{
     CaptureFactory, Engine, EngineConfig, EngineEvent, GroupMember, GroupSnapshot,
@@ -68,7 +66,4 @@ pub use silence::{
     MIN_SILENCE_MS, SILENCE_PEAK_THRESHOLD, SilenceSegment, SilenceSnapshot, SilenceTracker,
     frame_peak,
 };
-// 信任库条目的 re-export：外壳（桌面 / FFI）要读 [runtime::Engine::trusted_peers] 的返回值，
-// 而它们不一定依赖 `audiolink-identity` —— 从内核这一层转出去，省掉一条依赖边。
-pub use audiolink_identity::TrustEntry;
 pub use telemetry::TelemetryAggregator;

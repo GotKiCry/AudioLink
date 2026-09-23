@@ -21,13 +21,11 @@ class SenderFeedbackTextTest {
         peerIdShort: String? = null,
         note: String? = null,
         error: String? = null,
-        awaitingPin: Boolean = false,
         sessionDropped: Boolean = false,
     ) = SenderUiState(
         peerIdShort = peerIdShort,
         note = note,
         error = error,
-        awaitingPin = awaitingPin,
         sessionDropped = sessionDropped,
     )
 
@@ -47,14 +45,10 @@ class SenderFeedbackTextTest {
         assertNull("连接已经成了，入口卡不该再报错", connectPathError(failed))
     }
 
-    /** 输码与断开：两条都归接收端入口卡（主机卡那边状态徽章会自己退回「未连接」）。 */
+    /** 断开归接收端入口卡（主机卡那边状态徽章会自己退回「未连接」）。 */
     @Test
-    fun pinAndDisconnectNotesBelongToTheConnectEntry() {
+    fun disconnectNoteBelongsToTheConnectEntry() {
         val strings = AudioLinkStrings.zh
-
-        val awaiting = sender(awaitingPin = true, note = "service 层的中文提示")
-        assertEquals(strings.senderAwaitingPinNote, connectPathNote(strings, awaiting))
-        assertNull(hostPathNote(awaiting))
 
         val dropped = sender(sessionDropped = true)
         assertEquals(strings.senderSessionDropped, connectPathNote(strings, dropped))
@@ -77,22 +71,18 @@ class SenderFeedbackTextTest {
     fun everyNoteLandsOnExactlyOneCard() {
         val strings = AudioLinkStrings.zh
         for (hasSession in listOf(false, true)) {
-            for (awaitingPin in listOf(false, true)) {
-                for (dropped in listOf(false, true)) {
-                    val state = sender(
-                        peerIdShort = if (hasSession) "aaaa0001" else null,
-                        note = "推流那一侧的话",
-                        awaitingPin = awaitingPin,
-                        sessionDropped = dropped,
-                    )
-                    val shown = listOf(connectPathNote(strings, state), hostPathNote(state)).count { it != null }
-                    assertEquals(
-                        "hasSession=$hasSession awaitingPin=$awaitingPin dropped=$dropped：" +
-                            "提示必须恰好出现在一张卡上",
-                        1,
-                        shown,
-                    )
-                }
+            for (dropped in listOf(false, true)) {
+                val state = sender(
+                    peerIdShort = if (hasSession) "aaaa0001" else null,
+                    note = "推流那一侧的话",
+                    sessionDropped = dropped,
+                )
+                val shown = listOf(connectPathNote(strings, state), hostPathNote(state)).count { it != null }
+                assertEquals(
+                    "hasSession=$hasSession dropped=$dropped：提示必须恰好出现在一张卡上",
+                    1,
+                    shown,
+                )
             }
         }
     }
@@ -143,7 +133,6 @@ class SenderFeedbackTextTest {
             sender(),
             sender().copy(connecting = true),
             sender(peerIdShort = "aaaa0001"),
-            sender(awaitingPin = true),
         )
         for (state in states) {
             for (raw in addresses) {

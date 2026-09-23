@@ -52,11 +52,12 @@ pub use conceal::{CONCEAL_CROSSFADE_SAMPLES, CONCEAL_FADE_MS, PcmConcealer};
 pub use error::AudioError;
 pub use format::{
     CHANNELS, DEFAULT_FRAME_INTERLEAVED, DEFAULT_FRAME_MS, DEFAULT_FRAME_SAMPLES, DeviceFormat,
-    SAMPLE_RATE_HZ, SampleFormat, convert_from_internal, convert_to_internal,
+    FRAME_MS_OPTIONS, SAMPLE_RATE_HZ, SampleFormat, convert_from_internal, convert_to_internal,
+    is_supported_frame_ms,
 };
 pub use latency::{LatencyLedger, LatencyReport, SegmentSample};
 pub use ring::{SampleRingReader, SampleRingWriter, sample_ring};
-pub use sink::{PlayoutSink, PlayoutStats};
+pub use sink::{PlayoutBufferState, PlayoutSink, PlayoutStats};
 pub use source::{CaptureSource, CaptureStats, CapturedPacket};
 pub use stats::{SampleStats, Summary};
 pub use synth::{NullPlayout, SyntheticCapture};

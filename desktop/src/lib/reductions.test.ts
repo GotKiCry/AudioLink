@@ -64,18 +64,17 @@ describe("upsert（对端列表的乐观更新）", () => {
       name: "peer-" + idShort,
       addr: "192.168.1.23:58290",
       state: "idle",
-      trusted: false,
       capabilities: null,
       ...over,
     };
   }
 
   it("同一台设备覆盖、不追加（否则卡片会重复出现）", () => {
-    const before = [peer("aaaa", { trusted: true })];
-    const after = upsert(before, peer("aaaa", { trusted: false }));
+    const before = [peer("aaaa", { state: "streaming" })];
+    const after = upsert(before, peer("aaaa", { state: "idle" }));
 
     expect(after).toHaveLength(1);
-    expect(after[0]?.trusted).toBe(false);
+    expect(after[0]?.state).toBe("idle");
   });
 
   it("就地覆盖：位置不变（新状态不该让卡片在网格里跳来跳去）", () => {

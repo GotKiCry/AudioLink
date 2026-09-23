@@ -72,7 +72,7 @@ describe("三种结果", () => {
     checkUpdate.mockResolvedValue({
       currentVersion: "0.1.0",
       version: "0.1.1",
-      notes: "修了配对超时",
+      notes: "修了连接超时",
       pubDate: "2026-09-17",
     });
     render(<UpdatePanel />);
@@ -81,7 +81,7 @@ describe("三种结果", () => {
 
     expect(await screen.findByText(t("upd.available", { version: "0.1.1", current: "0.1.0" }))).toBeTruthy();
     expect(screen.getByText(t("upd.published", { date: "2026-09-17" }))).toBeTruthy();
-    expect(screen.getByText("修了配对超时")).toBeTruthy();
+    expect(screen.getByText("修了连接超时")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: t("upd.install", { version: "0.1.1" }) }));
     fireEvent.click(screen.getByRole("button", { name: t("upd.confirm") }));

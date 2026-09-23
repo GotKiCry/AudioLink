@@ -268,11 +268,9 @@ mod tests {
         "fun `disconnectPeer`",
         "fun `setLocalPeerGain`",
         "fun `localPeerGain`",
-        "fun `submitPin`",
         "fun `localStatus`",
         "fun `peers`",
         "fun `telemetry`",
-        "fun `displayedPin`",
         "fun `protocolSelfTest`",
         "interface PcmFeed",
         "interface PcmPull",
@@ -440,6 +438,131 @@ mod tests {
         );
     }
 
+    /// 护栏 5：生成物的 record `FfiConverter` **四处**都写全了字段。
+    ///
+    /// # 为什么单独立一条（护栏 4 抓不到它）
+    ///
+    /// 护栏 4 只比对 `data class` 的**声明顺序**，而 UniFFI 的 record 有四处互相独立的代码：
+    /// 定义、`read`、`allocationSize`、`write`。少写后三处中的任何一处，声明列表**一字未变**
+    /// —— 护栏 4 依然全绿，而动态库按新结构读、`.kt` 按旧结构解，两边**静默错位**
+    /// （错位之后读到的是「下一个字段的字节」，表现成完全无关的数据，极难排查）。
+    ///
+    /// 断言方式与护栏 4 同源：Rust 的 `pub struct <Name>` 字段（snake_case）逐个必须出现在
+    /// 该 record 的 `FfiConverterType<Name>` 块的 read / allocationSize / write 三处里
+    /// （Kotlin 侧是 camelCase，所以统一折算后再比对）。
+    #[test]
+    fn 生成物记录转换器三处都写全字段() {
+        const RECORDS: &[&str] = &[
+            "EngineStartConfig",
+            "LocalStatus",
+            "PeerView",
+            "TelemetryView",
+        ];
+
+        let source = std::fs::read_to_string(crate_root().join("src").join("engine_bridge.rs"))
+            .expect("读 engine_bridge.rs");
+        let files = generated_bindings();
+        assert!(!files.is_empty(), "找不到生成的 Kotlin 绑定");
+
+        let mut problems = Vec::new();
+        for name in RECORDS {
+            let rust_fields = rust_record_fields(&source, name);
+            assert!(!rust_fields.is_empty(), "Rust 侧找不到 record {name}");
+            let marker = format!("object FfiConverterType{name}:");
+            let mut found = false;
+            for file in &files {
+                let Ok(text) = std::fs::read_to_string(file) else {
+                    continue;
+                };
+                let Some(start) = text.find(&marker) else {
+                    continue;
+                };
+                found = true;
+                let body = &text[start..];
+                // 只在该 record 的转换器块内找：截到该对象的收尾行为止。
+                // 块尾 = 第一个「顶格右花括号」的行首；
+                // 不能用 `\n}\n`（那会命中 read / allocationSize 自己的收尾，把 write 整段切掉）。
+                let end = body.find("\n}").map_or(body.len(), |offset| offset);
+                let block = &body[..end];
+
+                // `allocationSize` / `write` 是**按字段名**写的，逐个比对就能抓到漏写。
+                //
+                // 分段必须靠「下一个 override 的起点」，**不能**靠缩进的右花括号：
+                // `allocationSize` 是个表达式体（以 `    )` 收尾，没有 `    }`），
+                // 用花括号切会把后面的 `write` 整段并进来 —— 那样任何一个字段都能在
+                // 别段里被「找到」，护栏就变成了装饰（本护栏的第一版正是栽在这里）。
+                let sections: [(&str, &str); 2] = [
+                    ("override fun allocationSize(", "override fun write("),
+                    ("override fun write(", "\n}\n"),
+                ];
+                for (section, until) in sections {
+                    let Some(section_start) = block.find(section) else {
+                        problems.push(format!("{name}：转换器块里找不到 {section}"));
+                        continue;
+                    };
+                    let rest = &block[section_start..];
+                    let section_end = rest.find(until).unwrap_or(rest.len());
+                    let section_body = &rest[..section_end];
+                    for field in &rust_fields {
+                        let kotlin_field = format!("\u{60}{}\u{60}", snake_to_camel(field));
+                        if !section_body.contains(&kotlin_field) {
+                            problems.push(format!(
+                                "{name}.{field}：{section} 段里没写（四处字段不对齐 = 静默错位）"
+                            ));
+                        }
+                    }
+                }
+                // `read` 是**按位置**读的，生成物里不出现字段名 —— 所以只能数它读了几次。
+                // 数与字段数不符同样意味着错位：多读一个字段会吃掉下一个字段的字节，
+                // 少读一个则后面整段前移。
+                let read_calls = {
+                    let Some(section_start) = block.find("override fun read(") else {
+                        problems.push(format!("{name}：转换器块里找不到 override fun read("));
+                        continue;
+                    };
+                    let rest = &block[section_start..];
+                    let section_end = rest
+                        .find("override fun allocationSize(")
+                        .unwrap_or(rest.len());
+                    rest[..section_end].matches(".read(buf)").count()
+                };
+                if read_calls != rust_fields.len() {
+                    problems.push(format!(
+                        "{name}：read 段读了 {read_calls} 个字段，Rust 侧有 {} 个（字段不对齐 = 静默错位）",
+                        rust_fields.len()
+                    ));
+                }
+                break;
+            }
+            if !found {
+                problems.push(format!(
+                    "{name}：生成物里没有 FfiConverterType{name} 转换器"
+                ));
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "生成物的 record 转换器字段不完整:\n{}",
+            problems.join("\n")
+        );
+    }
+
+    /// `id_short` → `idShort`（UniFFI 的 Kotlin 命名规则，与 `camel_to_snake` 互逆）。
+    fn snake_to_camel(snake: &str) -> String {
+        let mut out = String::with_capacity(snake.len());
+        let mut upper_next = false;
+        for ch in snake.chars() {
+            if ch == '_' {
+                upper_next = true;
+            } else if upper_next {
+                out.push(ch.to_ascii_uppercase());
+                upper_next = false;
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
     /// 取 Rust 里 `pub struct <name> { … }` 的字段名（声明顺序）。
     fn rust_record_fields(source: &str, name: &str) -> Vec<String> {
         let marker = format!("pub struct {name} {{");

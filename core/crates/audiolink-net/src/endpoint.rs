@@ -138,8 +138,8 @@ impl AudioLinkEndpoint {
         Ok(Connection::new(connection))
     }
 
-    /// 主动连接。`server_name` 用固定值 `"audiolink"`：自签证书下 SNI 不参与信任判定
-    /// （信任判定只认 [`Connection::peer_id`] 的指纹，见 `tls` 模块文档）。
+    /// 主动连接。`server_name` 用固定值 `"audiolink"`：自签证书下 SNI 不参与任何判定
+    /// （对端身份只认 [`Connection::peer_id`] 的指纹，见 `tls` 模块文档）。
     pub async fn connect(
         &self,
         addr: SocketAddr,

@@ -50,6 +50,7 @@ secrets/
 !.env.example
 
 # ---------- 日志与产物 ----------
+/out/
 logs/
 *.log
 *.csv

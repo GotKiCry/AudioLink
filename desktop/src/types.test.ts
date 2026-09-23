@@ -11,7 +11,6 @@ import { t } from "./i18n";
 import {
   PEER_STATE_STYLE,
   bpsToKbps,
-  isPinWellFormed,
   peerStateLabel,
   telemetryRowOf,
   toCommandError,
@@ -20,24 +19,11 @@ import {
   type TelemetryView,
 } from "./types";
 
-describe("isPinWellFormed（配对码的输入前置校验）", () => {
-  it("只认 6 位数字：位数与字符集都卡死", () => {
-    // 改坏：放宽长度（5 位/7 位）或允许字母 → 会拿一个必然被内核拒绝的码去打一次
-    // 15 s 死线的配对，用户白等一轮，还以为是"网络慢"。
-    for (const ok of ["000000", "123456", "958403"]) {
-      expect(isPinWellFormed(ok)).toBe(true);
-    }
-    for (const bad of ["", "12345", "1234567", "12345a", "a12345", "12 345", "-123456", "１２３４５６"]) {
-      expect(isPinWellFormed(bad)).toBe(false);
-    }
-  });
-});
-
 describe("toCommandError（任何 rejection 都要变成可显示的人话）", () => {
   it("完整形状原样带过来（code / message / context 一个不少）", () => {
-    expect(toCommandError({ code: 1002, message: "请先完成配对", context: "connect" })).toEqual({
+    expect(toCommandError({ code: 1002, message: "指定的对端不存在", context: "connect" })).toEqual({
       code: 1002,
-      message: "请先完成配对",
+      message: "指定的对端不存在",
       context: "connect",
     });
   });

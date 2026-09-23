@@ -45,8 +45,8 @@ use std::time::{Duration, Instant};
 use audiolink_audio::{
     AudioError, DeviceFormat, NullPlayout, PlayoutSink, PlayoutStats, SyntheticCapture,
 };
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::{ErrorCode, NodeId};
+use audiolink_engine::{Engine, EngineConfig, SessionState};
+use audiolink_types::NodeId;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
@@ -303,7 +303,7 @@ async fn wait_counter(counter: Arc<AtomicU64>, before: u64, budget: Duration) ->
     }
 }
 
-/// 起一对引擎、走完 PIN 配对与开流。
+/// 起一对引擎、走完握手与开流。
 async fn wire_up(
     dir: &Path,
     frame_ms: u32,
@@ -336,25 +336,17 @@ async fn wire_up(
 
     let receiver = Engine::start(recv_config).await.expect(r"接收引擎");
     let accept = receiver.spawn_accept_loop();
-    let mut events = receiver.subscribe();
+
     let receiver_id = receiver.info().id;
 
     let relay = OutageRelay::start(receiver.local_addr()).await;
     let sender = Engine::start(send_config).await.expect(r"发送引擎");
     let sender_id = sender.info().id;
 
-    let error = sender.connect(relay.addr).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, r"首次连接必须先要 PIN");
-
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-            break pin;
-        }
-    };
     sender
-        .submit_pin(receiver_id, &pin)
+        .connect(relay.addr)
         .await
-        .expect(r"PIN 配对");
+        .expect("连接应当直接成功（无认证）");
     while !sender
         .peers()
         .iter()

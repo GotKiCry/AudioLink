@@ -36,7 +36,6 @@ import com.gotkicry.audiolink.ui.components.ConsolePageHeading
 import com.gotkicry.audiolink.ui.components.ConnectionGuide
 import com.gotkicry.audiolink.ui.components.LampTone
 import com.gotkicry.audiolink.ui.components.NoticePanel
-import com.gotkicry.audiolink.ui.components.rememberMediaVolumeController
 import com.gotkicry.audiolink.ui.i18n.LocalStrings
 
 /** 单页控制台：连接和播放优先，发送是同一页中的独立视图。 */
@@ -46,7 +45,6 @@ fun ConsoleScreen(
     state: PlaybackUiState,
     onTogglePlayback: (Boolean) -> Unit,
     onConnect: (String) -> Unit,
-    onSubmitPin: (String) -> Unit,
     onStartSend: () -> Unit,
     onStopSend: () -> Unit,
     onSelectCapture: (CaptureSourceKind?) -> Unit,
@@ -56,7 +54,6 @@ fun ConsoleScreen(
 ) {
     val strings = LocalStrings.current
     val context = LocalContext.current
-    val volume = rememberMediaVolumeController()
     var sendingView by rememberSaveable { mutableStateOf(false) }
     val senderScroll = rememberScrollState()
     val viewState = rememberSaveableStateHolder()
@@ -91,14 +88,12 @@ fun ConsoleScreen(
                 description = if (sendingView) strings.sendIntro else strings.receiveIntro,
             )
 
-            // 有时限的配对请求不随视图切换而消失。
-            state.pairingPin?.let { PairingPanel(pin = it, stale = state.pinIsStale, note = state.pairingNote) }
             if (state.lastError != null || state.engineError != null) {
                 NoticePanel(strings.errorTitle, strings.errorRecoveryPlayback, AppIcons.Warning, LampTone.Live)
                 AlTextButton(onClick = onOpenSettings) { Text(strings.showDiagnostics) }
             }
-            if (state.pairingNote != null && state.pairingPin == null) {
-                NoticePanel(strings.errorPairingReadFailed, strings.errorRecoveryGeneric, AppIcons.Warning, LampTone.Warn)
+            if (state.peersNote != null) {
+                NoticePanel(strings.errorPeersReadFailed, strings.errorRecoveryGeneric, AppIcons.Warning, LampTone.Warn)
             }
 
             viewState.SaveableStateProvider(sendingView) {
@@ -118,17 +113,16 @@ fun ConsoleScreen(
                         )
                     } else {
                         val connected = state.peers.isNotEmpty()
-                        if (connected && !state.sender.awaitingPin) {
-                            ReceiverDeck(state = state, volume = volume, onDisconnect = { onTogglePlayback(false) })
+                        if (connected) {
+                            ReceiverDeck(state = state, onDisconnect = { onTogglePlayback(false) })
                         }
                         ReceiverEntryCard(
                             sender = state.sender,
                             onConnect = onConnect,
-                            onSubmitPin = onSubmitPin,
                             compact = connected,
                             connectedIds = state.peers.map { it.idShort },
                         )
-                        if (!connected && !state.sender.awaitingPin && !state.sender.connecting) {
+                        if (!connected && !state.sender.connecting) {
                             ConnectionGuide()
                         }
                     }

@@ -28,7 +28,7 @@ adaptive
 与上游 AudioShare / AudioPipe 的差别不在外观而在机制，界面必须让这些机制**可被信任地看见**：
 任意节点互推的双向网状拓扑（不只 Windows→Android）、QUIC 传输（数据报音频 + 可靠流控制）、
 四时间戳时钟同步 + 预约播放（不是事后 seek 拉平）、抖动缓冲 + 丢包隐藏 + NACK + 码率自适应、
-自签证书 TOFU + 6 位 PIN 配对白名单（没有 HTTP 管理面）。
+自签证书的 QUIC TLS1.3 加密（没有 HTTP 管理面）；局域网内**不做信任裁决**，连上即用。
 
 ## Operating Context
 

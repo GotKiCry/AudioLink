@@ -23,7 +23,7 @@ AudioLink 参考了 **[HeHang0/AudioShare](https://github.com/HeHang0/AudioShare
 | 传输 | 裸 TCP + 短连接控制 | **QUIC**（数据报 + 可靠流） |
 | 同步 | 事后 seek 拉平 | **时钟同步 + 预约播放**（组内 ±10 ms） |
 | 稳定性 | 无抖动缓冲，忙则丢帧；异常即静音 | 抖动缓冲 + 丢包隐藏 + 断线自愈 + 遥测 |
-| 安全 | 无鉴权、无加密、开放 HTTP 管理面 | **自签证书 + TOFU + PIN 配对**，无 HTTP 面 |
+| 安全 | 无鉴权、无加密，开放 HTTP 管理面 | **自签证书 QUIC TLS1.3**（局域网内不做信任裁决、连上即用），无 HTTP 面 |
 | 维护 | 2024-05 起停更，issue 无人处理 | 全新代码库，CI/测试/遥测齐备 |
 
 上游代码为 Apache-2.0，本项目的许可与归属声明见 [`LICENSE`](LICENSE) 与 [`NOTICE`](NOTICE)。**不采用**上游协议、不包含云音乐接口调用、不包含斐讯 R1 私有集成与 adb 静默安装流程。
@@ -34,7 +34,7 @@ AudioLink 参考了 **[HeHang0/AudioShare](https://github.com/HeHang0/AudioShare
 
 | 文档 | 内容 |
 |---|---|
-| [用户手册 · 中文](docs/manual/user-guide.zh-CN.md) / [English](docs/manual/user-guide.en-US.md) | 装哪个版本、第一次怎么配对、推流与接收、同步组、遥测、配置位置、卸载 |
+| [用户手册 · 中文](docs/manual/user-guide.zh-CN.md) / [English](docs/manual/user-guide.en-US.md) | 装哪个版本、第一次怎么连上、推流与接收、同步组、遥测、配置位置、卸载 |
 | [故障排查 · 中文](docs/manual/troubleshooting.zh-CN.md) / [English](docs/manual/troubleshooting.en-US.md) | 连不上、没声音、卡顿、MIUI 安装 -99、更新失败…… 每条都来自真实踩坑 |
 | [贡献指南](CONTRIBUTING.md) | 环境、门禁、提交与文档约定 |
 
@@ -47,12 +47,12 @@ AudioLink 参考了 **[HeHang0/AudioShare](https://github.com/HeHang0/AudioShare
 | 双向网状 | 每个节点都能发也能收（**连接由接收端发起，主机只被连**）；PC ⇄ 手机、手机 ⇄ 手机 |
 | 多设备并发 | 单发送端 ≥ 8 个接收端；接收端可同时接收 ≥ 4 路并混音 |
 | 多房间同步 | 发送端勾选设备即成临时同步组，组内偏差 ≤ ±10 ms（P95） |
-| 低延迟 | 端到端 P50 **80–110 ms**（Wi-Fi）/ **40–55 ms**（有线·理想），P95 ≤ 150 ms |
+| 低延迟 | 端到端 P50 **80–110 ms**（Wi-Fi）/ **40–55 ms**（有线·理想），P95 ≤ 150 ms；可选「低延迟档」（10 ms Opus 帧 + 10 ms 播放水位，两端需同开，见 [docs/70](docs/70-low-latency-profile.md)） |
 | 自适应抗弱网 | 抖动缓冲 + 默认冗余双发 + PCM 丢包掩盖 + NACK + 码率自适应（160→96 kbps） |
 | 声道路由 | 立体声 / 仅左 / 仅右 / 左→A 设备 + 右→B 设备 |
 | 手机内录 | Android 10+ 系统内录（AudioPlaybackCapture）作为发送源 |
 | 可观测 | 内置遥测面板（RTT/抖动/丢包/码率/缓冲/端到端延迟）+ 日志导出 |
-| 安全 | QUIC TLS1.3 + 自签证书指纹 + 6 位 PIN 配对白名单 |
+| 安全 | QUIC TLS1.3 + 自签证书（双向出示证书，证明对端持有其私钥）；**不做信任裁决** —— 连上即用，没有配对码、没有白名单 |
 
 **明确不做**：云音乐播放、音乐库、灯效、USB/adb 通道、远程 Web 管理页、跨公网穿透、iOS/Web 端。
 
@@ -62,7 +62,7 @@ AudioLink 参考了 **[HeHang0/AudioShare](https://github.com/HeHang0/AudioShare
 
 | 层 | 选型 |
 |---|---|
-| 跨平台内核 | **Rust**（`core/crates/*`）：协议 / Opus / 抖动缓冲 / 时钟同步 / 混音 / 发现 / 配对 |
+| 跨平台内核 | **Rust**（`core/crates/*`）：协议 / Opus / 抖动缓冲 / 时钟同步 / 混音 / 发现 |
 | 桌面端 | **Tauri 2 + React 19 + TypeScript + Tailwind 4**（托盘 / 自启 / 自动更新） |
 | Android 端 | **Kotlin + Jetpack Compose（Material 3）**，经 **JNI/UniFFI** 调用同一内核 |
 | 音频 | Windows：`wasapi`（loopback 采集 + render 播放）；Android：`AudioPlaybackCapture` / `AudioRecord` / `AudioTrack` |
@@ -86,7 +86,7 @@ AudioLink/
 │  ├─ audiolink-audio         #   采集播放抽象 / Opus / 抖动缓冲 / 混音
 │  ├─ audiolink-net           #   QUIC 会话 / FEC-NACK / 时钟同步
 │  ├─ audiolink-discovery     #   mDNS + UDP 广播发现
-│  ├─ audiolink-identity      #   证书 / 指纹 / 信任库 / PIN 配对
+│  ├─ audiolink-identity      #   自签证书 / 指纹 / 节点身份
 │  ├─ audiolink-engine        #   编排：会话 / 同步组 / 遥测
 │  ├─ audiolink-ffi           #   UniFFI 导出（供 Kotlin 调用）
 │  └─ audiolink-tools         #   alp2-dump / latency-probe / soak-runner

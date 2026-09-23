@@ -18,12 +18,8 @@ import type {
   GroupView,
   NoticesView,
   LocalStatus,
-  PairRequiredPayload,
   PeerView,
-  RevokeTrustResult,
   StartSendResult,
-  TrustedPeerView,
-  SubmitPinResult,
   TelemetryRow,
   TelemetryView,
   UpdateCheckView,
@@ -32,7 +28,6 @@ import type {
 // --- 事件名（契约 §6 冻结；Rust 侧同名常量在 engine_bridge.rs） ---
 export const EVENT_PEER = "audiolink://peer";
 export const EVENT_TELEMETRY = "audiolink://telemetry";
-export const EVENT_PAIR_REQUIRED = "audiolink://pair-required";
 /** §7 同步组变化：收到就去拉一次最新的组列表。 */
 export const EVENT_GROUPS = "audiolink://groups";
 
@@ -45,14 +40,6 @@ export const api = {
   localStatus: (): Promise<LocalStatus> => invoke<LocalStatus>("local_status"),
   /** `list_peers` —— 当前对端列表（首屏水合用；之后靠 `audiolink://peer` 事件）。 */
   listPeers: (): Promise<PeerView[]> => invoke<PeerView[]>("list_peers"),
-  /**
-   * `list_trusted_peers` —— **已配对设备**（信任库快照），含当前没有会话的那些。
-   *
-   * 与 `listPeers` 的分工：那个是会话表（有卡片的对端），这个覆盖「白名单里有、但没卡片」的
-   * 设备 —— 换机后残留的旧记录只能从这条读侧接口才看得见、才移得掉。
-   */
-  listTrustedPeers: (): Promise<TrustedPeerView[]> =>
-    invoke<TrustedPeerView[]>("list_trusted_peers"),
   listCaptureDevices: (): Promise<CaptureDeviceView[]> => invoke("list_capture_devices"),
   activeCaptureDevice: (): Promise<CaptureDeviceView | null> => invoke("active_capture_device"),
   /** `connect` —— 手工 IP 连接。 */
@@ -62,14 +49,6 @@ export const api = {
     invoke<StartSendResult>("start_send", { id_short: idShort, capture_device_id: captureDeviceId }),
   /** `stop_send` —— 停止推流（无入参，返回 `null`）。 */
   stopSend: (): Promise<null> => invoke<null>("stop_send"),
-  /**
-   * `submit_pin` —— 提交 6 位配对码。
-   *
-   * **比契约 §6 的表格多一个 `id_short`**：引擎的 `submit_pin(peer, pin)` 必须知道是哪条会话
-   * （PIN 本身没有归属信息，同时可能有多个对端在配对）。契约文档那一行待同步更新。
-   */
-  submitPin: (idShort: string, pin: string): Promise<SubmitPinResult> =>
-    invoke<SubmitPinResult>("submit_pin", { id_short: idShort, pin }),
   /** `telemetry` —— 遥测快照（首屏水合用；之后靠 `audiolink://telemetry` 事件）。 */
   telemetry: (): Promise<TelemetryView> => invoke<TelemetryView>("telemetry"),
   /** `export_telemetry` —— 把前端累积的采样点写成 CSV，返回落盘路径（M2 的日志导出）。 */
@@ -77,14 +56,6 @@ export const api = {
     invoke<string>("export_telemetry", { rows }),
   setPeerGain: (idShort: string, gain: number, rampMs: number): Promise<null> =>
     invoke<null>("set_peer_gain", { id_short: idShort, gain, ramp_ms: rampMs }),
-  /**
-   * `revoke_trust` —— 移除设备（FR-18）：断开该对端 + 撤销信任 + 清掉指向它的「上次设备」记录。
-   *
-   * 这是隐私说明里「你可以取消配对」的兑现口：此前只能手动删 `trust.json` 或清应用数据。
-   * 断会话与撤信任的**顺序**由内核保证（先断后撤），这里只负责把结果如实带给界面。
-   */
-  revokeTrust: (idShort: string): Promise<RevokeTrustResult> =>
-    invoke<RevokeTrustResult>("revoke_trust", { id_short: idShort }),
   listGroups: (): Promise<GroupView[]> => invoke<GroupView[]>("list_groups"),
   /**
    * `alignment` —— M4 多源对齐快照（各路样本编号 + 当前跨度）。
@@ -124,6 +95,17 @@ export const api = {
   /** `set_auto_broadcast` —— 开关「有人接入时自动开始推流」。 */
   setAutoBroadcast: (enabled: boolean): Promise<null> =>
     invoke<null>("set_auto_broadcast", { enabled }),
+  /**
+   * `low_latency_state` —— M6：低延迟档的开关（**默认关** = 20 ms 帧的标准档）。
+   *
+   * 与自动推流同一条路（settings.json），所以读的是**真实状态**而不是前端记住的布尔。
+   * 注意生效时机：档位落在引擎启动配置里，改完要**下次启动引擎**才生效 ——
+   * 界面必须把这一点说清楚（后端刻意不为了换档重启引擎，那会掐断正在进行的会话）。
+   */
+  lowLatencyState: (): Promise<boolean> => invoke<boolean>("low_latency_state"),
+  /** `set_low_latency` —— 开关「低延迟档」（10 ms Opus 帧）。 */
+  setLowLatency: (enabled: boolean): Promise<null> =>
+    invoke<null>("set_low_latency", { enabled }),
   /**
    * `try_auto_connect` —— M5：启动时试一次自动重连。
    *
@@ -183,7 +165,6 @@ export function subscribeEvents(handlers: {
   onTelemetry: (view: TelemetryView) => void;
   /** §7 同步组变化（不节流：建组/加入/退出都是低频人工动作）。 */
   onGroupUpdated: () => void;
-  onPairRequired: (payload: PairRequiredPayload) => void;
   onError: (raw: unknown) => void;
 }): () => void {
   let cancelled = false;
@@ -193,7 +174,6 @@ export function subscribeEvents(handlers: {
     listen<PeerView[]>(EVENT_PEER, (event) => handlers.onPeers(event.payload)),
     listen<TelemetryView>(EVENT_TELEMETRY, (event) => handlers.onTelemetry(event.payload)),
     listen<[number, number, number]>(EVENT_GROUPS, () => handlers.onGroupUpdated()),
-    listen<PairRequiredPayload>(EVENT_PAIR_REQUIRED, (event) => handlers.onPairRequired(event.payload)),
   ];
 
   for (const subscription of pending) {

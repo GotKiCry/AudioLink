@@ -14,7 +14,7 @@
 //! | 变体 | 码 | 理由 |
 //! |---|---|---|
 //! | [`NetError::Bind`] / [`NetError::Config`] | `1008` | 本机侧问题：端口绑不上 / 证书私钥 DER 非法 / 参数越界；与对端行为无关 |
-//! | [`NetError::Handshake`] / [`NetError::PeerIdentity`] | `1004` | 握手失败或拿不到对端证书 → 身份判定无法完成；§11 对该码的处置正是「断开并告警」 |
+//! | [`NetError::Handshake`] / [`NetError::PeerIdentity`] | `1008` | 握手失败或拿不到对端证书 → 本端无从确认对端身份；§11 的 `1008` 已含「握手失败与对端身份不可读」 |
 //! | [`NetError::DatagramUnsupported`] | `1005` | 对端未协商 RFC 9221 数据报 = 缺一项必需能力 |
 //! | [`NetError::DatagramTooLarge`] 等长度类 | `1008` | §11 对 `1008` 的定义明确含「长度越界」；§4 的帧边界违规同属该类 |
 //! | [`NetError::Transport`] | `1008` | §11 没有更贴切的码；见下注 |
@@ -97,11 +97,11 @@ define_net_errors! {
     #[error("1008 BAD_REQUEST (net config): {context}")]
     Config => config, config_owned, BadRequest, false;
     /// QUIC/TLS 握手失败（对端拒绝、超时、协议不符）。
-    #[error("1004 AUTH_FAILED (handshake): {context}")]
-    Handshake => handshake, handshake_owned, AuthFailed, false;
+    #[error("1008 BAD_REQUEST (handshake): {context}")]
+    Handshake => handshake, handshake_owned, BadRequest, false;
     /// 取不到对端证书（未做双向认证 / 证书链为空 / 身份类型不符）。
-    #[error("1004 AUTH_FAILED (peer identity): {context}")]
-    PeerIdentity => peer_identity, peer_identity_owned, AuthFailed, false;
+    #[error("1008 BAD_REQUEST (peer identity): {context}")]
+    PeerIdentity => peer_identity, peer_identity_owned, BadRequest, false;
     /// 连接已关闭，或收发过程中失败。
     #[error("1008 BAD_REQUEST (transport): {context}")]
     Transport => transport, transport_owned, BadRequest, false;
@@ -162,8 +162,8 @@ mod tests {
     #[test]
     fn 码映射与统计口径固定() {
         assert_eq!(NetError::bind("x").code(), ErrorCode::BadRequest);
-        assert_eq!(NetError::handshake("x").code(), ErrorCode::AuthFailed);
-        assert_eq!(NetError::peer_identity("x").code(), ErrorCode::AuthFailed);
+        assert_eq!(NetError::handshake("x").code(), ErrorCode::BadRequest);
+        assert_eq!(NetError::peer_identity("x").code(), ErrorCode::BadRequest);
         assert_eq!(
             NetError::datagram_unsupported("x").code(),
             ErrorCode::CapUnsupported

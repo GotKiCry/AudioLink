@@ -16,8 +16,8 @@ use std::time::Duration;
 use audiolink_audio::{
     AudioError, DeviceFormat, NullPlayout, PlayoutSink, PlayoutStats, SyntheticCapture,
 };
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::{ErrorCode, NodeId};
+use audiolink_engine::{Engine, EngineConfig, SessionState};
+use audiolink_types::NodeId;
 use tokio::sync::mpsc;
 
 /// 只记样本、不出声的播放端（NullPlayout 的写调用会把样本原样送进记录通道）。
@@ -94,23 +94,15 @@ async fn gain_changes_reach_the_receivers_playback_samples() {
 
     let receiver = Engine::start(recv_config).await.expect("接收引擎");
     let accept = receiver.spawn_accept_loop();
-    let mut events = receiver.subscribe();
     let receiver_id = receiver.info().id;
 
     let sender = Engine::start(send_config).await.expect("发送引擎");
 
-    // 配对 + 开流
-    let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-            break pin;
-        }
-    };
+    // 连接 + 开流
     sender
-        .submit_pin(receiver_id, &pin)
+        .connect(receiver.local_addr())
         .await
-        .expect("PIN 配对");
+        .expect("连接应当直接成功（无认证）");
     while !sender
         .peers()
         .iter()
@@ -238,23 +230,15 @@ async fn local_gain_multiplies_with_the_remote_layer() {
 
     let receiver = Engine::start(recv_config).await.expect("接收引擎");
     let accept = receiver.spawn_accept_loop();
-    let mut events = receiver.subscribe();
     let receiver_id = receiver.info().id;
     let sender = Engine::start(send_config).await.expect("发送引擎");
     let sender_id = sender.info().id;
 
-    // 配对 + 开流（与上一个用例同一套动作）
-    let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-            break pin;
-        }
-    };
+    // 连接 + 开流（与上一个用例同一套动作）
     sender
-        .submit_pin(receiver_id, &pin)
+        .connect(receiver.local_addr())
         .await
-        .expect("PIN 配对");
+        .expect("连接应当直接成功（无认证）");
     while !sender
         .peers()
         .iter()

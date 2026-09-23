@@ -664,21 +664,27 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 internal interface UniffiCallbackInterfacePcmFeedMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`samples`: RustBuffer.ByValue,`frames`: Int,`uniffiOutReturn`: IntByReference,uniffiCallStatus: UniffiRustCallStatus,)
 }
+internal interface UniffiCallbackInterfacePcmFeedMethod1 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
+}
 internal interface UniffiCallbackInterfacePcmPullMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`maxSamples`: Int,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
 }
-@Structure.FieldOrder("feedPcm", "uniffiFree")
+@Structure.FieldOrder("feedPcm", "playoutBufferState", "uniffiFree")
 internal open class UniffiVTableCallbackInterfacePcmFeed(
     @JvmField internal var `feedPcm`: UniffiCallbackInterfacePcmFeedMethod0? = null,
+    @JvmField internal var `playoutBufferState`: UniffiCallbackInterfacePcmFeedMethod1? = null,
     @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
 ) : Structure() {
     class UniffiByValue(
         `feedPcm`: UniffiCallbackInterfacePcmFeedMethod0? = null,
+        `playoutBufferState`: UniffiCallbackInterfacePcmFeedMethod1? = null,
         `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-    ): UniffiVTableCallbackInterfacePcmFeed(`feedPcm`,`uniffiFree`,), Structure.ByValue
+    ): UniffiVTableCallbackInterfacePcmFeed(`feedPcm`,`playoutBufferState`,`uniffiFree`,), Structure.ByValue
 
    internal fun uniffiSetValue(other: UniffiVTableCallbackInterfacePcmFeed) {
         `feedPcm` = other.`feedPcm`
+        `playoutBufferState` = other.`playoutBufferState`
         `uniffiFree` = other.`uniffiFree`
     }
 
@@ -798,9 +804,6 @@ internal open class UniffiVTableCallbackInterfacePcmPull(
 
 
 
-
-
-
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -819,8 +822,6 @@ internal interface IntegrityCheckingUniffiLib : Library {
     fun uniffi_audiolink_ffi_checksum_func_connect(
 ): Short
 fun uniffi_audiolink_ffi_checksum_func_disconnect_peer(
-): Short
-fun uniffi_audiolink_ffi_checksum_func_displayed_pin(
 ): Short
 fun uniffi_audiolink_ffi_checksum_func_engine_start(
 ): Short
@@ -844,8 +845,6 @@ fun uniffi_audiolink_ffi_checksum_func_stop_send(
 ): Short
 fun uniffi_audiolink_ffi_checksum_func_stop_send_to(
 ): Short
-fun uniffi_audiolink_ffi_checksum_func_submit_pin(
-): Short
 fun uniffi_audiolink_ffi_checksum_func_telemetry(
 ): Short
 fun uniffi_audiolink_ffi_checksum_method_discoverybrowser_hosts(
@@ -855,6 +854,8 @@ fun uniffi_audiolink_ffi_checksum_method_discoverybrowser_stop(
 fun uniffi_audiolink_ffi_checksum_constructor_discoverybrowser_new(
 ): Short
 fun uniffi_audiolink_ffi_checksum_method_pcmfeed_feed_pcm(
+): Short
+fun uniffi_audiolink_ffi_checksum_method_pcmfeed_playout_buffer_state(
 ): Short
 fun uniffi_audiolink_ffi_checksum_method_pcmpull_read_pcm(
 ): Short
@@ -927,8 +928,6 @@ fun uniffi_audiolink_ffi_fn_func_connect(`addr`: RustBuffer.ByValue,
 ): Long
 fun uniffi_audiolink_ffi_fn_func_disconnect_peer(`peerId`: RustBuffer.ByValue,
 ): Long
-fun uniffi_audiolink_ffi_fn_func_displayed_pin(uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
 fun uniffi_audiolink_ffi_fn_func_engine_start(`config`: RustBuffer.ByValue,`playout`: RustBuffer.ByValue,`capture`: RustBuffer.ByValue,
 ): Long
 fun uniffi_audiolink_ffi_fn_func_engine_stop(
@@ -950,8 +949,6 @@ fun uniffi_audiolink_ffi_fn_func_start_send(
 fun uniffi_audiolink_ffi_fn_func_stop_send(
 ): Long
 fun uniffi_audiolink_ffi_fn_func_stop_send_to(`peerId`: RustBuffer.ByValue,
-): Long
-fun uniffi_audiolink_ffi_fn_func_submit_pin(`pin`: RustBuffer.ByValue,
 ): Long
 fun uniffi_audiolink_ffi_fn_func_telemetry(uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1081,13 +1078,10 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if (lib.uniffi_audiolink_ffi_checksum_func_connect() != 12465.toShort()) {
+    if (lib.uniffi_audiolink_ffi_checksum_func_connect() != 36522.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_audiolink_ffi_checksum_func_disconnect_peer() != 34397.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_audiolink_ffi_checksum_func_displayed_pin() != 17789.toShort()) {
+    if (lib.uniffi_audiolink_ffi_checksum_func_disconnect_peer() != 30633.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_audiolink_ffi_checksum_func_engine_start() != 16758.toShort()) {
@@ -1117,13 +1111,10 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_audiolink_ffi_checksum_func_start_send() != 53400.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_audiolink_ffi_checksum_func_stop_send() != 16712.toShort()) {
+    if (lib.uniffi_audiolink_ffi_checksum_func_stop_send() != 36738.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_audiolink_ffi_checksum_func_stop_send_to() != 7210.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_audiolink_ffi_checksum_func_submit_pin() != 52703.toShort()) {
+    if (lib.uniffi_audiolink_ffi_checksum_func_stop_send_to() != 12519.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_audiolink_ffi_checksum_func_telemetry() != 3439.toShort()) {
@@ -1139,6 +1130,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_audiolink_ffi_checksum_method_pcmfeed_feed_pcm() != 1438.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_audiolink_ffi_checksum_method_pcmfeed_playout_buffer_state() != 59216.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_audiolink_ffi_checksum_method_pcmpull_read_pcm() != 57607.toShort()) {
@@ -1901,7 +1895,7 @@ data class EngineStartConfig (
      */
     var `nodeName`: kotlin.String, 
     /**
-     * 身份材料（`cert.pem` / `key.pem`）与信任库（`trust.json`）的落地目录。
+     * 身份材料（`cert.pem` / `key.pem`）的落地目录。
      */
     var `dataDir`: kotlin.String, 
     /**
@@ -1919,7 +1913,21 @@ data class EngineStartConfig (
      * 非零值与内核默认取**并集**，因此**不可能**抹掉必需位（`REQUIRED` 只有 `OPUS`）——
      * 若允许调用方覆盖整张位图，一个只写 `MICROPHONE` 的调用方就会让双方缺必需位、直接拒连。
      */
-    var `capabilities`: kotlin.UInt = 0u
+    var `capabilities`: kotlin.UInt = 0u,
+    /**
+     * 低延迟档开关：`true` = 10 ms Opus 帧 + 10 ms 播放水位；`false`（缺省）= 标准档 20 ms 帧。
+     *
+     * 这是**发送方向**的档位：本机推流时用它编码，`OPEN_STREAM.codec_prefs` 里报出的也是它。
+     *
+     * **接收方向不再要求同档**：内核已实现帧长联动 —— 接收端在开流期读
+     * `OPEN_STREAM.codec_prefs` 里第一个 `Opus` 项的帧长并跟随它解码（协商结果见
+     * [`PeerView::negotiated_frame_ms`]）。所以两端档位不同也能正常工作，
+     * 这个开关现在只决定「本机作为发送端时用什么帧长」。
+     *
+     * 为什么带 `uniffi(default = false)`：UniFFI 的 record 没有「Kotlin data class 默认参数」
+     * 那一层，标了默认值才能让不传这个字段的老调用点继续落在标准档 —— 也就是「加字段之前的行为不变」。
+     */
+    var `lowLatency`: kotlin.Boolean = false
 ) {
     
     companion object
@@ -1935,6 +1943,7 @@ public object FfiConverterTypeEngineStartConfig: FfiConverterRustBuffer<EngineSt
             FfiConverterString.read(buf),
             FfiConverterUShort.read(buf),
             FfiConverterUInt.read(buf),
+            FfiConverterBoolean.read(buf),
         )
     }
 
@@ -1942,7 +1951,8 @@ public object FfiConverterTypeEngineStartConfig: FfiConverterRustBuffer<EngineSt
             FfiConverterString.allocationSize(value.`nodeName`) +
             FfiConverterString.allocationSize(value.`dataDir`) +
             FfiConverterUShort.allocationSize(value.`listenPort`) +
-            FfiConverterUInt.allocationSize(value.`capabilities`)
+            FfiConverterUInt.allocationSize(value.`capabilities`) +
+            FfiConverterBoolean.allocationSize(value.`lowLatency`)
     )
 
     override fun write(value: EngineStartConfig, buf: ByteBuffer) {
@@ -1950,6 +1960,7 @@ public object FfiConverterTypeEngineStartConfig: FfiConverterRustBuffer<EngineSt
             FfiConverterString.write(value.`dataDir`, buf)
             FfiConverterUShort.write(value.`listenPort`, buf)
             FfiConverterUInt.write(value.`capabilities`, buf)
+            FfiConverterBoolean.write(value.`lowLatency`, buf)
     }
 }
 
@@ -1964,7 +1975,7 @@ data class LocalStatus (
      */
     var `idShort`: kotlin.String, 
     /**
-     * 完整指纹（64 hex 字符）—— 信任判定的唯一依据。
+     * 完整指纹（64 hex 字符）—— 本机身份的稳定标识。
      */
     var `idHex`: kotlin.String, 
     /**
@@ -2046,6 +2057,47 @@ public object FfiConverterTypeLocalStatus: FfiConverterRustBuffer<LocalStatus> {
 
 
 /**
+ * Android 输出链的水位快照；单位为 48 kHz 每声道采样帧，未知时整个快照为 None。
+ */
+data class PcmBufferState (
+    /**
+     * Kotlin 环、未写完的块与 AudioTrack 已接收但尚未消费的总帧数。
+     */
+    var `queuedFrames`: kotlin.UInt,
+    /**
+     * AudioTrack 的输出目标；不含网络抖动缓冲，0 表示停用闭环调节。
+     */
+    var `targetFrames`: kotlin.UInt
+) {
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePcmBufferState: FfiConverterRustBuffer<PcmBufferState> {
+    override fun read(buf: ByteBuffer): PcmBufferState {
+        return PcmBufferState(
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: PcmBufferState) = (
+            FfiConverterUInt.allocationSize(value.`queuedFrames`) +
+            FfiConverterUInt.allocationSize(value.`targetFrames`)
+    )
+
+    override fun write(value: PcmBufferState, buf: ByteBuffer) {
+            FfiConverterUInt.write(value.`queuedFrames`, buf)
+            FfiConverterUInt.write(value.`targetFrames`, buf)
+    }
+}
+
+
+
+/**
  * 一个对端的快照。
  */
 data class PeerView (
@@ -2058,7 +2110,7 @@ data class PeerView (
      */
     var `idHex`: kotlin.String, 
     /**
-     * 对端展示名（对端自报，**不参与信任判定**）。
+     * 对端展示名（对端自报，**不作为身份依据**：身份只认 `id_hex` 那份证书指纹）。
      */
     var `name`: kotlin.String, 
     /**
@@ -2071,15 +2123,24 @@ data class PeerView (
      */
     var `state`: kotlin.String, 
     /**
-     * 是否已在信任库中。
-     */
-    var `trusted`: kotlin.Boolean, 
-    /**
      * 该对端的遥测快照（`peers` 字段恒为 1）。
      */
-    var `telemetry`: TelemetryView
+    var `telemetry`: TelemetryView,
+    /**
+     * 本端作为**接收端**时，本条流协商生效的 Opus 帧长（ms）。
+     *
+     * `None` = 还没开流 / 还没协商（本端是发送端，或 `OPEN_STREAM` 尚未到达）。
+     *
+     * # 这个字段回答什么
+     *
+     * 「两端帧长联动」落地之后，本条流的帧长由**发送端**的 `OPEN_STREAM.codec_prefs` 决定、
+     * 接收端跟随。界面上需要有一个直接读数说明「协商到底生效了没有」—— 帧长不一致的典型症状
+     * 是听感发闷/断续而遥测全绿，只看 `telemetry.frame_ms`（那是本端**本地**档位）看不出来。
+     * 两者不等，就是「本端跟随了对端的帧长」的证据。
+     */
+    var `negotiatedFrameMs`: kotlin.UByte?
 ) {
-    
+
     companion object
 }
 
@@ -2094,8 +2155,8 @@ public object FfiConverterTypePeerView: FfiConverterRustBuffer<PeerView> {
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
-            FfiConverterBoolean.read(buf),
             FfiConverterTypeTelemetryView.read(buf),
+            FfiConverterOptionalUByte.read(buf),
         )
     }
 
@@ -2105,8 +2166,8 @@ public object FfiConverterTypePeerView: FfiConverterRustBuffer<PeerView> {
             FfiConverterString.allocationSize(value.`name`) +
             FfiConverterString.allocationSize(value.`addr`) +
             FfiConverterString.allocationSize(value.`state`) +
-            FfiConverterBoolean.allocationSize(value.`trusted`) +
-            FfiConverterTypeTelemetryView.allocationSize(value.`telemetry`)
+            FfiConverterTypeTelemetryView.allocationSize(value.`telemetry`) +
+            FfiConverterOptionalUByte.allocationSize(value.`negotiatedFrameMs`)
     )
 
     override fun write(value: PeerView, buf: ByteBuffer) {
@@ -2115,8 +2176,8 @@ public object FfiConverterTypePeerView: FfiConverterRustBuffer<PeerView> {
             FfiConverterString.write(value.`name`, buf)
             FfiConverterString.write(value.`addr`, buf)
             FfiConverterString.write(value.`state`, buf)
-            FfiConverterBoolean.write(value.`trusted`, buf)
             FfiConverterTypeTelemetryView.write(value.`telemetry`, buf)
+            FfiConverterOptionalUByte.write(value.`negotiatedFrameMs`, buf)
     }
 }
 
@@ -2269,16 +2330,16 @@ public object FfiConverterTypeTelemetryView: FfiConverterRustBuffer<TelemetryVie
  * ```
  *
  * 所以字段改名为 `message_text`（Kotlin 侧自动转成 `messageText`）。**语义不变**：
- * 契约 §1 里那一格还是「§11 错误码短名」（如 `NOT_PAIRED`），
- * 完整人话串由 `Throwable.message` 给出（`1002 NOT_PAIRED: peer requires pin pairing`）。
+ * 契约 §1 里那一格还是「§11 错误码短名」（如 `NO_PEER`），
+ * 完整人话串由 `Throwable.message` 给出（`1002 NO_PEER: no such peer session`）。
  */
 sealed class FfiException: kotlin.Exception() {
     
     /**
      * 统一失败形态。
      *
-     * - `code`：`docs/03-protocol.md` §11 错误码的数值形式（如 `1002` = `NOT_PAIRED`）；
-     * - `message_text`：错误码短名（如 `NOT_PAIRED`），供日志 / UI 查找与展示；
+     * - `code`：`docs/03-protocol.md` §11 错误码的数值形式（如 `1002` = `NO_PEER`）；
+     * - `message_text`：错误码短名（如 `NO_PEER`），供日志 / UI 查找与展示；
      * - `context`：出错细节（谁、在哪、什么值）。
      */
     class Failure(
@@ -2373,6 +2434,11 @@ public interface PcmFeed {
      */
     fun `feedPcm`(`samples`: List<kotlin.Float>, `frames`: kotlin.Int): kotlin.Int
     
+    /**
+     * 从播放线程发布的快照读数，不在 Rust 线程调用 AudioTrack。
+     */
+    fun `playoutBufferState`(): PcmBufferState?
+
     companion object
 }
 
@@ -2393,6 +2459,17 @@ internal object uniffiCallbackInterfacePcmFeed {
             uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
         }
     }
+    internal object `playoutBufferState`: UniffiCallbackInterfacePcmFeedMethod1 {
+        override fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypePcmFeed.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`playoutBufferState`(
+                )
+            }
+            val writeReturn = { value: PcmBufferState? -> uniffiOutReturn.setValue(FfiConverterOptionalTypePcmBufferState.lower(value)) }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
 
     internal object uniffiFree: UniffiCallbackInterfaceFree {
         override fun callback(handle: Long) {
@@ -2402,6 +2479,7 @@ internal object uniffiCallbackInterfacePcmFeed {
 
     internal var vtable = UniffiVTableCallbackInterfacePcmFeed.UniffiByValue(
         `feedPcm`,
+        `playoutBufferState`,
         uniffiFree,
     )
 
@@ -2489,6 +2567,38 @@ public object FfiConverterTypePcmPull: FfiConverterCallbackInterface<PcmPull>()
 /**
  * @suppress
  */
+public object FfiConverterOptionalUByte: FfiConverterRustBuffer<kotlin.UByte?> {
+    override fun read(buf: ByteBuffer): kotlin.UByte? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterUByte.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.UByte?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterUByte.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.UByte?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterUByte.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalUInt: FfiConverterRustBuffer<kotlin.UInt?> {
     override fun read(buf: ByteBuffer): kotlin.UInt? {
         if (buf.get().toInt() == 0) {
@@ -2521,28 +2631,28 @@ public object FfiConverterOptionalUInt: FfiConverterRustBuffer<kotlin.UInt?> {
 /**
  * @suppress
  */
-public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?> {
-    override fun read(buf: ByteBuffer): kotlin.String? {
+public object FfiConverterOptionalTypePcmBufferState: FfiConverterRustBuffer<PcmBufferState?> {
+    override fun read(buf: ByteBuffer): PcmBufferState? {
         if (buf.get().toInt() == 0) {
             return null
         }
-        return FfiConverterString.read(buf)
+        return FfiConverterTypePcmBufferState.read(buf)
     }
 
-    override fun allocationSize(value: kotlin.String?): ULong {
+    override fun allocationSize(value: PcmBufferState?): ULong {
         if (value == null) {
             return 1UL
         } else {
-            return 1UL + FfiConverterString.allocationSize(value)
+            return 1UL + FfiConverterTypePcmBufferState.allocationSize(value)
         }
     }
 
-    override fun write(value: kotlin.String?, buf: ByteBuffer) {
+    override fun write(value: PcmBufferState?, buf: ByteBuffer) {
         if (value == null) {
             buf.put(0)
         } else {
             buf.put(1)
-            FfiConverterString.write(value, buf)
+            FfiConverterTypePcmBufferState.write(value, buf)
         }
     }
 }
@@ -2705,8 +2815,8 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
         /**
          * 主动连接对端（FR-17 手工 IP）。成功返回对端快照。
          *
-         * 对端要求 PIN 配对时返回 `1002 NOT_PAIRED`，但**这不是连接失败**：QUIC 握手与会话已经在，
-         * UI 提示用户输入 PIN 后调用 [`submit_pin`] 即可继续同一条连接（见 engine `connect()` 的文档）。
+         * **一次调用就是一次完整连接**：QUIC 握手（TLS1.3 + 双向出示证书）走完、会话建立即返回，
+         * 没有「先返回一个待办、等 UI 再回一个码」的中间态 —— 连接要么成功，要么失败。
          */
     @Throws(FfiException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
@@ -2724,16 +2834,15 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
     }
 
         /**
-         * 断开与某台设备的会话（**保留信任**）。
+         * 断开与某台设备的会话。
          *
-         * 与 [`Engine::disconnect`] 同语义：只结束这条会话，信任库**不读不写不落盘** —— 该设备下次
-         * 连进来仍然免交互直连（§8 白名单命中）。要「连信任一起撤、逼它重新配对」是另一件事
-         * （引擎侧 [`Engine::revoke_trust`]；FFI 侧本里程碑不提供）。
+         * 与 [`Engine::disconnect`] 同语义：只结束这条会话。局域网内没有认证层，该设备下次
+         * 连进来照旧直连（不会要求任何交互）。
          *
          * 返回是否真的断了一条会话：`false` = 本来就没有（幂等，调用方不必先查 `peers()`）。
          *
          * **别承诺做不到的事**：断开只让对端看到「链路丢失」，若对端是发起方且正在推流，
-         * 它会按自己的 FR-27 逻辑重拨回来（本机信任库还留着它，握手直接过）。
+         * 它会按自己的 FR-27 逻辑重拨回来。
          */
     @Throws(FfiException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
@@ -2749,19 +2858,6 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
         FfiException.ErrorHandler,
     )
     }
-
-        /**
-         * 本机（接收端）当前展示给用户的配对 PIN；没有在配对时返回 `None`。
-         */
-    @Throws(FfiException::class) fun `displayedPin`(): kotlin.String? {
-            return FfiConverterOptionalString.lift(
-    uniffiRustCallWithError(FfiException) { _status ->
-    UniffiLib.INSTANCE.uniffi_audiolink_ffi_fn_func_displayed_pin(
-        _status)
-}
-    )
-    }
-    
 
         /**
          * 启动引擎并开始监听入站连接。
@@ -2938,7 +3034,7 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
     }
 
         /**
-         * 停止推流（保留连接与信任）—— **单对端语义**：停内核选中的那位 [`current_peer`]。
+         * 停止推流（保留连接）—— **单对端语义**：停内核选中的那位 [`current_peer`]。
          *
          * 多设备界面上请用 [`stop_send_to`]（显式点名对端）；本函数保留是给单对端调用方
          * （Android 现有代码）的兼容入口，两者**是同一个内核动作**，不是两套实现。
@@ -2969,33 +3065,13 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
          * - 本机是**发送端**：停本机采集并向对端发 `CLOSE_STREAM`，对端停止播放这一路；
          * - 本机是**接收端**：本机没有采集可停，实际效果是**请对端停发这一路**。
          *
-         * 两种都**保留连接与信任** —— 要彻底结束这条会话（仍然保留信任）用 [`disconnect_peer`]；
-         * 要连信任一起撤、逼它重新配对是 [`Engine::revoke_trust`]（FFI 侧本里程碑不提供）。
+         * 两种都**保留连接** —— 要彻底结束这条会话用 [`disconnect_peer`]。
          */
     @Throws(FfiException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
      suspend fun `stopSendTo`(`peerId`: kotlin.String) {
         return uniffiRustCallAsync(
         UniffiLib.INSTANCE.uniffi_audiolink_ffi_fn_func_stop_send_to(FfiConverterString.lower(`peerId`),),
-        { future, callback, continuation -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_poll_void(future, callback, continuation) },
-        { future, continuation -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_complete_void(future, continuation) },
-        { future -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_free_void(future) },
-        // lift function
-        { Unit },
-        
-        // Error FFI converter
-        FfiException.ErrorHandler,
-    )
-    }
-
-        /**
-         * 提交对端屏幕上显示的 6 位 PIN（本机是发起端时用）。
-         */
-    @Throws(FfiException::class)
-    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
-     suspend fun `submitPin`(`pin`: kotlin.String) {
-        return uniffiRustCallAsync(
-        UniffiLib.INSTANCE.uniffi_audiolink_ffi_fn_func_submit_pin(FfiConverterString.lower(`pin`),),
         { future, callback, continuation -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_poll_void(future, callback, continuation) },
         { future, continuation -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_complete_void(future, continuation) },
         { future -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_free_void(future) },
@@ -3019,5 +3095,3 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
     )
     }
     
-
-

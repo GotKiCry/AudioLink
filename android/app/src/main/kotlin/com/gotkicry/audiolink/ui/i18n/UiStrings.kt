@@ -12,9 +12,8 @@ import java.util.Locale
  * 本次不动它们（改文案会动到测试，等于改口径）。所以英文界面下，那几行来自内核/服务的提示
  * 会保持中文：这是**已知的残留不一致**，不是漏写。
  *
- * 唯一的例外是「需要本机输码」那一步：[com.gotkicry.audiolink.ui.screens.SenderDeck] 直接读
- * `awaitingPin` 这个**字段**改写提示 —— 那一条的 service 原文把主机默认成了「电脑」，
- * 与冻结术语直接冲突（主机也可能是另一部手机），且它必然会出现在接收端路径的主线上。
+ * 例外是**门禁原因**那一组（`gate*`）：[SenderStateMapper.gateNote] 的中文常量把主机默认成了
+ * 「电脑」，与冻结术语冲突（主机也可能是另一部手机），所以由本层按语言重写一遍。
  *
  * 文案纪律（沿用 docs/08-ui-spec.md §4 的既定要求）：短句、动词开头、说人话；
  * 内核真值（水位、欠载、PLC）只出现在诊断区。
@@ -38,13 +37,27 @@ data class UiStrings(
     val connectGuideTitle: String,
     val connectGuide: String,
     val addHost: String,
-    val pairingEntryTitle: String,
     val changeHost: String,
     val connectionDetails: String,
     val appearanceTitle: String,
     val appearanceHint: String,
     val aboutTitle: String,
     val backgroundTitle: String,
+
+    // ── 低延迟模式（音频链路档位）─────────────────────────────────
+    /** 开关标题（短语，不带句号）。 */
+    val lowLatencyTitle: String,
+    /**
+     * 开关说明。**三条信息缺一不可**：代价（帧更短 → 带宽/耗电上升）、
+     * 方向（它只管**本端作为发送端**时的帧长；接收端自动跟随对端）、
+     * 生效时机（下次启动引擎生效）。
+     * 少任何一条，用户都会在"我怎么听不清了"里找不到方向。
+     *
+     * ⚠️ 这里**刻意不再写"两端需同时开启"**：帧长联动已经落地，接收端跟随发送端，
+     * 手动让两端同档不再是必要条件。留着那句话会让用户在只需要开一端时白折腾另一台设备。
+     */
+    val lowLatencyHint: String,
+
     val showDiagnostics: String,
     val stopAll: String,
     val guideHost: String,
@@ -92,13 +105,10 @@ data class UiStrings(
     val receiverBitrate: String,
     val receiverLoss: String,
     val readoutUnknown: String,
-    val volume: String,
     /** 接收端的唯一主按钮：断开。连接即接收，所以这里没有"开始"这个动作。 */
     val actionDisconnect: String,
     /** 已连接、但对方还没推流时的状态字 ——"接收中"只在真有声音时说。 */
     val stateConnected: String,
-    /** 连上了但还没授信（握手会话）：它出现在列表里，但不是"配对好了"。 */
-    val stateAwaitingPairing: String,
     /** 多路接收时的大字（%d = 正在推流的台数）。 */
     val stateReceivingManyFormat: String,
     /** 多台设备时的来源读数（%d = 台数，%s = 第一台的名字）。 */
@@ -112,12 +122,6 @@ data class UiStrings(
     val serviceRunning: String,
     val serviceStopped: String,
 
-    // ── 配对 PIN ───────────────────────────────────────────────────
-    val pairingTitle: String,
-    val pairingTitleStale: String,
-    val pairingNote: String,
-    val pairingStaleNote: String,
-
     // ── 主机（提供声音、被连接的一方）──────────────────────────────
     val deckSender: String,
     val senderCaptureLabel: String,
@@ -129,10 +133,6 @@ data class UiStrings(
     val targetAddressPlaceholder: String,
     val actionConnect: String,
     val actionConnecting: String,
-    val pinLabel: String,
-    val actionSubmitPin: String,
-    /** 需要本机输码时的提示（覆盖 service 层的中文常量：那份措辞把主机默认成了「电脑」）。 */
-    val senderAwaitingPinNote: String,
     /** 上一次的会话已从内核会话表里消失（service 只给 `sessionDropped` 标记，怎么说由这里定）。 */
     val senderSessionDropped: String,
     /** 采集未就绪时的提示（同上：service 层 `SenderStateMapper.captureNote` 的中文常量由这组取代）。 */
@@ -145,7 +145,6 @@ data class UiStrings(
     /** 带一个端口占位（%d）：示例里的端口取自内核的缺省端口，不手写数字。 */
     val gateAddressInvalidFormat: String,
     val gateNoSession: String,
-    val gateAwaitingPin: String,
     val gateAlreadySending: String,
     val gateNotSending: String,
     val gateCaptureOff: String,
@@ -154,7 +153,7 @@ data class UiStrings(
     val actionStartSend: String,
     val actionStopSend: String,
     val senderHint: String,
-    /** 「接入即推」的边界说明：让自动行为**可预期**，也让用户知道怎么关掉它。 */
+    /** 主机卡的补充说明：当前**没有**自动推流，发送一律要手动点 [actionStartSend]（见 docs/72 遗留项）。 */
     val senderAutoSendHint: String,
 
     // ── 设备通道 ───────────────────────────────────────────────────
@@ -173,9 +172,6 @@ data class UiStrings(
     val labelFingerprint: String,
     val labelAddress: String,
     val labelState: String,
-    val labelTrust: String,
-    val trustYes: String,
-    val trustNo: String,
     /** 发送会话标签（由 UI 组装：sessionLabel 的中文常量在 service 层，语言跟随系统时不能直接用）。 */
     val senderSessionDisconnected: String,
     val senderSessionConnected: String,
@@ -215,6 +211,16 @@ data class UiStrings(
     val diagBufferRequested: String,
     val diagBufferActual: String,
     val diagFramesUnit: String,
+    /**
+     * 协商帧长（诊断行）—— 本端作为**接收端**时跟随对端生效的帧长。
+     *
+     * 与同区的「低延迟」（diagLowLatency，那是 AudioTrack 的 PERFORMANCE_MODE 实测）是两件事：
+     * 这一行回答的是「帧长联动到底生效了没有」。值是现成的数据通道（PeerView.negotiatedFrameMs
+     * → PeerUi.negotiatedFrameMs），**没有为它发明新通道**。
+     */
+    val diagNegotiatedFrame: String,
+    /** 未协商/未知时的占位符（由文案层决定显示什么，不在 Compose 里写死）。 */
+    val diagFrameNone: String,
 
     val diagCounters: String,
     val diagUnderrunsSystem: String,
@@ -269,7 +275,7 @@ data class UiStrings(
     val errorRecoveryPlayback: String,
     val errorRecoveryGeneric: String,
     val errorKernelDetail: String,
-    val errorPairingReadFailed: String,
+    val errorPeersReadFailed: String,
 
     // ── 许可页 ─────────────────────────────────────────────────────
     val licensesTitle: String,
@@ -308,21 +314,24 @@ private val Zh = UiStrings(
     discoveryRefreshing = "搜索中…",
     discoverySearching = "正在搜索同一局域网中的主机…",
     discoveryEmpty = "暂未发现主机。请让两端连接同一局域网，并在主机上打开 AudioLink。",
-    discoveryHint = "选择主机连接，首次连接需要输入配对码。",
+    discoveryHint = "选择主机连接，连上即开始接收。",
     discoveryError = "暂时无法搜索主机，正在重试。你也可以手动输入地址。",
     discoveryIncompatible = "协议版本不兼容，请更新两端 AudioLink。",
     receiveIntro = "把其他设备的声音，带到这台手机。",
     sendIntro = "让其他设备收听这台手机的声音。",
     connectGuideTitle = "连接前的准备",
-    connectGuide = "让两台设备连接同一 Wi-Fi，并打开 AudioLink。首次连接时，在这里输入主机显示的配对码。",
+    connectGuide = "让两台设备连接同一 Wi-Fi，并打开 AudioLink。填入主机地址或从发现列表点选，连上即开始接收。",
     addHost = "连接另一台主机",
-    pairingEntryTitle = "输入配对码",
     changeHost = "更换主机地址",
     connectionDetails = "连接详情",
     appearanceTitle = "外观",
     appearanceHint = "跟随系统，或选择适合当前光线的主题。",
     aboutTitle = "关于 AudioLink",
     backgroundTitle = "后台运行",
+    lowLatencyTitle = "低延迟模式",
+    lowLatencyHint = "用更短的音频帧（10 ms）换取更小的延迟，代价是带宽与耗电上升。" +
+        "本开关只管这台设备**发送声音**时的帧长；作为接收端收听时，会自动跟随发送方的帧长，" +
+        "不需要两台设备手动调成一样。关闭时发送方向保持默认 20 ms。下次启动引擎生效。",
     showDiagnostics = "查看诊断",
     stopAll = "断开全部设备",
     guideHost = "主机",
@@ -376,14 +385,12 @@ private val Zh = UiStrings(
     stateFailed = "接收异常",
     receiverSource = "来源",
     receiverSourceNone = "未连接到主机",
-    receiverLatency = "延迟",
+    receiverLatency = "网络延迟 (RTT)",
     receiverBitrate = "码率",
-    receiverLoss = "丢包",
+    receiverLoss = "音频丢包率",
     readoutUnknown = "—",
-    volume = "音量",
     actionDisconnect = "断开",
     stateConnected = "已连接",
-    stateAwaitingPairing = "已连接 · 待配对",
     stateReceivingManyFormat = "接收中 · %d 台",
     receiverSourceManyFormat = "%d 台设备（%s）",
     actionWaitForDevice = "等待设备接入",
@@ -393,11 +400,6 @@ private val Zh = UiStrings(
     receiverDegradedHint = "链路质量下降，声音可能短暂断续。",
     serviceRunning = "服务运行中",
     serviceStopped = "服务已停止",
-
-    pairingTitle = "配对码：在接收端输入这 6 位数字",
-    pairingTitleStale = "配对请求（已失效）",
-    pairingNote = "配对码 60 秒内有效。请在接收端输入；配对成功后会自动关闭。",
-    pairingStaleNote = "这个配对码已失效。请让接收端重新连接，以获取新的配对码。",
 
     deckSender = "声音来源",
     senderCaptureLabel = "发送源",
@@ -409,21 +411,16 @@ private val Zh = UiStrings(
     targetAddressPlaceholder = "192.168.1.5:58290",
     actionConnect = "连接主机",
     actionConnecting = "连接中…",
-    pinLabel = "主机上显示的 6 位数字",
-    actionSubmitPin = "提交配对码",
-    senderAwaitingPinNote = "配对码在主机屏幕上，60 秒内有效；连续输错会短暂锁定。",
     // 中性措辞：这条提示在接收端入口卡上显示，但断开也可能发生在"本机是主机"的时候
     // （对方收了声音挂断），写成"与主机的连接"在那时会指错人。
     senderSessionDropped = "与对方的连接已断开",
-    captureNoteWaiting = "正在等待授权，授权后会自动开始推流",
-    captureNoteFailed = "采集当前出错；恢复后会自动开始推流（对方会先看到连接、暂时没有声音）",
+    captureNoteWaiting = "正在等待授权；授权后点「开始推流」开始发送",
+    captureNoteFailed = "采集当前出错；恢复后点「开始推流」开始发送（对方会先看到连接、暂时没有声音）",
     gateEngineDown = "服务未运行。先点「等待设备接入」。",
     gateConnecting = "正在连接，请稍候",
     gateAddressEmpty = "请输入主机地址",
     gateAddressInvalidFormat = "地址格式不对：应是 192.168.1.5 或 192.168.1.5:%d",
     gateNoSession = "请先连接主机，再开始推流",
-    // 这条只回答「按钮为什么灰着」；码在哪、多久有效由 senderAwaitingPinNote 说（两处别互相复述）。
-    gateAwaitingPin = "先在下面提交配对码，才能开始推流",
     gateAlreadySending = "已经在推流了",
     gateNotSending = "当前没有在推流",
     gateCaptureOff = "请先选择发送源",
@@ -431,8 +428,8 @@ private val Zh = UiStrings(
     gatePeerMismatch = "当前连接的不是刚才那台设备，请重新连接",
     actionStartSend = "开始推流",
     actionStopSend = "停止推流",
-    senderHint = "让对方听到本机的声音。设备接入后会自动开始推流。",
-    senderAutoSendHint = "需先选择发送源；手动停止的设备不会自动恢复。",
+    senderHint = "让对方听到本机的声音。设备接入后点「开始推流」开始发送。",
+    senderAutoSendHint = "需先选择发送源；停止后要手动再点「开始推流」。",
 
     deckDevices = "设备通道",
     devicesCountFormat = "已连接 %d 台",
@@ -442,13 +439,10 @@ private val Zh = UiStrings(
     peerUnmute = "取消静音",
     peerMuted = "已静音",
     peerVolumeDefault = "默认",
-    devicesControlNote = "每台设备可单独调音量或静音，只影响本机听到的大小。断开只断连接、信任保留，对方可能自己重连。",
+    devicesControlNote = "每台设备可单独调音量或静音，只影响本机听到的大小。断开只断这一条连接，对方可能自己重连。",
     labelFingerprint = "短指纹",
     labelAddress = "地址",
     labelState = "状态",
-    labelTrust = "信任",
-    trustYes = "已信任（信任库已落盘）",
-    trustNo = "未信任（还需 PIN 配对）",
     senderSessionDisconnected = "未连接",
     senderSessionConnected = "已连接 · 未发送",
     senderSessionSending = "发送中",
@@ -484,6 +478,8 @@ private val Zh = UiStrings(
     diagBufferRequested = "输出缓冲（请求）",
     diagBufferActual = "输出缓冲（实际生效）",
     diagFramesUnit = "帧",
+    diagNegotiatedFrame = "协商帧长",
+    diagFrameNone = "—",
 
     diagCounters = "统计",
     diagUnderrunsSystem = "欠载（系统口径）",
@@ -530,7 +526,7 @@ private val Zh = UiStrings(
     actionSelfTesting = "自检中…",
 
     diagContracts = "契约说明（从首屏移到这里）",
-    diagHostContract = "主机：停止推流保留连接与配对；切换发送源会重启服务并中断当前会话。",
+    diagHostContract = "主机：停止推流保留连接；切换发送源会重启服务并中断当前会话。",
     diagCaptureContract = "采集：系统内录每次会话需重新授权；被声明为不可捕获的应用与 DRM 内容无法录制。",
     diagExplanation = "引擎随服务启停。连接由接收端主动发起；接收端还没连上或还没推流时，供给欠载会持续增长、" +
         "输出是静音，这是预期行为。主机一侧（地址与推流）见上方「主机」。低延迟是否生效与缓冲帧数不受此影响，可直接读。",
@@ -539,7 +535,7 @@ private val Zh = UiStrings(
     errorRecoveryPlayback = "重新点一次「开始接收」。若还是不行，展开上面的「诊断」看内核原文。",
     errorRecoveryGeneric = "再试一次；仍然失败时展开「诊断」，用内核原文定位。",
     errorKernelDetail = "内核原文（诊断用）",
-    errorPairingReadFailed = "配对状态读取失败",
+    errorPeersReadFailed = "对端列表读取失败",
 
     licensesTitle = "开源许可",
     actionBack = "返回",
@@ -557,21 +553,26 @@ private val En = UiStrings(
     discoveryRefreshing = "Searching…",
     discoverySearching = "Looking for hosts on your local network…",
     discoveryEmpty = "No hosts found yet. Connect both devices to the same network and open AudioLink on the host.",
-    discoveryHint = "Choose a host to connect. Enter its pairing code the first time.",
+    discoveryHint = "Choose a host to connect — you start receiving as soon as it connects.",
     discoveryError = "Unable to search for hosts. Retrying automatically. You can also enter an address manually.",
     discoveryIncompatible = "Incompatible protocol. Update AudioLink on both devices.",
     receiveIntro = "Listen to another device on this phone.",
     sendIntro = "Share this phone's audio with your other devices.",
     connectGuideTitle = "Before you connect",
-    connectGuide = "Connect both devices to the same Wi-Fi and open AudioLink. The first time, enter the pairing code shown on the host here.",
+    connectGuide = "Connect both devices to the same Wi-Fi and open AudioLink. Enter the host's address, or pick it from the list — you start receiving as soon as it connects.",
     addHost = "Connect another host",
-    pairingEntryTitle = "Enter pairing code",
     changeHost = "Change host address",
     connectionDetails = "Connection details",
     appearanceTitle = "Appearance",
     appearanceHint = "Follow your system or choose a theme for your surroundings.",
     aboutTitle = "About AudioLink",
     backgroundTitle = "Background activity",
+    lowLatencyTitle = "Low-latency mode",
+    lowLatencyHint = "Shorter audio frames (10 ms) for lower delay, at the cost of more " +
+        "bandwidth and battery. This switch only sets the frame length for audio sent from " +
+        "this device; when receiving, it follows the sender's frame length automatically, so " +
+        "the two devices no longer need to match settings by hand. Off keeps the default " +
+        "20 ms for sending. Takes effect the next time the engine starts.",
     showDiagnostics = "View diagnostics",
     stopAll = "Disconnect all devices",
     guideHost = "Host",
@@ -625,14 +626,12 @@ private val En = UiStrings(
     stateFailed = "Receiver error",
     receiverSource = "Source",
     receiverSourceNone = "Not connected to a host",
-    receiverLatency = "Latency",
+    receiverLatency = "Network RTT",
     receiverBitrate = "Bitrate",
-    receiverLoss = "Loss",
+    receiverLoss = "Audio packet loss",
     readoutUnknown = "—",
-    volume = "Volume",
     actionDisconnect = "Disconnect",
     stateConnected = "Connected",
-    stateAwaitingPairing = "Connected · pairing required",
     stateReceivingManyFormat = "Receiving · %d devices",
     receiverSourceManyFormat = "%d devices (%s)",
     actionWaitForDevice = "Wait for a device",
@@ -642,11 +641,6 @@ private val En = UiStrings(
     receiverDegradedHint = "Link quality dropped; audio may stutter briefly.",
     serviceRunning = "Service running",
     serviceStopped = "Service stopped",
-
-    pairingTitle = "Pairing code — type these 6 digits on the receiver",
-    pairingTitleStale = "Pairing request (expired)",
-    pairingNote = "Enter this code on the receiving device within 60 seconds. This panel closes after pairing.",
-    pairingStaleNote = "This code has expired. Ask the receiving device to reconnect for a new code.",
 
     deckSender = "Audio source",
     senderCaptureLabel = "Capture source",
@@ -658,19 +652,15 @@ private val En = UiStrings(
     targetAddressPlaceholder = "192.168.1.5 or 192.168.1.5:58290",
     actionConnect = "Connect to host",
     actionConnecting = "Connecting…",
-    pinLabel = "6-digit code shown on the host",
-    actionSubmitPin = "Submit code",
-    senderAwaitingPinNote = "The code is on the host's screen, valid for 60 s; repeated mistakes cause a short lockout.",
     senderSessionDropped = "Disconnected from the other device",
-    captureNoteWaiting = "Waiting for permission — streaming starts automatically once it is granted",
-    captureNoteFailed = "Capture failed; streaming resumes automatically once it recovers " +
+    captureNoteWaiting = "Waiting for permission — tap “Start streaming” once it is granted",
+    captureNoteFailed = "Capture failed; tap “Start streaming” once it recovers " +
         "(the receiver sees the connection but no audio yet)",
     gateEngineDown = "The service is not running. Tap “Wait for a device” first.",
     gateConnecting = "Connecting…",
     gateAddressEmpty = "Enter the host address",
     gateAddressInvalidFormat = "Address looks wrong: use 192.168.1.5 or 192.168.1.5:%d",
     gateNoSession = "Connect to a host before streaming",
-    gateAwaitingPin = "Submit the pairing code below before streaming",
     gateAlreadySending = "Already streaming",
     gateNotSending = "Not streaming right now",
     gateCaptureOff = "Select a capture source first",
@@ -678,8 +668,8 @@ private val En = UiStrings(
     gatePeerMismatch = "This is not the device you just connected to; connect again",
     actionStartSend = "Start streaming",
     actionStopSend = "Stop streaming",
-    senderHint = "Let the other device hear this device. Streaming starts automatically once a device connects.",
-    senderAutoSendHint = "A capture source is required; a device you stopped is not restarted automatically.",
+    senderHint = "Let the other device hear this device. Tap “Start streaming” once a device connects.",
+    senderAutoSendHint = "A capture source is required; tap “Start streaming” again after stopping.",
 
     deckDevices = "Devices",
     devicesCountFormat = "%d connected",
@@ -690,13 +680,10 @@ private val En = UiStrings(
     peerMuted = "Muted",
     peerVolumeDefault = "Default",
     devicesControlNote = "Each device has its own volume and mute, affecting only what this device hears. " +
-        "Disconnecting keeps trust — the peer may reconnect on its own.",
+        "Disconnecting only ends that connection — the peer may reconnect on its own.",
     labelFingerprint = "Fingerprint",
     labelAddress = "Address",
     labelState = "State",
-    labelTrust = "Trust",
-    trustYes = "Trusted (stored on disk)",
-    trustNo = "Not trusted (PIN pairing required)",
     senderSessionDisconnected = "Not connected",
     senderSessionConnected = "Connected · idle",
     senderSessionSending = "Streaming",
@@ -732,6 +719,8 @@ private val En = UiStrings(
     diagBufferRequested = "Output buffer (requested)",
     diagBufferActual = "Output buffer (effective)",
     diagFramesUnit = "frames",
+    diagNegotiatedFrame = "Negotiated frame",
+    diagFrameNone = "—",
 
     diagCounters = "Counters",
     diagUnderrunsSystem = "Underruns (track)",
@@ -780,7 +769,7 @@ private val En = UiStrings(
     actionSelfTesting = "Running…",
 
     diagContracts = "Contracts (moved off the main screen)",
-    diagHostContract = "Host: stopping a stream keeps the connection and pairing; switching the capture source " +
+    diagHostContract = "Host: stopping a stream keeps the connection; switching the capture source " +
         "restarts the service and ends the current session.",
     diagCaptureContract = "Capture: system audio needs a fresh consent per session; non-capturable apps and " +
         "DRM content cannot be recorded.",
@@ -792,7 +781,7 @@ private val En = UiStrings(
     errorRecoveryPlayback = "Tap Start receiving again. If it still fails, expand Diagnostics above for the kernel text.",
     errorRecoveryGeneric = "Try again; if it keeps failing, expand Diagnostics and read the kernel text.",
     errorKernelDetail = "Kernel message (diagnostics)",
-    errorPairingReadFailed = "Could not read pairing state",
+    errorPeersReadFailed = "Could not read the peer list",
 
     licensesTitle = "Open source licenses",
     actionBack = "Back",

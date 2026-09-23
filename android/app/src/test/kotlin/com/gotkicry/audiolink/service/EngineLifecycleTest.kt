@@ -69,7 +69,7 @@ class EngineLifecycleTest {
     }
 
     @Test(timeout = 10_000)
-    fun restartInOneServiceIgnoresOldResultsAndInvalidatesPairingRead() = runBlocking {
+    fun restartInOneServiceIgnoresOldResultsAndInvalidatesEarlierReads() = runBlocking {
         val queue = EngineOperationQueue(this)
         val finishStop = CompletableDeferred<Unit>()
         val published = mutableListOf<Pair<String?, String?>>()
@@ -82,10 +82,10 @@ class EngineLifecycleTest {
         )
         lifecycle.start()
         drain(queue)
-        val pairingToken = lifecycle.generation
+        val staleToken = lifecycle.generation
         lifecycle.stop()
         lifecycle.start()
-        assertFalse(lifecycle.isCurrent(pairingToken))
+        assertFalse("旧代次拿到的那次查询结果必须作废", lifecycle.isCurrent(staleToken))
         yield()
         assertEquals(1, starts)
         finishStop.complete(Unit)

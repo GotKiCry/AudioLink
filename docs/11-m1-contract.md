@@ -12,7 +12,7 @@
 | 看板条目 | 归属流 | 本地可验证性 |
 |---|---|---|
 | `[M1] QUIC 通道（quinn：控制流 #0 + 音频数据报）` | **net** | ✅ 完整（127.0.0.1 真 QUIC） |
-| `[M1] PIN 配对最小可用（白名单落盘）` | **identity** | ✅ 完整（单元 + wire） |
+| `[M1] 节点身份与自签证书最小可用` | **identity** | ✅ 完整（**PIN 配对 / 信任库已随本轮移除**，见 `docs/72-remove-pairing.md`） |
 | `[M1] Android 播放（AudioTrack 低延迟 + JNI 环缓冲 + 欠载检测）` | **android** | ⚠️ 仅编译 + JVM 单测（**本机无真机**） |
 | `[M1] 最小 UI（桌面手工 IP 连接；Android 服务启停）` | **desktop** / **android** | ⚠️ 仅构建（无头环境点不了 UI） |
 | `[M1] 验收：P50 ≤ 110 ms / P95 ≤ 150 ms、零重采样、低延迟模式` | **lead**（`tools`） | ⚠️ PC↔PC 段可实测；Android 段需真机 |
@@ -33,7 +33,7 @@
 | 契约 / 根 | **lead** | 根 `Cargo.toml`、`Cargo.lock`、`docs/**`、`core/crates/audiolink-types/**` |
 | 引擎 | **lead** | `core/crates/audiolink-engine/**`、`core/crates/audiolink-tools/**` |
 | net | **net-quic** | `core/crates/audiolink-net/**`（含其 `Cargo.toml`） |
-| identity | **identity-pin** | `core/crates/audiolink-identity/**`（含其 `Cargo.toml`） |
+| identity | **core-base** | `core/crates/audiolink-identity/**`（含其 `Cargo.toml`） |
 | ffi | **ffi-bridge** | `core/crates/audiolink-ffi/**`（含其 `Cargo.toml`） |
 | android | **android-playback** | `android/**` |
 | desktop | **desktop-ui** | `desktop/**` |
@@ -86,7 +86,7 @@ impl AudioLinkEndpoint {
     pub fn local_addr(&self) -> Result<SocketAddr, NetError>;
     /// 接受下一个入站连接（循环调用）。
     pub async fn accept(&self) -> Result<Connection, NetError>;
-    /// 主动连接。`server_name` 用固定值 `"audiolink"`（自签证书，SNI 不参与信任判定）。
+    /// 主动连接。`server_name` 用固定值 `"audiolink"`（自签证书，SNI 不参与任何校验）。
     pub async fn connect(&self, addr: SocketAddr, server_name: &str) -> Result<Connection, NetError>;
     pub fn close(&self, code: u32, reason: &str);
     /// 调用方结束使用者任务并释放连接后，等待真实 UDP 套接字释放（幂等、可恢复取消）。
@@ -98,7 +98,7 @@ pub struct Connection { /* ... */ }
 
 impl Connection {
     pub fn remote_addr(&self) -> SocketAddr;
-    /// 对端证书指纹 = SHA-256(对端证书 DER) → `NodeId`。**信任判定的唯一依据**。
+/// 对端证书指纹 = SHA-256(对端证书 DER) → `NodeId`。**节点身份的唯一依据**（不再有信任判定）。
     pub fn peer_id(&self) -> Result<NodeId, NetError>;
     /// 对端 TLS 证书链的叶子证书 DER，供 §5 的 `AUTH_RESPONSE` 验签取公钥。
     ///
@@ -182,9 +182,9 @@ impl ClockEstimator {
 
 ---
 
-## 4. `audiolink-identity` 冻结 API（所有者：identity-pin）
+## 4. `audiolink-identity` 冻结 API（所有者：core-base）
 
-规格依据：`03-protocol.md` §5（连接与认证时序、REST 强度说明、PIN 安全）、§9（信任库）。
+规格依据：`03-protocol.md` §2（TLS 映射）、§5（连接时序）。**PIN 门禁 / 信任库 / 挑战应答已于本轮整体移除**，交付记录见 `docs/72-remove-pairing.md`。
 实现提示：证书用 `rcgen 0.14`（**ECDSA P-256**，`signing_key.serialize_der()` 即 PKCS#8 DER）；签名/验签用 `p256`（纯 Rust，零 C 依赖，符合「不装 CMake」）。
 
 ```rust
@@ -199,68 +199,16 @@ impl NodeIdentity {
     pub fn key_der_pkcs8(&self) -> &[u8];
     pub fn node_name(&self) -> &str;
     pub fn cert_pem(&self) -> &str;
-    /// §5 `AUTH_RESPONSE`：`ECDSA-P256(privkey, nonce ‖ fp_local ‖ fp_peer)`，返回 DER 签名。
-    pub fn sign_challenge(&self, nonce: &[u8; 32], peer: NodeId) -> Result<Vec<u8>, IdentityError>;
-    /// 用对端证书验签。失败 → `AuthFailed`（1004，可能是中间人）。
-    pub fn verify_challenge(
-        peer_cert_der: &[u8],
-        nonce: &[u8; 32],
-        local: NodeId,
-        peer: NodeId,
-        signature: &[u8],
-    ) -> Result<(), IdentityError>;
 }
 
-pub struct TrustEntry {
-    pub id: NodeId,
-    pub name: String,
-    pub platform: Platform,
-    pub paired_at_unix: u64,
-}
-
-pub struct TrustStore { /* ... */ }
-
-impl TrustStore {
-    /// 不存在 → 空库（不是错误）。文件损坏 → `Err`（**不静默重置**，否则信任边界被悄悄清空）。
-    pub fn load(path: impl AsRef<Path>) -> Result<Self, IdentityError>;
-    pub fn is_trusted(&self, id: NodeId) -> bool;
-    /// 写入并**原子落盘**；同一 `NodeId` 重复写入为更新。
-    pub fn trust(&mut self, entry: TrustEntry) -> Result<(), IdentityError>;
-    /// 撤销信任（FR-18）；返回是否确实删掉了。
-    pub fn revoke(&mut self, id: NodeId) -> Result<bool, IdentityError>;
-    pub fn entries(&self) -> &[TrustEntry];
-}
-
-/// PIN 门禁（§5「PIN 安全」：6 位数字 + 60 s 有效 + 失败 5 次锁定 5 分钟）。
-pub struct PinGate { /* ... */ }
-
-impl PinGate {
-    pub fn new(now: Instant) -> Self;            // 生成并持有 6 位 PIN
-    pub fn pin(&self) -> &str;                   // 接收端展示用
-    pub fn expires_at(&self) -> Instant;
-    pub fn remaining_attempts(&self) -> u8;
-    /// 提交校验。成功**消耗**该 PIN（不可重放）。
-    pub fn verify(&mut self, submitted: &str, now: Instant) -> Result<(), PairRejection>;
-    /// 锁定中则返回剩余时长（`None` = 未锁定）。
-    pub fn lockout_remaining(&self, now: Instant) -> Option<Duration>;
-}
-
-pub enum PairRejection {
-    Expired,
-    WrongPin { remaining: u8 },
-    Locked { retry_after: Duration },
-}
 ```
 
-**验收（identity-pin 必须自己跑出来）**：
+**验收（core-base 必须自己跑出来）**：
 
 - `cargo test -p audiolink-identity` 全绿，至少覆盖：
   1. `load_or_create` 两次得到**同一 `NodeId`**（持久化生效）；`cert.pem`/`key.pem` 落盘存在；
   2. `NodeId` 等于对 `cert_der` 独立算出的 SHA-256（用 `sha2` 现算，不调被测代码）；
-  3. 签名往返：A 签 B 验通过；换一个 `nonce` / 换 `peer` / 篡改签名 1 bit → 全部失败；
-  4. `TrustStore`：落盘→重载后 `is_trusted` 保持；`revoke` 后变 false；**损坏 JSON → Err**；
-  5. `PinGate`：正确 PIN 通过且**不可二次通过**（消耗）；错误 PIN 递减剩余次数；第 5 次失败后进入锁定且 `lockout_remaining` 正确；过期 PIN 返回 `Expired`；
-  6. 落盘原子性：目录中途只读/路径不存在等错误路径**返回 Err 且不 panic**。
+  3. 落盘原子性：目录中途只读/路径不存在等错误路径**返回 Err 且不 panic**。
 
 ---
 
@@ -273,7 +221,6 @@ engine 是本轮的**集成核心**：把 `audio`（采集/编码/解码/播放�
 pub struct EngineConfig {
     pub node_name: String,
     pub identity_dir: PathBuf,
-    pub trust_store_path: PathBuf,
     pub listen: SocketAddr,
     /// 编码参数（默认 20 ms / 160 kbps / VBR / 48 kHz）。
     pub codec: CodecConfig,
@@ -289,21 +236,15 @@ impl Engine {
     pub fn local_addr(&self) -> SocketAddr;
     /// 接受入站连接的后台任务（返回句柄，便于测试等待）。
     pub fn spawn_accept_loop(self: &Arc<Self>) -> JoinHandle<()>;
-    /// 主动连接（FR-17 手工 IP）：QUIC → §5 握手 →（必要时）PIN 配对；成功返回对端 `NodeId`。
-    ///
-    /// **对端要求 PIN 时返回 `1002 NOT_PAIRED`，但会话与命令通道仍然活着** ——
-    /// UI 收到 [`EngineEvent::PinNeeded`] 后调 `submit_pin` 即可接着走同一条连接。
-    /// 把「需要 PIN」当成连接失败会让 UI 只能整条重连，白白丢掉已完成的 QUIC 握手与 HELLO 交换。
+    /// 主动连接（FR-17 手工 IP）：QUIC 握手 → §5 连接时序；**连上即用，没有 AUTH_* / PAIR_* 阶段**，
+    /// 成功返回对端 `NodeId`。
     pub async fn connect(self: &Arc<Self>, addr: SocketAddr) -> Result<NodeId, AudioLinkError>;
     /// 开始向对端推流（推流方向，由主机调）。
     /// 等本地采集/编码初始化和 OPEN_STREAM 写出，失败直接返回；尚不代表远端已开始播放。
     pub async fn start_send(&self, peer: NodeId) -> Result<(), AudioLinkError>;
-    /// 停止推流（保留连接与信任）。
+    /// 停止推流（保留连接）。
     pub async fn stop_send(&self, peer: NodeId) -> Result<(), AudioLinkError>;
-    /// 断开与对端的会话（**保留信任**）：信任库不读、不写、不落盘，该设备下次连进来仍是白名单直连。
-    /// 与 `revoke_trust` 的差别只有「动不动信任库」，但后果不同 ——
-    /// 断开只让对端看到链路丢失，对端若是发起方且正在推流会按 FR-27 重拨回来；要它别再回来只能用 `revoke_trust`。
-    /// 幂等：没有这条会话时返回 `false`（调用方的意图已成立）。
+    /// 断开与对端的会话：**只影响这一条会话**，不读写任何本地记录。
     pub async fn disconnect(&self, peer: NodeId) -> Result<bool, AudioLinkError>;
     /// FR-12 本地层：本机再叠一层「**我**听这台设备的音量」，**不走网络**（一个字节都不发出去）。
     /// 与 `set_peer_gain`（发给对端、调对端播放**本机音频**的音量）方向相反，别混用。
@@ -311,13 +252,6 @@ impl Engine {
     pub fn set_local_peer_gain(&self, peer: NodeId, gain: f32) -> Result<u32, AudioLinkError>;
     /// 读回本地增益（千分点）；`None` = 用户从没设过（等价 1.0，但如实区分「没设过」与「设成了 1.0」）。
     pub fn local_peer_gain(&self, peer: NodeId) -> Option<u32>;
-    /// 提交对端显示的 PIN。**必须带 `peer`** —— PIN 本身没有归属信息，引擎无法从 6 位数字
-    /// 反推是哪条会话（这决定了桌面端 command 是 `{ id_short, pin }` 而不是 `{ pin }`）。
-    pub async fn submit_pin(&self, peer: NodeId, pin: &str) -> Result<(), AudioLinkError>;
-    /// 当前有效的主机 PIN（本机作为主机时亮给接收端看的 6 位码），同步快照，不依赖广播；多请求时优先最新的一条。
-    pub fn displayed_pin(&self) -> Option<String>;
-    /// 本机作为接收端（发起连接的一方）正在等待输入 PIN 的对端。
-    pub fn pending_pin_peer(&self) -> Option<NodeId>;
     /// 已连接对端列表 + 每个对端的遥测。
     pub fn peers(&self) -> Vec<PeerStatus>;
     pub fn telemetry(&self, peer: NodeId) -> Option<StreamStats>;
@@ -336,7 +270,6 @@ pub struct PeerStatus {
     /// （链路断了、正在退避重连），把它折叠进 `Degraded` 会让 UI 无法区分
     /// 「还能出声但质量差」与「已经断了」。见 [`SessionState`]。
     pub state: SessionState,       // Idle/Handshaking/Streaming/Degraded/Reconnecting/Failed
-    pub trusted: bool,
     pub stats: StreamStats,
 }
 
@@ -344,11 +277,6 @@ pub enum EngineEvent {
     /// 对端状态变化（连接 / 状态迁移）。
     PeerUpdated(Box<PeerStatus>),
     PeerDisconnected { id: NodeId, reason: String },
-    /// 本机是主机：把 6 位码显示给用户（接收端要照着念）。
-    DisplayPin { from: NodeId, name: String, pin: String, remaining_attempts: u8 },
-    /// 本机是接收端：需要用户输入主机屏幕上显示的 6 位码。
-    PinNeeded { id: NodeId, name: String },
-    PairCompleted { id: NodeId, ok: bool, reason: String },
     /// 遥测快照。
     ///
     /// ⚠️ **已知局限**：本事件不带对端 id —— 它对「本机 1 Hz 采样」与「对端 `STREAM_STATS`
@@ -381,15 +309,13 @@ pub enum SessionState { Idle, Handshaking, Streaming, Degraded, Reconnecting, Fa
 
 **连接方向（冻结口径）**：`connect` 与 `start_send` 属**两个不同角色**的动作，不要在同一端混着用：
 
-- **接收端**（听声音的一方）：调 `connect(addr)` 主动连主机；对端要 PIN 时（`1002 NOT_PAIRED`）再用
-  `submit_pin(peer, pin)` 提交**主机屏幕上**亮出的 6 位码。
-- **主机**（提供声音、被连的一方）：**从不调 `connect`** —— 只 `spawn_accept_loop()` 等接入，需要配对时由
-  `displayed_pin()` 亮码，接入成功后用 `start_send(peer)` 开流。
-- 角色是**每次会话**的属性，不是设备属性：同一台设备这次当主机、下次当接收端都合法。一眼分辨靠事件镜像 ——
-  收到 `DisplayPin` 的一端是主机（亮码），收到 `PinNeeded` 的一端是接收端（输码）。
+- **接收端**（听声音的一方）：调 `connect(addr)` 主动连主机，**连上即可** —— 没有输码、没有等待批准这一步。
+- **主机**（提供声音、被连的一方）：**从不调 `connect`** —— 只 `spawn_accept_loop()` 等接入，接入成功后用 `start_send(peer)` 开流。
+- 角色是**每次会话**的属性，不是设备属性：同一台设备这次当主机、下次当接收端都合法。一眼分辨靠 `PeerStatus.initiated_locally`
+  （= 本次会话里是否为发起方）与 `PeerStatus.state`。
 
-协议 §5 的节点 A 是发起方（= 接收端）、节点 B 是响应方（= 主机，负责展示 PIN）；内核侧对应
-`audiolink-engine` 的 `handshake::Role`：只有 `Responder` 生成并显示 PIN，只有 `Initiator` 提交 PIN。
+协议 §5 的节点 A 是发起方（= 接收端）、节点 B 是响应方（= 主机）；内核侧对应
+`audiolink-engine` 的 `handshake::Role`：`Initiator` 发起、`Responder` 接受，**两者都不再做认证**。
 
 ---
 
@@ -408,7 +334,6 @@ pub enum SessionState { Idle, Handshaking, Streaming, Degraded, Reconnecting, Fa
 | `active_capture_device` | — | `CaptureDeviceView \| null`（实际正在采集的端点） |
 | `start_send` | `{ id_short: string, capture_device_id?: string \| null }` | `{ stream_id: number }` |
 | `stop_send` | — | `null` |
-| `submit_pin` | `{ id_short: string, pin: string }` | `{ ok: boolean, reason: string }` |
 | `telemetry` | — | `TelemetryView` |
 | `auto_broadcast_state` | — | `boolean`（**默认 true**：键缺失即视为开） |
 | `set_auto_broadcast` | `{ enabled: boolean }` | `null` |
@@ -417,11 +342,17 @@ pub enum SessionState { Idle, Handshaking, Streaming, Degraded, Reconnecting, Fa
 type PeerView = {
   idShort: string; name: string; addr: string;
   state: "idle" | "handshaking" | "streaming" | "degraded" | "reconnecting" | "failed";
-  trusted: boolean;
   receiving: boolean; // 本机是该会话的连接发起方；接收模式不自动回传声音
+  quality: { // 2026-09-21 增补；空值表示没有可用的会话质量读数
+    rttUs: number | null;
+    lossPctX100: number | null; // 百分比 ×100；null = 尚未收到有效接收端反馈
+    underruns: number | null;
+    bufferLevelUs: number | null;
+  } | null;
 };
 type TelemetryView = {
   peers: number; rttUs: number; jitterUs: number; lossPct: number;
+  receiverReport: boolean; // 接收端反馈是否有效，不依赖 e2eLatencyUs > 0
   bitrateBps: number; bufferLevelUs: number; underruns: number;
   e2eLatencyUs: number; e2eP50Us: number; e2eP95Us: number;
 };
@@ -459,15 +390,15 @@ IPv4 优先、同族按地址字节序稳定排序，已过滤回环 / 未指定
 再点一次「开始推流」属于多余门槛；而自动重连是用户在没操作时主动去连一台机器，越权风险不同，必须显式打开。
 
 **「自动」不能打脸用户** —— 后端只提供开关，是否发起由持界面状态的调用方（前端）按下列顺序判定：
-1. 只对「**已配对（trusted）+ 状态 idle**」的设备自动 `start_send`；`failed` **不自动重试**（否则会变成错误风暴），
-   `handshaking` / 配对 PIN 流程中不插手，等它自己变 `idle`；
+1. 只对「**状态 idle**」的设备自动 `start_send`；`failed` **不自动重试**（否则会变成错误风暴），
+   `handshaking` 中不插手，等它自己变 `idle`；
 2. **同一台设备每轮只自动发起一次**（按 `idShort` 去重），防止事件抖动导致重复调用；
 3. 用户对某台设备**手动点过「停止推流」** → 把它记入「用户拒绝」集合，本轮不再自动推它；
    拒绝的是**这台设备**，**不因此改动总开关**；
 4. 开关关闭 = 完全回到手动模式（与历史行为一致）。
 
 **事件**（后端 → 前端，`listen` 订阅名冻结）：`audiolink://peer`（`PeerView[]`）、
-`audiolink://telemetry`（`TelemetryView`，**500 ms** 节流）、`audiolink://pair-required`（`{ idShort, name, pin }`）。
+`audiolink://telemetry`（`TelemetryView`，**500 ms** 节流）。
 
 **UI 范围（M1 最小版）**：手工输入 IP → 连接 → 显示对端卡片与状态 → 开始/停止推流 → 遥测数字面板 +
 连接失败原因；补充本机采集端点选择、刷新、不可用原因及实际端点展示。**不做**：托盘 / 自启 / 双语 / 局域网自动发现设备列表 / 曲线图（属 M5/M2）。
@@ -515,23 +446,23 @@ data class PlaybackReport(val lowLatency: Boolean, val actualBufferFrames: Int,
 
 ## 8. `audiolink-ffi` 契约（所有者：ffi-bridge）
 
+**2026-09-21 播放水位扩展**：`PcmFeed` 增加 `playout_buffer_state() -> Option<PcmBufferState>`，记录 `queued_frames`（Kotlin 环 + 待写块 + AudioTrack 未消费帧）与 `target_frames`（设备目标，不含网络抖动余量）。单位为每声道采样帧。无播放器时返回 `None`，满灌档的目标为 0，二者不参与全链积压控制。快照由 Kotlin 播放线程发布，Rust 回调线程不访问 AudioTrack；播放器生命周期仍由 Kotlin 管理。此修改涉及本地回调 ABI，必须重新生成 Kotlin 绑定并重建双 ABI `.so` 与 APK；网络协议和 StreamStats 字段不变。实现与验证见 `69-playout-latency-recovery.md`。
+
 - UniFFI 0.29，导出给 Kotlin；**唯一允许 `unsafe` 的 crate**，需在文件顶部 `#[allow(unsafe_code)]` 并写明理由。
 - 导出面（M1 最小集）：`engineStart(config)` / `engineStop()` / `connect(addr)` / `startSend()` / `stopSend()` /
-  `submitPin(pin)` / `localStatus()` / `peers()` / `telemetry()` / `displayedPin()`，
+  `localStatus()` / `peers()` / `telemetry()`，
   加一个 `protocolSelfTest()` → `String`，内部跑 `audiolink-proto` 的 golden vectors 并返回摘要
   （这就是看板 `[护栏] 跨端一致性夹具`：**同一组向量在 Rust 与 FFI 两侧双跑，结果必须一致**）。
 - **按设备控制**（FR-12 在 Android 侧的解锁项；原来只有无参的 `startSend()/stopSend()`，多设备界面无从下手）：
   - `stopSendTo(peerId: String)` —— 停**这一台**的流。本机是**发送端**时：停本机采集并向对端发 `CLOSE_STREAM`，
     对端停止播放这一路；本机是**接收端**时：本机没有采集可停，实际效果是**请对端停发这一路**。
-    两种情况都**保留连接与信任**（断开是另一件事，本里程碑不提供）。
+    两种情况都**保留连接**（断开是另一件事）。
   - `setPeerGain(peerId: String, gain: Float)` —— §4.1 的 `SET_GAIN`（发送方 → 对端播放侧）：
     调对端播放**本机音频**的音量，取值 `0.0–2.0`（`1.0` = 原声）。NaN / 负数 / 超上限由引擎边界拒绝并返回人话原因
     （判据只留一处，文案与桌面端一致）；渐变时长固定 **200 ms**（与桌面端前端 `setPeerGain(idShort, gain, 200)` 同口径）。
 - **断连与本地音量**（T21 补充，两条都要引擎新 API，本轮已贯通 Engine → FFI → 契约）：
-  - `disconnectPeer(peerId: String): Boolean` —— 断开与**这一台**的会话，**保留信任**（信任库不读不写不落盘），
-    该设备下次连进来仍然是白名单直连（§8）。返回 `false` = 本来就没有这条会话（幂等）。
-    与「取消配对」的区别要讲清：要它**别再自己回来**只能用后者 —— 断开只让对端看到链路丢失，
-    而对端若是发起方且正在推流，它有自己的 FR-27 重拨逻辑，会连回来（本机信任库还留着它，握手直接过）。
+  - `disconnectPeer(peerId: String): Boolean` —— 断开与**这一台**的会话，不读写任何本地记录。
+    返回 `false` = 本来就没有这条会话（幂等）。
   - `setLocalPeerGain(peerId: String, gain: Float)` + `localPeerGain(peerId: String): UInt?` ——
     **接收端本地**每路音量（FR-12）：只影响本机混音，**一个字节都不发出去**；
     与 `setPeerGain`（发送方向、让对端调它播放本机音频的音量）**方向相反**，别混用。
@@ -542,23 +473,21 @@ data class PlaybackReport(val lowLatency: Boolean, val actualBufferFrames: Int,
     设备当前没在收音频（本机是发送端 / 还没开流）也照样设得进去：用户设的是**这台设备的音量**，值在下次开流时生效。
 - **`peerId` 的口径**：就是 `peers()` 返回的 `PeerView.idHex`（64 hex 完整指纹）或 `idShort`（16 hex 短码）——
   两者都在同一份 `PeerView` 里，壳侧**任选其一直接回传**，不要自己把短码换算成指纹（各端各写一份映射迟早分叉）。
-  短码必须在会话表里**唯一命中**：命不中报 `1002 NOT_PAIRED`；撞车（两台前 8 字节相同）报参数错误并要求改用完整指纹 ——
+  短码必须在会话表里**唯一命中**：命不中报 `1002 NO_PEER`；撞车（两台前 8 字节相同）报参数错误并要求改用完整指纹 ——
   绝不猜一台（猜错的后果是「点了 A 的停止，B 的流掉了」）。
 - **无参版与按设备版的关系（别误用）**：`stopSend()` **保留且不废弃** —— 它停的是内核选中的「当前对端」
   （`current_peer()`：优先正在推流的一台，否则第一台），是**单对端** UI 的入口；多设备界面一律用 `stopSendTo(peerId)`。
   两者调用的是**同一个内核动作**（`Engine::stop_send`），不是两套实现，差异只有「停谁」。
-- **本里程碑不提供（诚实记账）**：① `disconnect(peer)`（只断连、保留信任）—— 引擎没有独立入口，
-  `revoke_trust` 会连信任一起撤；② 「接收端**本地**每路音量/静音」—— 现有路径只有「对端下发 `SET_GAIN`/`SET_MUTE`
-  落到本机该路混音输入」，本机主动调本地每路增益的公开 API 尚不存在。两者都要动 `audiolink-engine` 的 API 面，见 T20 回报。
-- `displayedPin()` 返回当前连接的有效 PIN；未启动/成功/断开/锁定/到期时为 `null`。
-  2026-09-16 起直接读取 Engine 同步快照，不再依赖广播缓存；错误重试不延长门禁的原始 60 s 有效期。
-  `submitPin(pin)` 同样从当前连接定位待配对对端；FFI 函数签名与 Kotlin 绑定保持兼容。
+- **历史记账（当时不提供，后来补齐）**：① `disconnect(peer)`（只断连）—— 当时引擎没有独立入口，现在即 `disconnectPeer`；
+  ② 「接收端**本地**每路音量/静音」—— 现在即 `setLocalPeerGain` / `localPeerGain`（见上）。两条都已落地。
+- 配对相关的导出（`displayedPin()` / `submitPin(pin)`）已随本轮移除，不再出现在 UniFFI 表面与重新生成的 Kotlin 绑定里；
+  连接不再需要任何码 —— `connect()` 返回即表示会话已建立。
 - `engineStart/engineStop` 串行执行：同配置重复启动成功、不同配置返回 `1009 BUSY`。
   停止返回意味着会话、音频线程和原 UDP 套接字已释放，允许立即同端口启动。
   等待生命周期锁时取消则请求不执行；派发后取消等待，操作仍由引擎运行时完成并释放锁。
   平台音频回调须正常返回，停止会等待在途回调退出；详细语义与回归见 `15-engine-restart.md`。
 - Android Service 之间也按请求顺序排队启停，销毁不取消已登记的引擎清理。
-  UI 状态只在主线程发布，停止/销毁使旧启动与 PIN 查询结果失效；见 `16-android-service-lifecycle.md`。
+  UI 状态只在主线程发布，停止/销毁使旧的启动与状态查询结果失效；见 `16-android-service-lifecycle.md`。
 - **验收**：`cargo test -p audiolink-ffi` 通过（`protocolSelfTest` 的 Rust 侧断言）；
   `cargo check -p audiolink-ffi --target aarch64-linux-android` 通过（证明 FFI 表面能交叉编译）；
   若 UniFFI 代码生成可用，把生成的 Kotlin 放到 android 侧并让 `assembleDebug` 通过。

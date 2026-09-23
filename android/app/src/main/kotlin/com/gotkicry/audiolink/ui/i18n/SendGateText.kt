@@ -23,7 +23,6 @@ internal fun sendGateText(strings: UiStrings, gate: SendGate): String? = when (g
     SendGate.AddressInvalid ->
         String.format(strings.gateAddressInvalidFormat, SenderStateMapper.DEFAULT_PORT_HINT)
     SendGate.NoSession -> strings.gateNoSession
-    SendGate.AwaitingPin -> strings.gateAwaitingPin
     SendGate.AlreadySending -> strings.gateAlreadySending
     SendGate.NotSending -> strings.gateNotSending
     SendGate.CaptureOff -> strings.gateCaptureOff

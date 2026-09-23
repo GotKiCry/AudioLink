@@ -113,14 +113,10 @@ fun DeviceDeck(
                         KeyValueRow(strings.labelFingerprint, peer.idShort)
                         KeyValueRow(strings.labelAddress, peer.addr)
                         KeyValueRow(strings.labelState, peerStateText(peer.state))
-                        KeyValueRow(
-                            label = strings.labelTrust,
-                            value = if (peer.trusted) strings.trustYes else strings.trustNo,
-                        )
                     }
 
                     // 断开放在行末的次级位置（用户认可的权重：静音每行可见，断开下沉一档）——
-                    // 文案不能说成"永久踢掉"：信任还在，对端若是发起方会自己重拨回来。
+                    // 文案不能说成"永久踢掉"：只断这一条会话，对端若是发起方会自己重拨回来。
                     Row(modifier = Modifier.fillMaxWidth()) {
                         AlTextButton(
                             onClick = { detailsExpanded = !detailsExpanded },

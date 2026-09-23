@@ -10,8 +10,8 @@
 
 use std::time::{Duration, Instant};
 
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::{Capabilities, ErrorCode};
+use audiolink_engine::{Engine, EngineConfig, SessionState};
+use audiolink_types::Capabilities;
 
 /// 等两端都看到对方进入会话（握手完成）。
 async fn wait_established(desktop: &Engine, plain: &Engine, plain_id: audiolink_types::NodeId) {
@@ -47,20 +47,16 @@ async fn declared_platform_capabilities_reach_the_peer() {
 
     let plain = Engine::start(plain_config).await.expect("plain 引擎");
     let _accept = plain.spawn_accept_loop();
-    let mut events = plain.subscribe();
+
     let plain_id = plain.info().id;
 
     let desktop = Engine::start(desktop_config).await.expect("desktop 引擎");
 
-    // 首次连接必须先走 PIN 配对（§5）。
-    let error = desktop.connect(plain.local_addr()).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-            break pin;
-        }
-    };
-    desktop.submit_pin(plain_id, &pin).await.expect("PIN 配对");
+    // 无认证：一次 connect 即完成握手。
+    desktop
+        .connect(plain.local_addr())
+        .await
+        .expect("连接应当直接成功（无认证）");
 
     wait_established(&desktop, &plain, plain_id).await;
 

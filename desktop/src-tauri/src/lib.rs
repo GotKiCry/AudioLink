@@ -36,8 +36,7 @@ use error::CommandError;
 use update::UpdateCheckView;
 use view::{
     AlignmentView, CaptureDeviceView, GroupView, LocalStatus, NoticesView, PeerView,
-    RevokeTrustResult, StartSendResult, SubmitPinResult, TelemetryRow, TelemetryView,
-    TrustedPeerView,
+    StartSendResult, TelemetryRow, TelemetryView,
 };
 
 #[tauri::command]
@@ -73,20 +72,9 @@ async fn list_peers(bridge: State<'_, EngineBridge>) -> Result<Vec<PeerView>, Co
     bridge.list_peers().await
 }
 
-/// 已配对设备列表（FR-18 的读侧）：**信任库**快照，含当前没有会话的那些。
-///
-/// 与 list_peers 的分工：那个是会话表（界面上的对端卡片），这个是白名单 ——
-/// 换机后残留的旧信任记录只在这一侧出现，而它们正是「取消配对」要覆盖的对象。
-#[tauri::command]
-async fn list_trusted_peers(
-    bridge: State<'_, EngineBridge>,
-) -> Result<Vec<TrustedPeerView>, CommandError> {
-    bridge.list_trusted_peers().await
-}
-
 /// 手工 IP 连接（契约 §6 `connect`；需求 FR-17：发现被 AP 隔离时的兜底入口）。
 ///
-/// 返回的是"已登记 + 握手中"的对端卡片；配对/失败由事件异步推给 UI。
+/// 返回的是"已登记 + 已建立"的对端卡片（无认证后连接成功即握手完成）；后续状态由事件推给 UI。
 #[tauri::command]
 async fn connect(bridge: State<'_, EngineBridge>, addr: String) -> Result<PeerView, CommandError> {
     bridge.connect(&addr).await
@@ -109,20 +97,6 @@ async fn start_send(
 #[tauri::command]
 async fn stop_send(bridge: State<'_, EngineBridge>) -> Result<(), CommandError> {
     bridge.stop_send().await
-}
-
-/// 提交 6 位配对码（`submit_pin`）。
-///
-/// **入参比契约 §6 多了一个 `id_short`**：引擎的 `submit_pin(peer, pin)` 必须知道是哪条会话
-/// （可能同时有多个对端要找配对，而 `pin` 本身没有任何归属信息）。契约文档那一行需要同步更新 ——
-/// 已在交接里点名。这个命令会**等**到引擎给出配对结论（`PairCompleted`）才返回，不只是"已提交"。
-#[tauri::command(rename_all = "snake_case")]
-async fn submit_pin(
-    bridge: State<'_, EngineBridge>,
-    id_short: String,
-    pin: String,
-) -> Result<SubmitPinResult, CommandError> {
-    bridge.submit_pin(&id_short, &pin).await
 }
 
 /// 遥测快照（契约 §6 `telemetry`）；持续刷新请订阅 `audiolink://telemetry`。
@@ -189,18 +163,6 @@ async fn set_peer_gain(
     bridge.set_peer_gain(&id_short, gain, ramp_ms).await
 }
 
-/// 移除设备（FR-18）：断开该对端 + 撤销信任 + 清掉指向它的「上次设备」记录。
-///
-/// 这是隐私说明里「你可以取消配对」的**兑现口**：此前用户只能手动删 `trust.json`、
-/// 清应用数据或卸载。返回结构说明做了什么（见 `RevokeTrustResult`），UI 必须给出可见反馈。
-#[tauri::command(rename_all = "snake_case")]
-async fn revoke_trust(
-    bridge: State<'_, EngineBridge>,
-    id_short: String,
-) -> Result<RevokeTrustResult, CommandError> {
-    bridge.revoke_trust(&id_short).await
-}
-
 /// M4：多源对齐快照（各路样本编号 + 当前跨度）。
 #[tauri::command]
 async fn alignment(bridge: State<'_, EngineBridge>) -> Result<AlignmentView, CommandError> {
@@ -253,6 +215,24 @@ async fn set_background(
     config: settings::BackgroundConfig,
 ) -> Result<(), CommandError> {
     settings::write_background(&app, &config)
+}
+
+/// M6：低延迟档的当前设置（**默认关** = 20 ms 帧的标准档）。
+#[tauri::command]
+async fn low_latency_state(bridge: State<'_, EngineBridge>) -> Result<bool, CommandError> {
+    bridge.low_latency_state().await
+}
+
+/// M6：开关「低延迟档」（10 ms Opus 帧 + 更低播放水位）。
+///
+/// 只写 `settings.json`：档位在 `EngineConfig.codec` 里，只有下次 `Engine::start` 才读它 ——
+/// 界面必须说清「下次启动引擎生效」（见 SettingsPanel 的 `set.low_latency_hint`）。
+#[tauri::command(rename_all = "snake_case")]
+async fn set_low_latency(
+    bridge: State<'_, EngineBridge>,
+    enabled: bool,
+) -> Result<(), CommandError> {
+    bridge.set_low_latency(enabled).await
 }
 
 /// M5：启动时试一次自动重连（没开 / 没记录 / 连不上都返回 null，不报错）。
@@ -367,13 +347,11 @@ pub fn run() {
             local_status,
             list_peers,
             discovered_hosts,
-            list_trusted_peers,
             list_capture_devices,
             active_capture_device,
             connect,
             start_send,
             stop_send,
-            submit_pin,
             telemetry,
             export_telemetry,
             list_groups,
@@ -381,7 +359,6 @@ pub fn run() {
             join_group,
             leave_group,
             set_peer_gain,
-            revoke_trust,
             alignment,
             broadcast_epoch,
             third_party_notices,
@@ -394,6 +371,8 @@ pub fn run() {
             try_auto_connect,
             auto_broadcast_state,
             set_auto_broadcast,
+            low_latency_state,
+            set_low_latency,
             locale,
             set_locale,
             background,

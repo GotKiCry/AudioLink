@@ -1,6 +1,7 @@
 package com.gotkicry.audiolink.audio
 
 import com.gotkicry.audiolink.core.PcmFeed
+import com.gotkicry.audiolink.core.PcmBufferState
 
 /**
  * 内核 PCM → 播放环的搬运器：UniFFI 回调接口 [`PcmFeed`] 的 Kotlin 实现。
@@ -30,7 +31,15 @@ import com.gotkicry.audiolink.core.PcmFeed
 class FfiPcmFeed(
     private val ring: PcmRingBuffer,
     private val channelCount: Int = ring.channelCount,
+    private val outputBufferState: () -> PcmBufferState? = { null },
 ) : PcmFeed {
+
+    override fun playoutBufferState(): PcmBufferState? {
+        val output = outputBufferState() ?: return null
+        return output.copy(queuedFrames = (
+            output.queuedFrames.toULong() + ring.sizeFrames.toULong()
+        ).coerceAtMost(UInt.MAX_VALUE.toULong()).toUInt())
+    }
 
     private companion object {
         /** 初始搬运缓冲：一帧 20 ms / 2ch 是 1920 个样本（`DEFAULT_FRAME_INTERLEAVED`）。 */

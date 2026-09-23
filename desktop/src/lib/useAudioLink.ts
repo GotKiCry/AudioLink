@@ -3,8 +3,7 @@
  *
  * 数据来源（契约 §6）：
  * - 首屏水合：`version` / `local_status` / `list_peers` / `telemetry` 各一次；
- * - 之后持续推进：`audiolink://peer`（变化即推）、`audiolink://telemetry`（500 ms 节流）、
- *   `audiolink://pair-required`（配对请求，不节流）。
+ * - 之后持续推进：`audiolink://peer`（变化即推）、`audiolink://telemetry`（500 ms 节流）。
  *
  * 为什么不引入状态库：M1 的状态就 6 个字段，React 自带 useState 足够；
  * 引 zustand/jotai 只会多一层需要同步的真相（而且遥测是"覆盖式最新值"，天然适合 setState）。
@@ -20,7 +19,6 @@ import {
   type CaptureDeviceView,
   type GroupView,
   type LocalStatus,
-  type PairRequiredPayload,
   type PeerView,
   type TelemetryRow,
   type TelemetryView,
@@ -45,13 +43,6 @@ export interface AudioLinkController {
   groupBusy: boolean;
   /** §4.1：调某台对端的音量（0.0–2.0）。 */
   setPeerGain: (idShort: string, gain: number) => Promise<void>;
-  /**
-   * FR-18：移除设备 —— 断开会话 + 撤销信任 + （若它正是「上次设备」）清掉那条记录。
-   *
-   * 不可逆的隐私操作，所以界面上是两段式确认；成功后用 `notice` 如实报出做了什么
-   * （「本来就不在信任库里」与「已从信任库移除」是两件事）。
-   */
-  revokeTrust: (idShort: string) => Promise<void>;
   refreshGroups: () => Promise<void>;
   /** M4 多源对齐快照（1 Hz 轮询；没有对端时为 null）。 */
   alignment: AlignmentView | null;
@@ -66,25 +57,14 @@ export interface AudioLinkController {
   exportTelemetryLog: () => Promise<void>;
   /** 导出进行中（按钮禁用用）。 */
   exportingTelemetry: boolean;
-  /** 待处理的配对请求；非 null 时 UI 必须弹 PIN 输入框。 */
-  pairRequest: PairRequiredPayload | null;
-  /** 配对提交失败的原因（来自 `submit_pin` 的 `reason`，人话整句）。 */
-  pairReason: string;
   /** 最近一次失败的原因（连接失败、推流被拒…）。 */
   error: CommandError | null;
   /**
-   * 提示（非错误）：目前只有一种 —— `connect` 返回 `1002 NOT_PAIRED`。
-   * 那**不是失败**：会话与命令通道还活着（见 `Engine::connect` 文档），
-   * 用户要做的是去输配对码。用错误横幅表达会误导用户去重连。
+   * 动作回执（非错误）：例如「已导出 {count} 个采样点」「{peer} 音量已设为 {pct}%」
+   * 「已自动连接上次的主机」。它们是动作的**结果**，不是失败 ——
+   * 用红色错误横幅表达会让用户以为出了问题。
    */
   notice: string | null;
-  /**
-   * 需要**本机输入**配对码的对端（来自 `PinNeeded`）。
-   * 用途：弹窗被t("pair.later")关掉后，用户还得有一条路把输入框叫回来 ——
-   * 而 `PinNeeded` 是一次性事件，不会重发。
-   * 接收端（对端来输码）不在这个集合里，卡片上也不会出现t("peer.pin_entry")。
-   */
-  pairableIds: string[];
   /** `connect` 进行中（按钮禁用用）。 */
   connecting: boolean;
   /** 正在 start/stop 的对端 id（防连点；null = 无）。 */
@@ -121,17 +101,9 @@ export interface AudioLinkController {
   /** 开关正在落盘（界面禁用用）。 */
   autoBroadcastBusy: boolean;
   setAutoBroadcast: (enabled: boolean) => void;
-  /** `idShort` 决定是哪条会话（可能同时有多个对端在配对）。 */
-  submitPin: (idShort: string, pin: string) => Promise<boolean>;
-  /** 手动把某个对端的配对输入框叫回来（配合 `pairableIds` 使用）。 */
-  beginPairing: (idShort: string) => void;
   dismissError: () => void;
   dismissNotice: () => void;
-  dismissPairRequest: () => void;
 }
-
-/** `1002 NOT_PAIRED`：不是失败，而是"请去输配对码"。 */
-const CODE_NOT_PAIRED = 1002;
 
 /**
  * 遥测历史的长度上限：500 ms 一个采样点 × 600 = **5 分钟**曲线。
@@ -181,11 +153,8 @@ export function useAudioLink(): AudioLinkController {
   const [alignmentBusy, setAlignmentBusy] = useState(false);
   const [groupBusy, setGroupBusy] = useState(false);
   const [exportingTelemetry, setExportingTelemetry] = useState(false);
-  const [pairRequest, setPairRequest] = useState<PairRequiredPayload | null>(null);
-  const [pairReason, setPairReason] = useState("");
   const [error, setError] = useState<CommandError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [pairableIds, setPairableIds] = useState<string[]>([]);
   const [connecting, setConnecting] = useState(false);
   const [busyPeer, setBusyPeer] = useState<string | null>(null);
   const [captureDevices, setCaptureDevices] = useState<CaptureDeviceView[]>([]);
@@ -297,15 +266,13 @@ export function useAudioLink(): AudioLinkController {
   useEffect(() => {
     let cancelled = false;
     let peersUpdated = false;
-    // 订阅必须在挂载时就绪：配对请求可能在用户还没做任何动作时由对端发起
+    // 订阅在挂载时就绪：对端列表、遥测与同步组都靠事件推进。
     const unsubscribe = subscribeEvents({
       // §7 同步组变化（建组 / 成员加入退出）：顺手拉一次最新组列表。
       // 为什么不做轮询：这是低频人工动作，事件驱动既省 IPC 也不会漏。
       onGroupUpdated: () => {
         void refreshGroups();
       },
-      // 对端列表变化时顺手收敛配对对话框：对端没了、或已经变成"已受信"，
-      // 对话框就没有存在意义了（接收端场景下用户全程不点任何按钮，全靠这条规则关闭）。
       onPeers: (next) => {
         peersUpdated = true;
         // 断开或重连才重置本轮尝试；重复 idle/握手事件不能反复打开采集。
@@ -318,37 +285,10 @@ export function useAudioLink(): AudioLinkController {
         }
         reconnectsRef.current = new Map(next.map((peer) => [peer.idShort, peer.reconnects ?? 0]));
         setPeers(next);
-        setPairRequest((current) => {
-          if (current === null) {
-            return null;
-          }
-          const peer = next.find((item) => item.idShort === current.idShort);
-          if (peer === undefined || peer.trusted) {
-            return null;
-          }
-          return current;
-        });
-        // 只有"还没受信且还在列表里"的对端才保留"可输码"资格
-        setPairableIds((current) =>
-          current.filter((idShort) => {
-            const peer = next.find((item) => item.idShort === idShort);
-            return peer !== undefined && !peer.trusted;
-          }),
-        );
       },
       onTelemetry: (view) => {
         setTelemetry(view);
         setTelemetryHistory((current) => appendTelemetryRow(current, view));
-      },
-      onPairRequired: (payload) => {
-        setPairRequest(payload);
-        setPairReason("");
-        // 收到"请本机输入"的请求 → 记下这个对端，弹窗被关掉后还能叫回来
-        if (payload.pin === "") {
-          setPairableIds((current) =>
-            current.includes(payload.idShort) ? current : [...current, payload.idShort],
-          );
-        }
       },
       onError: (raw) => setError(toCommandError(raw)),
     });
@@ -385,13 +325,7 @@ export function useAudioLink(): AudioLinkController {
       setPeers((prev) => upsert(prev, peer));
       return true;
     } catch (raw) {
-      const failure = toCommandError(raw);
-      if (failure.code === CODE_NOT_PAIRED) {
-        // 会话还活着，用户只需要输配对码 → 提示而不是报错
-        setNotice(failure.message);
-      } else {
-        setError(failure);
-      }
+      setError(toCommandError(raw));
       return false;
     } finally {
       setConnecting(false);
@@ -479,7 +413,7 @@ export function useAudioLink(): AudioLinkController {
   useEffect(() => {
     if (!autoBroadcastReady || (!autoBroadcast && !broadcastRequested) || pausedRef.current ||
         !canStartCapture || captureLocked || activeSendRef.current) return;
-    const target = peers.find((peer) => !peer.receiving && peer.trusted && peer.state === "idle" &&
+    const target = peers.find((peer) => !peer.receiving && peer.state === "idle" &&
       !autoStartedRef.current.has(peer.idShort));
     if (target) void requestSend(target.idShort);
   }, [peers, autoBroadcast, autoBroadcastReady, broadcastRequested, broadcastPaused,
@@ -495,41 +429,8 @@ export function useAudioLink(): AudioLinkController {
       .finally(() => setAutoBroadcastBusy(false));
   }, []);
 
-  const submitPin = useCallback(async (idShort: string, pin: string): Promise<boolean> => {
-    try {
-      const result = await api.submitPin(idShort, pin);
-      if (!result.ok) {
-        setPairReason(result.reason);
-        return false;
-      }
-      setPairRequest(null);
-      setPairReason("");
-      setNotice(null);
-      // 配对成功后 trusted 变了，主动拉一次，避免完全依赖事件时序
-      setPeers(await api.listPeers());
-      return true;
-    } catch (raw) {
-      setError(toCommandError(raw));
-      return false;
-    }
-  }, []);
-
   const dismissError = useCallback(() => setError(null), []);
   const dismissNotice = useCallback(() => setNotice(null), []);
-  const dismissPairRequest = useCallback(() => {
-    setPairRequest(null);
-    setPairReason("");
-  }, []);
-
-  /** 把某个对端的配对输入框叫回来（`pin` 留空 = 本机要输入）。 */
-  const beginPairing = useCallback(
-    (idShort: string): void => {
-      const peer = peers.find((item) => item.idShort === idShort);
-      setPairReason("");
-      setPairRequest({ idShort, name: peer?.name ?? t("toast.this_device"), pin: "" });
-    },
-    [peers],
-  );
 
   /** 导出遥测历史：成功用 notice 报路径，失败用 error 报人话原因。 */
   const exportTelemetryLog = useCallback(async (): Promise<void> => {
@@ -553,29 +454,6 @@ export function useAudioLink(): AudioLinkController {
     try {
       await api.setPeerGain(idShort, gain, 200);
       setNotice(t("toast.gain", { peer: idShort, pct: Math.round(gain * 100) }));
-    } catch (raw) {
-      setError(toCommandError(raw));
-    }
-  }, []);
-
-  /**
-   * 移除设备（FR-18）：断开该对端、撤销信任，并（若它正是「上次设备」）清掉那条记录。
-   *
-   * 为什么必须给可见反馈：这是**不可逆的隐私操作** —— 静默成功等于用户无法判断是否生效；
-   * 而且「本来就不在信任库里」（removed=false，只断了会话）与「已从信任库移除」是两件事，
-   * 如实分开说，用户才知道下次要不要重新配对。
-   */
-  const revokeTrust = useCallback(async (idShort: string): Promise<void> => {
-    try {
-      const result = await api.revokeTrust(idShort);
-      const base = result.removed
-        ? t("toast.revoked", { peer: idShort })
-        : t("toast.revoked_not_trusted", { peer: idShort });
-      setNotice(
-        result.forgotLastPeer ? `${base} ${t("toast.revoked_forgot_last_peer")}` : base,
-      );
-      // 会话表已经变了（内核先断了会话）：立刻拉一次，别等下一拍事件。
-      setPeers(await api.listPeers());
     } catch (raw) {
       setError(toCommandError(raw));
     }
@@ -678,18 +556,14 @@ export function useAudioLink(): AudioLinkController {
     alignmentBusy,
     broadcastEpoch,
     setPeerGain,
-    revokeTrust,
     refreshGroups,
     createGroup,
     joinGroup,
     leaveGroup,
     exportTelemetryLog,
     exportingTelemetry,
-    pairRequest,
-    pairReason,
     error,
     notice,
-    pairableIds,
     connecting,
     busyPeer,
     captureDevices,
@@ -714,10 +588,7 @@ export function useAudioLink(): AudioLinkController {
     autoBroadcast,
     autoBroadcastBusy,
     setAutoBroadcast: setAutoBroadcastEnabled,
-    submitPin,
-    beginPairing,
     dismissError,
     dismissNotice,
-    dismissPairRequest,
   };
 }

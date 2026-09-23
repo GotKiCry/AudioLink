@@ -12,7 +12,6 @@ import { GroupPanel } from "./components/GroupPanel";
 import { HostAddressCard } from "./components/HostAddressCard";
 import { IconBackground } from "./components/icons";
 import { NoticeBanner } from "./components/NoticeBanner";
-import { PairDialog } from "./components/PairDialog";
 import { PeerCard } from "./components/PeerCard";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { Sidebar } from "./components/Sidebar";
@@ -95,7 +94,7 @@ export default function App() {
   const streamingCount = al.peers.filter(
     (peer) => peer.state === "streaming" || peer.state === "degraded",
   ).length;
-  const broadcastTargets = al.peers.filter((peer) => !peer.receiving && peer.trusted && peer.state === "idle");
+  const broadcastTargets = al.peers.filter((peer) => !peer.receiving && peer.state === "idle");
   const status: BroadcastStatus = al.broadcastStopping ? "pausing"
     : streamingCount > 0 ? "streaming"
     : al.broadcastPaused ? "paused"
@@ -197,12 +196,9 @@ export default function App() {
                     busy={al.broadcastStopping || al.busyPeer === peer.idShort}
                     paused={al.broadcastPaused}
                     canStart={al.canStartCapture && !al.captureLocked}
-                    canInputPin={al.pairableIds.includes(peer.idShort)}
                     onStart={al.startSend}
                     onStop={al.stopSend}
-                    onBeginPair={al.beginPairing}
                     onGain={(gain) => void al.setPeerGain(peer.idShort, gain)}
-                    onRevoke={al.revokeTrust}
                   />
                 ))}</div>
               )}
@@ -266,15 +262,6 @@ export default function App() {
           onClose={() => setBackgroundOpen(false)}
         />
       ) : null}
-
-      {al.pairRequest === null ? null : (
-        <PairDialog
-          request={al.pairRequest}
-          reason={al.pairReason}
-          onSubmit={al.submitPin}
-          onDismiss={al.dismissPairRequest}
-        />
-      )}
     </div>
   );
 }

@@ -5,7 +5,6 @@
 //! engineStart(config, …) ──►  runtime.spawn(Engine::start)   ──►  Engine::start(cfg)
 //! connect(addr)          ──►  runtime.spawn(Engine::connect) ──►  Engine::connect(addr)
 //! peers() / telemetry()  ──►  直接读 Engine 的同步快照          ──►  Engine::peers()/telemetry()
-//! displayedPin()         ──►  直接读当前会话的 PIN 快照        ──►  Engine::displayed_pin()
 //! ```
 //!
 //! # 线程模型（Android 上最容易踩的一脚）
@@ -23,8 +22,8 @@
 //!
 //! # 全局态
 //!
-//! 一个进程一个引擎。`ENGINE` 持有当前句柄；PIN 与对端列表都读取引擎的同步快照，
-//! 不再另建广播事件缓存，避免丢事件后永久缺失 PIN 或旧引擎的事件污染重启状态。
+//! 一个进程一个引擎。`ENGINE` 持有当前句柄；对端列表读取引擎的同步快照，
+//! 不再另建广播事件缓存，避免丢事件后对端表长期缺失，或旧引擎的事件污染重启状态。
 //!
 //! 运行时**永不释放**（进程级）：`tokio::runtime::Runtime` 若在 async 上下文里被 drop 会 panic
 //! （"Cannot drop a runtime in a context where blocking is not allowed"），而 FFI 的 async 函数
@@ -35,6 +34,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use audiolink_audio::CodecConfig;
 use audiolink_engine::{Engine, EngineConfig, PeerStatus};
 use audiolink_types::{Capabilities, Caps, DEFAULT_QUIC_PORT, ErrorCode, NodeId, StreamStats};
 use tokio::runtime::Runtime;
@@ -76,7 +76,7 @@ static LIFECYCLE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 pub struct EngineStartConfig {
     /// 用户可见节点名（仅展示，不参与身份判定）。
     pub node_name: String,
-    /// 身份材料（`cert.pem` / `key.pem`）与信任库（`trust.json`）的落地目录。
+    /// 身份材料（`cert.pem` / `key.pem`）的落地目录。
     pub data_dir: String,
     /// QUIC 监听端口；`0` = 默认 `58290`。
     pub listen_port: u16,
@@ -93,6 +93,19 @@ pub struct EngineStartConfig {
     // not supported here"），类型由字段本身决定。
     #[uniffi(default = 0)]
     pub capabilities: u32,
+    /// 低延迟档开关：`true` = 10 ms Opus 帧 + 10 ms 播放水位；`false`（缺省）= 标准档 20 ms 帧。
+    ///
+    /// 这是**发送方向**的档位：本机推流时用它编码，`OPEN_STREAM.codec_prefs` 里报出的也是它。
+    ///
+    /// **接收方向不再要求同档**：内核已实现帧长联动 —— 接收端在开流期读
+    /// `OPEN_STREAM.codec_prefs` 里第一个 `Opus` 项的帧长并跟随它解码（协商结果见
+    /// [`PeerView::negotiated_frame_ms`]）。所以两端档位不同也能正常工作，
+    /// 这个开关现在只决定「本机作为发送端时用什么帧长」。
+    ///
+    /// 为什么带 `uniffi(default = false)`：UniFFI 的 record 没有「Kotlin data class 默认参数」
+    /// 那一层，标了默认值才能让不传这个字段的老调用点继续落在标准档 —— 也就是「加字段之前的行为不变」。
+    #[uniffi(default = false)]
+    pub low_latency: bool,
 }
 
 /// 本机状态（`localStatus()`）。
@@ -100,7 +113,7 @@ pub struct EngineStartConfig {
 pub struct LocalStatus {
     /// 指纹短码（16 hex 字符）—— UI 展示用。
     pub id_short: String,
-    /// 完整指纹（64 hex 字符）—— 信任判定的唯一依据。
+    /// 完整指纹（64 hex 字符）—— 本机身份的稳定标识。
     pub id_hex: String,
     /// 节点展示名。
     pub name: String,
@@ -125,17 +138,26 @@ pub struct PeerView {
     pub id_short: String,
     /// 完整指纹。
     pub id_hex: String,
-    /// 对端展示名（对端自报，**不参与信任判定**）。
+    /// 对端展示名（对端自报，**不作为身份依据**：身份只认 `id_hex` 那份证书指纹）。
     pub name: String,
     /// 对端地址 `ip:port`。
     pub addr: String,
     /// `idle` / `handshaking` / `streaming` / `degraded` / `reconnecting` / `failed`
     /// （与桌面端契约 §6 的 `state` 字面量同一套）。
     pub state: String,
-    /// 是否已在信任库中。
-    pub trusted: bool,
     /// 该对端的遥测快照（`peers` 字段恒为 1）。
     pub telemetry: TelemetryView,
+    /// 本端作为**接收端**时，本条流协商生效的 Opus 帧长（ms）。
+    ///
+    /// `None` = 还没开流 / 还没协商（本端是发送端，或 `OPEN_STREAM` 尚未到达）。
+    ///
+    /// # 这个字段回答什么
+    ///
+    /// 「两端帧长联动」落地之后，本条流的帧长由**发送端**的 `OPEN_STREAM.codec_prefs` 决定、
+    /// 接收端跟随。界面上需要有一个直接读数说明「协商到底生效了没有」—— 帧长不一致的典型症状
+    /// 是听感发闷/断续而遥测全绿，只看 `telemetry.frame_ms`（那是本端**本地**档位）看不出来。
+    /// 两者不等，就是「本端跟随了对端的帧长」的证据。
+    pub negotiated_frame_ms: Option<u8>,
 }
 
 /// 遥测快照（`telemetry()`；字段尽可能对齐桌面契约 §6 的 `TelemetryView`）。
@@ -282,7 +304,7 @@ fn require_engine(operation: &str) -> Result<Arc<Engine>, FfiError> {
 
 /// M1 的「当前对端」：优先取正在推流的，否则取第一个。
 ///
-/// 契约 §8 里 `startSend()` / `stopSend()` / `submitPin(pin)` 都不带对端参数 —— 这是**单对端 UI**
+/// 契约 §8 里 `startSend()` / `stopSend()` 都不带对端参数 —— 这是**单对端 UI**
 /// 的语义（Android 端 M1 一次只连一台 PC）。多对端选择器属后续里程碑。
 fn current_peer(engine: &Engine) -> Result<NodeId, FfiError> {
     let peers = engine.peers();
@@ -292,10 +314,7 @@ fn current_peer(engine: &Engine) -> Result<NodeId, FfiError> {
         .or_else(|| peers.first())
         .map(|status| status.id)
         .ok_or_else(|| {
-            FfiError::from_code(
-                ErrorCode::NotPaired,
-                "no peer session; call connect() first",
-            )
+            FfiError::from_code(ErrorCode::NoPeer, "no peer session; call connect() first")
         })
 }
 
@@ -346,7 +365,7 @@ fn pick_short(short: &str, known: &[NodeId]) -> Result<NodeId, FfiError> {
     match (hits.next(), hits.next()) {
         (Some(only), None) => Ok(*only),
         (None, _) => Err(FfiError::from_code(
-            ErrorCode::NotPaired,
+            ErrorCode::NoPeer,
             format!("no session matches peer id {short}; call peers() and pass its idHex"),
         )),
         (Some(_), Some(_)) => Err(FfiError::invalid_argument(format!(
@@ -363,10 +382,10 @@ fn pick_short(short: &str, known: &[NodeId]) -> Result<NodeId, FfiError> {
 /// 界面上显示的是短码，列表去重/持久化更可能用完整指纹。任选其一直接回传即可 ——
 /// 壳侧不必自己把短码换算成指纹（那正是「各端各写一份映射、迟早分叉」的来源）。
 ///
-/// # 为什么只查会话表（不查信任库）
+/// # 为什么只查会话表
 ///
-/// 本模块导出的按设备动作（停流 / 调音量）都是**对活会话**的动作：一台只在信任库里、
-/// 没有会话的设备没有任何可停的流。删除配对记录是另一件事，桌面端有独立入口覆盖它。
+/// 本模块导出的按设备动作（停流 / 调音量）都是**对活会话**的动作：没有会话的设备既没有
+/// 可停的流、也没有可调的音量，所以「设备标识 → 对端」这一步只认 `peers()` 里的会话。
 fn resolve_peer(engine: &Engine, peer_id: &str) -> Result<NodeId, FfiError> {
     match parse_peer_ref(peer_id)? {
         PeerRef::Full(id) => Ok(id),
@@ -392,15 +411,18 @@ fn local_status_of(engine: &Engine) -> LocalStatus {
     }
 }
 
-fn peer_view(status: PeerStatus) -> PeerView {
+fn peer_view(engine: &Engine, status: PeerStatus) -> PeerView {
+    // 协商帧长**不在** `PeerStatus` 里（加公开字段会让外部结构体字面量编译失败），
+    // 所以在这里按 peer 查一次 —— 这一跳正是「有没有真的传到外壳」的边界。
+    let negotiated_frame_ms = engine.negotiated_frame_ms(status.id);
     PeerView {
         id_short: status.id.short(),
         id_hex: status.id.to_hex(),
         name: status.name.clone(),
         addr: status.addr.to_string(),
         state: status.state.name().to_string(),
-        trusted: status.trusted,
         telemetry: TelemetryView::from_stats(&status.stats, 1),
+        negotiated_frame_ms,
     }
 }
 
@@ -410,7 +432,7 @@ fn peer_view_for(engine: &Engine, id: NodeId) -> Result<PeerView, FfiError> {
         .peers()
         .into_iter()
         .find(|status| status.id == id)
-        .map(peer_view)
+        .map(|status| peer_view(engine, status))
         .ok_or_else(|| {
             FfiError::from_code(
                 ErrorCode::BadRequest,
@@ -464,6 +486,17 @@ pub async fn engine_start(
             engine_config.listen.set_port(config.listen_port);
         }
         engine_config.capabilities = Capabilities::CURRENT | config.capabilities;
+        // 编码档位：低延迟档 = 10 ms Opus 帧（播放水位随之降到 10 ms，见 playout 侧的自适应深度）。
+        //
+        // 这个档位是**发送方向**的档位：本机推流时用它编码，`OPEN_STREAM.codec_prefs` 里报出的
+        // 也是它。**接收方向**已经由内核协商跟随发送端（帧长联动，见 `PeerView.negotiated_frame_ms`），
+        // 所以现在两端不同档也能正常工作 —— 本地档只决定「本机推流时用什么帧长」。
+        // 传下去的意义因此变成了「选择本机作为发送端时的档位」，而不是「保证两端一致」。
+        engine_config.codec = if config.low_latency {
+            CodecConfig::m1_low_delay_tight()
+        } else {
+            CodecConfig::m1_default()
+        };
         engine_config.playout = playout.map(|feed| playout_factory(share_feed(feed)));
         engine_config.capture = capture.map(|pull| capture_factory(share_pull(pull)));
         let engine = Engine::start(engine_config)
@@ -516,8 +549,8 @@ pub async fn engine_stop() -> Result<(), FfiError> {
 
 /// 主动连接对端（FR-17 手工 IP）。成功返回对端快照。
 ///
-/// 对端要求 PIN 配对时返回 `1002 NOT_PAIRED`，但**这不是连接失败**：QUIC 握手与会话已经在，
-/// UI 提示用户输入 PIN 后调用 [`submit_pin`] 即可继续同一条连接（见 engine `connect()` 的文档）。
+/// **一次调用就是一次完整连接**：QUIC 握手（TLS1.3 + 双向出示证书）走完、会话建立即返回，
+/// 没有「先返回一个待办、等 UI 再回一个码」的中间态 —— 连接要么成功，要么失败。
 #[uniffi::export(async_runtime = "tokio")]
 pub async fn connect(addr: String) -> Result<PeerView, FfiError> {
     let engine = require_engine("connect")?;
@@ -535,7 +568,7 @@ pub async fn start_send() -> Result<(), FfiError> {
     on_runtime(async move { engine.start_send(peer).await }).await
 }
 
-/// 停止推流（保留连接与信任）—— **单对端语义**：停内核选中的那位 [`current_peer`]。
+/// 停止推流（保留连接）—— **单对端语义**：停内核选中的那位 [`current_peer`]。
 ///
 /// 多设备界面上请用 [`stop_send_to`]（显式点名对端）；本函数保留是给单对端调用方
 /// （Android 现有代码）的兼容入口，两者**是同一个内核动作**，不是两套实现。
@@ -555,8 +588,7 @@ pub async fn stop_send() -> Result<(), FfiError> {
 /// - 本机是**发送端**：停本机采集并向对端发 `CLOSE_STREAM`，对端停止播放这一路；
 /// - 本机是**接收端**：本机没有采集可停，实际效果是**请对端停发这一路**。
 ///
-/// 两种都**保留连接与信任** —— 要彻底结束这条会话（仍然保留信任）用 [`disconnect_peer`]；
-/// 要连信任一起撤、逼它重新配对是 [`Engine::revoke_trust`]（FFI 侧本里程碑不提供）。
+/// 两种都**保留连接** —— 要彻底结束这条会话用 [`disconnect_peer`]。
 #[uniffi::export(async_runtime = "tokio")]
 pub async fn stop_send_to(peer_id: String) -> Result<(), FfiError> {
     let engine = require_engine("stopSendTo")?;
@@ -615,32 +647,20 @@ pub fn local_peer_gain(peer_id: String) -> Result<Option<u32>, FfiError> {
     Ok(engine.local_peer_gain(peer))
 }
 
-/// 断开与某台设备的会话（**保留信任**）。
+/// 断开与某台设备的会话。
 ///
-/// 与 [`Engine::disconnect`] 同语义：只结束这条会话，信任库**不读不写不落盘** —— 该设备下次
-/// 连进来仍然免交互直连（§8 白名单命中）。要「连信任一起撤、逼它重新配对」是另一件事
-/// （引擎侧 [`Engine::revoke_trust`]；FFI 侧本里程碑不提供）。
+/// 与 [`Engine::disconnect`] 同语义：只结束这条会话。局域网内没有认证层，该设备下次
+/// 连进来照旧直连（不会要求任何交互）。
 ///
 /// 返回是否真的断了一条会话：`false` = 本来就没有（幂等，调用方不必先查 `peers()`）。
 ///
 /// **别承诺做不到的事**：断开只让对端看到「链路丢失」，若对端是发起方且正在推流，
-/// 它会按自己的 FR-27 逻辑重拨回来（本机信任库还留着它，握手直接过）。
+/// 它会按自己的 FR-27 逻辑重拨回来。
 #[uniffi::export(async_runtime = "tokio")]
 pub async fn disconnect_peer(peer_id: String) -> Result<bool, FfiError> {
     let engine = require_engine("disconnectPeer")?;
     let peer = resolve_peer(&engine, &peer_id)?;
     on_runtime(async move { engine.disconnect(peer).await }).await
-}
-
-/// 提交对端屏幕上显示的 6 位 PIN（本机是发起端时用）。
-#[uniffi::export(async_runtime = "tokio")]
-pub async fn submit_pin(pin: String) -> Result<(), FfiError> {
-    let engine = require_engine("submitPin")?;
-    let peer = match engine.pending_pin_peer() {
-        Some(peer) => peer,
-        None => current_peer(&engine)?,
-    };
-    on_runtime(async move { engine.submit_pin(peer, &pin).await }).await
 }
 
 /// 本机状态。
@@ -654,7 +674,11 @@ pub fn local_status() -> Result<LocalStatus, FfiError> {
 #[uniffi::export]
 pub fn peers() -> Result<Vec<PeerView>, FfiError> {
     let engine = require_engine("peers")?;
-    Ok(engine.peers().into_iter().map(peer_view).collect())
+    let statuses = engine.peers();
+    Ok(statuses
+        .into_iter()
+        .map(|status| peer_view(&engine, status))
+        .collect())
 }
 
 /// 遥测快照：当前对端的指标 + 对端总数。
@@ -672,16 +696,6 @@ pub fn telemetry() -> Result<TelemetryView, FfiError> {
         &stats,
         u32::try_from(peers.len()).unwrap_or(u32::MAX),
     ))
-}
-
-/// 本机（接收端）当前展示给用户的配对 PIN；没有在配对时返回 `None`。
-#[uniffi::export]
-pub fn displayed_pin() -> Result<Option<String>, FfiError> {
-    // 保持未启动时返回 None 的既有 FFI 语义。锁住句柄直到查询结束，避免读到旧引擎。
-    let guard = lock(&ENGINE)?;
-    Ok(guard
-        .as_ref()
-        .and_then(|handle| handle.engine.displayed_pin()))
 }
 
 #[cfg(test)]
@@ -804,6 +818,8 @@ mod tests {
             listen_port: free_udp_port(),
             // 这条用例不关心平台能力位：显式写 0 = 与加这个字段之前逐位一致。
             capabilities: 0,
+            // 同理：显式标准档 = 与加这个字段之前逐位一致（低延迟档另有用例覆盖）。
+            low_latency: false,
         }
     }
 
@@ -884,26 +900,21 @@ mod tests {
             Caps::CAN_RECEIVE.bits()
         );
 
-        // 7) 对端表空 → peers() 空、telemetry() 零值、displayedPin() 无
+        // 7) 对端表空 → peers() 空、telemetry() 零值
         assert!(peers().unwrap().is_empty());
         let view = telemetry().unwrap();
         assert_eq!(view.peers, 0);
         assert_eq!(view.rtt_us, 0);
         assert_eq!(view.loss_pct, 0.0);
-        assert!(displayed_pin().unwrap().is_none());
 
-        // 8) 没有对端时 startSend/stopSend 报 1002（不是 panic、也不是假成功）
+        // 8) 没有对端时 startSend/stopSend 报 1002 NO_PEER（不是 panic、也不是假成功）
         assert_eq!(
             start_send().await.unwrap_err().code(),
-            ErrorCode::NotPaired.as_u16()
+            ErrorCode::NoPeer.as_u16()
         );
         assert_eq!(
             stop_send().await.unwrap_err().code(),
-            ErrorCode::NotPaired.as_u16()
-        );
-        assert_eq!(
-            submit_pin("123456".to_string()).await.unwrap_err().code(),
-            ErrorCode::NotPaired.as_u16()
+            ErrorCode::NoPeer.as_u16()
         );
 
         engine_stop().await.unwrap();

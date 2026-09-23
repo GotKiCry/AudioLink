@@ -6,7 +6,7 @@ import com.gotkicry.audiolink.capture.CaptureState
 /**
  * 发送方向（本机 → 对端）的 UI 快照。
  *
- * 为什么单独一个模型而不是把字段摊进 [PlaybackUiState]：与 [PairingUiState] 的分层立场一致 ——
+ * 为什么单独一个模型而不是把字段摊进 [PlaybackUiState]：与 [PeerUiState] 的分层立场一致 ——
  * 「连没连上、能不能发、发没发」是三个独立问题，混进播放面板后每个判断都要先跨过一堆播放字段。
  * 映射与门禁判定全部放在 [SenderStateMapper]（**纯逻辑，JVM 可测**），服务只负责调 FFI 与发布。
  *
@@ -14,16 +14,13 @@ import com.gotkicry.audiolink.capture.CaptureState
  * @param connecting `connect()` 正在进行（按钮置灰用）。
  * @param peerIdShort 已建立的发送目标（`connect()` 返回的对端短指纹）；`null` = 还没有会话。
  * @param peerState 内核会话状态原始字面量（`idle`/`handshaking`/`streaming`/…）。
- * @param peerStateLabel 该状态的中文标签（复用 [PairingStateMapper.stateLabel]，未知状态原样透传）。
+ * @param peerStateLabel 该状态的中文标签（复用 [PeerStateMapper.stateLabel]，未知状态原样透传）。
  * @param sending 本机是否已发出「开始推流」并成功建立流（见 [SenderStateMapper.isSending] 的口径说明）。
- * @param awaitingPin 内核要求本机**输入**对端屏幕上的 6 位 PIN（`connect()` 返回 `1002`）——**不是错误**。
- * @param note 提示（非错误）：例如「请输入电脑上显示的 6 位数字」「正在等待授权，授权后会自动开始发送」。
+ * @param note 提示（非错误）：例如「正在等待授权」。
  * @param error 失败（人话）。与 [note] 分开：提示不是失败，混在一起会让用户以为出错了。
  * @param sessionDropped 上一次已知的会话已经从内核会话表里消失（断开 / 被对端关掉）。
  *   为什么不在这里写一句中文：这条提示出现在首屏，语言跟随系统时英文界面会被它拖回中文 ——
  *   所以 service 只给**事实标记**，怎么说由界面决定（`UiStrings.senderSessionDropped`）。
- * @param peerTrusted 对端是否已在信任库中（内核 `peers()` 的 trusted）。未授信的会话**也会**出现在
- *   列表里（手机 PIN 流程中的 handshaking 会话就是 trusted=false），所以「接入即推」要显式看它。
  * @param sessionInbound 当前会话是**对方连进来的**，而不是本机 `connect()` 出去的。
  *   自动推流只服务主机方向 —— 本机主动连出去时是在当接收端，不该擅自把声音推给别人。
  * @param manualStopFor 用户**手动**停过推流的那台设备（短指纹）。规则：自动不能打脸用户。
@@ -36,12 +33,10 @@ data class SenderUiState(
     val peerState: String = "",
     val peerStateLabel: String = "",
     val sending: Boolean = false,
-    val awaitingPin: Boolean = false,
     val note: String? = null,
     val error: String? = null,
     /** 见类注释：断开是**事实**，文案由界面出。 */
     val sessionDropped: Boolean = false,
-    val peerTrusted: Boolean = false,
     val sessionInbound: Boolean = false,
     val manualStopFor: String? = null,
     val autoStartedFor: String? = null,
@@ -58,7 +53,6 @@ internal enum class SendGate {
     AddressEmpty,
     AddressInvalid,
     NoSession,
-    AwaitingPin,
     AlreadySending,
     NotSending,
     /** 发送源 = 关闭（用户没选内录/麦克风）：先选源，否则推过去只有连接没有声音。 */
@@ -74,21 +68,16 @@ internal enum class SendGate {
  *
  * 这里的每一条都来自内核/FFI 的既有语义（不新造状态机）：
  *
- * 1. **`connect()` 的 `1002 NOT_PAIRED` 不是失败**：FFI 文档明写「QUIC 握手与会话已经在，UI 提示用户输入 PIN
- *    后调用 `submit_pin` 即可继续同一条连接」（`core/crates/audiolink-ffi/src/engine_bridge.rs` 的 `connect`）。
- * 2. **`startSend()` / `stopSend()` / `submitPin()` 都无 peer 参数**：内核 `current_peer()` 取「优先 streaming、
- *    否则第一个；一个都没有则 `1002`」—— 契约 §8 的单对端 UI 语义（Android M1 一次只连一台 PC）。
- * 3. **`stopSend()` 只停流、保持连接**：内核文档原文「关闭与对端的流（**保留连接与信任**）」
+ * 1. **`startSend()` / `stopSend()` 都无 peer 参数**：内核 `current_peer()` 取「优先 streaming、
+ *    否则第一个；一个都没有则报 `1002 NO_PEER`」—— 契约 §8 的单对端 UI 语义（Android M1 一次只连一台 PC）。
+ * 2. **`stopSend()` 只停流、保持连接**：内核文档原文「关闭与对端的流（**保留连接**）」
  *    （`audiolink-engine` 的 `Engine::stop_send`）—— 所以「停止发送」不等于「断开」，文案必须分开写。
- * 4. **「会话已建 + 采集尚未供数」是一个可见但不致命的中间态**：采集回调返回空时，FFI 侧只是
+ * 3. **「会话已建 + 采集尚未供数」是一个可见但不致命的中间态**：采集回调返回空时，FFI 侧只是
  *    `read_timeouts += 1`（`core/crates/audiolink-ffi/src/audio_bridge.rs` 的 `KotlinCaptureSource::read`，
  *    契约原文「返回空 = 暂无数据，不要忙等返回 0」），内核**不报错、不断流**；对端此刻的表现是
  *    「连着但没声音」。这一条是刻意接受的：授权回执马上会到，不该让用户为了几百毫秒反复点按。
  */
 internal object SenderStateMapper {
-
-    /** 协议 §2.3 的 `1002 NOT_PAIRED`。**不是连接失败**：会话与命令通道仍在，输入 PIN 后同一条连接继续。 */
-    const val NOT_PAIRED_CODE: Int = 1002
 
     /** 端口缺省提示用（内核 `parse_addr` 缺省走 QUIC 默认端口）。 */
     const val DEFAULT_PORT_HINT: Int = 58_290
@@ -149,7 +138,6 @@ internal object SenderStateMapper {
         if (!engineRunning) return SendGate.EngineDown
         if (sender.connecting) return SendGate.Connecting
         if (!sender.hasSession) return SendGate.NoSession
-        if (sender.awaitingPin) return SendGate.AwaitingPin
         if (sender.sending) return SendGate.AlreadySending
         if (captureSelection == null) return SendGate.CaptureOff
         // 采集已经在收尾：等它停完再判断（否则会出现「推流起来了、采集刚好被停」的空窗）。
@@ -172,7 +160,6 @@ internal object SenderStateMapper {
         SendGate.AddressEmpty -> "先填电脑的地址（例如 192.168.1.5）"
         SendGate.AddressInvalid -> "地址格式不对：应是 192.168.1.5 或 192.168.1.5:$DEFAULT_PORT_HINT"
         SendGate.NoSession -> "先连接一台电脑，再开始发送"
-        SendGate.AwaitingPin -> "请输入电脑上显示的 6 位数字"
         SendGate.AlreadySending -> "已经在发送了"
         SendGate.NotSending -> "当前没有在发送"
         SendGate.CaptureOff -> "先选择发送源（系统内录 / 麦克风）"
@@ -183,27 +170,25 @@ internal object SenderStateMapper {
     /**
      * 允许推流、但采集还没到 `Running` 时的**补充提示**。
      *
-     * 必须写明「授权后会**自动**开始发送」：否则用户会以为点错了、反复点按（这一条是明确要求）。
+     * 文案**不能**承诺"授权后会自动开始"：Android 侧当前没有自动推流（判定要求先观测到
+     * `idle`，而引擎的活会话状态从不报 `idle`，见 [shouldAutoStartSend] 与 docs/72 遗留项）——
+     * 写"自动"会让用户等一个永远不会到的动作。要说清的是「授权后还需要点一次开始发送」。
      */
     fun captureNote(captureSelection: CaptureSourceKind?, captureState: CaptureState): String? {
         if (captureSelection == null) return null
         return when (captureState) {
             CaptureState.Running -> null
             CaptureState.AwaitingPermission, CaptureState.Starting, CaptureState.Idle ->
-                "正在等待授权，授权后会自动开始发送"
+                "正在等待授权；授权后点「开始推流」开始发送"
             CaptureState.Stopping -> null // 该状态本身会被 [canStartSend] 拦成禁用，不需要补充提示。
-            CaptureState.Failed -> "采集当前出错；恢复后会自动开始发送（对端会先看到连接、暂时没有声音）"
+            CaptureState.Failed -> "采集当前出错；恢复后点「开始推流」开始发送（对端会先看到连接、暂时没有声音）"
         }
     }
 
-    /** `1002` 走提示（notice）而不是错误：它不是失败，是「该你输码了」。 */
-    fun connectFailureIsNotice(code: Int): Boolean = code == NOT_PAIRED_CODE
-
-    /** 连接失败的文案。`1002` 是引导输入 PIN；其它是失败 + 可否重试。 */
+    /** 连接失败的文案：一律是失败 + 可否重试（连接不再有「等用户回一个码」这种中间态）。 */
     fun noteForConnectFailure(code: Int, detail: String?): String {
         val suffix = detail?.trim().orEmpty()
         return when {
-            connectFailureIsNotice(code) -> "请输入电脑上显示的 6 位数字（60 秒内有效）"
             code > 0 -> "连接失败（$code）${if (suffix.isEmpty()) "" else "：$suffix"}；可以再试一次"
             else -> "连接失败${if (suffix.isEmpty()) "" else "：$suffix"}；可以再试一次"
         }
@@ -220,7 +205,7 @@ internal object SenderStateMapper {
      * 推流中把采集源切到「关闭」时的联动：**必须先停流**，否则对端会一直等一个永远不会到的流。
      *
      * 注意这里只回答「要不要停」；「停完是否断连」由内核语义决定 —— `stopSend()` 只停流、
-     * **保留连接与信任**（见类注释第 3 条），所以文案是「已停止发送」而不是「已断开」。
+     * **保留连接**（见类注释第 2 条），所以文案是「已停止发送」而不是「已断开」。
      */
     fun shouldStopSendOnCaptureChange(sending: Boolean, next: CaptureSourceKind?): Boolean =
         sending && next == null
@@ -245,7 +230,7 @@ internal object SenderStateMapper {
     /**
      * `connect()` 返回的对端是否仍是会话表里那一条。
      *
-     * 为什么需要：`startSend()` / `stopSend()` / `submitPin()` **都不带 peer 参数**，内核按
+     * 为什么需要：`startSend()` / `stopSend()` **都不带 peer 参数**，内核按
      * `current_peer()`（优先 streaming、否则第一个）选对端 —— 若本机同时还有一条**入站**会话
      * （别人连我），就可能发到错误的设备上。宁可让用户看到一句人话，也不能静默发错。
      */
@@ -262,37 +247,30 @@ internal object SenderStateMapper {
      * **直接决定主机能不能被接入**，而 Service 在 JVM 单测里跑不起来 —— "主机明明有人连进来、
      * 推流按钮却一直灰着"这种缺陷，只能在真机上点一遍才看得见，代价太高。
      *
-     * 四条口径：
+     * 三条口径：
      *
      * 1. **还没登记过会话时，会话表里唯一的那条就是当前会话** —— 无论它是本机 `connect()` 出去的，
      *    还是**对方连进来的**。主机只等接入，接入不该被"上一次请求"的残留挡住。
-     * 2. `awaitingPin` 是这里**唯一**的让路条件：那是**本机出站流程的中间态**（`connect()` 返回
-     *    `1002`：握手会话已在、配对未完成）。此刻登记会把界面上的「等待输码」悄悄变成「已连接」，
-     *    用户会以为配好了。配对成功后 `awaitingPin` 归零，下一拍自然登记 —— 是让路，不是丢弃
-     *    （设备通道与 PIN 卡始终在如实讲同一件事）。
-     * 3. **出站失败残留（`error`）不是让路条件**：它讲的是另一次尝试（"连接 192.168.1.9 失败"），
-     *    与此刻这条入站会话无关。把它和 `awaitingPin` 混在同一个早退里，就会让主机被接入之后
-     *    推流按钮仍然灰着、旁边还写着「先连接一台主机」。登记时顺手清掉这条残留 ——
+     * 2. **出站失败残留（`error`）不是让路条件**：它讲的是另一次尝试（"连接 192.168.1.9 失败"），
+     *    与此刻这条入站会话无关。把它塞进早退条件里，就会让主机被接入之后推流按钮仍然灰着、
+     *    旁边还写着「先连接一台主机」。登记时顺手清掉这条残留 ——
      *    屏幕不能一边说「已连接」一边报上一次的错。
-     * 4. **空会话表 ≠ 断开**：刚 `connect()` 完的一小段里 `peers()` 可能还是空的，那会儿清零
+     * 3. **空会话表 ≠ 断开**：刚 `connect()` 完的一小段里 `peers()` 可能还是空的，那会儿清零
      *    会让用户看到一条假断开；只有"表里确实有会话、但我们要的那条不在"才算断开。
      *
-     * 历史（2026-09-18 真机定位）：旧版这里 `?: return` 直接放行 ⇒ 需要 PIN 时 `connect()` 返回的
-     * 是 `1002` 而不是成功，`peerIdShort` 一直是 null ⇒ 会话**永远登记不进来**，界面停在
-     * 「未连接」，而 [sessionGate] 又按 [SendGate.PeerMismatch] 把「开始推流」禁用 ——
-     * 而链路明明是通的。
+     * 历史（2026-09-18 真机定位）：旧版这里与 [sessionGate] 都掺进了「等用户回一个码」的中间态，
+     * 而 `connect()` 那时返回的不是成功 ⇒ `peerIdShort` 一直是 null ⇒ 会话**永远登记不进来**，
+     * 界面停在「未连接」，推流按钮却按 [SendGate.PeerMismatch] 灰着 —— 而链路明明是通的。
+     * 那个中间态已随配对机制一起删除，本函数现在只面对「连上了」与「没连上」两种事实。
      */
     fun sessionAfterPeers(sender: SenderUiState, peers: List<PeerUi>): SenderUiState? {
         val expected = sender.peerIdShort
         if (expected == null) {
-            // 让路给本机自己的 PIN 流程（口径 2）。这里**只看 awaitingPin**，不看 error。
-            if (sender.awaitingPin) return null
             val only = peers.singleOrNull() ?: return null
             return sender.copy(
                 peerIdShort = only.idShort,
                 peerState = only.state,
                 peerStateLabel = only.stateLabel,
-                peerTrusted = only.trusted,
                 // 走到这一支就说明会话是**从会话表里采纳来的**：没有本机 connect 的返回，
                 // 那就只能是对方连进来的 —— 「接入即推」只认这一种会话（见 shouldAutoStartSend）。
                 sessionInbound = true,
@@ -309,10 +287,8 @@ internal object SenderStateMapper {
                 peerIdShort = null,
                 peerState = "",
                 peerStateLabel = "",
-                peerTrusted = false,
                 sessionInbound = false,
                 sending = false,
-                awaitingPin = false,
                 note = null,
                 sessionDropped = true,
             )
@@ -322,7 +298,6 @@ internal object SenderStateMapper {
             sender.copy(
                 peerState = peer.state,
                 peerStateLabel = peer.stateLabel,
-                peerTrusted = peer.trusted,
                 sessionDropped = false,
             )
         }
@@ -334,21 +309,31 @@ internal object SenderStateMapper {
     /**
      * 要不要**自动**开始推流（「接入即推」）。纯判定，不改任何状态。
      *
-     * 这是全套逻辑里最容易打脸用户的一条自动行为，所以它被六道条件围着，一道都不可省：
+     * 这是全套逻辑里最容易打脸用户的一条自动行为，所以它被五道条件围着，一道都不可省：
      *
      * 1. **只服务主机方向**（[SenderUiState.sessionInbound]）：对方连进来才自动。本机主动 `connect()`
      *    出去时正在当接收端 —— 不该擅自把声音推给别人。
      * 2. **只认 `idle`**（[PEER_STATE_IDLE]）：`failed` **不自动重试**（否则就是错误风暴）；
-     *    `handshaking`（PIN 还没输完）等它自己变成 idle 再说。
-     * 3. **必须是已授信会话**（[SenderUiState.peerTrusted]）：未授信的会话也会出现在列表里，
-     *    不能因为"它在表里"就开始推。
-     * 4. **用户手动停过的设备永不自动重启**（[SenderUiState.manualStopFor]）：这是"关掉自动"的
+     *    其余中间态等它自己变成 idle 再说。
+     * 3. **用户手动停过的设备永不自动重启**（[SenderUiState.manualStopFor]）：这是"关掉自动"的
      *    正规出口 —— 比一个总开关更精准（用户停掉哪台，就是那台不再自动）。
-     * 5. **同一台设备只自动发起一次**（[SenderUiState.autoStartedFor]）：既防事件抖动造成的重复
+     * 4. **同一台设备只自动发起一次**（[SenderUiState.autoStartedFor]）：既防事件抖动造成的重复
      *    调用，也顺带保证了"失败不重试"。
-     * 6. 采集源必须已经选好，其余门禁沿用 [canStartSend]（引擎在跑、不在 awaitingPin、
-     *    没在推流、采集不在停止中）。**没选发送源就不自动**：那样推过去只有连接没有声音，
-     *    等于白让对端等一场。
+     * 5. 采集源必须已经选好，其余门禁沿用 [canStartSend]（引擎在跑、没在推流、采集不在停止中）。
+     *    **没选发送源就不自动**：那样推过去只有连接没有声音，等于白让对端等一场。
+     *
+     * 口径变化（本轮去认证）：此前还有一条「必须是已授信会话」，它随信任库一起删除 ——
+     * 判定**不再依赖任何信任标记**。
+     *
+     * ⚠️ 但这不等于「任何设备接入就会自动推流」：第 2 条要求先观测到 `peerState == idle`，
+     * 而引擎的**活会话状态从不报 `idle`**（握手完成即 `Streaming`，见 engine
+     * `runtime.rs::mark_streaming`）—— 所以本函数在 Android 上**目前恒返回 false**，
+     * 「接入即推」这条路径当前不会触发。
+     *
+     * 这是**既有的跨端映射不一致**（非本轮回归）：桌面外壳有一层翻译
+     * （`desktop/src-tauri/src/engine_bridge.rs`——引擎 Streaming + 本机未推流 → 视图 idle），
+     * Android 没有这层翻译、直接吃 `PeerView.state` 字面量。补翻译层属于**行为变更**
+     * （会真的打开手机自动推声），本轮按裁决不动逻辑、只把口径写实；见 docs/72 遗留项。
      *
      * 将来若要加「自动推流」总开关，落点就是这里的第一行（加一个布尔字段，为 false 时直接返回）——
      * 本轮按需求先默认开、不加开关，所以没有这个字段。
@@ -361,7 +346,6 @@ internal object SenderStateMapper {
     ): Boolean {
         if (!sender.sessionInbound) return false
         if (sender.peerState != PEER_STATE_IDLE) return false
-        if (!sender.peerTrusted) return false
         val peer = sender.peerIdShort ?: return false
         if (sender.manualStopFor == peer) return false
         if (sender.autoStartedFor == peer) return false
@@ -391,7 +375,7 @@ internal object SenderStateMapper {
      * 「正在发送」的显示口径：**本机意图**（最后一次 `startSend` 成功且还没 `stopSend`）× 会话仍在。
      *
      * 为什么不用遥测反推：内核没有「本机是否在推流」的直接查询（`peers()` 只给会话状态），
-     * 而发帧计数在「连着但没数据」的中间态（见类注释第 4 条）同样是 0 —— 用它会把这个中间态
+     * 而发帧计数在「连着但没数据」的中间态（见类注释第 3 条）同样是 0 —— 用它会把这个中间态
      * 显示成「没在发送」，与用户刚点的动作不符。会话一旦消失（断开/重连）这里自动归零。
      */
     fun isSending(localStarted: Boolean, sender: SenderUiState): Boolean =

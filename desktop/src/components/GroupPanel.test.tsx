@@ -34,7 +34,6 @@ function peer(idShort: string, over: Partial<PeerView> = {}): PeerView {
     name: "device-" + idShort,
     addr: "192.168.1.23:58290",
     state: "streaming",
-    trusted: true,
     capabilities: caps(true),
     ...over,
   };

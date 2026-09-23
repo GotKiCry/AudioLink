@@ -334,7 +334,7 @@ async fn 读数据报缓冲不足返回err() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn 控制帧25个opcode全扫往返一致() {
+async fn 控制帧20个opcode全扫往返一致() {
     let pair = pair().await;
 
     // 每条命令一个可区分的 (request_id, 载荷)：长度覆盖 0 / 1 / 中间值，内容含 0x00 与 0xFF 边界。
@@ -349,8 +349,9 @@ async fn 控制帧25个opcode全扫往返一致() {
             (*op, request_id, payload)
         })
         .collect();
-    // M4 新增 RECEIVER_EPOCH（0x44）后是 25 条；这条断言是「协议表扩容」的显式确认点。
-    assert_eq!(expected.len(), 25, "§4.1 命令表共 25 条");
+    // M4 新增 RECEIVER_EPOCH（0x44）、再删掉配对用的 0x03–0x07 五条之后是 20 条；
+    // 这条断言是「协议表变化」的显式确认点。
+    assert_eq!(expected.len(), 20, "§4.1 命令表共 20 条");
 
     let mut client = pair
         .client

@@ -38,6 +38,9 @@ class PlayoutLoop(
     /** 还没写进输出设备的帧数；> 0 表示上一轮被回压卡住了。 */
     private var pendingFrames = 0
 
+    /** 已从源取走、尚未被设备接收的帧数；只在播放线程读。 */
+    val bufferedFrames: Int get() = pendingFrames
+
     /** [buffer] 中尚未写出的起始样本下标。 */
     private var pendingOffsetSamples = 0
 

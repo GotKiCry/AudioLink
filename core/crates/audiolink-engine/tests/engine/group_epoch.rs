@@ -17,7 +17,6 @@ use std::time::{Duration, Instant};
 use audiolink_audio::{NullPlayout, PlayoutSink, SyntheticCapture};
 use audiolink_engine::epoch::EpochSchedule;
 use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState, now_monotonic_us};
-use audiolink_types::ErrorCode;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn group_epoch_reaches_the_receiver_and_schedules_playout() {
@@ -49,17 +48,10 @@ async fn group_epoch_reaches_the_receiver_and_schedules_playout() {
     let sender_id = sender.info().id;
 
     let outcome = tokio::time::timeout(Duration::from_secs(45), async {
-        let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-        assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-        let pin = loop {
-            if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-                break pin;
-            }
-        };
         sender
-            .submit_pin(receiver_id, &pin)
+            .connect(receiver.local_addr())
             .await
-            .expect("PIN 配对");
+            .expect("连接应当直接成功（无认证）");
         while !sender
             .peers()
             .iter()
@@ -90,7 +82,7 @@ async fn group_epoch_reaches_the_receiver_and_schedules_playout() {
     .await;
 
     let (got_epoch, target_local_us, wait_us) =
-        outcome.expect("45 s 内必须完成配对、开流并观察到排播时间线");
+        outcome.expect("45 s 内必须完成连接、开流并观察到排播时间线");
 
     sender.shutdown().await;
     receiver.shutdown().await;
@@ -120,7 +112,7 @@ async fn group_epoch_reaches_the_receiver_and_schedules_playout() {
 /// 为什么补这一条（第 65 轮）：第 59 轮动过这条路径的实现（把「播放句柄未就绪」从报
 /// `cap_unsupported` 改成暂存、开流后补应用），但那次改动**没有测试**。
 ///
-/// **待查（本轮实测到的行为，不写成契约）**：在「配对完成、但还没开流」的时刻调用这条 API，
+/// **待查（本轮实测到的行为，不写成契约）**：在「连接完成、但还没开流」的时刻调用这条 API，
 /// 会拿到 `BadRequest { context: "session task is gone" }` —— 说明那一刻**接受侧的会话任务已经不在**
 /// （`send_command` 只在 command 通道关闭时报这句）。它究竟是「无流会话被提前回收」的缺陷，
 /// 还是「会话任务只在流期间存在」的既定设计，需要单独查；查清之前，这条测试只覆盖开流之后的语义。
@@ -152,22 +144,15 @@ async fn schedule_playout_before_open_stream_still_applies() {
     let sender_id = sender.info().id;
 
     let outcome = tokio::time::timeout(Duration::from_secs(45), async {
-        let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-        assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-        let pin = loop {
-            if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-                break pin;
-            }
-        };
         sender
-            .submit_pin(receiver_id, &pin)
+            .connect(receiver.local_addr())
             .await
-            .expect("PIN 配对");
+            .expect("连接应当直接成功（无认证）");
 
         // 等待顺序不能省（第 65 轮踩过两次）：
         // ① 会话要先进入 streaming（握手走完）才能真正开流 —— 否则 `start_send` 会回
         //    「session ended or is not ready to start capture」；
-        // ② 接受侧的会话登记可能比 `submit_pin` 返回晚一拍 —— 而 `schedule_playout` 走的是
+        // ② 接受侧的会话登记可能比 `connect` 返回晚一拍 —— 而 `schedule_playout` 走的是
         //    **本端会话表**，表里没对端时会回「session task is gone」。
         // 上次我把第 ② 点误记成待查缺陷；探针（跑 2.1 s，两侧 peers 恒为 1）证明会话是长驻的、
         // 这条 API 在开流前**确实可用**，所以本测试直接覆盖那条路径。

@@ -24,7 +24,7 @@ pub enum SessionState {
     /// 未开始（初始态，也是关闭后的归宿）。
     #[default]
     Idle,
-    /// QUIC 已连上，正在跑 §5 握手 / 配对。
+    /// QUIC 已连上，正在跑 §5 握手（`HELLO` / `HELLO_ACK`）。
     Handshaking,
     /// 正在推流（音视频数据报在流动）。
     Streaming,
@@ -80,9 +80,9 @@ pub enum SessionEvent {
     ConnectRequested,
     /// 收到对端入站连接（进站）。
     AcceptedInbound,
-    /// §5 握手（含配对）完成。
+    /// §5 握手完成。
     HandshakeOk,
-    /// §5 握手失败（版本不匹配 / 认证失败 / 配对被拒）。
+    /// §5 握手失败（版本不匹配 / 能力协商失败 / 对端拒绝）。
     HandshakeFailed,
     /// 链路质量下降（丢包或延迟越过阈值）—— 仍可出声。
     LinkDegraded,
@@ -472,8 +472,8 @@ mod tests {
         // 契约级（1001–1009）：没有自动迁移边，必须由调用方显式决定去向。
         for error in [
             AudioLinkError::version_mismatch("v3 peer"),
-            AudioLinkError::auth_failed("bad signature"),
-            AudioLinkError::pair_rejected("wrong pin"),
+            AudioLinkError::cap_unsupported("peer lacks opus"),
+            AudioLinkError::bad_request("handshake failed"),
         ] {
             assert!(error.is_fatal(), "{error} 应当是契约级失败");
             assert_eq!(SessionMachine::event_for_error(&error), None);

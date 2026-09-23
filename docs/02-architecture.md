@@ -28,7 +28,7 @@ flowchart TB
         CODEC["audio: opus<br/>编码 / 解码 / PLC"]
         NET["net: quinn QUIC<br/>数据报 + 可靠流 / FEC / NACK"]
         DISC["discovery<br/>mDNS + UDP 广播"]
-        IDENT["identity<br/>证书 / 指纹 / 信任库 / PIN"]
+        IDENT["identity<br/>证书 / 指纹 / 节点身份"]
     end
 
     FFI["FFI 层<br/>UniFFI (Kotlin) / 直接 in-process (Rust 外壳)"]
@@ -49,7 +49,7 @@ flowchart TB
 
 **关键取舍**：
 
-1. **内核用 Rust 写一次，两端共用**（FR-09/10/20 的实现基础）。协议、编解码、抖动缓冲、时钟同步、混音、发现、配对全在内核；Kotlin 与 Tauri 只做 UI + 平台音频出/入口 + 系统集成。
+1. **内核用 Rust 写一次，两端共用**（FR-09/10/20 的实现基础）。协议、编解码、抖动缓冲、时钟同步、混音、发现全在内核；Kotlin 与 Tauri 只做 UI + 平台音频出/入口 + 系统集成。
 2. **平台音频用"抽象层 + 平台实现"**：内核定义 `CaptureSource` / `PlayoutSink` trait；Windows 实现走 WASAPI（COM），Android 实现由 Kotlin 侧提供（`AudioRecord` / `AudioTrack` / `MediaProjection`）并通过 JNI 回调把 PCM 推给内核。
 3. **不做"内核托管播放线程"的反转**：Android 侧 `AudioTrack` 的生命周期与线程亲和性必须在 Kotlin 侧管理（避免 JNI 跨线程播放的经典坑），内核只输出"PCM + 目标播放时刻 + 期望速率"。
 4. **无 HTTP 服务面**（旧版最大攻击面）：节点间通信只走 QUIC，本地不监听任何明文端口。
@@ -70,7 +70,7 @@ AudioLink/
 │     ├─ audiolink-audio/         # 采集/播放抽象、重采样、Opus、抖动缓冲、混音器
 │     ├─ audiolink-net/           # quinn QUIC 会话、数据报通道、FEC/NACK、时钟同步
 │     ├─ audiolink-discovery/     # mDNS/DNS-SD + UDP 广播兜底
-│     ├─ audiolink-identity/      # 自签证书、指纹、信任库、PIN 配对状态机
+│     ├─ audiolink-identity/      # 自签证书、指纹、节点身份
 │     ├─ audiolink-engine/        # 编排：引擎、会话管理、同步组、遥测、事件总线
 │     ├─ audiolink-ffi/           # UniFFI 导出（供 Kotlin/其他语言调用）
 │     └─ audiolink-tools/         # alp2-dump / latency-probe / soak-runner
@@ -99,7 +99,7 @@ AudioLink/
 ```rust
 // audiolink-types（示意，非最终签名）
 
-/// 节点身份：由自签证书指纹确定，配对后进入信任库
+/// 节点身份：由自签证书指纹确定（仅用于区分设备，不做信任裁决）
 pub struct NodeId(pub [u8; 32]);          // SHA-256(cert DER)
 
 pub struct NodeInfo {
@@ -179,7 +179,7 @@ pub struct InboundStream {
 
 | 通道 | QUIC 载体 | 用途 | 可靠性 |
 |---|---|---|---|
-| **控制流** | 双向可靠流 #0（每连接一条） | 握手、命令、配对、同步组指令、遥测上报 | 可靠、有序、带请求 ID |
+| **控制流** | 双向可靠流 #0（每连接一条） | 握手、命令、同步组指令、遥测上报 | 可靠、有序、带请求 ID |
 | **音频通道** | QUIC **数据报**（RFC 9221，`quinn` `send_datagram`） | Opus/PCM 帧 + 序号 + 时间戳 | 不可靠、可重排，靠 seq/ts + 抖动缓冲 + PLC 兜底 |
 | **时钟探测** | 数据报（专用类型）+ 控制流回显 | NTP-like 采样 | 不重传（样本越多越好，取最小 RTT） |
 
@@ -218,7 +218,9 @@ pub struct InboundStream {
 3. 深度调整使用**不对称 IIR（升慢降快）+ 0.1 块迟滞**，避免抖动导致缓冲反复伸缩；
 4. **时钟漂移必须每秒结算**：200 ppm 晶振 = 12 ms/分钟 = **每 2 分钟就耗光 25 ms 缓冲** → 每秒做 ±1~2 帧的丢/补结算（或亚毫秒级速率微调），否则 8 h soak 必然失败（NFR-05）。
 
-**当前 M2 第一阶段（2026-09-16 已落地）**：先以 P95 到达间隔抖动和欠载驱动 20 / 40 / 60 ms 三档深度；升档立即，连续稳定 30 s 后逐档下降。60 ms 档才启用一帧有界重排；升档按实际水位缺口重缓冲且最多 60 ms，降档只丢真实多余深度。10 个仿真缓冲、误差率选深度、IIR 与漂移微调仍按上面的目标算法继续实现。详见 `docs/18-m2-adaptive-jitter.md`。
+**当前接收策略（2026-09-22）**：P95 到达间隔抖动和真实欠载驱动自适应深度。所有保护垫按**毫秒**定义、运行时按帧长向上取整换算成帧数：起步 20 ms（20 ms 帧 = 1 帧，10 ms 帧 = 2 帧），通常为 20 / 40 / 60 ms；超过一帧的抖动按 `ceil(P95 / 帧长) + 1` 选择余量，上限 120 ms（20 ms 帧 = 6 帧）。升档立即，连续稳定 5 s 后每次降一档。60 ms 及以上档位给一帧重排等待，低档保留 5 ms 冗余重排宽限。主动补水使用有界补音，不计作新的欠载，以免自反馈升档；降档只丢实际多余深度并平滑边界。预约播放仍由 epoch 决定，单端不得自行升档改变同步时间线。Android 输出目标默认 30 ms，通过 FFI 上报平台环、未写完块和 AudioTrack 的合计水位。单源非预约播放在总量连续超预算一整帧达 500 ms 时回收一帧；下游积压高时停写一拍让其消费，内核积压高时取走旧帧并推进时间轴。未知反馈、满灌对照档、多源和预约播放不启用该回收。详见 `docs/69-playout-latency-recovery.md`。
+
+**2026-09-21 补充**：20/40 ms 档遇到序号洞也留 5 ms 接收紧随主包的冗余副本，连续帧立即交付。播放欠载与重缓冲 Hold 由播放端即时 PCM 掩盖，120 ms 内有界淡出，恢复交叉淡入；预约播放不参与本地深度升降。详见 `docs/65-wifi-playout-continuity.md`。
 
 **数据面必须单播**（RFC 9119 明确：802.11 组播以基础速率发送、无 ACK/无重传、受省电模式影响）→ 音频只走单播 QUIC 数据报；组播仅用于 mDNS 发现，且必须保留 UDP 广播与手工 IP 兜底。
 
@@ -243,7 +245,7 @@ pub struct InboundStream {
 
 ---
 
-## 8. 发现与配对
+## 8. 发现与连接
 
 ```
 mDNS/DNS-SD（主）                      UDP 广播（兜底）
@@ -252,20 +254,16 @@ TXT: v=1;id=<fingerprint8>;caps=..;pk=<port>   载荷: 版本+长度前缀+JSON
         │                                        │
         └──────────────► 候选节点列表 ◄──────────┘
                              │
-                    连接（QUIC，自签证书；只由接收端发起）
+                    连接（QUIC，TLS1.3 自签证书；只由接收端发起）
                              │
-              指纹在白名单？ ── 是 ──► 直接建会话（0 交互）
-                     │
-                     否
-                     ▼
-           PIN 配对：主机显示 6 位码 → 接收端输入 → 双方落库白名单
+                     握手完成 ──► 直接建会话（0 交互：无配对码、无白名单）
 ```
 
 - **方向规则（连接由接收端发起）**：连接只能由**接收端**发起，**主机永不主动请求连接** —— 它的界面里没有
-  「填对方地址」这个动作，只做四件事：出示本机地址、亮 6 位配对码、接受接入、开始推流。
-- 身份 = 证书指纹（SHA-256），首次信任即 TOFU；PIN 用于防"同网段静默配对"。
-- 白名单持久化：桌面 `%APPDATA%\AudioLink\trust.json`；Android 应用私有目录（`filesDir`）。
-- 撤销信任立即断开现有会话（FR-18）。
+  「填对方地址」这个动作，只做三件事：出示本机地址、接受接入、开始推流。
+- 身份 = 证书指纹（SHA-256），仅用于区分设备与会话路由；**没有任何信任裁决**（无信任库、无白名单、无配对码）。
+- **没有准入校验的后果（如实记账）**：任何能连上本机 QUIC 端口的设备都会被接受，且「接入即自动推流」默认开；
+  想限制请关掉该开关或不要把端口暴露在不信任的网络上，见 `docs/72-remove-pairing.md`。
 
 ---
 
@@ -276,7 +274,7 @@ TXT: v=1;id=<fingerprint8>;caps=..;pk=<port>   载荷: 版本+长度前缀+JSON
 | 目录 | `%APPDATA%\AudioLink\` | `filesDir`（应用私有） |
 | 配置 | `config.json`（含采样率、编码档位、设备别名、窗口状态） | DataStore/JSON |
 | 身份 | `identity\cert.pem` + `key.pem`（key 用 DPAPI 或文件权限保护） | KeyStore 保护私钥 |
-| 信任库 | `trust.json` | 私有目录 JSON |
+| 信任库（**已移除**） | 旧版本可能残留一个 `trust.json`，当前版本不读、不写，可删 | 同左（应用私有目录内的同名文件） |
 | 日志 | `%LOCALAPPDATA%\AudioLink\logs\`（滚动 7 天） | `filesDir/logs`（滚动，可导出） |
 
 写入一律**原子写**（临时文件 + rename），避免断电产生半截配置（旧版直接 `File.WriteAllText` 覆盖）。

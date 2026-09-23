@@ -11,7 +11,7 @@
 | 术语 | 含义 |
 |---|---|
 | **Node（节点）** | 一个 AudioLink 实例（桌面或 Android），身份由自签证书指纹确定 |
-| **Peer（对端）** | 已完成配对与握手的另一个节点 |
+| **Peer（对端）** | 已完成握手的另一个节点 |
 | **Session（会话）** | 一次"主机向接收端推音频"的逻辑关系，1 对 1 |
 | **Stream（流）** | 会话内的一条音频通道（立体声/左/右/麦克风/内录） |
 | **Sync Group（同步组）** | 一个发送端 + N 个接收端，共享同一 `epoch`，组内 ±10 ms |
@@ -58,14 +58,16 @@
 
 | 载体 | ID | 语义 | 用途 |
 |---|---|---|---|
-| 双向可靠流 | `#0` | 有序可靠 | 控制命令、认证、配对、流协商、遥测上报 |
+| 双向可靠流 | `#0` | 有序可靠 | 控制命令、流协商、遥测上报 |
 | QUIC 数据报 | — | 不可靠、可重排 | 音频帧、时钟探测、心跳 |
 | 单向可靠流 | `#2+` | 有序可靠 | 大对象传输（日志导出、诊断快照），v1 可选 |
 
 TLS1.3（quinn 默认 rustls）：
 - 每节点首次启动生成 **自签证书**（ECDSA P-256）并持久化；
 - 节点身份 = `SHA-256(证书 DER)`，取前 16 字节作展示短码（`fp16`）；
-- 握手**不依赖 CA**：证书验证改为"校验指纹是否在信任库 / 是否为本次配对目标"（TOFU + PIN）。
+- 握手**不依赖 CA**：双方各自出示自签证书并被接受，握手本身即证明「对端持有其出示证书的私钥」；
+- **不做信任裁决**：证书"值不值得信任"不再有任何判据 —— 没有信任库、没有白名单、没有配对码（见 `docs/72-remove-pairing.md`）。
+  节点身份仍由证书指纹确定（`NodeId = SHA-256(证书 DER)`），仅用于区分设备与会话路由。
 
 ---
 
@@ -130,7 +132,7 @@ TLS1.3（quinn 默认 rustls）：
 |---|---|---|
 | 0 | `FEC_REDUNDANT` | 本包是 FEC 冗余包 |
 | 1 | `DTX` | 静音段（负载可能为空） |
-| 2 | `FRAME_10MS` | 该流使用 10 ms 帧长 |
+| 2 | `FRAME_10MS` | 该流使用 10 ms 帧长。**发送端必须按本流帧长如实置位**（含冗余副本与 NACK 重传包）；接收端据此与协商帧长比对，不一致只计数告警，不断流（见 §8 帧长联动） |
 | 3 | `MONO` | 单声道负载 |
 | 4 | `LAST_IN_BURST` | 标志突发结束（用于拥塞/延迟统计） |
 | 5–15 | 保留 | 必须置 0，对端忽略 |
@@ -175,11 +177,6 @@ TLS1.3（quinn 默认 rustls）：
 |---|---|---|---|
 | `0x01` | `HELLO` | 接收端 → 主机 | `proto_version, node_info{name, platform, caps, fp16}, nonce` |
 | `0x02` | `HELLO_ACK` | 主机 → 接收端 | `proto_version, node_info, accepted: bool, reason` |
-| `0x03` | `AUTH_CHALLENGE` | 双方 | `nonce(32B)` |
-| `0x04` | `AUTH_RESPONSE` | 双方 | `signature = ECDSA(privkey, nonce ‖ fp_pair)` |
-| `0x05` | `PAIR_REQUIRED` | 主机 → 接收端 | `pin_display: bool`（true 时主机屏幕显示 6 位码，由接收端输入） |
-| `0x06` | `PAIR_SUBMIT` | 接收端 → 主机 | `pin(6 位数字)` |
-| `0x07` | `PAIR_RESULT` | 主机 → 接收端 | `ok: bool, reason, persist: bool`（是否写入白名单） |
 | `0x10` | `OPEN_STREAM` | 主机 → 接收端 | `session_id, source_desc(采集源描述), codec_prefs[], target_rate, channels, group: Option<group_id>` |
 | `0x11` | `OPEN_STREAM_ACK` | 接收端 → 主机 | `session_id, stream_id, codec_chosen, epoch_id, epoch_local_us` |
 | `0x12` | `CLOSE_STREAM` | 双方 | `stream_id, reason` |
@@ -199,37 +196,29 @@ TLS1.3（quinn 默认 rustls）：
 
 ---
 
-## 5. 连接与认证时序
+## 5. 连接时序
 
 ```mermaid
 sequenceDiagram
     participant A as 发起方 · 接收端 (Node A)
     participant B as 响应方 · 主机 (Node B)
 
-    A->>B: QUIC 握手（TLS1.3，自签证书，验证指纹在白名单）
-    A->>B: HELLO (proto_version, node_info, caps)
+    A->>B: QUIC 握手（TLS1.3，自签证书，双向出示并证明持有私钥；不做信任裁决）
+    A->>B: HELLO (proto_version, node_info, caps, nonce)
     B->>A: HELLO_ACK (proto_version, node_info, accepted)
     alt 版本不兼容
         B->>A: ERROR(1001 VERSION_MISMATCH) + BYE
-    else 已配对（白名单命中）
-        B->>A: AUTH_CHALLENGE(nonce)
-        A->>B: AUTH_RESPONSE(signature)
-        B->>A: PONG/OK（进入会话协商）
-    else 未配对
-        B->>A: PAIR_REQUIRED(pin_display=true)
-        Note over B: 主机屏幕显示 6 位 PIN，A 照着输入（60 s 有效，最多 5 次尝试）
-        A->>B: PAIR_SUBMIT(pin)
-        B->>A: PAIR_RESULT(ok, persist=true) 或 ERROR(1003 PAIR_REJECTED)
-        Note over A,B: 成功后双方写入信任库
+    else 版本兼容
+        Note over A,B: 握手到此 Established —— 没有 AUTH_*、没有 PAIR_*
     end
     B->>A: OPEN_STREAM(...) → 音频数据报开始流动
     A->>B: OPEN_STREAM_ACK(stream_id, codec_chosen, epoch_id, epoch_local_us)
     Note over A,B: 连接由 A（接收端）发起，推流由 B（主机）发起 —— 两条方向相反
 ```
 
-**认证强度**：TLS 已保证通道加密与对端持有私钥；`AUTH_CHALLENGE/RESPONSE` 用于证明"私钥持有者 = 证书主体"（防止指纹白名单被伪造证书绕过，即防止仅凭指纹信任的中间人）。
+**加密与身份**：TLS1.3 仍保证通道加密与完整性，并由双向出示的自签证书证明「对端就是它出示的那张证书，且持有对应私钥」。**TLS 只做这两件事，不做信任裁决** —— 本版本没有信任库、白名单或配对码，任何能完成 QUIC 握手的对端都可直接建立会话。
 
-**PIN 安全**：6 位数字 + 60 s 有效 + 失败 5 次锁定 5 分钟；PIN 通过加密通道提交（防窃听），并绑定双方指纹（防转发）。
+**首连即通**：复制主机地址（或从发现列表点选）→ 直接开始推流，无需输码，也没有"等待批准"这一步。
 
 ---
 
@@ -298,7 +287,7 @@ rtt    = (t4 - t1) - (t3 - t2)
 
 | 编解码 | 参数 | 说明 |
 |---|---|---|
-| `Opus` | **`application: RESTRICTED_LOWDELAY`**、**强制 48 kHz**（锁死采样率，杜绝任何重采样）、`frame_ms: 10 \| 20`（默认 20，可按链路状况退化到 40/60）、`bitrate_bps: 96000..320000`（默认 160000）、`channels: 1\|2`、`vbr: true`、`dtx: false`、`complexity: 5..10`、`inband_fec: false`（默认，见 §8.1）、`packet_loss_perc`（**必须显式设置**） | 默认档；自适应由发送端单方面调整（接收端无需重协商），档位变化通过 `STREAM_STATS` 上报。注：`RESTRICTED_LOWDELAY` 只启用 CELT 层（禁用 SILK），在 ≤64 kbps 时音质会下降，本项目码率 ≥96 kbps 不受影响，且天然规避 §8.1 的 in-band FEC 陷阱 |
+| `Opus` | **`application: RESTRICTED_LOWDELAY`**、**强制 48 kHz**（锁死采样率，杜绝任何重采样）、`frame_ms: 10 \| 20`（默认 20，可按链路状况退化到 40/60）、`bitrate_bps: 96000..320000`（默认 160000）、`channels: 1\|2`、`vbr: true`、`dtx: false`、`complexity: 5..10`、`inband_fec: false`（默认，见 §8.1）、`packet_loss_perc`（**必须显式设置**） | 默认档。**帧长联动**：接收端取 `codec_prefs` 首个 `Opus` 项的 `frame_ms`（合法值 10/20/40/60，非法或缺失回退本地档）建接收解码链路，`codec_chosen` 回报实际生效帧长 —— 流的帧长由发送端决定，两端本地档位不同也能正常解码（2026-09-22 起，见 docs/70「帧长联动」）；数据报 `FRAME_10MS`（§3 flags bit 2）按帧长如实置位，供接收端逐包校验。码率等其余参数的自适应由发送端单方面调整（接收端无需重协商），档位变化通过 `STREAM_STATS` 上报。注：`RESTRICTED_LOWDELAY` 只启用 CELT 层（禁用 SILK），在 ≤64 kbps 时音质会下降，本项目码率 ≥96 kbps 不受影响，且天然规避 §8.1 的 in-band FEC 陷阱 |
 | `Pcm16` | `sample_rate: 48000`、`channels: 2`、`chunk_ms: 20` | 无损档（FR-05），仅建议用于有线/千兆/回环 |
 
 **自适应规则（发送端）**：
@@ -345,7 +334,6 @@ rtt    = (t4 - t1) - (t3 - t2)
 | `name` | `客厅 PC` | UTF-8 显示名 |
 | `platform` | `win` / `android` | 平台 |
 | `caps` | 位图 hex：bit0 可发送、bit1 可接收、bit2 支持内录、bit3 支持混音 | 能力 |
-| `paired` | `0` / `1` | 是否已与"我"配对（仅用于 UI 提示，不携带敏感信息） |
 
 ### 9.2 UDP 广播兜底（mDNS 被隔离时）
 
@@ -358,7 +346,7 @@ rtt    = (t4 - t1) - (t3 - t2)
 - Windows 主机在每个可用 IPv4 网卡的子网广播地址发送至 UDP `58280`，每 **3 s** 一次（例如 `192.168.1.255:58280`）。已连接／正在推流时也继续发送，便于其它接收端发现；退出引擎时停止。
 - JSON 字段：`v / proto / id / name / platform / caps / port`（**`port` = 对端 QUIC 监听端口，u16**；广播没有 SRV 记录，必须自带）；
 - 接收端以报文来源 IP + JSON `port` 形成连接地址；相同短指纹与地址的记录更新最后出现时间，**10 s** 未收到广播便移除。仅列出 `CAN_SEND` 主机，最多 128 条。
-- 广播只用于发现；点击条目后仍执行 QUIC/TLS 身份验证与 PIN 配对，不因名称／短指纹相同而获得信任。
+- 广播只用于发现；点击条目后仍走完整的 QUIC/TLS 握手，不因名称／短指纹相同而跳过连接建立。
 - 当前实现为 IPv4 UDP 广播；mDNS 与定向单播探测尚未接线。手工地址直接连接 QUIC，保留 IPv6 支持。
 
 **magic**：9 B ASCII `AUDIOLINK`；报文头 = `magic(9)` + `ver(1)` + `len(u16 LE)`，故最小报文 12 B。
@@ -375,7 +363,6 @@ rtt    = (t4 - t1) - (t3 - t2)
 | `name` | TXT + JSON | UTF-8 字符串 | 显示名（可含非 ASCII） |
 | `platform` | TXT + JSON | `"win"` / `"android"`（**区分大小写**） | 平台；其它值 → 丢弃该报文 |
 | `caps` | TXT + JSON | **无前缀小写 hex**，如 `"3"`（解析时大小写均可） | 位图：bit0 可发送、bit1 可接收、bit2 支持内录、bit3 支持混音 |
-| `paired` | **仅 TXT** | `"0"` / `"1"` | 是否已与「我」配对（仅 UI 提示，不携带敏感信息）；缺失按 `0` 处理 |
 | `port` | **仅 JSON** | 整数（u16） | QUIC 端口（TXT 由 mDNS 的 SRV 记录提供） |
 
 - 未知 Key 一律**忽略**（向前兼容）；缺必需 Key（`v/proto/id/name/platform/caps`，JSON 另有 `port`）或字段格式非法 → 丢弃该报文（L1 返回 `1008`，L2 计数）。
@@ -404,7 +391,7 @@ pub struct StreamStats {
 }
 ```
 
-接收侧自适应抖动深度不改变冻结的 `StreamStats` 结构。`buffer_level_us` 报告已解码待播 PCM 队列的实际水位；数据报在进入有界乱序窗时计入接收码率，乱序截止后才确认 `loss_pct_x100` / `plc_count`，重复和过期包计入 `late_drops`。当前 20 / 40 / 60 ms 三档规则与验证见 `docs/18-m2-adaptive-jitter.md`。
+接收侧自适应抖动深度不改变冻结的 `StreamStats` 结构。`buffer_level_us` 报告已解码待播 PCM 队列的实际水位；数据报在进入有界乱序窗时计入接收码率，乱序截止后才确认 `loss_pct_x100` / `plc_count`，近期重复副本静默去重，真正过期包计入 `late_drops`。正常网络通常使用 20 / 40 / 60 ms，弱网自适应上限扩至六帧（默认 20 ms 帧下 120 ms）；主动补水不计入真实欠载，避免控制器自反馈。详见 `docs/67-audio-link-quality.md`。2026-09-21 起低档遇洞也提供 5 ms 重排窗口；NACK 等待与发送同受 RTT < 30 ms 门控。播放端即时掩盖不会消除 `underruns` 计数，`plc_count` 仍只统计解码侧缺包掩盖；实际输出可能有声，欠载数不再等同静音拍数。详见 `docs/65-wifi-playout-continuity.md`。
 
 `CodecStats` 字段（v1 冻结）：
 
@@ -428,14 +415,12 @@ pub struct CodecStats {
 | 码 | 名称 | 含义与建议处置 |
 |---|---|---|
 | `1001` | `VERSION_MISMATCH` | 协议主版本不兼容 → 提示升级，双方断开 |
-| `1002` | `NOT_PAIRED` | 未配对 → 触发配对流程 |
-| `1003` | `PAIR_REJECTED` | PIN 错误/超时 → 重新发起（含剩余尝试次数） |
-| `1004` | `AUTH_FAILED` | 签名校验失败 → 断开并告警（可能是中间人） |
+| `1002` | `NO_PEER` | 指定的对端不存在（短码未命中 / 会话已不在）→ 刷新对端列表后重试 |
 | `1005` | `CAP_UNSUPPORTED` | 对方不支持所需能力（如内录）→ UI 置灰 |
 | `1006` | `STREAM_LIMIT` | 混音路数超上限 → 拒绝并提示 |
 | `1007` | `CODEC_UNSUPPORTED` | 无共同编解码 → 建议切 PCM 档 |
-| `1008` | `BAD_REQUEST` | 载荷非法（含长度越界）→ 记日志并忽略该帧 |
-| `1009` | `BUSY` | 正在握手/配对中 → 稍后重试 |
+| `1008` | `BAD_REQUEST` | 载荷非法（含长度越界），或握手失败与对端身份不可读 → 记日志并忽略该帧 / 断开该连接 |
+| `1009` | `BUSY` | 正在握手中 → 稍后重试 |
 | `2001` | `PLAYOUT_UNDERRUN` | 播放欠载（统计用途，不致命） |
 | `2002` | `SINK_REBUILD` | 播放器重建（自愈路径，FR-28） |
 | `2003` | `CAPTURE_LOST` | 采集源失效（设备拔出/权限回收）→ 自动重连或提示 |

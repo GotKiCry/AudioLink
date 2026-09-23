@@ -31,7 +31,7 @@ describe("t 的占位符语义", () => {
   });
 
   it("数字变量按十进制字符串化（不出现 0.30000000000000004 之类）", () => {
-    expect(t("pair.ttl", { seconds: 59 })).toContain("59");
+    expect(t("status.streaming", { count: 59 })).toContain("59");
     expect(t("toast.gain", { peer: "fp-1", pct: Math.round(0.35 * 100) })).toContain("35");
   });
 });

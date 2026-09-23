@@ -28,6 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 data_dir: dir,
                 listen_port: 58299,
                 capabilities: 0,
+                low_latency: false,
             },
             None,
             Some(Box::new(SilentSource)),

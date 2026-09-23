@@ -31,8 +31,8 @@ class ProtocolSelfTestTest {
         val result = ProtocolSelfTest.map {
             throw FfiException.Failure(
                 code = 1002u,
-                messageText = "NOT_PAIRED",
-                context = "peer requires pin pairing",
+                messageText = "NO_PEER",
+                context = "no such peer session",
             )
         }
 
@@ -41,8 +41,8 @@ class ProtocolSelfTestTest {
         // 注意：Kotlin 里 `1002u` 字面量的类型是 UInt，与 UShort 字段装箱比较会因类型不同而不相等
         // （会得到 "expected: kotlin.UInt<1002> but was: kotlin.UShort<1002>"），必须显式转换。
         assertEquals(1002u.toUShort(), rejected.code)
-        assertEquals("NOT_PAIRED", rejected.shortName)
-        assertEquals("peer requires pin pairing", rejected.context)
+        assertEquals("NO_PEER", rejected.shortName)
+        assertEquals("no such peer session", rejected.context)
     }
 
     @Test

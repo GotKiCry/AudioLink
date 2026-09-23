@@ -501,9 +501,7 @@ fn exercise_all_decoders(bytes: &[u8]) {
     let _ = DiscoveryBeacon::from_json_payload(bytes);
     let _ = payload_decode::<StreamStats>(bytes);
     if let Ok(text) = core::str::from_utf8(bytes) {
-        for key in [
-            "v", "proto", "id", "name", "platform", "caps", "paired", "unknown",
-        ] {
+        for key in ["v", "proto", "id", "name", "platform", "caps", "unknown"] {
             let pairs = [(key.to_string(), text.to_string())];
             let _ = DiscoveryTxt::from_pairs(&pairs);
         }

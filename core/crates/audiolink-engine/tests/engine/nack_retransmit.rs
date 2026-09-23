@@ -19,8 +19,7 @@ use std::time::Duration;
 use audiolink_audio::{
     AudioError, DeviceFormat, NullPlayout, PlayoutSink, PlayoutStats, SyntheticCapture,
 };
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::ErrorCode;
+use audiolink_engine::{Engine, EngineConfig, SessionState};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
@@ -170,7 +169,6 @@ async fn nack_recovers_injected_loss_without_playback_holes() {
 
     let receiver = Engine::start(recv_config).await.expect("接收引擎");
     let accept = receiver.spawn_accept_loop();
-    let mut events = receiver.subscribe();
     let receiver_id = receiver.info().id;
 
     // 每 10 个音频数据报丢连续的 2 个 ≈ 20% 丢包，且**成对**丢掉：
@@ -182,18 +180,10 @@ async fn nack_recovers_injected_loss_without_playback_holes() {
     let sender_id = sender.info().id;
 
     let produced = tokio::time::timeout(Duration::from_secs(20), async {
-        let error = sender.connect(relay.addr).await.unwrap_err();
-        assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-
-        let pin = loop {
-            if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-                break pin;
-            }
-        };
         sender
-            .submit_pin(receiver_id, &pin)
+            .connect(relay.addr)
             .await
-            .expect("PIN 配对");
+            .expect("连接应当直接成功（无认证）");
         while !sender
             .peers()
             .iter()
@@ -223,7 +213,7 @@ async fn nack_recovers_injected_loss_without_playback_holes() {
     .await;
 
     // 遥测要在**会话还在**的时候读：`shutdown` 之后会话表就被清掉了。
-    let (writes, silent) = produced.expect("20 s 内必须配对、开流并收到播放回调");
+    let (writes, silent) = produced.expect("20 s 内必须连接、开流并收到播放回调");
     let stats = receiver.telemetry(sender_id).expect("接收侧遥测");
     let dropped = relay.dropped();
     let forwarded = relay.forwarded();
@@ -260,9 +250,12 @@ async fn nack_recovers_injected_loss_without_playback_holes() {
         "PLC 掩盖 {} 次、丢包 {dropped} 次：重传必须补上绝大多数洞（对照：无 NACK 时为丢包数）",
         stats.plc_count
     );
-    // 播放侧仍会有欠载（洞占掉了一个播放拍，等重传期间队列只出不进）——
-    // 这是本轮实测到的已知权衡，留给抖动缓冲协同优化，不作为断言。
-    let _ = silent;
+    // 重传期间的欠载也必须在播放截止时刻掩盖，不能只救回包却在扬声器上留下静音。
+    // 给启动和系统调度留少量余量；原先约每次重传一拍硬静音的行为会超过这个门限。
+    assert!(
+        silent * 20 < writes,
+        "重传等待不应频繁硬静音：{silent}/{writes} 拍"
+    );
     assert!(
         writes >= 100,
         "3 s 内应有约 150 次播放回调，实际只有 {writes} 次"

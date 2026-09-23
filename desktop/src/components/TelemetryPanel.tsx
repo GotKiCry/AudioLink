@@ -124,7 +124,9 @@ export function TelemetryPanel({ telemetry, history, open, exporting, onExport }
   }
 
   // 没有快照（水合中）或没有会话时，遥测是内核给的全零值 —— 显示 "—" 而不是假的 0.0 ms
-  const idle = telemetry === null || telemetry.peers === 0 || telemetry.e2eLatencyUs === 0;
+  const idle = telemetry === null || telemetry.peers === 0;
+  const noReceiver = idle || telemetry?.receiverReport === false;
+  const noE2e = noReceiver || !telemetry?.e2eLatencyUs;
   const tele = telemetry;
   // `at(-1)` 在严格模式下是 `T | undefined`：显式收敛成 null，避免四处各写一遍下标。
   const last = history.at(-1) ?? null;
@@ -157,21 +159,21 @@ export function TelemetryPanel({ telemetry, history, open, exporting, onExport }
         <Metric label={t("tm.peers")} value={tele === null ? DASH : String(tele.peers)} />
         <Metric label="RTT" value={tele === null || idle ? DASH : usToMs(tele.rttUs)} unit="ms" />
         <Metric label={t("tm.jitter")} value={tele === null || idle ? DASH : usToMs(tele.jitterUs)} unit="ms" />
-        <Metric label={t("tm.loss")} value={tele === null || idle ? DASH : tele.lossPct.toFixed(2)} unit="%" />
+        <Metric label={t("quality.loss")} value={tele === null || noReceiver ? DASH : tele.lossPct.toFixed(2)} unit="%" />
         <Metric label={t("tm.bitrate")} value={tele === null || idle ? DASH : bpsToKbps(tele.bitrateBps)} unit="kbps" />
-        <Metric label={t("tm.buffer")} value={tele === null || idle ? DASH : usToMs(tele.bufferLevelUs)} unit="ms" />
-        <Metric label={t("tm.underruns")} value={tele === null ? DASH : String(tele.underruns)} unit={t("tm.count")} />
-        <Metric label={t("tm.e2e")} value={tele === null || idle ? DASH : usToMs(tele.e2eLatencyUs)} unit="ms" />
-        <Metric label={t("tm.e2e_p50")} value={tele === null || idle ? DASH : usToMs(tele.e2eP50Us)} unit="ms" />
-        <Metric label={t("tm.e2e_p95")} value={tele === null || idle ? DASH : usToMs(tele.e2eP95Us)} unit="ms" />
+        <Metric label={t("tm.buffer")} value={tele === null || noReceiver ? DASH : usToMs(tele.bufferLevelUs)} unit="ms" />
+        <Metric label={t("tm.underruns")} value={tele === null || noReceiver ? DASH : String(tele.underruns)} unit={t("tm.count")} />
+        <Metric label={t("tm.e2e")} value={tele === null || noE2e ? DASH : usToMs(tele.e2eLatencyUs)} unit="ms" />
+        <Metric label={t("tm.e2e_p50")} value={tele === null || noE2e ? DASH : usToMs(tele.e2eP50Us)} unit="ms" />
+        <Metric label={t("tm.e2e_p95")} value={tele === null || noE2e ? DASH : usToMs(tele.e2eP95Us)} unit="ms" />
       </div>
 
       <div className="mt-2 grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(200px,1fr))]">
         <Sparkline
           label={t("tm.e2e_latency")}
           unit="ms"
-          values={history.map((row) => row.e2eLatencyUs)}
-          latest={usToMs(last?.e2eLatencyUs ?? 0)}
+          values={history.filter((row) => row.e2eLatencyUs > 0).map((row) => row.e2eLatencyUs)}
+          latest={noE2e ? DASH : usToMs(last?.e2eLatencyUs ?? 0)}
         />
         <Sparkline
           label={t("tm.buffer")}
@@ -188,12 +190,13 @@ export function TelemetryPanel({ telemetry, history, open, exporting, onExport }
         <Sparkline
           label={t("tm.loss_rate")}
           unit="%"
-          values={history.map((row) => Math.round(row.lossPct * 100))}
-          latest={(last?.lossPct ?? 0).toFixed(2)}
+          values={history.filter((row) => row.receiverReport !== false).map((row) => Math.round(row.lossPct * 100))}
+          latest={noReceiver ? DASH : (last?.lossPct ?? 0).toFixed(2)}
         />
       </div>
 
       {idle ? <p className="mt-2 text-caption text-text-tertiary">{t("tm.idle")}</p> : null}
+      {!idle && noE2e ? <p className="mt-2 text-caption text-text-tertiary">{t("quality.e2e_unavailable")}</p> : null}
     </section>
   );
 }

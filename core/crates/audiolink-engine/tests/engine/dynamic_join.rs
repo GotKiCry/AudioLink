@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 use audiolink_audio::{
     AudioError, DeviceFormat, NullPlayout, PlayoutSink, PlayoutStats, SyntheticCapture,
 };
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::{ErrorCode, NodeId};
+use audiolink_engine::{Engine, EngineConfig, SessionState};
+use audiolink_types::NodeId;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -95,21 +95,13 @@ async fn start_receiver(
     (engine, accept)
 }
 
-/// 首次连接必须走 PIN 配对（§5）。
-async fn connect_and_pair(sender: &Arc<Engine>, receiver: &Arc<Engine>) -> NodeId {
-    let mut events = receiver.subscribe();
+/// 无认证：一次 connect 即完成握手。
+async fn connect_peer(sender: &Arc<Engine>, receiver: &Arc<Engine>) -> NodeId {
     let receiver_id = receiver.info().id;
-    let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-            break pin;
-        }
-    };
     sender
-        .submit_pin(receiver_id, &pin)
+        .connect(receiver.local_addr())
         .await
-        .expect("PIN 配对");
+        .expect("连接应当直接成功（无认证）");
     receiver_id
 }
 
@@ -149,7 +141,7 @@ async fn a_third_receiver_joins_without_interrupting_the_first_two() {
     for index in 0..2 {
         let (tx, rx) = mpsc::unbounded_channel();
         let (receiver, accept) = start_receiver(dir.path(), index, tx, frame_ms).await;
-        let id = connect_and_pair(&sender, &receiver).await;
+        let id = connect_peer(&sender, &receiver).await;
         wait_streaming(&sender, id).await;
         first_two.push(receiver);
         accepts.push(accept);
@@ -170,7 +162,7 @@ async fn a_third_receiver_joins_without_interrupting_the_first_two() {
     // 第三台**在运行中加入**（M3 验收表里的「动态」）。
     let (tx3, mut rx3) = mpsc::unbounded_channel();
     let (third, accept3) = start_receiver(dir.path(), 2, tx3, frame_ms).await;
-    let id3 = connect_and_pair(&sender, &third).await;
+    let id3 = connect_peer(&sender, &third).await;
     wait_streaming(&sender, id3).await;
     sender.start_send(id3).await.expect("第三台开流");
 

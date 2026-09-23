@@ -116,6 +116,19 @@ class QueueWatermarkTest {
     }
 
     @Test
+    fun lowLatencyTargetRefillsBeforeTheLastChunkIsConsumed() {
+        val watermark = QueueWatermark()
+        watermark.advanceHead(0)
+        watermark.recordFed(960)
+        assertFalse(watermark.shouldWrite(960, 480))
+
+        watermark.advanceHead(480)
+        assertTrue(watermark.shouldWrite(960, 480))
+        watermark.recordFed(480)
+        assertEquals(960L, watermark.queuedFrames)
+    }
+
+    @Test
     fun resetClearsEverythingForANewTrack() {
         val watermark = QueueWatermark()
         watermark.advanceHead(0)

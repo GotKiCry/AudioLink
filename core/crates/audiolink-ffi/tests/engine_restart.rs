@@ -6,8 +6,7 @@ use audiolink_audio::{
 };
 use audiolink_engine::{Engine, EngineConfig};
 use audiolink_ffi::{
-    EngineStartConfig, PcmFeed, PcmPull, displayed_pin, engine_start, engine_stop, local_status,
-    peers, start_send,
+    EngineStartConfig, PcmFeed, PcmPull, engine_start, engine_stop, local_status, peers, start_send,
 };
 use audiolink_types::ErrorCode;
 use std::net::{SocketAddr, UdpSocket};
@@ -106,15 +105,10 @@ async fn remote(dir: &std::path::Path, name: &str, writes: Arc<AtomicUsize>) -> 
     Engine::start(config).await.unwrap()
 }
 
-async fn pair(remote: &Engine) {
-    let id = audiolink_types::NodeId::from_hex(&local_status().unwrap().id_hex).unwrap();
-    until(|| displayed_pin().unwrap().is_some()).await;
-    remote
-        .submit_pin(id, &displayed_pin().unwrap().unwrap())
-        .await
-        .unwrap();
-    until(|| peers().unwrap().iter().any(|p| p.trusted)).await;
-    until(|| remote.peers().iter().any(|p| p.trusted)).await;
+/// 让原生对端与 FFI 引擎建立连接（**连上即通**：没有 PIN 交互、没有等待输码的中间态）。
+async fn pair(remote: &Arc<Engine>, addr: std::net::SocketAddr) {
+    remote.connect(addr).await.expect("连接 FFI 引擎");
+    until(|| !peers().unwrap().is_empty()).await;
 }
 
 struct BlockedFeed {
@@ -157,6 +151,7 @@ async fn check_restarts() {
         listen_port: port,
         // 这条用例不关心平台能力位；显式 0 = 与加这个字段之前逐位一致。
         capabilities: 0,
+        low_latency: false,
     };
     let bind_addr = SocketAddr::from(([0, 0, 0, 0], port));
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -181,9 +176,9 @@ async fn check_restarts() {
     assert!(first.is_ok());
     assert_eq!(conflict.unwrap_err().code(), ErrorCode::Busy.as_u16());
     engine_stop().await.unwrap();
-    // 三轮，每轮覆盖空闲、等 PIN、已连接、接收中、发送中，共 15 次同端口重启。
+    // 三轮，每轮覆盖空闲、已连接、接收中、发送中，共 12 次同端口重启。
     for round in 0..3 {
-        for phase in 0..5 {
+        for phase in 0..4 {
             let counts = Arc::new(Counts::default());
             let local = engine_start(
                 config.clone(),
@@ -213,18 +208,12 @@ async fn check_restarts() {
             )
             .await;
             if phase > 0 {
-                assert_eq!(
-                    remote.connect(addr).await.unwrap_err().code(),
-                    ErrorCode::NotPaired
-                );
-                if phase > 1 {
-                    pair(&remote).await;
-                }
-                if phase == 3 {
+                pair(&remote, addr).await;
+                if phase == 2 {
                     let id = audiolink_types::NodeId::from_hex(&local.id_hex).unwrap();
                     remote.start_send(id).await.unwrap();
                     until(|| counts.writes.load(Ordering::Relaxed) >= 3).await;
-                } else if phase == 4 {
+                } else if phase == 3 {
                     start_send().await.unwrap();
                     until(|| writes.load(Ordering::Relaxed) >= 3).await;
                 }
@@ -233,7 +222,6 @@ async fn check_restarts() {
             first.unwrap();
             second.unwrap();
             assert!(local_status().is_err());
-            assert!(displayed_pin().unwrap().is_none());
             assert!(counts.feed_dropped.load(Ordering::SeqCst));
             assert!(counts.pull_dropped.load(Ordering::SeqCst));
             drop(UdpSocket::bind(bind_addr).expect("停止返回后立即由 OS 重绑同一端口"));
@@ -257,11 +245,7 @@ async fn check_restarts() {
     .await
     .unwrap();
     let remote = remote(dir.path(), "blocked", Arc::new(AtomicUsize::new(0))).await;
-    assert_eq!(
-        remote.connect(addr).await.unwrap_err().code(),
-        ErrorCode::NotPaired
-    );
-    pair(&remote).await;
+    pair(&remote, addr).await;
     remote
         .start_send(audiolink_types::NodeId::from_hex(&local.id_hex).unwrap())
         .await

@@ -41,10 +41,10 @@ describe("错误必说人话（UI 规格 §4）且可对照协议文档", () => 
   it("是人话而不是同一句兜底文案（组件不加工、不替换上层给的句子）", () => {
     // 改坏：把 message 换成一句统一的"操作失败" → 这条会红，而用户唯一能拿到的线索就没了。
     render(
-      <ErrorBanner error={{ code: 1002, message: "请先完成配对，再开始推流", context: "start_send" }} onDismiss={vi.fn()} />,
+      <ErrorBanner error={{ code: 1002, message: "指定的对端不存在", context: "start_send" }} onDismiss={vi.fn()} />,
     );
 
-    expect(screen.getByRole("alert").textContent).toContain("请先完成配对，再开始推流");
+    expect(screen.getByRole("alert").textContent).toContain("指定的对端不存在");
     expect(screen.getByRole("alert").textContent).not.toContain("操作失败");
   });
 });

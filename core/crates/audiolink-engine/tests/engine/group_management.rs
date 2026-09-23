@@ -13,7 +13,6 @@ use std::time::Duration;
 use audiolink_audio::{NullPlayout, PlayoutSink, SyntheticCapture};
 use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
 use audiolink_types::ClockQuality;
-use audiolink_types::ErrorCode;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn creating_a_group_schedules_the_member_and_leaving_converges() {
@@ -43,17 +42,10 @@ async fn creating_a_group_schedules_the_member_and_leaving_converges() {
     let sender = Engine::start(send_config).await.expect("发送引擎");
 
     let outcome = tokio::time::timeout(Duration::from_secs(60), async {
-        let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-        assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-        let pin = loop {
-            if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-                break pin;
-            }
-        };
         sender
-            .submit_pin(receiver_id, &pin)
+            .connect(receiver.local_addr())
             .await
-            .expect("PIN 配对");
+            .expect("连接应当直接成功（无认证）");
         while !sender
             .peers()
             .iter()
@@ -87,7 +79,7 @@ async fn creating_a_group_schedules_the_member_and_leaving_converges() {
     .await;
 
     let (group_id, after_create, after_leave, scheduled_epoch) =
-        outcome.expect("60 s 内必须完成配对、开流、建组、排播与退出");
+        outcome.expect("60 s 内必须完成连接、开流、建组、排播与退出");
 
     sender.shutdown().await;
     receiver.shutdown().await;

@@ -19,7 +19,7 @@
 | 首帧 | ≤ 300 ms |
 | 长时稳定 | 8 h 无崩溃、无静音、无累积漂移 |
 | 平台 | Windows 10 1809+ / 11；Android 8.0+（API 26+） |
-| 安全 | QUIC TLS1.3 + 自签证书指纹（TOFU）+ 6 位 PIN 配对白名单 |
+| 安全 | QUIC TLS1.3 + 自签证书（加密与身份证明）；**局域网内不做信任裁决，连上即用** |
 
 ## 边界（用户已确认）
 
@@ -31,7 +31,7 @@
 
 ```
 Rust 内核（core/crates/*）
-  ├─ 协议 ALP/2 · Opus · 抖动缓冲 · 时钟同步 · 混音 · 发现 · 配对
+  ├─ 协议 ALP/2 · Opus · 抖动缓冲 · 时钟同步 · 混音 · 发现
   ├─ 桌面端：Tauri 2 外壳 + React 19 + Tailwind（进程内直接调用）
   └─ Android：Kotlin + Compose UI + AudioTrack/AudioPlaybackCapture（经 UniFFI/JNI 调用同一内核）
 传输：QUIC（quinn）—— 音频走数据报，控制走可靠流
@@ -49,7 +49,7 @@ Rust 内核（core/crates/*）
 | 桌面端 | Tauri 2 + React 19 + TS + Tailwind 4 | 用户 R3 |
 | Android | Kotlin + Compose（完全重写），minSdk **26** | 用户 R3/R7 |
 | 同步 | 四时间戳时钟同步（200 样本中位数）+ 预约播放 | 用户 R4 |
-| 配对 | 自签证书 + TOFU 指纹 + PIN 白名单 | 用户 R3 |
+| 连接 | 连上即用（本轮移除 PIN 配对与信任白名单，见 `docs/72-remove-pairing.md`） | 用户 R3 |
 | 许可 | Apache-2.0，保留上游归属（NOTICE） | 用户 R4 |
 | 起点 | 先打穿单链路（PC → 单手机） | 用户 R4 |
 | 版本红线 | `compileSdk 37` / **`targetSdk` 必须停在 36** / JDK 17 | ADR-009 |

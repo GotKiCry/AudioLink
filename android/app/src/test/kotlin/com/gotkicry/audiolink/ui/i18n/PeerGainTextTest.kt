@@ -20,7 +20,6 @@ class PeerGainTextTest {
         addr = "192.168.3.1:58290",
         state = "streaming",
         stateLabel = "已连接",
-        trusted = true,
     )
 
     /** 三态必须各自可辨：没设过 ≠ 已静音 ≠ 某个百分比。 */

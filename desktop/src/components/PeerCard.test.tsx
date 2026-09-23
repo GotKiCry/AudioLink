@@ -1,5 +1,5 @@
 /**
- * 对端卡片（`PeerCard`）—— 界面上**唯一**能发起/停止推流与配对的地方。
+ * 对端卡片（`PeerCard`）—— 界面上**唯一**能发起/停止推流的地方。
  *
  * 这一组不是"渲染不崩"：每条都对应一个用户动作的准入判断。点错一次的代价是
  * 对着已经断线的设备点推流、或把接收端场景变成"点了没反应"的假按钮。
@@ -17,7 +17,6 @@ function peer(over: Partial<PeerView> = {}): PeerView {
     name: "客厅 R1",
     addr: "192.168.1.23:58290",
     state: "idle",
-    trusted: false,
     capabilities: null,
     ...over,
   };
@@ -27,9 +26,7 @@ function card(over: Partial<PeerView> = {}, props: Partial<Parameters<typeof Pee
   const handlers = {
     onStart: vi.fn(async () => undefined),
     onStop: vi.fn(async () => undefined),
-    onBeginPair: vi.fn(),
     onGain: vi.fn(),
-    onRevoke: vi.fn(async () => undefined),
     ...props,
   };
   render(
@@ -37,36 +34,31 @@ function card(over: Partial<PeerView> = {}, props: Partial<Parameters<typeof Pee
       peer={peer(over)}
       busy={props.busy === true}
       canStart={props.canStart !== false}
-      canInputPin={props.canInputPin === true}
       {...handlers}
     />,
   );
   return handlers;
 }
 
-describe("配对入口（两个方向的按钮必须不同）", () => {
-  it("未受信 + 不是本机该输码（接收端场景）→ 只有一个禁用的「等待配对」，没有输入入口", () => {
-    // 改坏：忽略 canInputPin → 接收端也会出现可点的「输入配对码」，
-    // 用户点进去只会看到一个自己屏幕上已有的码（点了没反应）。
-    card({ trusted: false }, { canInputPin: false });
-
-    const waiting = screen.getByRole("button", { name: t("peer.waiting") });
-    expect((waiting as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.queryByRole("button", { name: t("peer.pin_entry") })).toBeNull();
+describe("质量读数的占位（缺失反馈不伪装成零）", () => {
+  it("没有端到端测量时仍显示 RTT 和零丢包，缺失的反馈使用占位", () => {
+    card({ receiving: true, quality: { rttUs: 12500, lossPctX100: 0, underruns: 3, bufferLevelUs: 80000 } });
+    expect(screen.getByText("12.5 ms")).toBeTruthy();
+    expect(screen.getByText("0.00%")).toBeTruthy();
+    expect(screen.queryByText(t("quality.waiting"))).toBeNull();
   });
 
-  it("未受信 + 本机该输码 → 「输入配对码」可点，并把**这台**对端的短码交上去", () => {
-    // 多台对端可能同时在配对：idShort 传错 = 把码提交到另一条会话上。
-    const handlers = card({ trusted: false, idShort: "aaaa1111" }, { canInputPin: true });
-
-    fireEvent.click(screen.getByRole("button", { name: t("peer.pin_entry") }));
-    expect(handlers.onBeginPair).toHaveBeenCalledWith("aaaa1111");
+  it("接收端没有反馈时不能显示零丢包", () => {
+    card({ quality: { rttUs: 18000, lossPctX100: null, underruns: null, bufferLevelUs: null } });
+    expect(screen.getByText("18.0 ms")).toBeTruthy();
+    expect(screen.queryByText("0.00%")).toBeNull();
+    expect(screen.getByText(t("quality.waiting"))).toBeTruthy();
   });
 });
 
 describe("推流按钮的准入", () => {
-  it("已受信 + 空闲 + 可用采集设备 → 「开始推流」可点", () => {
-    card({ trusted: true, state: "idle" }, { canStart: true });
+  it("空闲 + 可用采集设备 → 「开始推流」可点", () => {
+    card({ state: "idle" }, { canStart: true });
 
     const start = screen.getByRole("button", { name: t("peer.start") });
     expect((start as HTMLButtonElement).disabled).toBe(false);
@@ -75,14 +67,14 @@ describe("推流按钮的准入", () => {
   it("本机没有可用采集设备（canStart=false）→ 禁用", () => {
     // 改坏：把 canStart 从 disabled 里去掉 → 用户点了必然失败（内核会拒），
     // 却要走一次 IPC 才看到失败原因。
-    card({ trusted: true, state: "idle" }, { canStart: false });
+    card({ state: "idle" }, { canStart: false });
 
     expect((screen.getByRole("button", { name: t("peer.start") }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("会话已断开（state=failed）→ 无论如何都禁用推流", () => {
     // 改坏：删掉 `peer.state === "failed"` → 能对着一台已经断线的设备点「开始推流」。
-    card({ trusted: true, state: "failed" }, { canStart: true });
+    card({ state: "failed" }, { canStart: true });
 
     expect((screen.getByRole("button", { name: t("peer.start") }) as HTMLButtonElement).disabled).toBe(true);
   });
@@ -90,7 +82,7 @@ describe("推流按钮的准入", () => {
   it("降级中也算推流中：给「停止推流」和音量入口，而不是「开始推流」", () => {
     // 改坏：streaming 判定只写 state === "streaming" → 降级会话既停不掉也没有音量入口，
     // 用户唯一的办法是等它自己恢复。
-    card({ trusted: true, state: "degraded" }, { canStart: true });
+    card({ state: "degraded" }, { canStart: true });
 
     expect(screen.getByRole("button", { name: t("peer.stop") })).toBeTruthy();
     expect(screen.queryByRole("button", { name: t("peer.start") })).toBeNull();
@@ -98,14 +90,14 @@ describe("推流按钮的准入", () => {
   });
 
   it("正在 start/stop 时按钮禁用、文案变「启动中…」（防连点）", () => {
-    card({ trusted: true, state: "idle" }, { canStart: true, busy: true });
+    card({ state: "idle" }, { canStart: true, busy: true });
 
     const starting = screen.getByRole("button", { name: t("peer.starting") });
     expect((starting as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("音量滑块把 0–2 的增益交给上层（是数字，不是字符串）", () => {
-    const handlers = card({ trusted: true, state: "streaming" }, { canStart: true });
+    const handlers = card({ state: "streaming" }, { canStart: true });
 
     fireEvent.change(screen.getByRole("slider", { name: t("peer.volume_label") }), {
       target: { value: "0.5" },
@@ -125,7 +117,7 @@ describe("能力协商的展示（§13）", () => {
   };
 
   it("对端缺能力时逐条列出来（缺什么一眼看得见）", () => {
-    card({ trusted: true, capabilities });
+    card({ capabilities });
 
     expect(
       screen.getAllByText(t("peer.caps_missing", { list: "音频采集" })).length,
@@ -133,7 +125,7 @@ describe("能力协商的展示（§13）", () => {
   });
 
   it("对端什么都不缺时不显示那句缺能力的提示（好链路不该被标黄）", () => {
-    card({ trusted: true, capabilities: { ...capabilities, missingOnPeer: [], missingKeys: [] } });
+    card({ capabilities: { ...capabilities, missingOnPeer: [], missingKeys: [] } });
 
     expect(screen.queryByText(t("peer.caps_missing", { list: "" }))).toBeNull();
     expect(
@@ -142,52 +134,36 @@ describe("能力协商的展示（§13）", () => {
   });
 });
 
-describe("移除设备（FR-18：隐私说明里「你可以取消配对」的兑现口）", () => {
-  it("未配对的对端没有移除入口（没有信任记录可撤）", () => {
-    // 改坏：不看 trusted 就渲染 → 未配对对端出现一个「移除设备」，
-    // 用户以为能撤销什么，其实什么也没撤（真正该做的是别去配对）。
-    card({ trusted: false });
+describe("协商帧长（帧长联动的直接读数）", () => {
+  const quality = { rttUs: 12500, lossPctX100: 0, underruns: 0, bufferLevelUs: 40000 };
 
-    expect(screen.queryByRole("button", { name: t("peer.revoke") })).toBeNull();
+  it("协商为 10 ms 时显示「10 ms」（而不是本机档位）", () => {
+    card({ receiving: true, quality, negotiatedFrameMs: 10 });
+
+    expect(screen.getByText(t("diag.frame_ms"))).toBeTruthy();
+    expect(screen.getByText("10 ms")).toBeTruthy();
   });
 
-  it("已配对的对端：第一次点击只展开确认，**不**立刻移除", () => {
-    // 改坏：把 onRevoke 直接挂在第一个按钮上 → 一次误点就断掉正在用的链路、
-    // 还得重新配对才能回来（代价不对称）。
-    const handlers = card({ trusted: true, state: "streaming" });
+  it("协商为 20 ms 时显示「20 ms」", () => {
+    card({ receiving: true, quality, negotiatedFrameMs: 20 });
 
-    fireEvent.click(screen.getByRole("button", { name: t("peer.revoke") }));
-
-    expect(handlers.onRevoke).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: t("peer.revoke_confirm") })).toBeTruthy();
+    expect(screen.getByText("20 ms")).toBeTruthy();
   });
 
-  it("确认后才把**这台**对端的短码交上去", () => {
-    // 多台对端都在列表里：短码传错 = 移除另一台设备（不可逆）。
-    const handlers = card({ trusted: true, idShort: "bbbb2222", state: "idle" });
+  it("还没协商（null）→ 显示占位符，绝不伪装成某个帧长", () => {
+    // 改坏：把 null 兜底成 20 → 界面上永远是一个正常数字，
+    // 而「帧长不一致」的症状正是「遥测全绿但声音发闷」，正好被这个假数字盖住。
+    card({ receiving: true, quality, negotiatedFrameMs: null });
 
-    fireEvent.click(screen.getByRole("button", { name: t("peer.revoke") }));
-    fireEvent.click(screen.getByRole("button", { name: t("peer.revoke_confirm") }));
-
-    expect(handlers.onRevoke).toHaveBeenCalledWith("bbbb2222");
+    expect(screen.getByText(t("diag.frame_ms"))).toBeTruthy();
+    expect(screen.queryByText("10 ms")).toBeNull();
+    expect(screen.queryByText("20 ms")).toBeNull();
+    expect(screen.getByText("—")).toBeTruthy();
   });
 
-  it("取消后收起确认，且不发起移除", () => {
-    const handlers = card({ trusted: true, state: "idle" });
+  it("老内核不给这个字段（undefined）→ 同样显示占位符，不崩", () => {
+    card({ receiving: true, quality });
 
-    fireEvent.click(screen.getByRole("button", { name: t("peer.revoke") }));
-    fireEvent.click(screen.getByRole("button", { name: t("peer.revoke_cancel") }));
-
-    expect(handlers.onRevoke).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: t("peer.revoke") })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: t("peer.revoke_confirm") })).toBeNull();
-  });
-
-  it("正在忙（busy）时移除入口禁用（防连点重复撤销）", () => {
-    // busy 期间连入口都点不动：这条不可逆动作不该在另一个操作还没落地时并发提交。
-    card({ trusted: true, state: "idle" }, { busy: true });
-
-    const entry = screen.getByRole("button", { name: t("peer.revoke") });
-    expect((entry as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("—")).toBeTruthy();
   });
 });

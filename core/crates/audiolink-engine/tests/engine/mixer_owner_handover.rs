@@ -33,8 +33,7 @@ use std::time::{Duration, Instant};
 use audiolink_audio::{
     AudioError, DeviceFormat, NullPlayout, PlayoutSink, PlayoutStats, SyntheticCapture,
 };
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::ErrorCode;
+use audiolink_engine::{Engine, EngineConfig, SessionState};
 use tokio::sync::mpsc;
 
 /// 「播放设备被打开的次数」（判据 ⑧）。
@@ -148,32 +147,21 @@ fn sender_config(dir: &Path, name: &str, frequency: f32, frame_ms: u32) -> Engin
     config
 }
 
-/// 与接收端走完 PIN 配对，返回接收端 id。
-async fn pair_with_receiver(
-    sender: &Arc<Engine>,
-    receiver: &Arc<Engine>,
-) -> audiolink_types::NodeId {
+/// 连接接收端（无认证：一次 connect 即完成握手），返回接收端 id。
+async fn connect_receiver(sender: &Arc<Engine>, receiver: &Arc<Engine>) -> audiolink_types::NodeId {
     let receiver_id = receiver.info().id;
-    let mut events = receiver.subscribe();
-    let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-            break pin;
-        }
-    };
     sender
-        .submit_pin(receiver_id, &pin)
+        .connect(receiver.local_addr())
         .await
-        .expect("PIN 配对");
-    let paired = wait_for(Duration::from_secs(10), || {
+        .expect("连接应当直接成功（无认证）");
+    let streaming = wait_for(Duration::from_secs(10), || {
         sender
             .peers()
             .iter()
             .any(|peer| peer.id == receiver_id && peer.state == SessionState::Streaming)
     })
     .await;
-    assert!(paired, "发送侧没有在 10 s 内进入 Streaming");
+    assert!(streaming, "发送侧没有在 10 s 内进入 Streaming");
     receiver_id
 }
 
@@ -242,7 +230,7 @@ async fn owner_handover_reopens_the_playout_device() {
         ))
         .await
         .expect("发送引擎");
-        let receiver_id = pair_with_receiver(&sender, &engine).await;
+        let receiver_id = connect_receiver(&sender, &engine).await;
         let opens_before = receiver.opens();
         sender.start_send(receiver_id).await.expect("开流");
 
@@ -327,7 +315,7 @@ async fn other_sources_keep_playing_after_the_owner_leaves() {
     let sender_a = Engine::start(sender_config(dir.path(), "sender-a", 440.0, frame_ms))
         .await
         .expect("发送引擎 A");
-    let receiver_id = pair_with_receiver(&sender_a, &engine).await;
+    let receiver_id = connect_receiver(&sender_a, &engine).await;
     sender_a.start_send(receiver_id).await.expect("A 开流");
     let first_opens = wait_for(Duration::from_secs(10), || receiver.opens() == 1).await;
     assert!(
@@ -340,9 +328,9 @@ async fn other_sources_keep_playing_after_the_owner_leaves() {
     let sender_b = Engine::start(sender_config(dir.path(), "sender-b", 660.0, frame_ms))
         .await
         .expect("发送引擎 B");
-    pair_with_receiver(&sender_b, &engine).await;
+    connect_receiver(&sender_b, &engine).await;
     // 注意：这里是**发送端 B 自己的 id** —— 接收端 peers 表以对端（发送端）id 为键，
-    // 用它才读得到「B 路还在不在被接收」。（pair_with_receiver 返回的是接收端 id，别混用。）
+    // 用它才读得到「B 路还在不在被接收」。（connect_receiver 返回的是接收端 id，别混用。）
     let sender_b_id = sender_b.info().id;
     sender_b.start_send(receiver_id).await.expect("B 开流");
     let mixed = wait_for(Duration::from_secs(10), || receiver.sources() == Some(2)).await;

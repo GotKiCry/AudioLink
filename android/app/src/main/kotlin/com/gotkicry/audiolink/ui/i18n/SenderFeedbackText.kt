@@ -7,7 +7,7 @@ import com.gotkicry.audiolink.service.SenderUiState
  * 会话反馈的**归属**：拆卡之后，"提示与错误"必须各归各的卡，既不重复也不遗漏。
  *
  * 为什么需要一层显式的归属判定：[SenderUiState] 的 `note` / `error` 是**一条**通道，
- * 里面混着两个角色的消息（连接失败、输码提示、推流失败、停流提示、会话状态）。拆成
+ * 里面混着两个角色的消息（连接失败、推流失败、停流提示、会话状态）。拆成
  * 「接收端入口卡」与「主机卡」之后，如果两张卡都显示它，用户会看到同一句话出现两遍；
  * 只放其中一张，另一张的关键反馈就会人间蒸发。
  *
@@ -26,13 +26,12 @@ internal fun hostPathError(sender: SenderUiState): String? =
     if (sender.hasSession) sender.error else null
 
 /**
- * 接收端入口卡的提示：输码（本机要提交主机屏幕上的码）与断开（那条会话没了）。
+ * 接收端入口卡的提示：断开（那条会话没了）。
  *
  * 断开提示放这一张卡：会话是接收端入口建立起来的，断开在这里说最自然；主机卡那边
  * 状态徽章本来就会从「发送中」退回「未连接」，不会漏消息。
  */
 internal fun connectPathNote(strings: UiStrings, sender: SenderUiState): String? = when {
-    sender.awaitingPin -> strings.senderAwaitingPinNote
     sender.sessionDropped -> strings.senderSessionDropped
     else -> null
 }
@@ -66,6 +65,6 @@ internal fun connectEntryGateHints(
  * 不需要 `strings`：这一格的文案就是 service 给的原文（本层只决定"归哪张卡"）。
  */
 internal fun hostPathNote(sender: SenderUiState): String? = when {
-    sender.awaitingPin || sender.sessionDropped -> null
+    sender.sessionDropped -> null
     else -> sender.note
 }

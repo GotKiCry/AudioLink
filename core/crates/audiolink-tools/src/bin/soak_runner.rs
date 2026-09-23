@@ -40,7 +40,7 @@ use audiolink_tools::soak::{
     BitrateExpectationSource, REDUNDANT_COPIES, SoakMeta, SoakMonitor, SoakSample, SoakThresholds,
     expected_bitrate_bps_from_codec,
 };
-use audiolink_types::{ErrorCode, NodeId, StreamStats};
+use audiolink_types::{NodeId, StreamStats};
 use tokio::sync::broadcast::error::TryRecvError;
 
 const USAGE: &str = "\
@@ -71,7 +71,7 @@ soak-runner —— 回环长跑 + 指标采集 + 异常快照
 
 说明：
   两个真实 Engine（node-a 发送 / node-b 接收）走真实 QUIC；
-  node-b 之前不认识 node-a，因此会实跑一遍 §5 的 PIN 配对流程。
+  连接即建立：一次 connect 就完成 §5 握手，没有任何配对步骤。
   给了任一 --netem-* 参数时，中间会插入一个弱网中继（node-a 连中继、中继转给 node-b），
   于是「弱网下的长跑」也是一条命令。
   五个参数写全即 M2 的验收口径：--netem-loss-pct 2 --netem-delay-ms 15 --netem-jitter-ms 15 --netem-bandwidth-kbps 5000
@@ -401,27 +401,17 @@ async fn run(
         .as_ref()
         .map_or_else(|| engine_b.local_addr(), |relay| relay.addr());
 
-    // ---- §5 握手 + PIN 配对 ----
-    let mut events_b = engine_b.subscribe();
-    let peer_on_a = match engine_a.connect(rendezvous).await {
-        Ok(_) => first_peer(&engine_a).ok_or_else(|| anyhow!("node-a 侧没有建立会话"))?,
-        Err(error) if error.code() == ErrorCode::NotPaired => {
-            let peer_on_a =
-                first_peer(&engine_a).ok_or_else(|| anyhow!("node-a 侧没有建立会话"))?;
-            let pin = wait_for_pin(&mut events_b, Duration::from_secs(5)).await?;
-            engine_a
-                .submit_pin(peer_on_a, &pin)
-                .await
-                .map_err(link_error)
-                .context("提交 PIN 失败")?;
-            peer_on_a
-        }
-        Err(error) => return Err(link_error(error)).context("连接 node-b 失败"),
-    };
+    // ---- §5 握手（连接即建立，没有配对步骤）----
+    engine_a
+        .connect(rendezvous)
+        .await
+        .map_err(link_error)
+        .context("连接 node-b 失败")?;
+    let peer_on_a = first_peer(&engine_a).ok_or_else(|| anyhow!("node-a 侧没有建立会话"))?;
     wait_for_streaming(&engine_a, peer_on_a, Duration::from_secs(5)).await?;
     let peer_on_b = first_peer(&engine_b).ok_or_else(|| anyhow!("node-b 侧没有建立会话"))?;
     println!(
-        "配对完成：node-a 侧 peer {} / node-b 侧 peer {}",
+        "连接建立：node-a 侧 peer {} / node-b 侧 peer {}",
         peer_on_a.short(),
         peer_on_b.short()
     );
@@ -587,25 +577,6 @@ fn peer_state(engine: &Engine, peer: NodeId) -> &'static str {
         .iter()
         .find(|status| status.id == peer)
         .map_or("gone", |status| status.state.name())
-}
-
-async fn wait_for_pin(
-    events: &mut tokio::sync::broadcast::Receiver<EngineEvent>,
-    timeout: Duration,
-) -> Result<String> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            bail!("等 PIN 超时（{timeout:?}）");
-        }
-        match tokio::time::timeout(remaining, events.recv()).await {
-            Ok(Ok(EngineEvent::DisplayPin { pin, .. })) => return Ok(pin),
-            Ok(Ok(_)) => continue,
-            Ok(Err(error)) => bail!("事件通道关闭：{error}"),
-            Err(_) => bail!("等 PIN 超时（{timeout:?}）"),
-        }
-    }
 }
 
 async fn wait_for_streaming(engine: &Engine, peer: NodeId, timeout: Duration) -> Result<()> {

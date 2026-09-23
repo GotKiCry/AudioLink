@@ -104,45 +104,6 @@ pub struct HelloAckPayload {
     pub agreed_caps: u32,
 }
 
-/// `AUTH_CHALLENGE`（`0x03`，双方）：`nonce(32 B)`。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AuthChallengePayload {
-    /// 32 B 挑战随机数。
-    pub nonce: Vec<u8>,
-}
-
-/// `AUTH_RESPONSE`（`0x04`，双方）：`ECDSA(privkey, nonce ‖ fp_pair)`。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AuthResponsePayload {
-    /// DER 编码的 ECDSA-P256 签名。
-    pub signature: Vec<u8>,
-}
-
-/// `PAIR_REQUIRED`（`0x05`，主机 → 接收端）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PairRequiredPayload {
-    /// `true` 时由主机显示 6 位码（桌面端为窗口提示，Android 为通知/界面）。
-    pub pin_display: bool,
-}
-
-/// `PAIR_SUBMIT`（`0x06`，接收端 → 主机）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PairSubmitPayload {
-    /// 6 位数字 PIN（经加密通道提交，防窃听）。
-    pub pin: String,
-}
-
-/// `PAIR_RESULT`（`0x07`，主机 → 接收端）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PairResultPayload {
-    /// 是否通过。
-    pub ok: bool,
-    /// 失败原因（如「PIN 错误，剩余 3 次」）。
-    pub reason: String,
-    /// 是否已写入双方白名单。
-    pub persist: bool,
-}
-
 // ---------------------------------------------------------------------------
 // §4.1 会话与流控制
 // ---------------------------------------------------------------------------

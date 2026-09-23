@@ -77,7 +77,6 @@ export function HostAddressCard({ local }: { local: LocalStatus | null }) {
       {ready ? (
         <ol className="al-connect-steps">
           <li><span aria-hidden="true">1</span><p>{t("host.hint")}</p></li>
-          <li><span aria-hidden="true">2</span><p>{t("host.pair_hint")}</p></li>
         </ol>
       ) : <p className="text-caption leading-relaxed text-caution">{t("host.hint_missing")}</p>}
     </section>

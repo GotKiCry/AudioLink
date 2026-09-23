@@ -1,7 +1,5 @@
 // AudioLink Android —— app 模块
 import java.util.Properties
-import javax.inject.Inject
-import org.gradle.process.ExecOperations
 
 plugins {
     id("com.android.application")
@@ -74,6 +72,22 @@ android {
         }
     }
 
+    // 发布签名只声明一次，release 与 debug 共用（keystore.properties 不入库，CI 由 Secret 生成）：
+    // debug 只是「方便调试」的构建类型，不是第二个应用 —— 包名与签名都与 release 一致，
+    // 避免「共存双包」带来的数据分裂（SharedPreferences 不互通）与覆盖安装被拒（签名不匹配）。
+    val releaseSigning = if (keystorePropsFile.exists()) {
+        signingConfigs.create("release").apply {
+            storeFile = file(keystoreProps.getProperty("storeFile"))
+            storePassword = keystoreProps.getProperty("storePassword")
+            keyAlias = keystoreProps.getProperty("keyAlias")
+            keyPassword = keystoreProps.getProperty("keyPassword")
+        }
+    } else {
+        // 没有发布密钥时：release 产出未签名包（由分发流程另行签名），
+        // debug 回退到 AGP 默认调试签名 —— 保持「没有密钥也能本地构建」。
+        null
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -82,17 +96,14 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            if (keystorePropsFile.exists()) {
-                signingConfig = signingConfigs.create("release").apply {
-                    storeFile = file(keystoreProps.getProperty("storeFile"))
-                    storePassword = keystoreProps.getProperty("storePassword")
-                    keyAlias = keystoreProps.getProperty("keyAlias")
-                    keyPassword = keystoreProps.getProperty("keyPassword")
-                }
+            if (releaseSigning != null) {
+                signingConfig = releaseSigning
             }
         }
         debug {
-            applicationIdSuffix = ".debug" // 允许与正式版共存于同一台设备
+            if (releaseSigning != null) {
+                signingConfig = releaseSigning
+            }
         }
     }
 
@@ -160,36 +171,53 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }
 
-/**
- * 一键交叉编译 Rust 内核到 `app/src/main/jniLibs`（避免忘记同步 .so）。
- *
- * 注意：Gradle 9 已移除任务/项目级的 `exec {}` DSL（会报 Unresolved reference 'exec'）。
- * 官方推荐注入 `ExecOperations` —— 这样在配置缓存与 Isolated Projects 下同样安全，
- * 且路径在**配置阶段**解析好，执行期不再访问 rootProject。
- */
-abstract class RustBuildTask : DefaultTask() {
-    @get:Inject
-    abstract val execOps: ExecOperations
+// ---- Rust 内核交叉编译：一键编到 app/src/main/jniLibs（避免忘记同步 .so）----------------
+//
+// **已接进构建图**（见文件末尾）：`assembleDebug/Release` 与 Android Studio 的 Run 都会先跑它。
+// 「只注册任务、不挂接」等于把「.so 同步了吗」重新交回给人的记性 —— 本任务此前在仓库里零引用
+// （只有 register，没有任何 dependsOn），这正是「core 改了、APK 里还是旧内核」的根因。
+//
+// 为什么用内置的 `Exec` 任务类型，而不是在脚本里自己写一个 abstract class：
+// Kotlin DSL 脚本里声明的类会成为脚本类 `Build_gradle` 的**内部类**，Gradle 实例化时直接报
+// 「Class Build_gradle.RustBuildTask is a non-static inner class」（实测）。旧版之所以没暴露，
+// 是因为那个任务从来没人 dependsOn —— 任务注册是惰性的，直到真要执行才实例化。
+// 内置 Exec 配置缓存友好，也不需要注入 ExecOperations。
+//
+// 为什么**不**声明 `@OutputDirectory`：声明了 Gradle 就会按「输入（脚本路径 / ABI）没变」判定
+// up-to-date 并**跳过执行**，于是 Rust 源码改了也不重编 —— 比现在还糟。不声明输出 = 每次执行，
+// 增量判断交给 cargo 自己（它才是唯一知道源码变没变的人）。
+//
+// 两个 Gradle property 开关：
+//   * `-PskipRust=true`：不接进构建图（CI 用：android job 已显式 `cargo ndk` 编过 .so）；
+//   * `-PrustAbi=arm64-v8a`：只编一个 ABI（Studio 日常 Run 只装自己手机时省一半时间）。
+val rustAbi = providers.gradleProperty("rustAbi").getOrElse("arm64-v8a,armeabi-v7a")
 
-    @get:Input
-    abstract val scriptPath: Property<String>
-
-    @get:Input
-    abstract val abis: Property<String>
-
-    @TaskAction
-    fun build() {
-        execOps.exec {
-            commandLine("pwsh", "-NoProfile", "-File", scriptPath.get(), "-Abi", abis.get())
-        }
-    }
+tasks.register<Exec>("buildRustCore") {
+    group = "audiolink"
+    description = "用 cargo-ndk 交叉编译 Rust 内核到 app/src/main/jniLibs（已挂 preBuild，随构建自动执行）"
+    commandLine(
+        "pwsh", "-NoProfile", "-File",
+        rootProject.layout.projectDirectory.file("scripts/build-rust.ps1").asFile.absolutePath,
+        "-Abi", rustAbi,
+    )
+    // 编完顺手清 AGP 的 native 中间产物（merged_native_libs / merged_jni_libs 会把上一轮的 .so
+    // 原样送进 APK）——这件事由 scripts/build-rust.ps1 自己收尾，不放在这里做：
+    // Kotlin DSL 的 doLast 闭包会捕获脚本实例，配置缓存直接报「cannot serialize object of type DefaultProject」。
 }
 
-tasks.register<RustBuildTask>("buildRustCore") {
-    group = "audiolink"
-    description = "用 cargo-ndk 交叉编译 Rust 内核到 app/src/main/jniLibs"
-    scriptPath.set(
-        rootProject.layout.projectDirectory.file("scripts/build-rust.ps1").asFile.absolutePath
-    )
-    abis.set("arm64-v8a,armeabi-v7a")
+// ---- 接进构建图（这一步才是「core 改了、包装的还是旧内核」的解法）------------------
+// 挂 AGP 的 preBuild：两个变体共用它，Android Studio 的 Run / Make Project 走的也是这条图。
+// 为什么不靠 build-rust.ps1「自己保证」：Studio 只执行 Gradle 任务图，不会去跑仓库里的 .ps1。
+val skipRustSync = providers.gradleProperty("skipRust").orNull?.toBoolean() ?: false
+if (skipRustSync) {
+    logger.lifecycle("buildRustCore: NOT wired into the build graph (-PskipRust=true) - .so sync is the caller's responsibility.")
+} else {
+    tasks.matching { it.name == "preBuild" }.configureEach { dependsOn("buildRustCore") }
+    // 静默失效比报错更坏：AGP 若改了任务名，这里当场红，而不是「以为同步了、其实没同步」。
+    afterEvaluate {
+        check(tasks.names.contains("preBuild")) {
+            "AGP preBuild task not found, so buildRustCore wiring is broken (AGP task graph changed). " +
+                "Check the AGP version in android/build.gradle.kts, or pass -PskipRust=true to bypass."
+        }
+    }
 }

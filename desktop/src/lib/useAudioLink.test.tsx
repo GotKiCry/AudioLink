@@ -43,7 +43,6 @@ function peer(over: Partial<PeerView> = {}): PeerView {
     name: "手机",
     addr: "192.168.1.23:58290",
     state: "idle",
-    trusted: true,
     capabilities: null,
     ...over,
   };
@@ -104,7 +103,7 @@ beforeEach(() => {
 });
 
 describe("接入即自动推流", () => {
-  it("已配对设备接入并进入 idle → 自动发起，且「已发起」如实成立", async () => {
+  it("设备接入并进入 idle → 自动发起，且「已发起」如实成立", async () => {
     // 意图不成立的话，侧栏会停在「开始推流」—— 自动拉起之后用户反而没有停止入口。
     const { result } = await mount();
 
@@ -113,14 +112,6 @@ describe("接入即自动推流", () => {
     await waitFor(() => expect(startSend).toHaveBeenCalledTimes(1));
     expect(startSend.mock.calls[0]?.[0]).toBe("bbbb2222");
     await waitFor(() => expect(result.current.broadcastRequested).toBe(true));
-  });
-
-  it("未配对的设备不自动推（那会必然失败）", async () => {
-    await mount();
-
-    await emit([peer({ trusted: false })]);
-
-    expect(startSend).not.toHaveBeenCalled();
   });
 
   it("failed 不自动重试（自动重试会变成错误风暴）", async () => {

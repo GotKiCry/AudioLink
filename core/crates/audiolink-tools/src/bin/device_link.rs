@@ -1,13 +1,13 @@
-//! device-link —— PC 侧真机（Android）验收工具：连接 → PIN 配对 → 推流 → 跨机延迟账本
+//! device-link —— PC 侧真机（Android）验收工具：连接 → 推流 → 跨机延迟账本
 //!
-//! 规格：`docs/03-protocol.md`（§5 握手与 PIN、§6 时钟同步、§10 遥测）、
+//! 规格：`docs/03-protocol.md`（§5 连接时序、§6 时钟同步、§10 遥测）、
 //! `docs/11-m1-contract.md`（§5 引擎冻结 API）、`docs/10-handoff.md` §4.2（跨机测量）。
 //!
 //! # 它解决什么问题
 //!
 //! M1 的真机验收需要一个**无头、可复跑、可审计**的路径：桌面上只有 Tauri GUI（无头环境点不动），
 //! 而 `link-loop` 量的是 PC↔PC（两端共享同一个进程级单调时钟）。本工具把同一件事搬到真机上：
-//! 真实 `Engine` + 真实 QUIC（mTLS）+ 真实 §5 握手 + 真实 PIN 配对 + 真实推流，
+//! 真实 `Engine` + 真实 QUIC（mTLS）+ 真实 §5 握手 + 真实推流（连接即建立，没有任何配对步骤），
 //! 产出一份**逐项标注来源**的跨机延迟账本 + JSON。
 //!
 //! # 报告口径（这份工具的灵魂：不许把模型值混进实测值，也不许把「没测到」写成 0）
@@ -35,38 +35,23 @@
 //! 逐探针的四时间戳（`t1/t2/t3/t4`）来自引擎会话内的 §6 环；未收敛时（样本 < 8）
 //! 估计为 `None`，报告里呈现为「未收敛」，**不是 0**。
 //!
-//! # 身份与信任库（复跑的前提）
+//! # 身份目录（复跑的前提）
 //!
-//! 默认落在 `target/device-link/`（`cert.pem` / `key.pem` / `trust.json`）。
-//! 真机验收要复跑很多次，配对结果跨次留存 —— 第一次 `--pin` 之后，后续运行直接走
-//! `AUTH_CHALLENGE/RESPONSE` 分支，不再需要看手机屏幕。
-//!
-//! # PIN 必须在**同一条连接内**提交（工具为什么需要 `--pin-file`）
-//!
-//! 内核是**每连接新建一个 `PinGate`**：会话一断/重连，那条连接上的 PIN 立刻作废
-//! （实测三次连接拿到三个不同 PIN）。所以「先连上 → 手机显示 PIN → 人工读到 → 再提交」这一步
-//! **必须发生在同一条会话里**，不能断开重连后拿刚才那个 PIN 去试。
-//!
-//! 无人值守（后台作业）没法在正确时刻往 stdin 打字，于是三条来源按「确定性」排序：
-//! `--pin <NNNNNN>`（已知，复跑用）→ `--pin-file <path>`（连接期间随时把手机屏幕上的 6 位数字写进文件，
-//! 工具每 300 ms 轮询、上限 60 s）→ 交互 stdin。
-//!
-//! 死线口径（task-10 之后）：进入配对等待时，会话死线会顺延到「PIN 有效期 + 15 s 余量」（PIN 60 s → 75 s），
-//! 所以「人工读屏再敲字」的正常节奏不会再被 10 s 握手死线掐断（本机实测：把人工延迟模拟成 20 s 仍配对成功）。
-//! 工具这边的 60 s 上限是 **PIN 自身的有效期** —— 再等下去手机上的那个 PIN 已经过期，等下去没有意义。配对成功后写入信任库，
-//! **之后每次运行都直接走 `AUTH_CHALLENGE/AUTH_RESPONSE`，再也不需要看手机屏幕**（这正是要复跑很多次的真机验收的前提）。
+//! 默认落在 `target/device-link/`（`cert.pem` / `key.pem`）。
+//! 真机验收要复跑很多次，身份跨次留存 —— 指纹稳定，对端才认得出「还是那台 PC」。
+//! `trust.json` 不再产生：连接即建立，工具里没有任何配对步骤，也不再有「第一次要人工输码、
+//! 之后才免输」的区别（`docs/71-remove-pairing.md`）。
 //!
 //! # 用法
 //!
 //! ```text
-//! device-link run --peer 172.16.2.54 --seconds 30 --pin 123456 --capture wasapi
+//! device-link run --peer 172.16.2.54 --seconds 30 --capture wasapi
 //! device-link --self-test            # 同进程起两个真 Engine（不依赖真机，验证工具自身流程）
 //! ```
 //!
-//! 退出码：`0` 成功 · `2` 参数/连接/配对失败 · `3` 对端无遥测或无出声证据 ·
+//! 退出码：`0` 成功 · `2` 参数/连接失败 · `3` 对端无遥测或无出声证据 ·
 //! `4` §6 时钟未收敛（offset 一直为 0）· `5` PC 侧采集疑似静音（默认端点是虚拟声卡？）
 
-use std::io::IsTerminal;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -85,7 +70,7 @@ use audiolink_engine::{
 };
 use audiolink_proto::{AudioDatagram, ClockProbe, ClockReply};
 use audiolink_tools::{ClockSamples, Sample};
-use audiolink_types::{DEFAULT_QUIC_PORT, ErrorCode, NodeId, StreamStats};
+use audiolink_types::{DEFAULT_QUIC_PORT, NodeId, StreamStats};
 use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
@@ -94,7 +79,7 @@ use serde_json::{Value, json};
 
 /// 成功：观测完成，且所有「必须有」的实测项都拿到。
 const EXIT_OK: u8 = 0;
-/// 参数错误 / 连不上 / 握手失败 / PIN 错。
+/// 参数错误 / 连不上 / 握手失败。
 const EXIT_USAGE: u8 = 2;
 /// 会话建立但**对端没有出声证据**（没收到 1 Hz `STREAM_STATS`，或全程 buffer/underrun/e2e 为 0）。
 const EXIT_NO_PEER: u8 = 3;
@@ -109,14 +94,14 @@ const EXIT_SILENT_CAPTURE: u8 = 5;
 /// 而静音帧（CELT-only、VBR、DTX 关）只有几 kbps 量级。这是**启发式**，报告里会打印原始数字。
 const SILENT_CAPTURE_BITRATE_BPS: u32 = 20_000;
 
-/// 默认身份/信任库目录（跨次留存，真机验收要复跑很多次）。
+/// 默认身份目录（跨次留存，真机验收要复跑很多次）。
 const DEFAULT_DIR: &str = "target/device-link";
 
 /// 证据目录（JSON 报告默认落这里）。
 const EVIDENCE_DIR: &str = "target/evidence/device-tool";
 
 const USAGE: &str = "\
-device-link —— PC 侧真机（Android）验收：连接 / PIN 配对 / 推流 / 跨机延迟账本
+device-link —— PC 侧真机（Android）验收：连接 / 推流 / 跨机延迟账本
 
 用法：
   device-link run --peer <IP[:PORT]> [选项]      # 对真机（或任意 peer）跑一次验收
@@ -125,9 +110,6 @@ device-link —— PC 侧真机（Android）验收：连接 / PIN 配对 / 推�
 选项：
   --peer <IP[:PORT]>    对端地址（省略端口 = 默认 QUIC 端口 58290）
   --seconds <n>         观测时长（秒），默认 30
-  --pin <NNNNNN>        已知 PIN 时直接提交（复跑用：配对成功会落盘信任库，第二次就不再需要 PIN）
-  --pin-file <path>     无头/无人值守：连接后收到 PinNeeded 起轮询该文件（每 300 ms 一次，上限 60 s），
-                        读到 6 位数字就提交 —— 你可以随时把手机屏幕上的 PIN 写进这个文件
   --frame-ms <n>        帧长（10 / 20），默认 20
   --capture <wasapi|synth>
                         采集后端，默认 wasapi（真实 WASAPI loopback = 系统正在播放的声音）
@@ -135,20 +117,18 @@ device-link —— PC 侧真机（Android）验收：连接 / PIN 配对 / 推�
   --device <sel>        WASAPI 渲染端点：default | id:<子串> | name:<友好名>（默认 default）
   --buffer-ms <n>       采集源请求缓冲（ms），默认 20（共享模式实测下限 22 ms）
   --cross-probe <n>     额外起一条**独立测量连接**跑 §6 探针（mTLS，需本机身份目录），n = 探针数，默认 0（关闭）
-  --dir <path>          身份/信任库目录，默认 target/device-link（--self-test 默认用临时目录）
+  --dir <path>          身份目录，默认 target/device-link（--self-test 默认用临时目录）
   --listen-port <n>     --self-test 时 node-b 的监听端口（默认 0 = 随机）。给固定端口便于用
                         latency-probe 等外部工具对准同一条链路做交叉验证
   --json <path>         额外导出 JSON 报告（默认总是写 target/evidence/device-tool/）
   --quiet               只打印结论账本，不打进度
 
-退出码：0 成功 · 2 参数/连接/配对失败 · 3 对端无遥测或无出声证据 · 4 时钟未收敛 · 5 PC 采集疑似静音
+退出码：0 成功 · 2 参数/连接失败 · 3 对端无遥测或无出声证据 · 4 时钟未收敛 · 5 PC 采集疑似静音
 
 说明：
-  · 身份与信任库落在 --dir（默认 target/device-link/），配对结果跨次留存：第一次用 --pin 配对后，
-    后续运行直接走 AUTH_CHALLENGE/RESPONSE，不再需要手机屏幕。
-  · --self-test 默认用临时目录（每次都实跑一遍 PIN 配对流程），给它 --dir 才会留存。
-  · PIN 是**每连接新建**的（内核每连接一个 PinGate，重连即作废）：必须在**同一条连接内**提交。
-    无头环境用 --pin-file —— 连接期间随时把手机屏幕上的 6 位数字写进该文件即可，工具会轮询读到。
+  · 身份落在 --dir（默认 target/device-link/），跨次留存：指纹稳定，对端才认得出「还是那台 PC」。
+  · 连接即建立：没有配对码、没有信任库白名单，也不需要任何人工输码步骤（`docs/71-remove-pairing.md`）。
+  · --self-test 默认用临时目录（每次都是一对全新身份），给它 --dir 才会留存。
 ";
 
 fn main() -> ExitCode {
@@ -232,8 +212,6 @@ struct Options {
     mode: Mode,
     peer: Option<String>,
     seconds: u64,
-    pin: Option<String>,
-    pin_file: Option<PathBuf>,
     listen_port: u16,
     frame_ms: u32,
     capture: CaptureBackend,
@@ -252,8 +230,6 @@ impl Default for Options {
             mode: Mode::Device,
             peer: None,
             seconds: 30,
-            pin: None,
-            pin_file: None,
             listen_port: 0,
             frame_ms: 20,
             capture: CaptureBackend::Wasapi,
@@ -300,18 +276,6 @@ fn parse_args(args: &[String]) -> Result<Option<Options>> {
             }
             "--seconds" => {
                 options.seconds = parse_u64(&take("--seconds")?, "--seconds", 1, 86_400)?;
-                index += 2;
-            }
-            "--pin" => {
-                let pin = take("--pin")?;
-                if pin.len() != 6 || !pin.chars().all(|c| c.is_ascii_digit()) {
-                    bail!("--pin 必须是 6 位数字（收到 {pin:?}）");
-                }
-                options.pin = Some(pin);
-                index += 2;
-            }
-            "--pin-file" => {
-                options.pin_file = Some(PathBuf::from(take("--pin-file")?));
                 index += 2;
             }
             "--listen-port" => {
@@ -587,9 +551,9 @@ fn wasapi_warnings(
 // 主流程
 // ---------------------------------------------------------------------------
 
-/// 顶层流程：探测 → 起引擎 → 连接配对 → 推流观测 → 报告。
+/// 顶层流程：探测 → 起引擎 → 连接 → 推流观测 → 报告。
 async fn run(options: &Options) -> Result<u8> {
-    println!("=== device-link —— PC 侧真机验收（真实 Engine · 真实 QUIC · 真实 §5 配对）===");
+    println!("=== device-link —— PC 侧真机验收（真实 Engine · 真实 QUIC · 真实 §5 握手）===");
     println!(
         "模式：{} · 观测 {} s · 帧长 {} ms · 采集 {}（{}）",
         match options.mode {
@@ -603,7 +567,7 @@ async fn run(options: &Options) -> Result<u8> {
     );
     if options.mode == Mode::Device {
         println!(
-            "提示：真机验收前请在 PC 上**播放一段测试音**（loopback 采的就是它），并确认手机端服务已启动、屏幕能显示 PIN"
+            "提示：真机验收前请在 PC 上**播放一段测试音**（loopback 采的就是它），并确认手机端服务已启动"
         );
     }
 
@@ -614,10 +578,10 @@ async fn run(options: &Options) -> Result<u8> {
     let silent_by_config =
         capture.looks_virtual.unwrap_or(false) && options.capture == CaptureBackend::Wasapi;
 
-    // ---- [2] 身份与信任库 ----
+    // ---- [2] 身份 ----
     let (dir, _temp_guard) = resolve_dir(options)?;
     match options.mode {
-        Mode::Device => println!("\n[2] 身份与信任库：{}（配对结果跨次留存）", dir.display()),
+        Mode::Device => println!("\n[2] 身份目录：{}（身份跨次留存）", dir.display()),
         Mode::SelfTest => println!("\n[2] 自检目录：{}", dir.display()),
     }
 
@@ -681,7 +645,6 @@ async fn run(options: &Options) -> Result<u8> {
     let report = build_report(
         options,
         &capture,
-        &session.auth,
         &session.remote,
         &snapshots,
         &tap,
@@ -703,13 +666,12 @@ struct SessionHandles {
     peer: NodeId,
     /// 对端套接字地址（独立测量连接要连同一个地址）。
     peer_addr: SocketAddr,
-    auth: AuthPath,
     events: tokio::sync::broadcast::Receiver<EngineEvent>,
     tap: Option<Arc<MeasurementTap>>,
     remote: RemoteView,
 }
 
-/// 身份/信任库目录：`--dir` 优先；`--self-test` 无 `--dir` 时用临时目录（每次都实跑 PIN 配对）。
+/// 身份目录：`--dir` 优先；`--self-test` 无 `--dir` 时用临时目录（每次都是一对全新身份）。
 fn resolve_dir(options: &Options) -> Result<(PathBuf, Option<tempfile::TempDir>)> {
     if let Some(dir) = options.dir.as_ref() {
         std::fs::create_dir_all(dir).with_context(|| format!("创建目录 {} 失败", dir.display()))?;
@@ -724,7 +686,7 @@ fn resolve_dir(options: &Options) -> Result<(PathBuf, Option<tempfile::TempDir>)
     Ok((dir, None))
 }
 
-/// 真机模式：起一个引擎（发送端），连到对端，必要时走 PIN 配对。
+/// 真机模式：起一个引擎（发送端），连到对端（连接即建立，没有任何配对步骤）。
 async fn run_device_session(options: &Options, dir: &Path) -> Result<SessionHandles> {
     let peer_text = options.peer.clone().ok_or_else(|| anyhow!("缺少 --peer"))?;
     let peer_addr = resolve_peer(&peer_text)?;
@@ -749,90 +711,34 @@ async fn run_device_session(options: &Options, dir: &Path) -> Result<SessionHand
     );
     println!("    目标 {}（{}）", peer_addr, peer_text);
 
-    // ---- 连接 + §5 握手 + （必要时）PIN 配对 ----
-    println!("\n[3] §5 握手与 PIN 配对");
-    let mut events = engine.subscribe();
-    let outcome = tokio::time::timeout(Duration::from_secs(25), engine.connect(peer_addr))
+    // ---- 连接 + §5 握手（连接即建立，没有配对步骤）----
+    println!("\n[3] §5 握手与连接建立");
+    let events = engine.subscribe();
+    let peer = tokio::time::timeout(Duration::from_secs(25), engine.connect(peer_addr))
         .await
         .map_err(|_| {
             anyhow!(
                 "连接 {peer_addr} 超时（25 s）：对端没在监听？端口被防火墙挡了？先确认手机端服务在跑、PC 与手机同一局域网（手机 IP 会变，重连前用 adb shell ip addr 复核）"
             )
-        })?;
+        })?
+        .map_err(|error| anyhow!("连接 {} 失败：{}", peer_addr, link_error(&error)))?;
 
-    let (auth, remote) = match outcome {
-        Ok(peer) => {
-            println!("    已配对（信任库命中）→ 走 AUTH_CHALLENGE/AUTH_RESPONSE 分支");
-            let remote = remote_view(&engine, peer);
-            (AuthPath::Trusted, remote)
-        }
-        Err(error) if error.code() == ErrorCode::NotPaired => {
-            println!("    对端不认识本机 → 进入 PIN 配对分支（PIN 显示在手机屏幕上）");
-            let peer = first_peer(&engine)
-                .ok_or_else(|| anyhow!("对端要求 PIN，但本机侧没有建立任何会话（会话表为空）"))?;
-
-            // PIN 的三条来源，按「确定性」排序：--pin（已知）→ --pin-file（无头异步投喂）→ stdin（有人守着终端）。
-            // 无头环境下 --pin-file 是**唯一可行**的那条：PIN 由手机屏幕显示、PC 端输入，
-            // 而工具必须先在线上手机才显示 PIN —— 后台作业没法在正确时刻往 stdin 打字。
-            let pin = if let Some(pin) = options.pin.clone() {
-                println!("    使用 --pin 提供的 PIN");
-                pin
-            } else if let Some(path) = options.pin_file.clone() {
-                wait_for_pin_file(&path, Duration::from_secs(60)).await?
-            } else if std::io::stdin().is_terminal() {
-                print!("    请输入手机屏幕上的 6 位 PIN：");
-                let mut line = String::new();
-                std::io::stdin()
-                    .read_line(&mut line)
-                    .context("读取 PIN 失败")?;
-                let pin = line.trim().to_string();
-                if pin.len() != 6 || !pin.chars().all(|c| c.is_ascii_digit()) {
-                    bail!("PIN 必须是 6 位数字（收到 {pin:?}）");
-                }
-                pin
-            } else {
-                bail!(
-                    "对端要求 PIN 配对，但既没给 --pin 也没给 --pin-file，且当前不是交互终端：无头环境请用 --pin-file <path>（连接期间随时把手机屏幕上的 6 位 PIN 写进该文件）"
-                )
-            };
-
-            drain_info_events(&mut events);
-            engine
-                .submit_pin(peer, &pin)
-                .await
-                .map_err(|error| anyhow!("提交 PIN 失败：{}", link_error(&error)))?;
-
-            // 等「进入 Streaming」或「被拒」——**先等到哪个算哪个**。
-            // 为什么不能只等 Streaming：PIN 错时对端会立刻回 PAIR_RESULT(ok=false)，
-            // 而会话状态永远停在 Handshaking，如果只等状态机就会在 10 s 后报「超时」，
-            // 白白把「PIN 错了，还剩 4 次」这个真正有用的原因丢掉。
-            match wait_pair_outcome(&engine, peer, &mut events, Duration::from_secs(10)).await {
-                PairOutcome::Streaming => println!("    PIN 校验通过，双方已写入信任库"),
-                PairOutcome::Rejected(reason) => bail!(
-                    "PIN 配对失败：{reason}（PIN 错会消耗尝试次数，5 次后锁定 5 分钟；请重新看手机屏幕上的 PIN —— 注意 PIN 是**每连接新建**的，重连后会换一个新的）"
-                ),
-                PairOutcome::Timeout => bail!(
-                    "提交 PIN 后 10 s 内既没进入 Streaming 也没收到配对结果：对端可能已经走了，或握手卡住"
-                ),
-            }
-            let remote = remote_view(&engine, peer);
-            (AuthPath::Pin { used: true }, remote)
-        }
-        Err(error) => return Err(anyhow!("连接 {} 失败：{}", peer_addr, link_error(&error))),
-    };
+    // 连接返回时握手已完成；这里再等状态机真的进 `Streaming`，后面量到的数才算数。
+    wait_for_streaming(&engine, peer, Duration::from_secs(10)).await?;
+    println!("    已连接 {}", peer.short());
+    let remote = remote_view(&engine, peer);
 
     Ok(SessionHandles {
         engine,
         peer: remote.id,
         peer_addr,
-        auth,
         events,
         tap: Some(tap),
         remote,
     })
 }
 
-/// 自检模式：同进程两个真 Engine，PIN 自动回填（不需要人看屏幕）。
+/// 自检模式：同进程两个真 Engine，走真实的 QUIC 握手与推流（不需要第二台设备）。
 async fn run_self_test_session(options: &Options, dir: &Path) -> Result<SessionHandles> {
     let dir_a = dir.join("node-a");
     let dir_b = dir.join("node-b");
@@ -871,65 +777,30 @@ async fn run_self_test_session(options: &Options, dir: &Path) -> Result<SessionH
         engine_b.info().id.short()
     );
 
-    println!("\n[3] §5 握手与 PIN 配对（自动回填）");
-    let mut events_a = engine_a.subscribe();
-    let mut events_b = engine_b.subscribe();
+    println!("\n[3] §5 握手与连接建立");
+    let events_a = engine_a.subscribe();
 
-    let auth = match engine_a.connect(addr_b).await {
-        Ok(_) => {
-            println!("    两端已在同一信任库中 → 走 AUTH_CHALLENGE/AUTH_RESPONSE 分支");
-            AuthPath::Trusted
-        }
-        Err(error) if error.code() == ErrorCode::NotPaired => {
-            println!("    node-b 不认识 node-a → 实跑 PIN 配对流程");
-            let pin = wait_for_pin(&mut events_b, Duration::from_secs(5)).await?;
-            println!("    node-b 展示 PIN：{pin}（自检自动回填）");
-            let peer = first_peer(&engine_a)
-                .ok_or_else(|| anyhow!("node-a 侧没有建立会话（会话表为空）"))?;
-            engine_a
-                .submit_pin(peer, &pin)
-                .await
-                .map_err(|error| anyhow!("提交 PIN 失败：{}", link_error(&error)))?;
-            wait_for_streaming(&engine_a, peer, Duration::from_secs(10)).await?;
-            println!("    PIN 校验通过，双方已写入信任库");
-            AuthPath::Pin { used: true }
-        }
-        Err(error) => return Err(anyhow!("node-a 连接 node-b 失败：{}", link_error(&error))),
-    };
+    engine_a
+        .connect(addr_b)
+        .await
+        .map_err(|error| anyhow!("node-a 连接 node-b 失败：{}", link_error(&error)))?;
 
     let peer_on_a = first_peer(&engine_a).ok_or_else(|| anyhow!("node-a 侧没有会话"))?;
-    let _ = drain_pair_events(&mut events_a);
+    wait_for_streaming(&engine_a, peer_on_a, Duration::from_secs(10)).await?;
+    println!(
+        "    已连接：node-a {} ↔ node-b {}",
+        peer_on_a.short(),
+        addr_b
+    );
     let remote = remote_view(&engine_a, peer_on_a);
     Ok(SessionHandles {
         engine: engine_a,
         peer: peer_on_a,
         peer_addr: addr_b,
-        auth,
         events: events_a,
         tap: Some(tap),
         remote,
     })
-}
-
-/// 认证路径（报告里要能一眼看出这次是「已配对直连」还是「现配对」）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AuthPath {
-    /// 信任库命中：`AUTH_CHALLENGE/AUTH_RESPONSE`。
-    Trusted,
-    /// 本次运行实跑了 PIN 配对。
-    Pin {
-        /// 是否真的提交过 PIN。
-        used: bool,
-    },
-}
-
-impl AuthPath {
-    const fn name(self) -> &'static str {
-        match self {
-            Self::Trusted => "trusted (AUTH_CHALLENGE/RESPONSE)",
-            Self::Pin { .. } => "pin (PAIR_REQUIRED/PAIR_SUBMIT)",
-        }
-    }
 }
 
 /// 对端视图。
@@ -938,7 +809,6 @@ struct RemoteView {
     id: NodeId,
     name: String,
     addr: String,
-    trusted: bool,
 }
 
 fn remote_view(engine: &Arc<Engine>, peer: NodeId) -> RemoteView {
@@ -947,13 +817,11 @@ fn remote_view(engine: &Arc<Engine>, peer: NodeId) -> RemoteView {
             id: peer,
             name: status.name,
             addr: status.addr.to_string(),
-            trusted: status.trusted,
         },
         None => RemoteView {
             id: peer,
             name: "unknown".to_string(),
             addr: "-".to_string(),
-            trusted: false,
         },
     }
 }
@@ -969,88 +837,6 @@ fn first_peer(engine: &Arc<Engine>) -> Option<NodeId> {
     engine.peers().into_iter().next().map(|peer| peer.id)
 }
 
-/// 从文本里取 PIN：第一个**恰好 6 位**的连续数字串。
-///
-/// 为什么不用严格的「全文等于 6 位」：投喂方往往写成 `123456` 换行、`PIN: 123456` 甚至带时间戳注释；
-/// 只要出现一个恰好 6 位的数字串就取它（更短或更长的数字串不会被误取，例如 8 位时间戳）。
-fn extract_pin(text: &str) -> Option<String> {
-    let mut run = String::new();
-    for ch in text.chars() {
-        if ch.is_ascii_digit() {
-            run.push(ch);
-        } else {
-            if run.len() == 6 {
-                return Some(run);
-            }
-            run.clear();
-        }
-    }
-    if run.len() == 6 { Some(run) } else { None }
-}
-
-/// 轮询 PIN 文件直到读到 6 位数字（无头/无人值守的主路径，见 `--pin-file` 的说明）。
-///
-/// 上限 60 s 与 §5 的 PIN 有效期一致：再等下去手机上的那个 PIN 也过期了，继续等没有意义。
-async fn wait_for_pin_file(path: &Path, timeout: Duration) -> Result<String> {
-    println!(
-        "    等待 PIN 文件 {}：每 300 ms 轮询一次，上限 {} s（PIN 本身只有 60 s 有效期）",
-        path.display(),
-        timeout.as_secs()
-    );
-    let started = Instant::now();
-    let mut last_note = 0_u64;
-    loop {
-        match std::fs::read_to_string(path) {
-            Ok(text) => {
-                if let Some(pin) = extract_pin(&text) {
-                    println!("    从 PIN 文件读到 PIN：{pin}");
-                    return Ok(pin);
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => println!("    ⚠ 读 PIN 文件失败：{error}（继续轮询）"),
-        }
-
-        let waited = started.elapsed();
-        if waited >= timeout {
-            bail!(
-                "等待 PIN 文件 {} 超时（{} s）：手机上的 PIN 已过期，请重新在手机上触发配对后用 --pin-file 重投",
-                path.display(),
-                timeout.as_secs()
-            );
-        }
-        if waited.as_secs() >= last_note + 5 {
-            last_note = waited.as_secs();
-            println!(
-                "    仍在等待 PIN 文件…（已等 {} s / 上限 {} s）",
-                waited.as_secs(),
-                timeout.as_secs()
-            );
-        }
-        tokio::time::sleep(Duration::from_millis(300)).await;
-    }
-}
-
-/// 等对端展示 PIN（响应方视角）。
-async fn wait_for_pin(
-    events: &mut tokio::sync::broadcast::Receiver<EngineEvent>,
-    timeout: Duration,
-) -> Result<String> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            bail!("等待对端展示 PIN 超时（§5 配对没走到 PAIR_REQUIRED？）");
-        }
-        match tokio::time::timeout(remaining, events.recv()).await {
-            Ok(Ok(EngineEvent::DisplayPin { pin, .. })) => return Ok(pin),
-            Ok(Ok(_)) => continue,
-            Ok(Err(error)) => bail!("事件订阅中断：{error}"),
-            Err(_) => bail!("等待对端展示 PIN 超时"),
-        }
-    }
-}
-
 /// 等会话进入 `Streaming`（= 握手完成、会话可用）。
 async fn wait_for_streaming(engine: &Arc<Engine>, peer: NodeId, timeout: Duration) -> Result<()> {
     let deadline = tokio::time::Instant::now() + timeout;
@@ -1063,118 +849,10 @@ async fn wait_for_streaming(engine: &Arc<Engine>, peer: NodeId, timeout: Duratio
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
-            bail!(
-                "等待会话进入 Streaming 超时（PIN 不对 / 对端握手失败？用 --pin 复核手机屏幕上的 6 位数字）"
-            );
+            bail!("等待会话进入 Streaming 超时（对端握手失败，或对端已经离开？）");
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-}
-
-/// 提交 PIN 之后的两种结局（决定报什么错）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PairOutcome {
-    /// 会话进入 `Streaming`：握手完成、配对成功。
-    Streaming,
-    /// 对端明确回绝（`PAIR_RESULT{ok:false}`）：reason 是对端给的原文（含剩余尝试次数）。
-    Rejected(String),
-    /// 两边都没等到：超时。
-    Timeout,
-}
-
-/// 等「配对成功」或「被回绝」，先到哪个算哪个（见调用点的注释：只等状态机会丢掉真正的原因）。
-async fn wait_pair_outcome(
-    engine: &Arc<Engine>,
-    peer: NodeId,
-    events: &mut tokio::sync::broadcast::Receiver<EngineEvent>,
-    timeout: Duration,
-) -> PairOutcome {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        if engine
-            .peers()
-            .into_iter()
-            .any(|status| status.id == peer && status.state == SessionState::Streaming)
-        {
-            return PairOutcome::Streaming;
-        }
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return PairOutcome::Timeout;
-        }
-        let slice = remaining.min(Duration::from_millis(200));
-        match tokio::time::timeout(slice, events.recv()).await {
-            // 成功事件不提前返回：还要等状态机真的进 Streaming（否则会把「已回 PAIR_RESULT 但尚未迁移」当成完成）
-            Ok(Ok(EngineEvent::PairCompleted {
-                ok: false, reason, ..
-            })) => {
-                return PairOutcome::Rejected(reason);
-            }
-            Ok(Ok(_)) | Err(_) => {}
-            Ok(Err(_)) => return PairOutcome::Timeout,
-        }
-    }
-}
-
-/// 排干并打印信息类事件（`PinNeeded` / `DisplayPin` / `Error`），不消费 `PairCompleted`。
-///
-/// 为什么单独一个函数：`submit_pin` 之前先把已排队的 `PinNeeded` 打印掉，日志顺序才与真实时序一致
-/// （否则「提示需要 PIN」会晚于「PIN 校验通过」出现，读日志的人会以为流程错了）。
-fn drain_info_events(events: &mut tokio::sync::broadcast::Receiver<EngineEvent>) {
-    let mut seen = 0;
-    while let Ok(event) = events.try_recv() {
-        match event {
-            EngineEvent::DisplayPin { pin, .. } => {
-                println!("    展示过 PIN：{pin}");
-                seen += 1;
-            }
-            EngineEvent::PinNeeded { name, .. } => {
-                println!("    提示需要 PIN（对端 {name}）");
-                seen += 1;
-            }
-            EngineEvent::Error { code, context } => {
-                println!("    会话错误 {code}：{context}");
-                seen += 1;
-            }
-            _ => {}
-        }
-        if seen >= 16 {
-            break;
-        }
-    }
-}
-
-/// 排干配对相关事件，返回 `PairCompleted` 的 `(ok, reason)`。
-fn drain_pair_events(
-    events: &mut tokio::sync::broadcast::Receiver<EngineEvent>,
-) -> Option<(bool, String)> {
-    let mut outcome = None;
-    let mut seen = 0;
-    while let Ok(event) = events.try_recv() {
-        match event {
-            EngineEvent::PairCompleted { ok, reason, .. } => {
-                outcome = Some((ok, reason));
-                seen += 1;
-            }
-            EngineEvent::DisplayPin { pin, .. } => {
-                println!("    展示过 PIN：{pin}");
-                seen += 1;
-            }
-            EngineEvent::PinNeeded { name, .. } => {
-                println!("    提示需要 PIN（对端 {name}）");
-                seen += 1;
-            }
-            EngineEvent::Error { code, context } => {
-                println!("    会话错误 {code}：{context}");
-                seen += 1;
-            }
-            _ => {}
-        }
-        if seen >= 16 {
-            break;
-        }
-    }
-    outcome
 }
 
 // ---------------------------------------------------------------------------
@@ -1479,7 +1157,6 @@ fn us_to_ms(value: u64) -> f64 {
 fn build_report(
     options: &Options,
     capture: &CaptureFacts,
-    auth: &AuthPath,
     remote: &RemoteView,
     snapshots: &[Snapshot],
     tap: &TapView,
@@ -2027,14 +1704,11 @@ fn build_report(
             "device": options.device,
             "buffer_ms": options.buffer_ms,
             "cross_probe": options.cross_probe,
-            "pin_provided": options.pin.is_some(),
         },
-        "auth_path": auth.name(),
         "peer": {
             "id": remote.id.short(),
             "name": remote.name,
             "addr": remote.addr,
-            "trusted": remote.trusted,
         },
         "capture": {
             "backend": capture.backend,
@@ -2295,7 +1969,7 @@ fn render_report(report: &Report, options: &Options) {
         println!("    ⚠ {warning}");
     }
     println!(
-        "    退出码约定：0 成功 · 2 参数/连接/配对失败 · 3 对端无遥测/无出声证据 · 4 时钟未收敛 · 5 PC 采集疑似静音"
+        "    退出码约定：0 成功 · 2 参数/连接失败 · 3 对端无遥测/无出声证据 · 4 时钟未收敛 · 5 PC 采集疑似静音"
     );
 }
 
@@ -2635,8 +2309,6 @@ mod tests {
             "172.16.2.54:58290",
             "--seconds",
             "10",
-            "--pin",
-            "012345",
             "--frame-ms",
             "10",
             "--capture",
@@ -2648,7 +2320,6 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(options.seconds, 10);
-        assert_eq!(options.pin.as_deref(), Some("012345"));
         assert_eq!(options.frame_ms, 10);
         assert_eq!(options.capture, CaptureBackend::Synth);
         assert_eq!(options.json, Some(PathBuf::from("out.json")));
@@ -2668,52 +2339,33 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_pin_and_unknown_flags() {
-        assert!(parse_args(&args(&["run", "--peer", "1.2.3.4", "--pin", "12345"])).is_err());
-        assert!(parse_args(&args(&["run", "--peer", "1.2.3.4", "--pin", "abcdef"])).is_err());
+    fn rejects_unknown_flags() {
         assert!(parse_args(&args(&["run", "--peer", "1.2.3.4", "--nope"])).is_err());
         assert!(parse_args(&args(&["run", "--peer", "1.2.3.4", "--capture", "alsa"])).is_err());
     }
 
     #[test]
-    fn parses_pin_file_and_listen_port() {
+    fn parses_listen_port() {
         let options = parse_args(&args(&[
             "run",
             "--peer",
             "172.16.2.54",
-            "--pin-file",
-            "pin.txt",
             "--listen-port",
             "58800",
         ]))
         .unwrap()
         .unwrap();
-        assert_eq!(options.pin_file, Some(PathBuf::from("pin.txt")));
         assert_eq!(options.listen_port, 58800);
         assert!(parse_args(&args(&["run", "--peer", "1.2.3.4", "--listen-port", "0"])).is_err());
     }
 
-    #[test]
-    fn extract_pin_takes_first_six_digit_run() {
-        assert_eq!(extract_pin("123456"), Some("123456".to_string()));
-        assert_eq!(extract_pin("  123456  "), Some("123456".to_string()));
-        assert_eq!(
-            extract_pin("PIN: 123456 # 20260916"),
-            Some("123456".to_string())
-        );
-        assert_eq!(extract_pin("12345"), None);
-        assert_eq!(extract_pin("1234567"), None);
-        assert_eq!(extract_pin("20260916"), None);
-        assert_eq!(extract_pin(""), None);
-    }
-
-    /// **真链路**验证 `--pin-file` 的完整机制：两个真 Engine + 真 QUIC + 真 §5 握手，
-    /// PIN 由「响应方展示 → 写进文件 → 发起方轮询读到 → 在**同一条连接内**提交」这条无头路径传递。
+    /// **真链路**验证「连接即建立」：两个真 Engine + 真 QUIC + 真 §5 握手。
     ///
-    /// 这里用进程内的两个 Engine 而不是命令行，是因为「手机屏幕上的 PIN」只有**响应方**知道：
-    /// 测试里由响应方事件流充当那个人，把 PIN 写进文件；命令行版本对真机跑时，那个人就是 Lead。
+    /// 这条测试钉住本轮最重要的行为变化：**不再有任何配对步骤**，一次 `connect()` 就应当把会话
+    /// 推进到 `Streaming`；同时反向断言身份目录里**不会**出现 `trust.json`（信任库是真的不再产生，
+    /// 而不是「还写着但没人看」）。
     #[tokio::test]
-    async fn pin_file_pairs_over_real_quic() {
+    async fn connect_establishes_over_real_quic_without_pairing() {
         let dir = tempfile::TempDir::new().unwrap();
         let dir_a = dir.path().join("a");
         let dir_b = dir.path().join("b");
@@ -2725,11 +2377,11 @@ mod tests {
             ..Options::default()
         };
 
-        let mut config_a = EngineConfig::new("pin-file-a", &dir_a);
+        let mut config_a = EngineConfig::new("direct-a", &dir_a);
         config_a.listen = "127.0.0.1:0".parse().unwrap();
         config_a.capture = capture_factory(&options);
 
-        let mut config_b = EngineConfig::new("pin-file-b", &dir_b);
+        let mut config_b = EngineConfig::new("direct-b", &dir_b);
         config_b.listen = "127.0.0.1:0".parse().unwrap();
         config_b.playout = Some(null_playout_factory(60));
 
@@ -2738,92 +2390,32 @@ mod tests {
         let _accept_a = engine_a.spawn_accept_loop();
         let _accept_b = engine_b.spawn_accept_loop();
 
-        // 「人」：把响应方展示的 PIN 写进文件（延迟 200 ms，模拟读屏幕）
-        let pin_path = dir.path().join("pin.txt");
-        let writer_path = pin_path.clone();
-        let mut events_b = engine_b.subscribe();
-        tokio::spawn(async move {
-            while let Ok(event) = events_b.recv().await {
-                if let EngineEvent::DisplayPin { pin, .. } = event {
-                    // 200 ms ≈ 人工读屏+敲字的快版；task-10 之后配对死线顺延到 PIN 有效期 + 15 s 余量，
-                    // 「慢版」（20 s 级人工节奏）也验证过：见 target/evidence/device-tool/e8-pinfile-delayed-20s.log
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    let _ = std::fs::write(&writer_path, format!("{pin}\n"));
-                    return;
-                }
-            }
-        });
-
-        let outcome = engine_a.connect(engine_b.local_addr()).await;
-        assert!(
-            matches!(outcome, Err(ref error) if error.code() == ErrorCode::NotPaired),
-            "未配对的连接必须返回 1002 NOT_PAIRED，实际 {outcome:?}"
-        );
-        let peer = first_peer(&engine_a).expect("会话表里应已有对端");
-
-        let pin = wait_for_pin_file(&pin_path, Duration::from_secs(10))
+        // 一次连接就该成功：没有「先失败取 PIN、再提交」那套两段式流程。
+        let peer = engine_a
+            .connect(engine_b.local_addr())
             .await
-            .unwrap();
-        assert_eq!(pin.len(), 6);
-
-        // 关键：PIN 必须在**同一条连接**里提交（内核每连接新建 PinGate，重连后那个 PIN 就作废了）
-        engine_a.submit_pin(peer, &pin).await.unwrap();
+            .expect("连接现在必须直接成功（没有任何配对步骤）");
+        assert_eq!(
+            first_peer(&engine_a),
+            Some(peer),
+            "connect 返回的对端必须就是会话表里的那一个"
+        );
         wait_for_streaming(&engine_a, peer, Duration::from_secs(10))
             .await
             .unwrap();
 
-        // 响应方是「先回 PAIR_RESULT、再置 trusted 位」，所以这里要轮询等它落定（不是断言失败）。
-        // 注意：在 B 的会话表里，对端是 **A 自己的 NodeId** —— 别拿 A 眼里的 peer（那是 B）去查。
-        let local_id = engine_a.info().id;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        let mut trusted = false;
-        while tokio::time::Instant::now() < deadline {
-            trusted = engine_b
-                .peers()
-                .into_iter()
-                .find(|status| status.id == local_id)
-                .map(|status| status.trusted)
-                .unwrap_or(false);
-            if trusted {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert!(trusted, "配对成功后对端应把本机写进信任库");
-        // 「跨次留存」的落盘证据：信任库文件必须真的在
+        // 反向断言：信任库不再产生（本轮删除的正是它）。
         assert!(
-            dir_b.join("trust.json").exists(),
-            "配对成功后信任库必须已落盘（否则复跑还要再看一次手机屏幕）"
+            !dir_b.join("trust.json").exists(),
+            "信任库已删除，身份目录里不该再出现 trust.json"
+        );
+        assert!(
+            dir_b.join("cert.pem").exists() && dir_b.join("key.pem").exists(),
+            "身份文件仍必须落盘（TLS 双向认证要用）"
         );
 
         engine_a.shutdown().await;
         engine_b.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn pin_file_polling_reads_late_pin() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("pin.txt");
-        let writer = path.clone();
-        // 模拟真实时序：工具已经在线上，投喂方稍后才把文件写出来
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(400)).await;
-            std::fs::write(&writer, "PIN: 246810\n").unwrap();
-        });
-        let pin = wait_for_pin_file(&path, Duration::from_secs(5))
-            .await
-            .unwrap();
-        assert_eq!(pin, "246810");
-    }
-
-    #[tokio::test]
-    async fn pin_file_wait_times_out_with_clear_error() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("missing.txt");
-        let error = wait_for_pin_file(&path, Duration::from_millis(400))
-            .await
-            .unwrap_err();
-        assert!(format!("{error:#}").contains("超时"), "{error:#}");
     }
 
     #[test]

@@ -16,7 +16,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandError {
-    /// `ErrorCode` 的数值形式（如 `1003` = `PAIR_REJECTED`）。
+    /// `ErrorCode` 的数值形式（如 `1002` = `NO_PEER`）。
     pub code: u16,
     /// 给用户看的整句人话（短句、动词开头、不出现 socket/RTT 之类黑话）。
     pub message: String,

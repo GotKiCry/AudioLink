@@ -1,7 +1,7 @@
 /**
  * 契约 §6 的视图形状（`docs/11-m1-contract.md`）。
  *
- * 为什么手写而不用代码生成：M1 只有 8 个 command / 3 个事件，手写的成本低于引入
+ * 为什么手写而不用代码生成：command 与事件的数量有限，手写的成本低于引入
  * tauri-specta 之类工具的构建复杂度；**代价是必须与 `desktop/src-tauri/src/view.rs` 对齐**，
  * 那一侧有序列化形状的单元测试钉死字段名，两侧一起改才不会漂。
  *
@@ -70,7 +70,6 @@ export interface PeerView {
   name: string;
   addr: string;
   state: PeerState;
-  trusted: boolean;
   /** 本机主动连接该主机收听声音，不向它自动回传音频。 */
   receiving?: boolean;
   /** 重连成功次数（0 = 从未重连）：界面据此显示回执。 */
@@ -78,6 +77,20 @@ export interface PeerView {
   reconnects?: number;
   /** §13 能力协商结果；null = 还没走完能力交换（握手中就是 null）。 */
   capabilities: PeerCapabilitiesView | null;
+  /**
+   * **本条流**协商生效的 Opus 帧长（ms，10 / 20）；null = 还没开流 / 还没协商，
+   * 或本机对这条流是发送端（发送方向恒用本地档）。
+   *
+   * 声明为可选：老内核不会给这个字段 —— 缺它是**正常态**，界面要按「未知」显示占位符，
+   * 而不是把它当成 0 / 20 去展示一个假数字。
+   */
+  negotiatedFrameMs?: number | null;
+  quality?: {
+    rttUs: number | null;
+    lossPctX100: number | null;
+    underruns: number | null;
+    bufferLevelUs: number | null;
+  } | null;
 }
 
 export interface DiscoveredHost {
@@ -95,6 +108,7 @@ export interface TelemetryView {
   rttUs: number;
   jitterUs: number;
   lossPct: number;
+  receiverReport?: boolean;
   bitrateBps: number;
   bufferLevelUs: number;
   underruns: number;
@@ -103,22 +117,9 @@ export interface TelemetryView {
   e2eP95Us: number;
 }
 
-/** `audiolink://pair-required` 的载荷。 */
-export interface PairRequiredPayload {
-  idShort: string;
-  name: string;
-  pin: string;
-}
-
 /** `start_send` 的返回（注意 snake_case）。 */
 export interface StartSendResult {
   stream_id: number;
-}
-
-/** `submit_pin` 的返回：**总是成功返回**，失败信息在 `reason`。 */
-export interface SubmitPinResult {
-  ok: boolean;
-  reason: string;
 }
 
 /** 命令失败的 rejection 形状（Rust 侧 `error::CommandError`）。 */
@@ -145,13 +146,6 @@ export function toCommandError(raw: unknown): CommandError {
     message: t("err.ipc"),
     context: typeof raw === "string" ? raw : String(raw),
   };
-}
-
-const PIN_PATTERN = /^\d{6}$/;
-
-/** 配对码是否形如 6 位数字（**输入前置校验**，不是安全校验；真正的校验在内核里）。 */
-export function isPinWellFormed(pin: string): boolean {
-  return PIN_PATTERN.test(pin);
 }
 
 /** IPv4 的一段（十进制，1-3 位）。 */
@@ -336,39 +330,6 @@ export interface AutoConnectPolicy {
 }
 
 /**
- * 移除设备（`revoke_trust`，FR-18）的结果。
- *
- * 为什么不是 `null`：这是一次**不可逆**的隐私操作，界面必须能如实说出「做了什么」——
- * 尤其「本来就不在信任库里」与「顺手清掉了上次设备记录」是两件不同的事，
- * 返回空值等于让用户无法判断是否生效。
- */
-/**
- * 一条**已配对设备**（`list_trusted_peers` 的元素）。
- *
- * 与 `PeerView` 的区别在数据来源：`PeerView` 来自会话表（界面上的对端卡片），
- * 这份来自**信任库**（白名单）—— 换机后残留的旧记录、很久没连过的设备只在这一侧出现，
- * 而它们正是「取消配对」要覆盖的对象。
- * `idShort` 与 `PeerView.idShort` 同口径，所以两处共用同一个移除入口。
- */
-export interface TrustedPeerView {
-  /** 指纹短码（与 `PeerView.idShort` 同一口径）。 */
-  idShort: string;
-  /** 配对时记下的展示名（对端自报，仅展示）。 */
-  name: string;
-  /** `windows` / `android` / `unknown`。 */
-  platform: string;
-  /** 首次配对成功的 Unix 秒。 */
-  pairedAtUnix: number;
-}
-
-export interface RevokeTrustResult {
-  /** 是否真的从信任库里删掉了（`false` = 本来就不在，幂等）。 */
-  removed: boolean;
-  /** 是否顺手清掉了「上次设备」记录（它原本指向这台设备）。 */
-  forgotLastPeer: boolean;
-}
-
-/**
  * `check_update` 的返回（M5 自动更新）。
  *
  * 只有两种**正常**结果：`version === null` = 已是最新；有版本号 = 发现新版本。
@@ -387,6 +348,7 @@ export interface UpdateCheckView {
 }
 
 export interface TelemetryRow {
+  receiverReport?: boolean;
   /** 采样时刻（Unix 毫秒）。 */
   atUnixMs: number;
   peers: number;

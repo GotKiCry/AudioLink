@@ -1,5 +1,9 @@
 # AudioLink 交接文档（Handoff）
 
+> ⚠️ **历史记录说明（2026-09-22 补）**：本文记录的是 M1 交接时的交付事实。文中 **PIN 配对 / 信任库** 相关的
+> 验收数字、工具参数（如 `device-link --pin-file`）与教训条目属于当时的记账；该认证机制已在本轮整体移除
+> （现在连上即用：没有配对码、没有白名单），现状见 `docs/72-remove-pairing.md`。
+
 > **性质**：过程性文档。新会话接手本项目时先读本文，再按 `docs/05-roadmap.md` 推进。
 > **⚠️ 阅读方式（task-43，2026-09-17 补）**：本文件**按轮次追加**，是**过程日志**，不是现状快照。
 > 早期轮次里的「未做 / 缺口 / 还没接线」**只代表当时**，不是当前 HEAD 的缺口；
@@ -511,7 +515,7 @@ PC → Android 全链路（真实 QUIC/mTLS → §5 PIN 配对 → Opus → Audi
   于是立 3 条共享任务、派两位队友（`reconnect-test` 写验收测试、`reconnect-design` 写 `docs/50-m2-reconnect.md`），
   Lead 自己做实现。**实现三件**：① `Inner` 加 `reconnect_tx` + 重连监督任务（持 `Weak<Engine>` 避免自我引用环）；
   ② `reconnect_once` 摘旧会话 → 退避重拨（单次 1.5 s 超时、退避 200→1000 ms、预算 20 s）→ 成功后 `start_send`；
-  重拨走完整的 `connect_inner`，它内部的 `is_trusted` 决定是否要 PIN —— **重连不绕过信任库**；
+  重拨走完整的 `connect_inner`，（**认证阶段已随本轮移除**，见 `docs/72-remove-pairing.md`）—— **重连不绕过握手与身份校验**；
   ③ **静默看门狗（关键）**：拔网时 QUIC 不报错（`idle_timeout` 30 s 才判死），`report_peer_gone` 压根没被调用，
   所以要自己数「多久没听到对端」（`PeerSession.last_rx_us` + `ticker`，阈值 1 s）。**实测 4783 → 444 ms**，
   上行静默消失，验收测试的 3000 ms 断言转绿。**但引入回归**：接收侧 `peers()` 变成空表（`[Streaming] / []`），
@@ -673,11 +677,11 @@ Issue #1 已定位并修复：`OpusDecoder::decode_into()` 返回**交错样本�
 21. **生产端点是强制 mTLS**：`audiolink-net::tls::server_config()` 索取客户端证书（§5 要求接收侧也能拿到对端证书 DER 验签）。
     ⇒ 任何「裸 QUIC 客户端」都连不上：M0 的 `latency-probe` 客户端原本不带证书，被服务端回
     `error 116: peer sent no certificates`（**看起来像网络不通，其实是缺客户端证书**）。已给它补自签客户端证书。
-22. **握手死线必须给配对让路**：死线 10 s 是绝对的、而 §5 的 PIN 有效期 60 s ⇒「人在手机上看 PIN 再敲进 PC」必然超时，
-    表现为 `1002 NOT_PAIRED（unknown peer）`（会话已被回收，peers 表里没有该对端）。
-    现在进入配对等待时把死线顺延到 75 s（PIN_TTL 60 + 15 余量），权威判据仍在 `PinGate`。
-23. **内核每连接新建 `PinGate`**：PIN 不是「这台设备的 PIN」，而是**每连接一个**，连接一断即作废。
-    ⇒ 自动化流程必须「连上后轮询读屏 → 同一条连接内提交」（`device-link --pin-file` 就是为此）。
+22. **[历史] 握手死线必须给配对让路（该机制已在本轮移除）**：死线 10 s 是绝对的、而 §5 的 PIN 有效期 60 s ⇒「人在手机上看 PIN 再敲进 PC」必然超时，
+表现为 `1002 NOT_PAIRED（unknown peer）`（会话已被回收，peers 表里没有该对端）。**现在不存在这个路径** —— 没有 PIN、没有 `NOT_PAIRED` 码。
+当时进入配对等待时把死线顺延到 75 s（PIN_TTL 60 + 15 余量），权威判据仍在 `PinGate`。
+23. **[历史] 内核每连接新建 `PinGate`**（该机制已在本轮移除）：PIN 不是「这台设备的 PIN」，而是**每连接一个**，连接一断即作废。
+⇒ 当时自动化流程必须「连上后轮询读屏 → 同一条连接内提交」（`device-link --pin-file` 就是为此），该参数已随实现一并删除。
 24. **低延迟模式生效 ≠ 缓冲小**：真机 `getPerformanceMode()=LOW_LATENCY`，但请求 960 帧被框架顶到 **3844 帧（80 ms）**，
     flinger 对该 track 报 Latency 101 ms。合法解释：缓冲**容量**与队列**水位**是两件事；
     容量可 `setBufferSizeInFrames` 收缩（实测 3844→960r **不掉 FAST**，Latency 101→41 ms），

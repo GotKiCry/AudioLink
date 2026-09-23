@@ -9,8 +9,7 @@ use std::time::Duration;
 use audiolink_audio::{
     AudioError, DeviceFormat, NullPlayout, PlayoutSink, PlayoutStats, SyntheticCapture,
 };
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::ErrorCode;
+use audiolink_engine::{Engine, EngineConfig, SessionState};
 use tokio::sync::mpsc;
 
 struct RecordingSink {
@@ -77,17 +76,13 @@ async fn check_pcm_delivery(frame_ms: u32, expected_samples: usize) {
     let sender = Engine::start(send_config).await.expect("发送引擎");
     let receiver = Engine::start(recv_config).await.expect("接收引擎");
     let accept = receiver.spawn_accept_loop();
-    let mut events = receiver.subscribe();
+
     let peer = receiver.info().id;
     let result = tokio::time::timeout(Duration::from_secs(10), async {
-        let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-        assert_eq!(error.code(), ErrorCode::NotPaired);
-        let pin = loop {
-            if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-                break pin;
-            }
-        };
-        sender.submit_pin(peer, &pin).await.expect("PIN 配对");
+        sender
+            .connect(receiver.local_addr())
+            .await
+            .expect("连接应当直接成功（无认证）");
         while !sender
             .peers()
             .iter()
@@ -115,7 +110,7 @@ async fn check_pcm_delivery(frame_ms: u32, expected_samples: usize) {
     sender.shutdown().await;
     receiver.shutdown().await;
     accept.abort();
-    let writes = result.expect("10 s 内必须配对、开流并收到 30 包音频");
+    let writes = result.expect("10 s 内必须连接、开流并收到 30 包音频");
     let mut audio_samples = 0;
     for samples in writes {
         assert_eq!(

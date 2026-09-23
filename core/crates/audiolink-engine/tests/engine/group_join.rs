@@ -23,7 +23,7 @@ use audiolink_audio::{
     AudioError, DeviceFormat, NullPlayout, PlayoutSink, PlayoutStats, SyntheticCapture,
 };
 use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::{ErrorCode, NodeId};
+use audiolink_types::NodeId;
 use tokio::task::JoinHandle;
 
 /// 播放端：分别数「写了多少样本」与「其中多少是非静音」。
@@ -102,20 +102,12 @@ async fn start_receiver(
     (engine, accept)
 }
 
-async fn connect_and_pair(sender: &Arc<Engine>, receiver: &Arc<Engine>) -> NodeId {
-    let mut events = receiver.subscribe();
+async fn connect_peer(sender: &Arc<Engine>, receiver: &Arc<Engine>) -> NodeId {
     let receiver_id = receiver.info().id;
-    let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-            break pin;
-        }
-    };
     sender
-        .submit_pin(receiver_id, &pin)
+        .connect(receiver.local_addr())
         .await
-        .expect("PIN 配对");
+        .expect("连接应当直接成功（无认证）");
     receiver_id
 }
 
@@ -178,9 +170,9 @@ async fn joining_member_receives_an_epoch_and_plays() {
     let (receiver_c, accept_c) =
         start_receiver(dir.path(), 2, Arc::clone(&counters_c), frame_ms).await;
 
-    let id_a = connect_and_pair(&sender, &receiver_a).await;
-    let id_b = connect_and_pair(&sender, &receiver_b).await;
-    let id_c = connect_and_pair(&sender, &receiver_c).await;
+    let id_a = connect_peer(&sender, &receiver_a).await;
+    let id_b = connect_peer(&sender, &receiver_b).await;
+    let id_c = connect_peer(&sender, &receiver_c).await;
     for id in [id_a, id_b, id_c] {
         wait_streaming(&sender, id).await;
     }

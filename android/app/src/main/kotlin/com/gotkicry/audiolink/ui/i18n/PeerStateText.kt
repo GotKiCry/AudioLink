@@ -6,7 +6,7 @@ import java.util.Locale
 /**
  * 内核会话状态字面量 → 当前语言的标签。
  *
- * 为什么不在 UI 里直接用 `PeerUi.stateLabel`：那个标签由 [com.gotkicry.audiolink.service.PairingStateMapper]
+ * 为什么不在 UI 里直接用 `PeerUi.stateLabel`：那个标签由 [com.gotkicry.audiolink.service.PeerStateMapper]
  * 生成，是**中文常量**且有 JVM 单测钉住。语言跟随系统时英文界面会被它拖回中文，所以这里按同一口径
  * （对应 docs/03-protocol.md 的 state 字面量，未知值原样透传、不吞）重新给一份当前语言的映射。
  * 判定口径不变，只是换了语言。

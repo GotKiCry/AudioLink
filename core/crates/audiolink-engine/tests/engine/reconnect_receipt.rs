@@ -29,8 +29,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use audiolink_audio::{NullPlayout, PlayoutSink, SyntheticCapture};
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::{ErrorCode, NodeId};
+use audiolink_engine::{Engine, EngineConfig, SessionState};
+use audiolink_types::NodeId;
 use tokio::net::UdpSocket;
 
 /// 双向闸门中继：闸门关着时**两个方向都丢** —— 这就是「拔网线」。
@@ -107,7 +107,7 @@ async fn wait_for(budget: Duration, condition: impl Fn() -> bool) -> bool {
     }
 }
 
-/// 起一对引擎：真 QUIC 走中继，走完 PIN 配对与开流。
+/// 起一对引擎：真 QUIC 走中继，走完握手与开流。
 async fn wire_up(
     dir: &Path,
 ) -> (
@@ -134,32 +134,40 @@ async fn wire_up(
 
     let receiver = Engine::start(recv_config).await.expect(r"接收引擎");
     let accept = receiver.spawn_accept_loop();
-    let mut events = receiver.subscribe();
+
     let receiver_id = receiver.info().id;
 
     let gate = Gate::start(receiver.local_addr()).await;
     let sender = Engine::start(send_config).await.expect(r"发送引擎");
 
-    let error = sender.connect(gate.addr).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, r"首次连接必须先要 PIN");
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-            break pin;
-        }
-    };
     sender
-        .submit_pin(receiver_id, &pin)
+        .connect(gate.addr)
         .await
-        .expect(r"PIN 配对");
-    let paired = wait_for(Duration::from_secs(10), || {
+        .expect("连接应当直接成功（无认证）");
+    let streaming = wait_for(Duration::from_secs(10), || {
         sender
             .peers()
             .iter()
             .any(|peer| peer.id == receiver_id && peer.state == SessionState::Streaming)
     })
     .await;
-    assert!(paired, r"发送侧没有在 10 s 内进入 Streaming");
+    assert!(streaming, r"发送侧没有在 10 s 内进入 Streaming");
     sender.start_send(receiver_id).await.expect(r"开流");
+
+    // 拔网之前必须先让发起方**听到过**对端：FR-27 的静默判据从「听到过」起算
+    // （一次都没听到时 `silent_for_ms()` 恒为 0，免得刚建好的会话被判静默），
+    // 所以少了这一等，`cut()` 之后的 3 s 阈值永远算不出来 —— 重连根本不会发生，
+    // 而下面「状态仍是 Streaming、reconnects 0」会被误读成回执缺陷。
+    let heard = wait_for(Duration::from_secs(5), || {
+        sender
+            .clock_probe_stats(receiver_id)
+            .is_some_and(|stats| stats.received > 0)
+    })
+    .await;
+    assert!(
+        heard,
+        r"发起方 5 s 内没收到对端的任何时钟探测：静默看门狗的前提不成立，这条用例失去意义"
+    );
 
     (sender, receiver, gate, accept, receiver_id)
 }

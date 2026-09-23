@@ -18,8 +18,7 @@ use std::time::Duration;
 use audiolink_audio::{
     AudioError, DeviceFormat, NullPlayout, PlayoutSink, PlayoutStats, SyntheticCapture,
 };
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState, StreamAxis};
-use audiolink_types::ErrorCode;
+use audiolink_engine::{Engine, EngineConfig, SessionState, StreamAxis};
 use tokio::sync::mpsc;
 
 struct RecordingSink {
@@ -109,18 +108,10 @@ async fn receiver_broadcasts_the_common_start() {
 
     let outcome = tokio::time::timeout(Duration::from_secs(90), async {
         for sender in &senders {
-            let mut events = receiver.subscribe();
-            let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-            assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-            let pin = loop {
-                if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-                    break pin;
-                }
-            };
             sender
-                .submit_pin(receiver_id, &pin)
+                .connect(receiver.local_addr())
                 .await
-                .expect("PIN 配对");
+                .expect("连接应当直接成功（无认证）");
             while !sender
                 .peers()
                 .iter()
@@ -154,7 +145,7 @@ async fn receiver_broadcasts_the_common_start() {
     receiver.shutdown().await;
 
     let (sent, before, after, axis_before, axis_after) =
-        outcome.expect("90 s 内必须完成配对、开流与广播");
+        outcome.expect("90 s 内必须完成连接、开流与广播");
     println!(
         "M4 共同基准：广播 {} 条会话 · 对齐前 {} 帧（掉队 {}）· 对齐后 {} 帧（掉队 {}）",
         sent, before.total_frames, before.partial_frames, after.total_frames, after.partial_frames

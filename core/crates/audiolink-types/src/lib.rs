@@ -300,8 +300,8 @@ impl Flags {
 /// 每条命令的方向都用**主机 / 接收端**标注。它们描述的是**本次会话中的角色**，不是设备属性 ——
 /// 同一台设备这次当主机、下次当接收端都合法：
 ///
-/// - **主机**：提供声音、被连接的一方。**永不主动发起连接**，只出示地址、亮 6 位配对码、接受接入、开始推流。
-/// - **接收端**：收听声音、主动连接主机的一方。它提交主机亮出的 6 位配对码。
+/// - **主机**：提供声音、被连接的一方。**永不主动发起连接**，只出示地址、接受接入、开始推流。
+/// - **接收端**：收听声音、主动连接主机的一方：拿到主机地址（或从发现列表点选）后直接连。
 ///
 /// 协议文档 §5 的节点 A 是发起方（= 接收端），节点 B 是响应方（= 主机）。旧文里的「发起方 →」
 /// 等于「接收端 →」，「响应方 →」等于「主机 →」；而「接收方」一词在旧文里既指接受连接的主机、
@@ -313,16 +313,6 @@ pub enum OpCode {
     Hello = 0x01,
     /// `0x02` 主机 → 接收端：`proto_version, node_info, accepted, reason`。
     HelloAck = 0x02,
-    /// `0x03` 双方：`nonce(32B)`。
-    AuthChallenge = 0x03,
-    /// `0x04` 双方：`ECDSA(privkey, nonce ‖ fp_pair)`。
-    AuthResponse = 0x04,
-    /// `0x05` 主机 → 接收端：`pin_display`（主机生成并亮出 6 位配对码）。
-    PairRequired = 0x05,
-    /// `0x06` 接收端 → 主机：`pin(6 位数字)`（把主机屏幕上的码提交回来）。
-    PairSubmit = 0x06,
-    /// `0x07` 主机 → 接收端：`ok, reason, persist`。
-    PairResult = 0x07,
     /// `0x10` 主机 → 接收端：开流协商（推流方向由主机发起）。
     OpenStream = 0x10,
     /// `0x11` 接收端 → 主机：`stream_id, codec_chosen, epoch_id, epoch_local_us`。
@@ -363,14 +353,9 @@ pub enum OpCode {
 
 impl OpCode {
     /// 全部已知取值（供遍历测试与解码工具使用）。
-    pub const ALL: [OpCode; 25] = [
+    pub const ALL: [OpCode; 20] = [
         OpCode::Hello,
         OpCode::HelloAck,
-        OpCode::AuthChallenge,
-        OpCode::AuthResponse,
-        OpCode::PairRequired,
-        OpCode::PairSubmit,
-        OpCode::PairResult,
         OpCode::OpenStream,
         OpCode::OpenStreamAck,
         OpCode::CloseStream,
@@ -396,11 +381,6 @@ impl OpCode {
         match value {
             0x01 => Some(Self::Hello),
             0x02 => Some(Self::HelloAck),
-            0x03 => Some(Self::AuthChallenge),
-            0x04 => Some(Self::AuthResponse),
-            0x05 => Some(Self::PairRequired),
-            0x06 => Some(Self::PairSubmit),
-            0x07 => Some(Self::PairResult),
             0x10 => Some(Self::OpenStream),
             0x11 => Some(Self::OpenStreamAck),
             0x12 => Some(Self::CloseStream),
@@ -433,11 +413,6 @@ impl OpCode {
         match self {
             Self::Hello => "HELLO",
             Self::HelloAck => "HELLO_ACK",
-            Self::AuthChallenge => "AUTH_CHALLENGE",
-            Self::AuthResponse => "AUTH_RESPONSE",
-            Self::PairRequired => "PAIR_REQUIRED",
-            Self::PairSubmit => "PAIR_SUBMIT",
-            Self::PairResult => "PAIR_RESULT",
             Self::OpenStream => "OPEN_STREAM",
             Self::OpenStreamAck => "OPEN_STREAM_ACK",
             Self::CloseStream => "CLOSE_STREAM",
@@ -645,21 +620,17 @@ impl Capabilities {
 pub enum ErrorCode {
     /// `1001`：协议主版本不兼容 → 提示升级并断开。
     VersionMismatch = 1001,
-    /// `1002`：未配对 → 触发配对流程。
-    NotPaired = 1002,
-    /// `1003`：PIN 错误 / 超时。
-    PairRejected = 1003,
-    /// `1004`：签名校验失败（可能是中间人）。
-    AuthFailed = 1004,
+    /// `1002`：指定的对端不存在（未连接 / 短码未命中）。
+    NoPeer = 1002,
     /// `1005`：对方不支持所需能力。
     CapUnsupported = 1005,
     /// `1006`：混音路数超上限。
     StreamLimit = 1006,
     /// `1007`：无共同编解码。
     CodecUnsupported = 1007,
-    /// `1008`：载荷非法（截断 / 超长 / 未知类型 / 保留位 / 长度越界）。
+    /// `1008`：载荷非法（截断 / 超长 / 未知类型 / 保留位 / 长度越界），含握手失败与对端身份不可读。
     BadRequest = 1008,
-    /// `1009`：正在握手 / 配对中。
+    /// `1009`：正在握手中。
     Busy = 1009,
     /// `2001`：播放欠载（统计用途，不致命）。
     PlayoutUnderrun = 2001,
@@ -681,9 +652,7 @@ impl ErrorCode {
     pub const fn from_u16(value: u16) -> Option<Self> {
         match value {
             1001 => Some(Self::VersionMismatch),
-            1002 => Some(Self::NotPaired),
-            1003 => Some(Self::PairRejected),
-            1004 => Some(Self::AuthFailed),
+            1002 => Some(Self::NoPeer),
             1005 => Some(Self::CapUnsupported),
             1006 => Some(Self::StreamLimit),
             1007 => Some(Self::CodecUnsupported),
@@ -701,9 +670,7 @@ impl ErrorCode {
     pub const fn name(self) -> &'static str {
         match self {
             Self::VersionMismatch => "VERSION_MISMATCH",
-            Self::NotPaired => "NOT_PAIRED",
-            Self::PairRejected => "PAIR_REJECTED",
-            Self::AuthFailed => "AUTH_FAILED",
+            Self::NoPeer => "NO_PEER",
             Self::CapUnsupported => "CAP_UNSUPPORTED",
             Self::StreamLimit => "STREAM_LIMIT",
             Self::CodecUnsupported => "CODEC_UNSUPPORTED",
@@ -718,7 +685,7 @@ impl ErrorCode {
 }
 
 /// 按 §11 错误码表批量生成 [`AudioLinkError`]：每个变体 4 个成员（`const` 构造器 / 动态构造器 /
-/// `code()` 分支 / `context()` 分支），避免 13 份手写样板漂移。
+/// `code()` 分支 / `context()` 分支），避免 10 份手写样板漂移。
 ///
 /// 语法：`Variant => snake_name, ErrorCode::Variant, is_statistical;`
 macro_rules! define_audio_link_errors {
@@ -784,23 +751,19 @@ macro_rules! define_audio_link_errors {
 define_audio_link_errors! {
     /// `1001`：协议主版本不兼容 → 提示升级并断开。
     VersionMismatch => version_mismatch, VersionMismatch, false;
-    /// `1002`：未配对 → 触发配对流程。
-    NotPaired => not_paired, NotPaired, false;
-    /// `1003`：PIN 错误 / 超时（含剩余尝试次数）。
-    PairRejected => pair_rejected, PairRejected, false;
-    /// `1004`：签名校验失败（可能是中间人）→ 断开并告警。
-    AuthFailed => auth_failed, AuthFailed, false;
+    /// `1002`：指定的对端不存在（未连接 / 短码未命中）→ 提示并留在当前页。
+    NoPeer => no_peer, NoPeer, false;
     /// `1005`：对方不支持所需能力（如内录）→ UI 置灰。
     CapUnsupported => cap_unsupported, CapUnsupported, false;
     /// `1006`：混音路数超上限 → 拒绝并提示。
     StreamLimit => stream_limit, StreamLimit, false;
     /// `1007`：无共同编解码 → 建议切 PCM 档。
     CodecUnsupported => codec_unsupported, CodecUnsupported, false;
-    /// `1008`：字节流非法（截断 / 超长 / 未知 ptype / 保留位非 0 / 长度越界 …）。
+    /// `1008`：字节流非法（截断 / 超长 / 未知 ptype / 保留位非 0 / 长度越界 …），含握手失败与对端身份不可读。
     ///
     /// 这是 L1 严格解码层（`audiolink-proto`）的**唯一拒绝出口**：调用方不得把它升级为断连（§1.1）。
     BadRequest => bad_request, BadRequest, false;
-    /// `1009`：正在握手 / 配对中 → 稍后重试。
+    /// `1009`：正在握手中 → 稍后重试。
     Busy => busy, Busy, false;
     /// `2001`：播放欠载（统计用途，不致命）。
     PlayoutUnderrun => playout_underrun, PlayoutUnderrun, true;
@@ -820,9 +783,7 @@ impl AudioLinkError {
         let context = Cow::Owned(context);
         match code {
             ErrorCode::VersionMismatch => Self::VersionMismatch { context },
-            ErrorCode::NotPaired => Self::NotPaired { context },
-            ErrorCode::PairRejected => Self::PairRejected { context },
-            ErrorCode::AuthFailed => Self::AuthFailed { context },
+            ErrorCode::NoPeer => Self::NoPeer { context },
             ErrorCode::CapUnsupported => Self::CapUnsupported { context },
             ErrorCode::StreamLimit => Self::StreamLimit { context },
             ErrorCode::CodecUnsupported => Self::CodecUnsupported { context },
@@ -1131,9 +1092,8 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 
 /// 节点标识 = 自签证书 DER 的 SHA-256 指纹（32 B）。
 ///
-/// 这是 AudioLink 的**唯一身份**：TLS 握手已保证对端持有对应私钥，控制面
-/// `AUTH_CHALLENGE` / `AUTH_RESPONSE` 再证明「私钥持有者 = 证书主体」（§5「认证强度」）。
-/// 因此信任库只需存这个值，UI 上也只展示它的[短码](NodeId::short)。
+/// 这是 AudioLink 的**唯一身份**：TLS 1.3 握手已保证对端持有对应私钥，本值由对端证书现算，
+/// 只用于区分设备；UI 上只展示它的[短码](NodeId::short)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NodeId(pub [u8; NODE_ID_LEN]);
@@ -1159,7 +1119,7 @@ impl NodeId {
 
     /// 短码（16 个 hex 字符 = 指纹前 8 字节）：UI 展示与发现报文 `id` 字段用。
     ///
-    /// 注意：短码**只用于展示与发现提示**，任何信任判定必须比对完整 [`NodeId`]。
+    /// 注意：短码**只用于展示与发现提示**，任何身份比对必须比对完整 [`NodeId`]。
     pub fn short(self) -> String {
         hex_encode(&self.0[..NODE_ID_SHORT_HEX_LEN / 2])
     }
@@ -1178,7 +1138,7 @@ impl NodeId {
         Some(Self(out))
     }
 
-    /// 该短码是否与另一完整指纹的[短码](NodeId::short)一致（发现流程的初筛，**不构成信任**）。
+    /// 该短码是否与另一完整指纹的[短码](NodeId::short)一致（发现流程的初筛；短码只用于展示，判别身份要用完整指纹）。
     pub fn short_matches(self, text: &str) -> bool {
         text.eq_ignore_ascii_case(&self.short())
     }
@@ -1200,9 +1160,9 @@ impl fmt::Display for NodeId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct NodeInfo {
-    /// 节点身份（完整 32 B 指纹）—— 信任判定的唯一依据。
+    /// 节点身份（完整 32 B 指纹）—— 区分设备的唯一依据。
     pub id: NodeId,
-    /// 用户可改的展示名。**仅展示**，不参与任何身份 / 信任判定。
+    /// 用户可改的展示名。**仅展示**，不参与任何身份判定。
     pub name: String,
     /// 平台。
     pub platform: Platform,

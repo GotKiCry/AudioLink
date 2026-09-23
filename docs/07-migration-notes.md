@@ -38,7 +38,7 @@
 | **托盘常驻 + 开机自启 + 单实例** | FR-30/31 | 上游 `ShellLink.CreateShortcut(path,"startup")` 第二参实际是命令行参数（用错）；Tauri 插件实现 |
 | **UDP 局域网自发现** | FR-16 兜底发现（mDNS 为主） | 上游 Windows 侧因 26 字节阈值 bug **100% 失效**；新协议载荷带长度前缀与版本字段 |
 | **单文件便携分发**（免安装） | 桌面端同时产"安装包 + 便携版" | 上游 Costura 单文件 + 5 个文件同目录约定（含 apk/adb）；新方案不依赖同名约定 |
-| **配置持久化在用户目录** | FR-33 窗口状态/白名单持久化 | 上游 `%APPDATA%\AudioShare\audio.share.config.json` 全静态单例；改为显式配置模块 + 原子写 |
+| **配置持久化在用户目录** | FR-33 窗口状态/偏好持久化 | 上游 `%APPDATA%\AudioShare\audio.share.config.json` 全静态单例；改为显式配置模块 + 原子写 |
 | **双语 + 深浅色** | FR-33/39 | 上游 24 个语言 key 硬编码在 XAML；新方案用 i18n 资源文件 + 双语齐备校验 |
 
 ---
@@ -75,13 +75,13 @@
 | `UdpClient` 端口扫描循环不 break → 句柄泄漏 | 单 socket + 组播/广播复用，生命周期由 RAII 管理 |
 | `Speaker.ReadAsync` 对端关闭后无限空转烧 CPU | 读取任务在流关闭时退出，用 `select!/await` + 明确的连接状态机 |
 | 无 KeepAlive、无重连退避 | QUIC 连接迁移 + 指数退避重连（上限 3 s 恢复，FR-27） |
-| 无加密无鉴权（Android `LocalServerSocket` 全局命名空间，同机任意 App 可推流） | QUIC TLS1.3 + PIN 配对 + 白名单；本机回环也走身份校验 |
+| 无加密无鉴权（Android `LocalServerSocket` 全局命名空间，同机任意 App 可推流） | QUIC TLS1.3 + 自签证书；本机回环也走 TLS 握手与证书出示 |
 
 ### 3.4 Android 端安全问题（旧版最大攻击面）
 
 | 上游缺陷 | AudioLink 方案 |
 |---|---|
-| 内置 HTTP 服务器 45 条路由**无任何鉴权**，`/storage?key=` 可明文读回音乐平台 cookie，`/proxy` 是开放代理（SSRF），CORS `*` + `Allow-Credentials: true` | **整块删除**：v1 不提供任何 HTTP 服务面；节点通信只走 QUIC + 已配对身份 |
+| 内置 HTTP 服务器 45 条路由**无任何鉴权**，`/storage?key=` 可明文读回音乐平台 cookie，`/proxy` 是开放代理（SSRF），CORS `*` + `Allow-Credentials: true` | **整块删除**：v1 不提供任何 HTTP 服务面；节点通信只走 QUIC（TLS1.3 + 自签证书） |
 | `android/sign.jks` 与明文口令入库 | 密钥不入库，CI 用 Secret 注入；本地用 `~/.audiolink/keystore.jks` |
 | `usesCleartextTraffic=true` | 禁止明文流量（QUIC 本身加密） |
 | 声明 `RECORD_AUDIO` 却从不申请；`requestPermissions` 申请的全是 normal 权限 | 权限按需申请且与功能路径一一对应（FR-07） |

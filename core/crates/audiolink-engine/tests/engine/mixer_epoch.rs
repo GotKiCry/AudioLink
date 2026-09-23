@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use audiolink_audio::{NullPlayout, PlayoutSink, SyntheticCapture};
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::{ErrorCode, NodeId};
+use audiolink_engine::{Engine, EngineConfig, SessionState};
+use audiolink_types::NodeId;
 use tokio::task::JoinHandle;
 
 /// 一台手机（发送端）：有采集源，没有播放。
@@ -44,21 +44,13 @@ async fn start_pc(dir: &Path, frame_ms: u32) -> (Arc<Engine>, JoinHandle<()>) {
     (engine, accept)
 }
 
-/// 手机连上 PC 并完成 PIN 配对；PIN 从 **PC 侧**的事件里读（PC 是显示方）。
-async fn pair_phone(
-    pc: &Arc<Engine>,
-    pc_events: &mut tokio::sync::broadcast::Receiver<EngineEvent>,
-    phone: &Arc<Engine>,
-) -> NodeId {
+/// 手机连到 PC（无认证：一次 `connect` 即完成握手），返回 PC 的身份。
+async fn connect_phone(pc: &Arc<Engine>, phone: &Arc<Engine>) -> NodeId {
     let pc_id = pc.info().id;
-    let error = phone.connect(pc.local_addr()).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = pc_events.recv().await.unwrap() {
-            break pin;
-        }
-    };
-    phone.submit_pin(pc_id, &pin).await.expect("PIN 配对");
+    phone
+        .connect(pc.local_addr())
+        .await
+        .expect("连接应当直接成功（无认证）");
     pc_id
 }
 
@@ -84,13 +76,12 @@ async fn broadcast_epoch_aligns_every_sender_to_one_origin() {
     let lead_ms = 80_u32;
 
     let (pc, accept) = start_pc(dir.path(), frame_ms).await;
-    let mut pc_events = pc.subscribe();
     let phone_a = start_phone(dir.path(), 0, frame_ms).await;
     let phone_b = start_phone(dir.path(), 1, frame_ms).await;
 
     let outcome = tokio::time::timeout(Duration::from_secs(60), async {
-        let pc_id = pair_phone(&pc, &mut pc_events, &phone_a).await;
-        pair_phone(&pc, &mut pc_events, &phone_b).await;
+        let pc_id = connect_phone(&pc, &phone_a).await;
+        connect_phone(&pc, &phone_b).await;
         wait_streaming(&phone_a, pc_id).await;
         wait_streaming(&phone_b, pc_id).await;
 
@@ -125,7 +116,7 @@ async fn broadcast_epoch_aligns_every_sender_to_one_origin() {
         (before_a, before_b, after_a, after_b)
     })
     .await
-    .expect("60 s 内必须完成配对、开流、广播与对齐");
+    .expect("60 s 内必须完成连接、开流、广播与对齐");
 
     let (before_a, before_b, after_a, after_b) = outcome;
     println!(

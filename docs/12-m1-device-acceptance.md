@@ -1,5 +1,9 @@
 # M1 真机验收报告（PC → Android）
 
+> ⚠️ **历史记录说明（2026-09-22 补）**：本文记录的是 **PIN 配对 / 信任库时代**的交付事实与证据。
+> 该认证机制已在本轮整体移除（现在连上即用：没有配对码、没有白名单），本文中的配对步骤、PIN 验收数字与
+> 信任判定均**不再对应当前实现**，只作为当时的交付记账保留 —— 现状见 `docs/72-remove-pairing.md`。
+
 > 设备：MI 8 Lite（platina）· adb cd46884 · Android 10 / API 29 · arm64-v8a · Wi-Fi 172.16.2.54
 > PC：Windows · 192.168.3.200（以太网）· Rust 1.96.1 · 工具：`tools/device-link`（本轮新增）· 2026-09-15
 > 性质：**验收报告**。所有数字标注 [实测] / [模型] / [未测]；模型值不混进实测值；未测不写 0。
@@ -34,7 +38,7 @@ Opus 20 ms/160 kbps → 手机 AudioTrack 低延迟输出，60 s 连续推流零
 
 | 项 | 值 |
 |---|---|
-| 设备 | MI 8 Lite · Android 10 / API 29 · arm64-v8a · 包名 `com.gotkicry.audiolink.debug` |
+| 设备 | MI 8 Lite · Android 10 / API 29 · arm64-v8a · 包名 `com.gotkicry.audiolink`（2026-09-22 起 debug 与 release 同包名同签名；本次验收时 debug 尚带 `.debug` 后缀） |
 | 手机网络 | Wi-Fi `vimedia-5G` 172.16.2.54/23 · RSSI -56 · Link 81 Mbps（Tx 81 / Rx 57）—— 机器口径采样于 15:47（`acceptance/network-facts.txt`），**晚于 run3（15:29）**，只作拓扑说明，不回证 run3 时刻的无线状态 |
 | PC 网络 | 以太网 192.168.3.200/24 |
 | **路径形态** | **跨子网三层转发**：PC → 192.168.3.1 → 192.168.0.2 → 192.168.20.2 → 手机（**不是同 AP 二层**）· 机器输出见 `acceptance/network-facts.txt`（`ping` 5/5 通、min 4 / avg 30 / max 90 ms、`tracert` 首跳 192.168.3.254） |
@@ -231,10 +235,10 @@ Opus 20 ms/160 kbps → 手机 AudioTrack 低延迟输出，60 s 连续推流零
 pwsh android/scripts/build-rust.ps1
 pwsh tools/gradlew.ps1 -JavaHome '<JDK 17 根目录>' assembleDebug testDebugUnitTest
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n com.gotkicry.audiolink.debug/com.gotkicry.audiolink.MainActivity
+adb shell am start -n com.gotkicry.audiolink/com.gotkicry.audiolink.MainActivity
 
 # 2) 真机推流验收（synth 对照 / 真实 WASAPI 采集）
-target/x86_64-pc-windows-msvc/debug/device-link.exe run --peer 172.16.2.54 --seconds 60 --capture synth --pin-file target/evidence/acceptance/pin.txt
+target/x86_64-pc-windows-msvc/debug/device-link.exe run --peer 172.16.2.54 --seconds 60 --capture synth
 # 真实系统声音：先在渲染端点播放内容，再指定端点采集
 cargo run -q -p audiolink-tools --bin self-loop -- run --seconds 140 --capture synth --device id:c85b743e --sink-device id:c85b743e --gain 0.3 --marker-ms 0
 target/x86_64-pc-windows-msvc/debug/device-link.exe run --peer 172.16.2.54 --seconds 60 --capture wasapi --device id:c85b743e --cross-probe 30

@@ -32,8 +32,17 @@ use std::time::{Duration, Instant};
 
 use audiolink_audio::{
     AudioError, CHANNELS, CaptureSource, CaptureStats, CapturedPacket, DEFAULT_FRAME_MS,
-    DeviceFormat, PlayoutSink, PlayoutStats, SAMPLE_RATE_HZ, SampleFormat,
+    DeviceFormat, PlayoutBufferState, PlayoutSink, PlayoutStats, SAMPLE_RATE_HZ, SampleFormat,
 };
+
+/// Android 输出链的水位快照；单位为 48 kHz 每声道采样帧，未知时整个快照为 None。
+#[derive(Debug, Clone, Copy, uniffi::Record)]
+pub struct PcmBufferState {
+    /// Kotlin 环、未写完的块与 AudioTrack 已接收但尚未消费的总帧数。
+    pub queued_frames: u32,
+    /// AudioTrack 的输出目标；不含网络抖动缓冲，0 表示停用闭环调节。
+    pub target_frames: u32,
+}
 
 /// Kotlin 实现的 PCM 灌入口（`AudioLinkService.feedPcm` 就是它）。
 ///
@@ -46,6 +55,11 @@ use audiolink_audio::{
 pub trait PcmFeed: Send + Sync {
     /// 交付一段 PCM。
     fn feed_pcm(&self, samples: Vec<f32>, frames: i32) -> i32;
+
+    /// 从播放线程发布的快照读数，不在 Rust 线程调用 AudioTrack。
+    fn playout_buffer_state(&self) -> Option<PcmBufferState> {
+        None
+    }
 }
 
 /// Kotlin 实现的 PCM 拉取口（发送方向用，M1 Android 不用）。
@@ -95,8 +109,16 @@ impl PlayoutSink for KotlinPlayoutSink {
     }
 
     fn buffered_frames(&mut self) -> u32 {
-        // 内核看不见 Kotlin 的环深度。**刻意不编一个数字**：要么真知道，要么说不知道。
-        0
+        self.buffer_state().map_or(0, |state| state.queued_frames)
+    }
+
+    fn buffer_state(&mut self) -> Option<PlayoutBufferState> {
+        self.feed
+            .playout_buffer_state()
+            .map(|state| PlayoutBufferState {
+                queued_frames: state.queued_frames,
+                target_frames: state.target_frames,
+            })
     }
 
     fn write(&mut self, samples: &[f32]) -> Result<(), AudioError> {
@@ -249,9 +271,13 @@ mod tests {
         received: Mutex<Vec<f32>>,
         calls: Mutex<usize>,
         accept_limit: Option<i32>,
+        buffer: Option<PcmBufferState>,
     }
 
     impl PcmFeed for RecordingFeed {
+        fn playout_buffer_state(&self) -> Option<PcmBufferState> {
+            self.buffer
+        }
         fn feed_pcm(&self, samples: Vec<f32>, _frames: i32) -> i32 {
             *self.calls.lock().unwrap() += 1;
             let frames = (samples.len() / 2) as i32;
@@ -275,6 +301,27 @@ mod tests {
                 chunks.remove(0)
             }
         }
+    }
+
+    #[test]
+    fn 播放桥保留未知状态并转交实际输出水位() {
+        let mut unknown = KotlinPlayoutSink::new(Arc::new(RecordingFeed::default()));
+        assert_eq!(unknown.buffer_state(), None);
+        let mut known = KotlinPlayoutSink::new(Arc::new(RecordingFeed {
+            buffer: Some(PcmBufferState {
+                queued_frames: 2_880,
+                target_frames: 1_440,
+            }),
+            ..RecordingFeed::default()
+        }));
+        assert_eq!(known.buffered_frames(), 2_880);
+        assert_eq!(
+            known.buffer_state(),
+            Some(PlayoutBufferState {
+                queued_frames: 2_880,
+                target_frames: 1_440,
+            })
+        );
     }
 
     #[test]

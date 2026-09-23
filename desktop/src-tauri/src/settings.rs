@@ -1,4 +1,4 @@
-//! 外壳设置（M5）：自动重连策略 + 应用背景（z0 壁纸）。
+//! 外壳设置（M5）：自动重连策略 + 应用背景（z0 壁纸）+ 低延迟档（M6）。
 //!
 //! 为什么用 tauri-plugin-store 而不是自己写文件：插件早就注册了却一直没用；
 //! 而「原子写 + 读坏了怎么办」这类事它已经处理过，没必要重造一遍。
@@ -45,6 +45,29 @@ impl AutoConnectPolicy {
 const SETTINGS_FILE: &str = "settings.json";
 /// 背景配置的键。
 const KEY_BACKGROUND: &str = "background";
+/// 低延迟档开关的键（契约：`lowLatency`，默认 false = 标准档）。
+const KEY_LOW_LATENCY: &str = "lowLatency";
+/// [`KEY_LOW_LATENCY`] 的默认值：**关**（标准档 20 ms Opus 帧）。
+///
+/// 为什么默认关而不是按「更好的体验」默认开：低延迟档会让**包率翻倍**
+/// （10 ms 帧 = 100 包/秒，标准档 50 包/秒），代价落在无线链路的空口占用与耗电上。
+/// 一个改变带宽/耗电画像的开关，不能替用户默认打开。
+///
+/// 注：本开关只管**发送方向**（本机推流用什么帧长）。接收方向自帧长联动落地后
+/// 不再要求两端同档 —— 接收端开流期跟随对端 `OPEN_STREAM.codec_prefs` 的帧长解码
+/// （见 `Engine::negotiated_frame_ms` 与 docs/70 的「帧长联动」节）。
+pub const DEFAULT_LOW_LATENCY: bool = false;
+
+/// 低延迟档的当前取值。
+///
+/// 读不到设置（目录不可写）或值被手改成非布尔（`settings.json` 是可以被手改的）都回
+/// 默认值：把 `"lowLatency": "yes"` 猜成「用户想开」是一次猜测，按默认档处理至少可预期。
+#[must_use]
+pub fn low_latency_from(stored: Option<&serde_json::Value>) -> bool {
+    stored
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(DEFAULT_LOW_LATENCY)
+}
 
 /// 背景模式：单色（纯色）/ 双色 / 三色（线性渐变）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +194,35 @@ pub fn write_background(app: &AppHandle, config: &BackgroundConfig) -> Result<()
     Ok(())
 }
 
+/// 读低延迟档设置（键缺失 / 读坏 / 目录不可写都回 [`DEFAULT_LOW_LATENCY`]）。
+///
+/// 与读背景同一条路：返回 `bool` 而不是 `Result` —— 读不出来不该让应用起不来，
+/// 回标准档继续跑才是对的处置。
+#[must_use]
+pub fn read_low_latency(app: &AppHandle) -> bool {
+    let Ok(store) = app.store(SETTINGS_FILE) else {
+        return DEFAULT_LOW_LATENCY;
+    };
+    low_latency_from(store.get(KEY_LOW_LATENCY).as_ref())
+}
+
+/// 保存低延迟档设置。
+///
+/// 只写设置，**不触碰正在跑的引擎**：档位落在 `EngineConfig.codec` 里，只有 `Engine::start`
+/// 才读它一次 —— 已经跑着的会话不会被这一行改变。这是刻意的，与 `auto_broadcast` 的处理一致
+/// （见 engine_bridge.rs 的 `set_auto_broadcast`）：真要中途换档就得重建引擎，
+/// 那会掐断正在进行的会话，代价远大于收益。UI 负责告诉用户「下次启动引擎生效」。
+pub fn write_low_latency(app: &AppHandle, enabled: bool) -> Result<(), CommandError> {
+    let store = app
+        .store(SETTINGS_FILE)
+        .map_err(|error| CommandError::busy(format!("打开设置失败：{error}"), "set_low_latency"))?;
+    store.set(KEY_LOW_LATENCY, serde_json::Value::Bool(enabled));
+    store
+        .save()
+        .map_err(|error| CommandError::busy(format!("保存设置失败：{error}"), "set_low_latency"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,5 +299,36 @@ mod tests {
         assert_eq!(json["c3"], "#0f6b6b");
         let back: BackgroundConfig = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, BackgroundConfig::default_dark());
+    }
+
+    // --- 低延迟档（M6）---
+
+    #[test]
+    fn low_latency_defaults_to_off_when_the_key_is_missing() {
+        // 键缺失 = 用户从没开过 = 标准档。契约要求默认行为「与现状完全一致」，
+        // 所以这条断言就是「升级后行为不变」的表述。
+        // 断言的是**读函数的产出**而不是常量本身（对常量下断言会被 clippy 拦下），
+        // 同时钉住「缺键 = 默认常量」这条一致性。
+        assert_eq!(low_latency_from(None), DEFAULT_LOW_LATENCY);
+    }
+
+    #[test]
+    fn low_latency_reads_the_stored_boolean() {
+        assert!(low_latency_from(Some(&serde_json::Value::Bool(true))));
+        assert!(!low_latency_from(Some(&serde_json::Value::Bool(false))));
+    }
+
+    #[test]
+    fn low_latency_ignores_a_hand_edited_non_boolean() {
+        // settings.json 是可以被手改的：把 "lowLatency": "yes" 猜成「想开」是一种猜测，
+        // 按默认档处理至少可预期（与 auto_broadcast_from 同一处置）。
+        for broken in [
+            serde_json::json!("yes"),
+            serde_json::json!(1),
+            serde_json::json!(null),
+            serde_json::json!({ "enabled": true }),
+        ] {
+            assert!(!low_latency_from(Some(&broken)), "{broken} 不该被当成开");
+        }
     }
 }

@@ -130,6 +130,7 @@ keyPassword=<同上>
 | 路径过长 | Rust/NDK 构建失败 | 已开启长路径；仓库路径保持短（`C:\_Project\AudioLink` 即可） |
 | 端口占用 | QUIC 58290 / 发现 58280 冲突 | 端口可配置；启动时检测占用并提示 |
 | PATH 里有 GNU coreutils 的 `link.exe` | 可能劫持 MSVC 链接步骤 | 用 `cargo build`（rustc 自带精确工具链路径）；不要手写 `link` 调用 |
+| 桌面增量构建报 `LNK2001/2019/1120`，符号为 `anon.*.llvm.*` | 本机 Rust 1.96.1 / MSVC 在复用桌面库增量对象时出现未解析符号 | workspace 已为 `audiolink-desktop` 配置 `incremental = false`；直接重跑 `npm run tauri:dev`，不需要每次设置临时环境变量。桌面源码变更后重编会稍慢，详见 `66-desktop-dev-linker.md` |
 | 想装 CMake 编译 Opus | 不必要 | 本项目走 **纯 Rust `opus-rs`**（ADR-003）→ **CMake / NASM / Perl / pkg-config / vcpkg 全都不需要**；仅当切换到 `opus` 0.4.0 路线才需要 CMake |
 | `cargo build` 报 `aws-lc-sys` / 缺 CMake、NASM | `rustls` 的**默认**加密后端是 `aws_lc_rs`（需要 CMake 构建） | workspace 里已把 `rustls` 固定为 `default-features = false, features = ["ring", "std", "tls12", "logging"]`；`quinn` 默认后端即 `rustls-ring`（无需改动）。**不要**给 `rustls` 打开默认 features，也不要显式启用 `quinn/rustls-aws-lc-rs` |
 

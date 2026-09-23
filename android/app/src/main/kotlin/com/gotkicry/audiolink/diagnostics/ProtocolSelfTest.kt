@@ -10,7 +10,7 @@ import kotlinx.coroutines.withContext
  *
  * 为什么要把它单独建模成三态而不是一个 Boolean：真机验收时"连不上"可能是**三种完全不同**的原因，
  * 三态让它们在一眼之间被分开：
- * - [Passed]：内核在真机上活着、§12 三组 golden vectors 逐字节正确 → 问题在**网络/配对**层；
+ * - [Passed]：内核在真机上活着、§12 三组 golden vectors 逐字节正确 → 问题在**网络**层；
  * - [Rejected]：内核明确拒绝（带 §11 错误码）→ 问题在**内核逻辑**；
  * - [Unavailable]：`.so` 没加载 / ABI 不匹配 / JNA 崩 → 问题在**打包或 ABI** 层。
  * 没有这个切分，人就只能拿着"没声音"同时怀疑三层。
@@ -21,7 +21,7 @@ sealed interface SelfTestResult {
     data class Passed(val summary: String) : SelfTestResult
 
     /**
-     * 内核明确拒绝：`code` = §11 错误码数值，[shortName] = 错误码短名（如 `NOT_PAIRED`），
+     * 内核明确拒绝：`code` = §11 错误码数值，[shortName] = 错误码短名（如 `NO_PEER`），
      * [context] = 出错细节。三个都显示出来 —— 吞成"自检失败"等于把线索丢了。
      */
     data class Rejected(val code: UShort, val shortName: String, val context: String) : SelfTestResult

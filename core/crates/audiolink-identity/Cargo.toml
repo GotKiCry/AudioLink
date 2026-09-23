@@ -1,5 +1,5 @@
-# audiolink-identity —— 自签证书、指纹、信任库、PIN 配对状态机
-# 规格见 docs/02-architecture.md §8/§9、docs/03-protocol.md §5
+# audiolink-identity —— 自签证书、指纹（节点身份）
+# 规格见 docs/02-architecture.md §9、docs/03-protocol.md §2
 # 接口形状冻结于 docs/11-m1-contract.md §4（不得改形状）
 [package]
 name = "audiolink-identity"
@@ -15,13 +15,10 @@ rcgen = { workspace = true }
 rustls-pemfile = { workspace = true }
 # 指纹 = SHA-256(cert DER)
 sha2 = { workspace = true }
-# PIN / nonce 随机数
+# 原子写的临时文件名后缀
 rand = { workspace = true }
-# §5 AUTH 签名：纯 Rust ECDSA P-256（本仓库硬约束：绝不引入需要 CMake/NASM 的依赖）
+# 证书公钥自检：纯 Rust ECDSA P-256（本仓库硬约束：绝不引入需要 CMake/NASM 的依赖）
 p256 = { workspace = true }
-# 信任库 / 身份元数据的 JSON 持久化
-serde = { workspace = true }
-serde_json = { workspace = true }
 # 统一错误类型
 thiserror = { workspace = true }
 

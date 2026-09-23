@@ -23,7 +23,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
+use audiolink_engine::{Engine, EngineConfig, SessionState};
 use audiolink_types::{Capabilities, ErrorCode, NodeId};
 
 /// 起一个接收端：能力位可定制（缺省 = 内核完整能力，含 §7 排播）。
@@ -54,29 +54,22 @@ async fn wait_for(budget: Duration, condition: impl Fn() -> bool) -> bool {
     }
 }
 
-/// 与接收端走完 PIN 配对，返回接收端 id（同时等到发送侧进入 Streaming）。
-async fn pair(sender: &Arc<Engine>, receiver: &Arc<Engine>) -> NodeId {
+/// 连接接收端（无认证：一次 connect 即完成握手），返回接收端 id（同时等到发送侧进入 Streaming）。
+async fn connect_peer(sender: &Arc<Engine>, receiver: &Arc<Engine>) -> NodeId {
     let receiver_id = receiver.info().id;
-    let mut events = receiver.subscribe();
-    let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, r"首次连接必须先要 PIN");
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-            break pin;
-        }
-    };
+
     sender
-        .submit_pin(receiver_id, &pin)
+        .connect(receiver.local_addr())
         .await
-        .expect(r"PIN 配对");
-    let paired = wait_for(Duration::from_secs(10), || {
+        .expect("连接应当直接成功（无认证）");
+    let streaming = wait_for(Duration::from_secs(10), || {
         sender
             .peers()
             .iter()
             .any(|peer| peer.id == receiver_id && peer.state == SessionState::Streaming)
     })
     .await;
-    assert!(paired, r"发送侧没有在 10 s 内进入 Streaming");
+    assert!(streaming, r"发送侧没有在 10 s 内进入 Streaming");
     receiver_id
 }
 
@@ -110,8 +103,8 @@ async fn group_calls_reject_members_without_group_epoch() {
     )
     .await;
 
-    let ok = pair(&sender, &receiver_ok).await;
-    let bad = pair(&sender, &receiver_bad).await;
+    let ok = connect_peer(&sender, &receiver_ok).await;
+    let bad = connect_peer(&sender, &receiver_bad).await;
 
     // ⓪ 前提：协商结果里「谁支持」是确定的 —— 内核手里本来就有这个事实。
     assert_ne!(

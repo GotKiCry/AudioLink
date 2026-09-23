@@ -30,19 +30,18 @@ impl Connection {
         self.inner.remote_address()
     }
 
-    /// 对端证书指纹 = `SHA-256(对端证书 DER)` → [`NodeId`]。**信任判定的唯一依据**（§2）。
+    /// 对端证书指纹 = `SHA-256(对端证书 DER)` → [`NodeId`]。**对端身份的唯一依据**（§2）。
     pub fn peer_id(&self) -> Result<NodeId, NetError> {
         Ok(node_id_of(&self.peer_cert_der()?))
     }
 
     /// 对端 TLS 证书链的**叶子证书** DER。
     ///
-    /// 为什么指纹不够：§5 的 `AUTH_RESPONSE` 验签需要**对端公钥**，而公钥只存在于证书里，
-    /// `SHA-256` 摘要还原不回去。engine 拿这份 DER 调
-    /// `audiolink-identity` 的 `verify_challenge`。
+    /// 为什么指纹不够：指纹是单向摘要，任何需要**对端公钥**的用法（例如把这份证书交给
+    /// `audiolink-identity` 解析）都还原不回去 —— 所以证书原文必须在这一层就能取到。
     ///
-    /// 取不到时返回 `Err` 而**不是**空 `Vec`：空证书会让验签静默失败，
-    /// 把「没有材料」伪装成「认证不通过」，排障时会指向完全错误的方向。
+    /// 取不到时返回 `Err` 而**不是**空 `Vec`：空证书会让上层拿到一个「看似合法却什么都用不了」的
+    /// 身份，把「没有材料」伪装成「身份可读」，排障时会指向完全错误的方向。
     ///
     /// 实现上走 quinn 的 `peer_identity()` 而不是在自定义校验器里缓存证书：
     /// [`peer_id`](Self::peer_id) 与本法必须永远看到**同一份字节**（否则两个方法会悄悄漂移），

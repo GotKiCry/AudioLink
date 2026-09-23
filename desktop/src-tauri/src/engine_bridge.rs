@@ -9,9 +9,9 @@
 //! 前端不认识引擎：它只认 `lib.rs` 里的 command 与这里的三个事件名。
 //!
 //! ## 与引擎的接缝语义（读代码前先看这几条，都是刻意的）
-//! 1. **`connect` 返回 `1002 NOT_PAIRED` 不是失败**：会话与命令通道仍然活着
-//!    （见 `Engine::connect` 的文档）。这里把它翻成"请对方念配对码"，并**刷新对端列表**
-//!    让卡片先出现；PIN 由 `EngineEvent::PinNeeded` / `DisplayPin` 转成前端事件。
+//! 1. **`connect` 成功即握手完成**：无认证之后没有 PIN 提交或挑战应答要推进
+//!    （见 `Engine::connect` 的文档），这里把返回的 `NodeId` 翻成 `PeerView`，
+//!    并**刷新对端列表**让卡片立刻出现。
 //! 2. **引擎的 `Streaming` ≠ 契约的 `streaming`**：引擎在握手完成时就把会话置为
 //!    `Streaming`（`runtime.rs::mark_streaming`），而契约的 `streaming` 对用户意味着"正在推流"。
 //!    只有外壳知道本机有没有在推流（`start_send`/`stop_send` 不产生引擎状态迁移），
@@ -19,9 +19,7 @@
 //!    （卡片不消失，按钮回到"开始推流"）。
 //! 3. **引擎有 6 个会话状态，契约 §6 只有 5 个**（缺 `reconnecting`）→ 归入 `degraded`
 //!    （"琥珀 / 重连中"语义最近）。这是契约待补的一处，已在汇报里点名。
-//! 4. **`submit_pin` 必须等结果**：`Engine::submit_pin` 只是把命令投给会话任务并立刻返回，
-//!    真正的判定以 `EngineEvent::PairCompleted` 回来；因此这里先订阅、再提交、再等事件。
-//! 5. **遥测源是引擎的 1 Hz**：`StreamStats` 没有分位数，契约却要 `e2eP50Us/e2eP95Us`，
+//! 4. **遥测源是引擎的 1 Hz**：`StreamStats` 没有分位数，契约却要 `e2eP50Us/e2eP95Us`，
 //!    所以外壳按对端维护滑动窗口自己算（见 `aggregate`）。这一层只保证"不快于 500 ms 一次"。
 
 use std::collections::{HashMap, VecDeque};
@@ -50,6 +48,10 @@ const KEY_LOCALE: &str = "locale";
 const KEY_LAST_PEER: &str = "last_peer";
 /// 「有人接入时自动开始推流」开关。
 const KEY_AUTO_BROADCAST: &str = "auto_broadcast";
+// 「低延迟档」的读写**不在本文件**：键常量 `KEY_LOW_LATENCY`（= 契约名 `lowLatency`）
+// 与读写函数都在 settings.rs 里，engine_config 直接调 `crate::settings::read_low_latency(app)`。
+// 为什么不在这里再抄一份键名：一个键两处字面量，改一处漏一处就会变成"开关存了但引擎读不到"
+// 这种两边都不报错的静默故障 —— 少一份副本就少一个能踩的坑。
 
 /// [`KEY_AUTO_BROADCAST`] 的默认值：**开**。
 ///
@@ -80,9 +82,8 @@ use crate::error::CommandError;
 use crate::settings::AutoConnectPolicy;
 use crate::view::{
     AlignmentView, CaptureDeviceView, GroupMemberView, GroupView, LocalStatus, NoticesView,
-    PairRequiredPayload, PeerCapabilitiesView, PeerState, PeerView, RevokeTrustResult,
-    StartSendResult, SubmitPinResult, TelemetryRow, TelemetryView, TrustedPeerView, alignment_view,
-    notices_view, render_telemetry_csv,
+    PeerCapabilitiesView, PeerQualityView, PeerState, PeerView, StartSendResult, TelemetryRow,
+    TelemetryView, alignment_view, notices_view, render_telemetry_csv,
 };
 
 // ---------------------------------------------------------------------------
@@ -93,12 +94,6 @@ use crate::view::{
 pub const EVENT_PEER: &str = "audiolink://peer";
 /// 遥测事件，载荷 `TelemetryView`；**不快于 500 ms 一次**。
 pub const EVENT_TELEMETRY: &str = "audiolink://telemetry";
-/// 配对请求事件，载荷 `{ idShort, name, pin }`。
-///
-/// 两个方向共用这一个事件（契约只冻结了一个名字）：
-/// * `pin` 非空 → **本机是主机**：把码亮给用户，让对方照着输入（`EngineEvent::DisplayPin`）；
-/// * `pin` 为空 → **本机是接收端**：请用户输入主机屏幕上显示的码（`EngineEvent::PinNeeded`）。
-pub const EVENT_PAIR_REQUIRED: &str = "audiolink://pair-required";
 
 /// §7 同步组变化（建组 / 成员加入退出）：前端收到就去拉一次最新的组列表。
 pub const EVENT_GROUPS: &str = "audiolink://groups";
@@ -120,10 +115,6 @@ const E2E_WINDOW: usize = 300;
 /// 等引擎启动的上限：启动要读身份材料 + 绑 QUIC 端口，正常在毫秒级。
 const ENGINE_READY_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 等配对结果（`PairCompleted`）的上限。引擎握手自己有死线，这里只做兜底，
-/// 保证 UI 不会永远转圈。
-const PAIR_OUTCOME_TIMEOUT: Duration = Duration::from_secs(15);
-
 /// 对端上报遥测的新鲜度上限。超过它就不再采信 —— 链路断了却继续显示 3 秒前的"漂亮数字"
 /// 比显示"没有数据"更糟。
 const PEER_REPORT_TTL: Duration = Duration::from_secs(3);
@@ -131,6 +122,12 @@ const PEER_REPORT_TTL: Duration = Duration::from_secs(3);
 /// WASAPI 缓冲请求值（ms）。20 ms 是本仓工具链的既有取值：
 /// 共享模式下小于一个周期的请求会被抬到 1056 帧 = 22 ms（`wasapi/mod.rs` 的实测表），
 /// 所以填 20 与填 1 的实际效果一样，填 20 至少让意图可读。
+///
+/// **这个值与低延迟档（M6）刻意不联动**：低延迟档压的是「Opus 帧长 + 播放水位」，
+/// 而 Windows 共享模式 WASAPI 的下限由系统抬到约 22 ms —— 填 10 换不来更低的实际缓冲，
+/// 只会让"我压过了"这件事在代码里名不副实。真要把播放端延迟压到 10 ms 量级，
+/// 需要的是独占模式（exclusive）+ 事件驱动，那是另一件事（见 `docs/09-benchmark-notes.md`
+/// 的实测对比），不在低延迟档的范围内。
 #[cfg(windows)]
 const WASAPI_BUFFER_MS: u32 = 20;
 
@@ -278,7 +275,7 @@ impl EngineBridge {
 
     /// 手工 IP 连接（`connect`，FR-17）。
     ///
-    /// 返回"已登记 + 正在握手/配对"的对端视图；配对请求与后续状态由事件推进。
+    /// 返回"已登记 + 已建立"的对端视图；后续状态变化由 `audiolink://peer` 事件推进。
     pub async fn connect(&self, raw_addr: &str) -> Result<PeerView, CommandError> {
         let engine = self.engine().await?;
         let addr = parse_endpoint(raw_addr)?;
@@ -304,17 +301,6 @@ impl EngineBridge {
                         format!("connect: peer={}", peer_id.short()),
                     )
                 })
-            }
-            Err(error) if error.code() == ErrorCode::NotPaired => {
-                // 刻意不当成失败：会话与控制通道还活着（`Engine::connect` 文档）。
-                // 刷新列表让卡片出现；前端收到 1002 后应引导用户去输配对码，而不是重连。
-                let (peers, _) = refresh(&engine, &self.cache);
-                emit_peer(&self.app, &self.cache, &peers);
-                Err(engine_error_with_message(
-                    "connect",
-                    &error,
-                    "对方要求配对：请输入对方屏幕上显示的 6 位配对码",
-                ))
             }
             Err(error) => {
                 let (peers, _) = refresh(&engine, &self.cache);
@@ -417,66 +403,6 @@ impl EngineBridge {
         Ok(lock(&self.capture).opened.clone())
     }
 
-    /// 提交 6 位配对码（`submit_pin`）。
-    ///
-    /// **等真实结果**：引擎的 `submit_pin` 是"投递命令"，判定走 `PairCompleted` 事件。
-    /// 契约要求返回 `{ ok, reason }`，所以这里订阅事件再等 —— 否则 UI 只能显示"已提交"，
-    /// 而用户真正要知道的是"配对成不成、还能试几次"。
-    pub async fn submit_pin(
-        &self,
-        id_short: &str,
-        pin: &str,
-    ) -> Result<SubmitPinResult, CommandError> {
-        let engine = self.engine().await?;
-        let peer = resolve_peer(&engine, id_short)?;
-
-        // 先订阅再投递：广播通道不回放历史，反过来做会漏掉秒回的结果。
-        let mut events = engine.subscribe();
-        engine
-            .submit_pin(peer, pin)
-            .await
-            .map_err(|error| engine_error("submit_pin", &error))?;
-
-        let deadline = Instant::now() + PAIR_OUTCOME_TIMEOUT;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Ok(timeout_result());
-            }
-            match tokio::time::timeout(remaining, events.recv()).await {
-                Err(_) => return Ok(timeout_result()),
-                Ok(Err(broadcast::error::RecvError::Closed)) => {
-                    return Ok(SubmitPinResult {
-                        ok: false,
-                        reason: "引擎事件通道已关闭，请重启应用".to_string(),
-                    });
-                }
-                // 事件积压只会发生在 UI 不消费时；PIN 判定必须继续等。
-                Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
-                Ok(Ok(EngineEvent::PairCompleted { id, ok, reason })) if id == peer => {
-                    let (peers, _) = refresh(&engine, &self.cache);
-                    emit_peer(&self.app, &self.cache, &peers);
-                    return Ok(SubmitPinResult {
-                        ok,
-                        // 成功后不需要解释；失败原因由引擎给出
-                        // （已是中文整句，含剩余尝试次数 / 锁定剩余秒数）。
-                        reason: if ok { String::new() } else { reason },
-                    });
-                }
-                Ok(Ok(EngineEvent::PeerDisconnected { id, reason })) if id == peer => {
-                    let (peers, _) = refresh(&engine, &self.cache);
-                    emit_peer(&self.app, &self.cache, &peers);
-                    return Ok(SubmitPinResult {
-                        ok: false,
-                        reason: format!("连接已断开（{reason}），请重新连接"),
-                    });
-                }
-                // 其余事件与本命令无关，继续等（不发散：PIN 结果只有这一条路）。
-                Ok(Ok(_)) => continue,
-            }
-        }
-    }
-
     /// 当前遥测快照（`telemetry`）。
     pub async fn telemetry(&self) -> Result<TelemetryView, CommandError> {
         let engine = self.engine().await?;
@@ -501,71 +427,6 @@ impl EngineBridge {
             .set_peer_gain(peer, gain, ramp_ms)
             .await
             .map_err(|error| engine_error("set_peer_gain", &error))
-    }
-
-    /// 全部**已配对设备**（`list_trusted_peers`）：信任库快照，含**当前没有会话**的那些。
-    ///
-    /// 与 [EngineBridge::list_peers] 的分工：那个是会话表（有卡片的对端），这个是白名单。
-    /// 界面的「已配对设备」列表用它 —— 换机后残留的旧记录只在这一侧出现。
-    pub async fn list_trusted_peers(&self) -> Result<Vec<TrustedPeerView>, CommandError> {
-        let engine = self.engine().await?;
-        Ok(engine
-            .trusted_peers()
-            .into_iter()
-            .map(|entry| TrustedPeerView {
-                id_short: entry.id.short(),
-                name: entry.name,
-                platform: entry.platform.as_str().to_string(),
-                paired_at_unix: entry.paired_at_unix,
-            })
-            .collect())
-    }
-
-    /// 移除设备（FR-18）：断开该对端会话 + 撤销信任 + 清掉指向它的「上次设备」记录。
-    ///
-    /// 三件事必须一起做，理由各不相同：
-    /// * **断会话 + 撤信任的顺序**由内核保证（`Engine::revoke_trust` 里有完整说明：先断后撤，
-    ///   否则那条活会话下一次成功握手会把记录写回白名单，「移除」被静默撤销）；
-    /// * **清 `last_peer`**：它指向刚被移除的设备时，开机自动重连会去连一台用户刚移除的设备；
-    /// * 地址必须**在撤之前**取 —— 撤完之后那条会话就不在 `peers()` 里了。
-    pub async fn revoke_trust(&self, id_short: &str) -> Result<RevokeTrustResult, CommandError> {
-        let engine = self.engine().await?;
-        // 双源解析：无会话的已配对设备只能从信任库解析出来（见 `resolve_revocable`）。
-        let peer = resolve_revocable(&engine, id_short)?;
-        let addr = engine
-            .peers()
-            .iter()
-            .find(|status| status.id == peer)
-            .map(|status| status.addr.to_string());
-
-        let removed = engine
-            .revoke_trust(peer)
-            .await
-            .map_err(|error| engine_error("revoke_trust", &error))?;
-
-        // 只有「上次设备」确实指向它时才清：指向别的设备时不该被顺手删掉。
-        let forgot_last_peer =
-            should_forget_last_peer(self.policy().last_peer.as_deref(), addr.as_deref());
-        if forgot_last_peer {
-            self.forget_last_peer();
-        }
-
-        Ok(RevokeTrustResult {
-            removed,
-            forgot_last_peer,
-        })
-    }
-
-    /// 清掉「上次设备」记录。
-    ///
-    /// 写 `null` 而不是删键：读侧（`policy`）本来就按 `as_str()` 取值，`null` 与「键不存在」
-    /// 在语义上完全一样，而 `set` 是本文件已经在用的 API（少一处版本面）。
-    fn forget_last_peer(&self) {
-        let Ok(store) = self.app.store(SETTINGS_FILE) else {
-            return;
-        };
-        store.set(KEY_LAST_PEER, serde_json::Value::Null);
-        let _ = store.save();
     }
 
     /// M4：多源对齐快照 —— 各路「最近一帧编号 ↔ 到达时刻」与当前跨度。
@@ -650,6 +511,26 @@ impl EngineBridge {
             CommandError::busy(format!("保存设置失败：{error}"), "set_auto_broadcast")
         })?;
         Ok(())
+    }
+
+    /// M6：低延迟档的当前值（`lowLatency`，**默认关** = 20 ms 帧的标准档）。
+    ///
+    /// 只读设置、不碰引擎：设置面板要在引擎就绪**之前**就能显示当前状态（同 `auto_broadcast_state`）。
+    /// 返回**裸布尔**：前端只关心开/关，再包一层对象没有信息量。
+    pub async fn low_latency_state(&self) -> Result<bool, CommandError> {
+        Ok(crate::settings::read_low_latency(&self.app))
+    }
+
+    /// M6：开关「低延迟档」。
+    ///
+    /// 只写设置，**不重启引擎**：档位是 `EngineConfig.codec` 的一部分，只在 `Engine::start`
+    /// 读一次；已经跑着的会话（可能正在推流/接收）不会因为这一行改变 —— 这是与 `set_auto_broadcast`
+    /// 完全一致的处置（那个也刻意不掐断在推的流）。
+    ///
+    /// 为什么不做「重启引擎让它立刻生效」：重启会掐断所有会话，而对端此刻可能正在听 ——
+    /// 用户点的是一个设置开关，不该有掐断音频的副作用。UI 负责把「下次启动生效」说清楚。
+    pub async fn set_low_latency(&self, enabled: bool) -> Result<(), CommandError> {
+        crate::settings::write_low_latency(&self.app, enabled)
     }
 
     /// M5：启动时试一次自动重连。
@@ -827,14 +708,6 @@ fn starting_error() -> CommandError {
     CommandError::busy("引擎还在启动，请稍候再试", "engine: still starting")
 }
 
-/// 等配对结果超时。
-fn timeout_result() -> SubmitPinResult {
-    SubmitPinResult {
-        ok: false,
-        reason: "等对方确认超时，请重试".to_string(),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // 启动与事件翻译
 // ---------------------------------------------------------------------------
@@ -905,42 +778,11 @@ async fn run_event_loop(app: AppHandle, engine: Arc<Engine>, cache: Arc<Mutex<Ca
                     let (peers, _) = refresh(&engine, &cache);
                     emit_peer(&app, &cache, &peers);
                 }
-                // 遥测：可能是本机 1 Hz 采样，也可能是对端 `STREAM_STATS` 的透传。
-                // 只有 e2e > 0 的那种才是"接收侧测得的量"，留作本机推流时的展示来源。
-                EngineEvent::Telemetry(stats) => {
-                    if stats.e2e_latency_us > 0 {
-                        lock(&cache).peer_report = Some((*stats, Instant::now()));
-                    }
+                // 事件只用于触发刷新；从按 NodeId 隔离的存储取值，避免多设备反馈串线。
+                EngineEvent::Telemetry(_) => {
                     let (peers, view) = refresh(&engine, &cache);
                     emit_peer(&app, &cache, &peers);
                     emit_telemetry(&app, &cache, &view);
-                }
-                // 本机是接收端：请用户输入主机屏幕上的码（pin 留空表达这一点）。
-                EngineEvent::PinNeeded { id, name } => emit(
-                    &app,
-                    EVENT_PAIR_REQUIRED,
-                    &PairRequiredPayload {
-                        id_short: id.short(),
-                        name,
-                        pin: String::new(),
-                    },
-                ),
-                // 本机是主机：把码亮给用户（接收端要照着输入）。
-                EngineEvent::DisplayPin {
-                    from, name, pin, ..
-                } => emit(
-                    &app,
-                    EVENT_PAIR_REQUIRED,
-                    &PairRequiredPayload {
-                        id_short: from.short(),
-                        name,
-                        pin,
-                    },
-                ),
-                // 配对结果的"等待"在 `submit_pin` 里做；这里只同步一次状态。
-                EngineEvent::PairCompleted { .. } => {
-                    let (peers, _) = refresh(&engine, &cache);
-                    emit_peer(&app, &cache, &peers);
                 }
                 // §8 自适应码率生效：目前只记日志 —— 面板上的可视化属于 M2 的「遥测面板」那一项。
                 EngineEvent::CodecAdapted {
@@ -1005,7 +847,7 @@ async fn run_event_loop(app: AppHandle, engine: Arc<Engine>, cache: Arc<Mutex<Ca
     }
 }
 
-/// 引擎配置：身份/信任库落盘位置 + QUIC 监听 + 音频工厂。
+/// 引擎配置：身份落盘位置 + QUIC 监听 + 音频工厂。
 fn engine_config(app: &AppHandle, capture: SharedCapture) -> Result<EngineConfig, CommandError> {
     // 路径口径：用 Tauri 的 `app_config_dir()`（Windows 下 = `%APPDATA%\<identifier>`）。
     // 架构 §9 写的是 `%APPDATA%\AudioLink\` —— 只差目录名；这里选 Tauri 口径，
@@ -1032,8 +874,7 @@ fn engine_config(app: &AppHandle, capture: SharedCapture) -> Result<EngineConfig
     // 能力由外壳按平台声明、而不是内核写死 —— 内核并不知道自己跑在谁的机器上。
     config.capabilities =
         audiolink_types::Capabilities::CURRENT | audiolink_types::Capabilities::SYSTEM_LOOPBACK;
-    // 身份材料在 `<config>/identity/`，信任库在 `<config>/trust.json`（架构 §9 的分工）。
-    config.trust_store_path = dir.join("trust.json");
+    // 身份材料在 `<config>/identity/`（架构 §9）。
     config.listen = SocketAddr::from(([0, 0, 0, 0], DEFAULT_QUIC_PORT));
 
     // 音频工厂：`CaptureSource` / `PlayoutSink` 都是 `!Send`（WASAPI 对象绑线程），
@@ -1043,6 +884,26 @@ fn engine_config(app: &AppHandle, capture: SharedCapture) -> Result<EngineConfig
         config.capture = Some(capture::factory(capture));
         config.playout = Some(playout_factory());
     }
+
+    // 传输档位（M6）：标准档 = 20 ms Opus 帧（与 M1 基线完全一致），
+    // 低延迟档 = 10 ms 帧。这里**显式**给两种档位各赋一次值，而不是"关着就不动"：
+    // `EngineConfig::new` 的默认值与 `m1_default()` 今天是同一个常量，但把默认值抄在
+    // 两个地方，将来内核改基线时外壳会**静默**跟着变 —— 这里写死"标准档 = m1_default()"
+    // 让「不开开关 = 行为与现状完全一致」成为可读的承诺，而不是默认值的副作用。
+    //
+    // 档位从 settings.json 现读（不是启动时快照）：`boot` 只在进程启动时调本函数一次，
+    // 而用户改设置走的是 `set_low_latency`（只落盘）—— 要让下一次引擎启动拿到新值，
+    // 读设置这件事就必须发生在 `engine_config` 里。两者共同构成"改完 → 下次启动生效"。
+    config.codec = if crate::settings::read_low_latency(app) {
+        audiolink_audio::CodecConfig::m1_low_delay_tight()
+    } else {
+        audiolink_audio::CodecConfig::m1_default()
+    };
+    // 本开关只决定**发送方向**帧长：接收方向自帧长联动落地后自动跟随对端
+    // （接收端开流期读 `OPEN_STREAM.codec_prefs` 的帧长建解码链路，
+    // `Engine::negotiated_frame_ms` 暴露协商结果，PeerCard 展示）。
+    // 历史上「两端必须同档、混档会被当 PLC 掩盖且无任何报错」的坑已由内核协商根治；
+    // 这里仍需如实选档 —— 它决定本机推流时 `codec_prefs` 报出去的帧长。
 
     Ok(config)
 }
@@ -1086,16 +947,6 @@ struct Cache {
     last_telemetry_emit: Option<Instant>,
     /// 每个对端的 e2e 滑动窗口（µs）。按对端分开存：换了展示对象不能混样本。
     e2e_windows: HashMap<NodeId, VecDeque<u32>>,
-    /// 最近一条**由对端上报**的遥测。
-    ///
-    /// 为什么要它：端到端延迟与播放水位是**接收侧**才量得到的量 —— 本机推流时自己的
-    /// `StreamStats.e2e_latency_us` 恒为 0，面板要显示就必须用对端报回来的那一份。
-    /// 数据来源是引擎把对端的 `STREAM_STATS` 帧透传成的 `EngineEvent::Telemetry`
-    /// （见 `runtime.rs` 的 `ControlRequest::StreamStats` 分支）。
-    ///
-    /// 已知局限：该事件**不带对端 id**，所以这里只有一个槽位 —— 多对端同时上报时无法归属
-    /// （见汇报里的契约缺口）。M1 单路推流下够用。
-    peer_report: Option<(StreamStats, Instant)>,
 }
 
 impl Default for Cache {
@@ -1107,7 +958,6 @@ impl Default for Cache {
             last_emitted_peers: None,
             last_telemetry_emit: None,
             e2e_windows: HashMap::new(),
-            peer_report: None,
         }
     }
 }
@@ -1126,12 +976,35 @@ fn refresh(engine: &Engine, cache: &Mutex<Cache>) -> (Vec<PeerView>, TelemetryVi
         .filter(|id| statuses.iter().any(|status| status.id == *id));
     guard.sending = sending;
 
+    let reports: HashMap<NodeId, StreamStats> = statuses
+        .iter()
+        .filter_map(|status| {
+            engine
+                .fresh_peer_stats(status.id, PEER_REPORT_TTL)
+                .map(|stats| (status.id, stats))
+        })
+        .collect();
+    guard
+        .e2e_windows
+        .retain(|id, _| statuses.iter().any(|s| s.id == *id && active_audio(s)));
     let peers: Vec<PeerView> = statuses
         .iter()
-        .map(|status| peer_view(status, sending))
+        .map(|status| {
+            // 本端作接收端时对端协商出的帧长；本端作发送端 / 未开流 → None（界面显示占位）。
+            let mut view = peer_view(status, sending, engine.negotiated_frame_ms(status.id));
+            if active_audio(status) {
+                let receiver = receiver_stats(status, &reports);
+                view.quality = Some(PeerQualityView {
+                    rtt_us: (status.stats.rtt_us > 0).then_some(status.stats.rtt_us),
+                    loss_pct_x100: receiver.map(|stats| stats.loss_pct_x100),
+                    underruns: receiver.map(|stats| stats.underruns),
+                    buffer_level_us: receiver.map(|stats| stats.buffer_level_us),
+                });
+            }
+            view
+        })
         .collect();
-    let peer_report = guard.peer_report;
-    let telemetry = aggregate(&statuses, sending, &mut guard.e2e_windows, peer_report);
+    let telemetry = aggregate(&statuses, sending, &mut guard.e2e_windows, &reports);
 
     guard.peers = peers.clone();
     guard.telemetry = telemetry.clone();
@@ -1139,16 +1012,26 @@ fn refresh(engine: &Engine, cache: &Mutex<Cache>) -> (Vec<PeerView>, TelemetryVi
 }
 
 /// `PeerStatus` → 契约视图。
-fn peer_view(status: &PeerStatus, sending: Option<NodeId>) -> PeerView {
+///
+/// `negotiated_frame_ms` 由调用方查好传进来（[`Engine::negotiated_frame_ms`]），
+/// 而不是在这里拿 `&Engine`：**它不在 `PeerStatus` 里** —— 帧长联动是「按 peer 查询的
+/// 会话级事实」，内核做成访问器就是不想让它污染 `PeerStatus` 的字面量。
+/// 拆成入参之后，这个映射保持纯函数（测试不必去起一个真引擎）。
+fn peer_view(
+    status: &PeerStatus,
+    sending: Option<NodeId>,
+    negotiated_frame_ms: Option<u8>,
+) -> PeerView {
     PeerView {
         id_short: status.id.short(),
         name: status.name.clone(),
         addr: status.addr.to_string(),
         state: map_state(status.state, sending == Some(status.id)),
-        trusted: status.trusted,
         receiving: status.initiated_locally,
         capabilities: capabilities_view(status.capabilities),
         reconnects: status.reconnects,
+        quality: None,
+        negotiated_frame_ms,
     }
 }
 
@@ -1204,40 +1087,40 @@ fn map_state(state: SessionState, is_sending: bool) -> PeerState {
 
 /// 把对端快照聚合成**一个** `TelemetryView`（契约只有一个面板，不是每对端一份）。
 ///
-/// 选谁做展示对象：优先当前推流目标；否则取 e2e 最差的一路。
+/// 选谁做展示对象：优先当前推流目标；否则按丢包率、e2e、RTT 取最差一路。
 /// 取最差而不是平均 —— 这个面板是"体检表"，平均值会把一路正在爆的链路藏起来。
 ///
-/// 用哪份数字：本机是接收侧（`e2e_latency_us > 0`，说明这条流在本机测过）时用本机统计，
-/// 否则用对端上报的那一份（推流方向上，水位/欠载/端到端只有接收侧量得到）。
+/// 接收方向用本地数据，发送方向用对应设备的反馈；端到端测量不是遥测有效的前提。
 fn aggregate(
     statuses: &[PeerStatus],
     sending: Option<NodeId>,
     windows: &mut HashMap<NodeId, VecDeque<u32>>,
-    peer_report: Option<(StreamStats, Instant)>,
+    reports: &HashMap<NodeId, StreamStats>,
 ) -> TelemetryView {
     let peers = statuses.len() as u32;
 
     let focus = sending
-        .and_then(|id| statuses.iter().find(|status| status.id == id))
+        .and_then(|id| {
+            statuses
+                .iter()
+                .find(|status| status.id == id && active_audio(status))
+        })
         .or_else(|| {
             statuses
                 .iter()
-                .filter(|status| status.stats.e2e_latency_us > 0)
-                .max_by_key(|status| status.stats.e2e_latency_us)
+                .filter(|status| active_audio(status))
+                .max_by_key(|status| {
+                    let stats = receiver_stats(status, reports).unwrap_or(&status.stats);
+                    (stats.loss_pct_x100, stats.e2e_latency_us, stats.rtt_us)
+                })
         });
     let Some(focus) = focus else {
         return TelemetryView::zeros(peers);
     };
 
     let local = &focus.stats;
-    let reported = peer_report
-        .filter(|(stats, at)| stats.e2e_latency_us > 0 && at.elapsed() < PEER_REPORT_TTL)
-        .map(|(stats, _)| stats);
-    let stats = if local.e2e_latency_us > 0 {
-        local
-    } else {
-        reported.as_ref().unwrap_or(local)
-    };
+    let receiver = receiver_stats(focus, reports);
+    let stats = receiver.unwrap_or(local);
 
     let window = windows.entry(focus.id).or_default();
     // 只记"有流"的样本：空闲时的 0 会把分位数一路拖平，读起来像"网络突然变好了"。
@@ -1246,6 +1129,8 @@ fn aggregate(
         while window.len() > E2E_WINDOW {
             let _dropped = window.pop_front();
         }
+    } else {
+        window.clear();
     }
     let mut sorted: Vec<u32> = window.iter().copied().collect();
     sorted.sort_unstable();
@@ -1254,10 +1139,11 @@ fn aggregate(
 
     TelemetryView {
         peers,
-        rtt_us: u64::from(stats.rtt_us),
+        rtt_us: u64::from(local.rtt_us),
         jitter_us: u64::from(stats.jitter_us),
         // 内核用 ×100 的整数存百分比（避免浮点），契约要百分数 → 这里还原。
         loss_pct: f64::from(stats.loss_pct_x100) / 100.0,
+        receiver_report: receiver.is_some(),
         bitrate_bps: u64::from(stats.bitrate_bps),
         buffer_level_us: u64::from(stats.buffer_level_us),
         underruns: u64::from(stats.underruns),
@@ -1265,6 +1151,25 @@ fn aggregate(
         e2e_p50_us: u64::from(p50),
         e2e_p95_us: u64::from(p95),
     }
+}
+
+fn active_audio(status: &PeerStatus) -> bool {
+    matches!(
+        status.state,
+        SessionState::Streaming | SessionState::Degraded
+    )
+}
+
+fn receiver_stats<'a>(
+    status: &'a PeerStatus,
+    reports: &'a HashMap<NodeId, StreamStats>,
+) -> Option<&'a StreamStats> {
+    let stats = if status.initiated_locally {
+        Some(&status.stats)
+    } else {
+        reports.get(&status.id)
+    }?;
+    (stats.bitrate_bps > 0).then_some(stats)
 }
 
 /// 最近秩（nearest-rank）分位数：升序样本里的第 `⌈p·n/100⌉` 个（1-based）。
@@ -1365,61 +1270,6 @@ fn quality_name(quality: ClockQuality) -> &'static str {
     }
 }
 
-/// 移除设备时该不该顺手清掉「上次设备」记录：**只有它确实指向这台被移除的设备时**。
-///
-/// 抽成纯函数是为了能钉住这条判断：指向**别的**设备时顺手删掉，等于把用户另一台设备的
-/// 便利性（开机自动重连它）当成本次移除的代价 —— 而用户点的是「移除这一台」。
-fn should_forget_last_peer(last_peer: Option<&str>, revoked_addr: Option<&str>) -> bool {
-    matches!((last_peer, revoked_addr), (Some(last), Some(addr)) if last == addr)
-}
-
-/// 解析「要移除的那台设备」：**先查会话表，再查信任库**。
-///
-/// 为什么不复用 [resolve_peer]：它只认会话表，而移除要覆盖的场景恰恰是「白名单里有、
-/// 当前没有会话」的那些设备（换机后残留的旧记录、很久没连过的设备）——
-/// 它们在会话表里**根本不存在**，用会话表解析必然报「找不到这个设备」。
-fn resolve_revocable(engine: &Engine, id_short: &str) -> Result<NodeId, CommandError> {
-    if id_short.trim().is_empty() {
-        return Err(CommandError::bad_request(
-            "缺少设备标识，请先刷新列表",
-            "resolve_revocable: id_short 为空",
-        ));
-    }
-    let sessions: Vec<NodeId> = engine.peers().iter().map(|peer| peer.id).collect();
-    let trusted: Vec<NodeId> = engine
-        .trusted_peers()
-        .iter()
-        .map(|entry| entry.id)
-        .collect();
-    find_revocable(&sessions, &trusted, id_short).ok_or_else(|| {
-        CommandError::bad_request(
-            "找不到这个设备：它既没有连接，也不在已配对列表里",
-            format!("resolve_revocable: id_short={}", id_short.trim()),
-        )
-    })
-}
-
-/// 双源查找的核心（抽出来是为了能钉住它）：**先会话表、再信任库**。
-///
-/// 只认短码（与全会话表命令同一口径，界面上展示的也是它），返回完整指纹。
-/// 顺序无关正确性（同一台设备两侧的指纹必然相同），但会话表优先能让「正连着的设备」
-/// 少走一次信任库查找。
-fn find_revocable(
-    session_ids: &[NodeId],
-    trusted_ids: &[NodeId],
-    id_short: &str,
-) -> Option<NodeId> {
-    let trimmed = id_short.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    session_ids
-        .iter()
-        .chain(trusted_ids.iter())
-        .find(|id| id.short_matches(trimmed))
-        .copied()
-}
-
 fn resolve_peer(engine: &Engine, id_short: &str) -> Result<NodeId, CommandError> {
     let trimmed = id_short.trim();
     if trimmed.is_empty() {
@@ -1450,7 +1300,7 @@ fn find_view(peers: &[PeerView], id: NodeId) -> Option<PeerView> {
 fn state_text(peer: &PeerStatus) -> &'static str {
     match peer.state {
         SessionState::Idle => "空闲",
-        SessionState::Handshaking => "正在配对",
+        SessionState::Handshaking => "正在连接",
         SessionState::Streaming => "已连接",
         SessionState::Degraded => "网络不稳",
         SessionState::Reconnecting => "正在重连",
@@ -1490,7 +1340,7 @@ fn engine_error(command: &str, error: &AudioLinkError) -> CommandError {
     engine_error_with_message(command, error, human_message(error.code()))
 }
 
-/// 同上，但覆盖文案（用于 `1002` 这种"不是失败、而是要用户做点什么"的情形）。
+/// 同上，但覆盖文案（按错误码给出更具体的处置指引，见 `start_send` 的两个分支）。
 fn engine_error_with_message(command: &str, error: &AudioLinkError, message: &str) -> CommandError {
     CommandError::new(
         error.code(),
@@ -1506,9 +1356,7 @@ fn engine_error_with_message(command: &str, error: &AudioLinkError, message: &st
 fn human_message(code: ErrorCode) -> &'static str {
     match code {
         ErrorCode::VersionMismatch => "对方版本过旧，请两台设备升级到同一版本",
-        ErrorCode::NotPaired => "该设备还没配对：请输入对方屏幕上显示的 6 位配对码",
-        ErrorCode::PairRejected => "配对码不正确或已过期，请重新输入",
-        ErrorCode::AuthFailed => "安全校验未通过（对方证书签名不匹配），已拒绝对接",
+        ErrorCode::NoPeer => "找不到这个设备，可能已经断开，请重新连接",
         ErrorCode::CapUnsupported => "对方不支持这个能力",
         ErrorCode::StreamLimit => "同时推流的路上限已满，请先停止一路",
         ErrorCode::CodecUnsupported => "双方没有共同支持的编码，无法建立音频流",
@@ -1558,51 +1406,6 @@ fn unix_millis() -> u128 {
 mod tests {
     use super::*;
     use audiolink_engine::GroupMember;
-
-    /// 移除入口的双源解析：**先会话表、再信任库**。
-    ///
-    /// 改坏：只查会话表（task-33 的写法）→ 「白名单里有、但没有会话」的设备永远解析不出 id，
-    /// 「你可以取消配对」对它们不成立。这条用例就是那个缺口的守卫。
-    #[test]
-    fn revocable_ids_come_from_sessions_then_from_the_trust_store() {
-        let session = NodeId::from_bytes([0x01; NodeId::LEN]);
-        let trusted_only = NodeId::from_bytes([0x02; NodeId::LEN]);
-        let unknown = NodeId::from_bytes([0x03; NodeId::LEN]);
-
-        assert_eq!(
-            find_revocable(&[session], &[trusted_only], &session.short()),
-            Some(session)
-        );
-        // 没有会话、只在信任库里的那台 —— 本任务存在的理由。
-        assert_eq!(
-            find_revocable(&[session], &[trusted_only], &trusted_only.short()),
-            Some(trusted_only)
-        );
-        // 两侧都没有：交给调用方报「找不到这个设备」。
-        assert_eq!(
-            find_revocable(&[session], &[trusted_only], &unknown.short()),
-            None
-        );
-        // 空串不猜（调用方有专门的「缺少设备标识」文案）。
-        assert_eq!(find_revocable(&[session], &[trusted_only], "  "), None);
-    }
-
-    /// 移除设备时「要不要清上次设备记录」这条判断：只有指向被移除的那一台才清。
-    ///
-    /// 改坏：写成「有 last_peer 就清」→ 用户移除 A 时，B（另一台设备的便利性）被顺手删掉，
-    /// 而用户从没要求动 B。
-    #[test]
-    fn forgetting_last_peer_only_when_it_points_at_the_removed_device() {
-        let removed = "192.168.1.23:58290";
-        assert!(should_forget_last_peer(Some(removed), Some(removed)));
-        assert!(!should_forget_last_peer(
-            Some("192.168.1.99:58290"),
-            Some(removed)
-        ));
-        assert!(!should_forget_last_peer(None, Some(removed)));
-        // 会话已经摘表时地址查不到：此时宁可不动记录，也不误删别人的。
-        assert!(!should_forget_last_peer(Some(removed), None));
-    }
 
     /// 自动推流开关的默认值必须是**开**：只有明确写进 settings.json 的 `false` 才算「用户关了」。
     ///
@@ -1752,9 +1555,7 @@ mod tests {
     fn every_error_code_has_a_human_message() {
         let codes = [
             ErrorCode::VersionMismatch,
-            ErrorCode::NotPaired,
-            ErrorCode::PairRejected,
-            ErrorCode::AuthFailed,
+            ErrorCode::NoPeer,
             ErrorCode::CapUnsupported,
             ErrorCode::StreamLimit,
             ErrorCode::CodecUnsupported,
@@ -1770,105 +1571,94 @@ mod tests {
         }
     }
 
-    /// 聚合的取景规则：优先推流目标；没有目标时取"最差一路"而不是平均。
-    #[test]
-    fn aggregate_prefers_send_target_and_worst_link() {
-        let mut windows: HashMap<NodeId, VecDeque<u32>> = HashMap::new();
-        let empty = aggregate(&[], None, &mut windows, None);
-        assert_eq!(empty.peers, 0);
-        assert_eq!(empty.e2e_latency_us, 0);
-
-        let far = NodeId::from_bytes([2u8; 32]);
-        let near = NodeId::from_bytes([1u8; 32]);
-        let status = |id: NodeId, e2e: u32| PeerStatus {
-            initiated_locally: false,
-            id,
+    fn quality_status(id: u8, receiving: bool, loss: u16) -> PeerStatus {
+        PeerStatus {
+            id: NodeId::from_bytes([id; 32]),
+            initiated_locally: receiving,
             reconnects: 0,
             capabilities: None,
-            name: format!("peer-{}", id.short()),
+            name: format!("peer-{id}"),
             addr: "127.0.0.1:58290".parse().expect("addr"),
             state: SessionState::Streaming,
-            trusted: true,
             stats: StreamStats {
-                e2e_latency_us: e2e,
+                rtt_us: 12_000,
+                bitrate_bps: 160_000,
+                loss_pct_x100: loss,
                 ..Default::default()
             },
-        };
-        let peers = vec![status(near, 60_000), status(far, 200_000)];
-
-        // 没有推流目标 → 取最差一路
-        let worst = aggregate(&peers, None, &mut windows, None);
-        assert_eq!(worst.peers, 2);
-        assert_eq!(worst.e2e_latency_us, 200_000);
-
-        // 指定推流目标 → 以目标为准（即使它不是最差的一路）
-        let focused = aggregate(&peers, Some(near), &mut windows, None);
-        assert_eq!(focused.e2e_latency_us, 60_000);
-
-        // 窗口按对端分开累计：near 与 far 各 1 条，不会互相污染
-        assert_eq!(windows.get(&near).map(|w| w.len()), Some(1));
-        assert_eq!(windows.get(&far).map(|w| w.len()), Some(1));
+        }
     }
 
-    /// 推流方向：本机 e2e 恒为 0（测量点在接收侧），面板必须改用对端上报的那一份；
-    /// 报告过期就退回本机统计，绝不让过期数字继续冒充"当前值"。
     #[test]
-    fn aggregate_uses_peer_report_when_local_cannot_measure() {
-        let mut windows: HashMap<NodeId, VecDeque<u32>> = HashMap::new();
-        let peer = NodeId::from_bytes([7u8; 32]);
-        let sender_side = vec![PeerStatus {
-            initiated_locally: false,
-            id: peer,
-            reconnects: 0,
-            name: "phone".to_string(),
-            addr: "192.168.1.23:58290".parse().expect("addr"),
-            state: SessionState::Streaming,
-            trusted: true,
-            // 发送侧：只量得到 RTT 与码率，e2e / 水位 / 欠载都是 0
-            stats: StreamStats {
-                rtt_us: 3_200,
-                bitrate_bps: 160_000,
-                ..Default::default()
-            },
-            capabilities: None,
-        }];
+    fn quality_does_not_require_end_to_end_measurement() {
+        let statuses = [quality_status(1, true, 250)];
+        let view = aggregate(&statuses, None, &mut HashMap::new(), &HashMap::new());
+        assert!(view.receiver_report);
+        assert_eq!(view.loss_pct, 2.5);
+        assert_eq!(view.rtt_us, 12_000);
+        assert_eq!(view.e2e_latency_us, 0);
+    }
 
-        // 没有对端上报 → 本机统计（e2e = 0，UI 会显示 "—"）
-        let local_only = aggregate(&sender_side, Some(peer), &mut windows, None);
-        assert_eq!(local_only.rtt_us, 3_200);
-        assert_eq!(local_only.e2e_latency_us, 0);
-
-        // 有新鲜的对端上报 → 用对端的（这才是接收侧测得的 62 ms）
-        let report = StreamStats {
-            e2e_latency_us: 62_000,
-            buffer_level_us: 38_000,
-            underruns: 1,
-            ..Default::default()
-        };
-        let merged = aggregate(
-            &sender_side,
-            Some(peer),
+    #[test]
+    fn sender_uses_the_matching_receivers_report_including_zero_loss() {
+        let statuses = [quality_status(1, false, 0), quality_status(2, false, 0)];
+        let reports = HashMap::from([
+            (
+                statuses[0].id,
+                StreamStats {
+                    loss_pct_x100: 375,
+                    bitrate_bps: 160_000,
+                    underruns: 4,
+                    ..Default::default()
+                },
+            ),
+            (
+                statuses[1].id,
+                StreamStats {
+                    loss_pct_x100: 0,
+                    bitrate_bps: 160_000,
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let mut windows = HashMap::new();
+        let first = aggregate(&statuses, Some(statuses[0].id), &mut windows, &reports);
+        assert_eq!(first.loss_pct, 3.75);
+        assert_eq!(first.underruns, 4);
+        let second = aggregate(&statuses, Some(statuses[1].id), &mut windows, &reports);
+        assert_eq!(second.loss_pct, 0.0);
+        assert!(second.receiver_report);
+        let worst = aggregate(&statuses, None, &mut windows, &reports);
+        assert_eq!(worst.loss_pct, 3.75);
+        let missing = aggregate(
+            &statuses,
+            Some(statuses[0].id),
             &mut windows,
-            Some((report, Instant::now())),
+            &HashMap::new(),
         );
-        assert_eq!(merged.e2e_latency_us, 62_000);
-        assert_eq!(merged.buffer_level_us, 38_000);
-        assert_eq!(merged.underruns, 1);
-        // 分位数窗口也吃到了这条样本
-        assert_eq!(merged.e2e_p50_us, 62_000);
-        assert_eq!(merged.e2e_p95_us, 62_000);
+        assert!(!missing.receiver_report, "尚未上报或过期不能冒充零丢包");
+        assert_eq!(missing.rtt_us, 12_000, "RTT 仍来自本机 QUIC 测量");
+    }
 
-        // 报告过期（超过 TTL）→ 不再采信，退回本机统计
-        let stale = aggregate(
-            &sender_side,
-            Some(peer),
+    #[test]
+    fn idle_peer_does_not_keep_previous_quality_or_latency_history() {
+        let mut statuses = [quality_status(1, true, 0)];
+        statuses[0].stats.e2e_latency_us = 62_000;
+        let mut windows = HashMap::new();
+        let measured = aggregate(&statuses, None, &mut windows, &HashMap::new());
+        assert_eq!(measured.e2e_p50_us, 62_000);
+        statuses[0].stats.e2e_latency_us = 0;
+        let unmeasured = aggregate(&statuses, None, &mut windows, &HashMap::new());
+        assert_eq!(unmeasured.e2e_p50_us, 0);
+        statuses[0].state = SessionState::Idle;
+        let idle = aggregate(
+            &statuses,
+            Some(statuses[0].id),
             &mut windows,
-            Some((
-                report,
-                Instant::now() - PEER_REPORT_TTL - Duration::from_secs(1),
-            )),
+            &HashMap::new(),
         );
-        assert_eq!(stale.e2e_latency_us, 0);
+        assert!(!idle.receiver_report);
+        assert_eq!(idle.bitrate_bps, 0);
     }
 
     /// 视图字段口径：短码必须是内核定义的 `NodeId::short()`（16 hex），
@@ -1884,12 +1674,11 @@ mod tests {
             name: "客厅 R1".to_string(),
             addr: "192.168.1.23:58290".parse().expect("addr"),
             state: SessionState::Streaming,
-            trusted: true,
             stats: StreamStats::default(),
             capabilities: None,
         };
 
-        let view = peer_view(&status, Some(id));
+        let view = peer_view(&status, Some(id), None);
         assert_eq!(view.id_short, id.short());
         assert!(view.receiving);
         assert_eq!(view.id_short.len(), 16);
@@ -1898,10 +1687,40 @@ mod tests {
             "短码必须能反查回同一个 NodeId"
         );
         assert_eq!(view.state, PeerState::Streaming);
-        assert!(view.trusted);
         assert_eq!(view.addr, "192.168.1.23:58290");
 
         // 同一个引擎状态、但本机没在推流 → 呈现为 idle（卡片仍在，按钮回到"开始推流"）
-        assert_eq!(peer_view(&status, None).state, PeerState::Idle);
+        assert_eq!(peer_view(&status, None, None).state, PeerState::Idle);
+    }
+
+    /// 协商帧长照原样进视图：内核给什么界面就显示什么。
+    ///
+    /// 改坏：这里若"顺手填个本机档位兜底"（None → 20），界面就会在**没协商**时显示一个
+    /// 看起来很正常的数字 —— 而帧长不一致的症状恰恰是"遥测全绿但声音发闷"，
+    /// 一个假数字会把唯一的直接读数变成误导。
+    #[test]
+    fn peer_view_passes_negotiated_frame_ms_through_without_a_fallback() {
+        let id = NodeId::from_bytes([0xcd; 32]);
+        let status = PeerStatus {
+            initiated_locally: false,
+            id,
+            reconnects: 0,
+            name: "手机".to_string(),
+            addr: "192.168.1.31:58290".parse().expect("addr"),
+            state: SessionState::Streaming,
+            stats: StreamStats::default(),
+            capabilities: None,
+        };
+
+        assert_eq!(
+            peer_view(&status, Some(id), Some(10)).negotiated_frame_ms,
+            Some(10),
+            "本端作接收端、对端报 10 ms → 视图必须如实报 10"
+        );
+        assert_eq!(
+            peer_view(&status, Some(id), None).negotiated_frame_ms,
+            None,
+            "还没协商 / 本端作发送端 → 必须是 None（界面据此显示占位符，不能兜底成 20）"
+        );
     }
 }

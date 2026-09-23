@@ -13,8 +13,8 @@ import org.junit.Test
  * 发送接线（连接 + 推流）的**纯逻辑**测试。
  *
  * 断言一律用字面量（不引用被测实现里的常量/推导）—— 第 107 轮的教训：用实现常量写断言，
- * 阈值写错时测试永远绿。例如 `1002` 在这里是**字面量**，而 [SenderStateMapper] 里那份是另一处定义，
- * 错了会被下面「1009 不该被当成提示」那条抓住。
+ * 阈值写错时测试永远绿。例如 `1002` 在断言里是**字面量**，与协议表里的数值各自独立表述，
+ * 表变了而这里没跟着变就会红。
  */
 class SenderStateMapperTest {
 
@@ -23,8 +23,7 @@ class SenderStateMapperTest {
         name = "PC",
         addr = "192.168.1.5:58290",
         state = state,
-        stateLabel = PairingStateMapper.stateLabel(state),
-        trusted = true,
+        stateLabel = PeerStateMapper.stateLabel(state),
     )
 
     private fun sender(
@@ -32,13 +31,11 @@ class SenderStateMapperTest {
         connecting: Boolean = false,
         peerIdShort: String? = null,
         sending: Boolean = false,
-        awaitingPin: Boolean = false,
     ) = SenderUiState(
         targetAddr = addr,
         connecting = connecting,
         peerIdShort = peerIdShort,
         sending = sending,
-        awaitingPin = awaitingPin,
     )
 
     // ---- 地址格式 ----
@@ -141,12 +138,7 @@ class SenderStateMapperTest {
     }
 
     @Test
-    fun startBlockedWhileAwaitingPinOrAlreadySending() {
-        val awaiting = sender(peerIdShort = "aaaa0001", awaitingPin = true)
-        assertEquals(
-            SendGate.AwaitingPin,
-            SenderStateMapper.canStartSend(awaiting, engineRunning = true, captureSelection = CaptureSourceKind.Microphone, captureState = CaptureState.Running),
-        )
+    fun startBlockedWhileAlreadySending() {
         val sending = sender(peerIdShort = "aaaa0001", sending = true)
         assertEquals(
             SendGate.AlreadySending,
@@ -200,7 +192,7 @@ class SenderStateMapperTest {
     @Test
     fun startAllowedWhenCaptureFailedButSourceChosen() {
         // 采集出错（例如权限被拒）不禁用发送：用户已明确选源，禁用只会让他困惑；
-        // 提示会说清「恢复后会自动开始发送」。对端此刻看到的是「连着但没声音」，属可接受中间态
+        // 提示会说清「恢复后点开始发送」——**不**承诺自动。对端此刻看到的是「连着但没声音」，属可接受中间态
         // （内核侧只表现为采集回调返回空 → read_timeouts 增长，不报错、不断流）。
         assertEquals(
             SendGate.Allowed,
@@ -216,32 +208,38 @@ class SenderStateMapperTest {
     // ---- 文案 ----
 
     @Test
-    fun waitingForAuthorizationTellsUserSendingStartsAutomatically() {
+    fun waitingForAuthorizationTellsUserToStartManually() {
         val note = SenderStateMapper.captureNote(CaptureSourceKind.SystemLoopback, CaptureState.AwaitingPermission)
         assertNotNull(note)
-        assertTrue("必须说清会自动开始：$note", note!!.contains("自动开始发送"))
+        assertTrue("要说清授权后还得点一下开始：$note", note!!.contains("开始推流"))
+        assertFalse("不许承诺自动开始（Android 侧没有自动推流）：$note", note.contains("自动"))
         assertTrue("必须点明在等授权：$note", note.contains("授权"))
         assertNull("采集正常运行时不需要补充提示", SenderStateMapper.captureNote(CaptureSourceKind.Microphone, CaptureState.Running))
         assertNull("发送源关闭时不提示", SenderStateMapper.captureNote(null, CaptureState.Idle))
         val failed = SenderStateMapper.captureNote(CaptureSourceKind.Microphone, CaptureState.Failed)
         assertNotNull(failed)
-        assertTrue("采集失败要说明会恢复后自动开始：$failed", failed!!.contains("恢复后会自动开始发送"))
+        assertTrue("采集失败要说明恢复后手动点开始：$failed", failed!!.contains("恢复后点「开始推流」"))
+        assertFalse("失败文案同样不许承诺自动：$failed", failed.contains("自动"))
     }
 
+    /**
+     * 连接失败只有一种口径：失败 + 可否重试。
+     *
+     * 1002（`NO_PEER`）在这里**也不再是提示** —— 它曾经的含义是「握手已在、等你回一个码」，
+     * 那个中间态已随配对机制删除，如今它只表示「指定的对端不存在」，所以必须按失败显示。
+     */
     @Test
-    fun connectNoticeDistinguishesPinFromFailure() {
-        // 1002 是提示（该你输码），不是失败 —— 文案里不该出现「失败」二字。
-        assertTrue(SenderStateMapper.connectFailureIsNotice(1002))
-        assertFalse("别的错误码不能被当成提示", SenderStateMapper.connectFailureIsNotice(1009))
-        assertFalse(SenderStateMapper.connectFailureIsNotice(0))
+    fun connectFailureIsAlwaysWordedAsFailure() {
+        val noPeer = SenderStateMapper.noteForConnectFailure(1002, "no peer session")
+        assertTrue("1002 现在就是一次失败：$noPeer", noPeer.contains("失败"))
+        assertTrue("要带上错误码便于排查：$noPeer", noPeer.contains("1002"))
 
-        val pinNotice = SenderStateMapper.noteForConnectFailure(1002, "peer requires pin pairing")
-        assertTrue("要引导用户输码：$pinNotice", pinNotice.contains("6 位数字"))
-        assertFalse("1002 不是失败：$pinNotice", pinNotice.contains("失败"))
+        val busy = SenderStateMapper.noteForConnectFailure(1009, "busy")
+        assertTrue("真失败要说明可重试：$busy", busy.contains("失败"))
+        assertTrue("要带上可重试的语义：$busy", busy.contains("可以再试"))
 
-        val realFailure = SenderStateMapper.noteForConnectFailure(1009, "busy")
-        assertTrue("真失败要说明可重试：$realFailure", realFailure.contains("失败"))
-        assertTrue("要带上可重试的语义：$realFailure", realFailure.contains("可以再试"))
+        val noCode = SenderStateMapper.noteForConnectFailure(0, "")
+        assertTrue("没有错误码时也要给人话：$noCode", noCode.isNotEmpty())
     }
 
     @Test
@@ -260,7 +258,6 @@ class SenderStateMapperTest {
         assertNull("允许时没有禁用原因", SenderStateMapper.gateNote(SendGate.Allowed))
         assertTrue(SenderStateMapper.gateNote(SendGate.CaptureOff)!!.contains("发送源"))
         assertTrue(SenderStateMapper.gateNote(SendGate.NoSession)!!.contains("连接"))
-        assertTrue(SenderStateMapper.gateNote(SendGate.AwaitingPin)!!.contains("6 位数字"))
         assertTrue(SenderStateMapper.gateNote(SendGate.PeerMismatch)!!.contains("重新连接"))
     }
 
@@ -309,7 +306,7 @@ class SenderStateMapperTest {
     /**
      * 缺陷回归（task-10）：先有一次**失败的出站连接**（error 残留在状态里），随后**对方连进来**。
      *
-     * 旧口径把 `error != null` 与 `awaitingPin` 塞进同一个早退条件 ⇒ 入站会话登记不上：
+     * 旧口径把 `error != null` 也当成早退条件 ⇒ 入站会话登记不上：
      * 主机明明已经被接入，推流按钮却一直灰着、旁边写着「先连接一台主机」。
      * 规则是**主机只等接入，接入不该被上一次请求的残留阻断**。
      */
@@ -334,12 +331,6 @@ class SenderStateMapperTest {
                 captureState = CaptureState.Running,
             ),
         )
-    }
-
-    /** pending 的 PIN 流程是**唯一**的让路条件：配对没完成就登记，会把「等待输码」说成「已连接」。 */
-    @Test
-    fun pendingPinKeepsTheSessionUnadopted() {
-        assertNull(SenderStateMapper.sessionAfterPeers(sender(awaitingPin = true), listOf(peer("aaaa0001"))))
     }
 
     /** 会话表里有多个对端时不猜（单对端语义）：宁可让用户重新连接，也不能把声音发到错误的设备上。 */
@@ -438,16 +429,19 @@ class SenderStateMapperTest {
     }
 
     // ---- 「接入即推」（自动开始推流）----
+    //
+    // 注意：这一组钉的是**纯判定** —— 「给定一个 idle 的入站会话时该不该自动」。它**不**证明
+    // 端到端会触发：引擎的活会话状态从不报 idle（握手完成即 Streaming），所以这个判据在真机上
+    // 目前恒为 false，inboundIdle() 只是把「若观测到 idle 则应当自动」这条规则钉住。
+    // 既有跨端映射不一致，见 docs/72 遗留项。
 
-    /** 主机方向的基线状态：对方连进来（入站）、已授信、会话空闲。 */
+    /** 主机方向的基线状态：对方连进来（入站）、会话空闲。 */
     private fun inboundIdle(
         manualStopFor: String? = null,
         autoStartedFor: String? = null,
         peerState: String = "idle",
-        trusted: Boolean = true,
     ) = sender(peerIdShort = "aaaa0001").copy(
         sessionInbound = true,
-        peerTrusted = trusted,
         peerState = peerState,
         manualStopFor = manualStopFor,
         autoStartedFor = autoStartedFor,
@@ -460,9 +454,9 @@ class SenderStateMapperTest {
         captureState: CaptureState = CaptureState.Running,
     ) = SenderStateMapper.shouldAutoStartSend(state, engineRunning, capture, captureState)
 
-    /** 规则 1/2/3 的正面路径：入站 + 授信 + idle + 采集就绪 → 自动。 */
+    /** 规则 1/2 的正面路径：入站 + idle + 采集就绪 → 自动。 */
     @Test
-    fun autoStartFiresForAnInboundIdleTrustedSession() {
+    fun autoStartFiresForAnInboundIdleSession() {
         assertTrue("对方接入且一切就绪时就该自动开始", autoStartWanted(inboundIdle()))
     }
 
@@ -471,7 +465,6 @@ class SenderStateMapperTest {
     fun autoStartNeverFiresForOutboundSessions() {
         val outbound = sender(peerIdShort = "aaaa0001").copy(
             sessionInbound = false,
-            peerTrusted = true,
             peerState = "idle",
         )
         assertFalse("出站会话不参与「接入即推」", autoStartWanted(outbound))
@@ -484,10 +477,10 @@ class SenderStateMapperTest {
         val refreshed = SenderStateMapper.sessionAfterPeers(outbound, listOf(peer("aaaa0001", state = "idle")))
         assertNotNull(refreshed)
         assertFalse(refreshed!!.sessionInbound)
-        assertFalse("刷新之后依然不该自动", autoStartWanted(refreshed.copy(peerTrusted = true)))
+        assertFalse("刷新之后依然不该自动", autoStartWanted(refreshed))
     }
 
-    /** 规则 2：只认 idle —— failed 不重试、handshaking 等它自己变。 */
+    /** 规则 2：只认 idle —— failed 不重试、其余中间态等它自己变。 */
     @Test
     fun autoStartOnlyAcceptsTheIdleState() {
         for (state in listOf("handshaking", "streaming", "degraded", "reconnecting", "failed")) {
@@ -496,13 +489,7 @@ class SenderStateMapperTest {
         assertTrue("idle 是唯一可推的时刻", autoStartWanted(inboundIdle(peerState = "idle")))
     }
 
-    /** 规则 3 的前半：未授信的会话也会出现在列表里，不能因为"它在表里"就开始推。 */
-    @Test
-    fun autoStartSkipsUntrustedSessions() {
-        assertFalse(autoStartWanted(inboundIdle(trusted = false)))
-    }
-
-    /** 规则 4：用户手动停过的设备永不自动重启 —— 而且只管那一台。 */
+    /** 规则 3：用户手动停过的设备永不自动重启 —— 而且只管那一台。 */
     @Test
     fun manualStopOptsThatDeviceAndOnlyThatDeviceOut() {
         assertFalse(
@@ -515,7 +502,7 @@ class SenderStateMapperTest {
         )
     }
 
-    /** 规则 3 的后半：同一台设备只自动发起一次（事件抖动不会造成重复调用）。 */
+    /** 规则 4：同一台设备只自动发起一次（事件抖动不会造成重复调用）。 */
     @Test
     fun autoStartFiresOnlyOncePerDevice() {
         assertFalse(
@@ -528,24 +515,23 @@ class SenderStateMapperTest {
         )
     }
 
-    /** 规则 6：没选发送源就不自动 —— 那样推过去只有连接没有声音，白让对端等。 */
+    /** 规则 5：没选发送源就不自动 —— 那样推过去只有连接没有声音，白让对端等。 */
     @Test
     fun autoStartNeedsACaptureSource() {
         assertFalse(autoStartWanted(inboundIdle(), capture = null))
     }
 
-    /** 规则 6 后半：其余门禁一律沿用 canStartSend，不另造一套。 */
+    /** 规则 5 后半：其余门禁一律沿用 canStartSend，不另造一套。 */
     @Test
     fun autoStartSharesTheManualGates() {
         assertFalse("引擎没起来不自动", autoStartWanted(inboundIdle(), engineRunning = false))
         assertFalse("已经在推流就不再自动", autoStartWanted(inboundIdle().copy(sending = true)))
-        assertFalse("还在等 PIN 不自动", autoStartWanted(inboundIdle().copy(awaitingPin = true)))
         assertFalse(
             "采集正在停止时先等它停完",
             autoStartWanted(inboundIdle(), captureState = CaptureState.Stopping),
         )
         assertTrue(
-            "等授权期间照样自动（授权一到就出声，与既有文案「授权后会自动开始推流」一致）",
+            "等授权期间判定照样放行（判定只看采集状态、不看是否已有权限；真机上因 idle 门禁恒不触发，见上一节说明）",
             autoStartWanted(inboundIdle(), captureState = CaptureState.AwaitingPermission),
         )
     }
@@ -585,11 +571,9 @@ class SenderStateMapperTest {
         val adopted = SenderStateMapper.sessionAfterPeers(sender(), listOf(peer("aaaa0001", state = "idle")))
         assertNotNull(adopted)
         assertTrue("从会话表里采纳来的就是入站会话", adopted!!.sessionInbound)
-        assertTrue("授信状态也要跟着记下来", adopted.peerTrusted)
 
         val gone = SenderStateMapper.sessionAfterPeers(adopted, listOf(peer("bbbb0002")))
         assertNotNull(gone)
         assertFalse("断开之后就不再是入站会话", gone!!.sessionInbound)
-        assertFalse(gone.peerTrusted)
     }
 }

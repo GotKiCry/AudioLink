@@ -1,16 +1,20 @@
-//! M2 接收抖动控制：20--60 ms 目标深度与有界包重排。
+//! 接收抖动控制：正常网络 20--60 ms，持续弱网最多 120 ms，与有界包重排。
 //!
-//! # 两个「帧数」不再共用一个常量（第 114 轮拆分）
+//! 所有保护垫都是**毫秒制**常量，运行时按帧长用 [`frames_for_ms`] 换算成帧数
+//! （向上取整、至少一帧）：20 ms 帧下 20/40/120/60/60 ms → 1/2/6/3/3 帧，
+//! 10 ms 帧下 → 2/4/12/6/6 帧。墙钟余量不随档位变化。
 //!
-//! 这里有两个语义不同的量，曾经共用一个 `DEFAULT_TARGET_FRAMES`，于是「想调起步延迟」就得
-//! 连带改「中等抖动该用几帧」：
+//! # 两个「目标深度」不再共用一个常量（第 114 轮拆分）
 //!
-//! * [`INITIAL_TARGET_FRAMES`] = **起步档**：会话刚起播时攒几帧才出声（= `MIN_TARGET_FRAMES`，
-//!   20 ms @20 ms 帧）。它是**出声延迟**的直接来源 —— 多攒一帧就多一帧的延迟。
-//! * [`DEFAULT_TARGET_FRAMES`] = **中等抖动档**：`observe()` 在「抖动 ≤ 一帧」时选用的深度
+//! 这里有两个语义不同的量，曾经共用一个 `DEFAULT_TARGET`，于是「想调起步延迟」就得
+//! 连带改「中等抖动该给多少余量」：
+//!
+//! * [`INITIAL_TARGET_MS`] = **起步档**：会话刚起播时攒够这么多毫秒才出声（= [`MIN_TARGET_MS`]，
+//!   20 ms；20 ms 帧 = 1 帧，10 ms 帧 = 2 帧）。它是**出声延迟**的直接来源。
+//! * [`DEFAULT_TARGET_MS`] = **中等抖动档**：`observe()` 在「抖动 ≤ 一帧」时选用的深度
 //!   （40 ms）。它是**抗抖动保护**的一部分，由 M2 的口径决定，不该被起步延迟的需求牵动。
 //!
-//! 实测（本机）：起步档 2 帧 → 1 帧后，回环 P50 53 872 → 25 965 / 27 259 µs（两次）、
+//! 实测（本机，20 ms 帧）：起步档 40 ms → 20 ms 后，回环 P50 53 872 → 25 965 / 27 259 µs（两次）、
 //! 接收侧水位 40 000 → 20 000 µs。
 //!
 //! ⚠️ **弱网代价在本机这个口径上判不出来，别把噪声当结论**：`soak-runner --tolerant` +
@@ -22,36 +26,60 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-pub(super) const MIN_TARGET_FRAMES: usize = 1;
-/// **起步档**：会话起播时攒够这么多帧才出声（20 ms @20 ms 帧）。
+pub(super) const MIN_TARGET_MS: u64 = 20;
+/// **起步档**：会话起播时攒够这么多毫秒才出声（20 ms 帧 = 1 帧，10 ms 帧 = 2 帧）。
 ///
-/// 与 [`DEFAULT_TARGET_FRAMES`] 分开：起步帧数是**延迟**，中等抖动档是**抗抖动保护**。
+/// 与 [`DEFAULT_TARGET_MS`] 分开：起步深度是**延迟**，中等抖动档是**抗抖动保护**。
 /// 详见模块文档。
-pub(super) const INITIAL_TARGET_FRAMES: usize = MIN_TARGET_FRAMES;
-/// **中等抖动档**：`observe()` 在「抖动 ≤ 一帧」时选用的深度（40 ms @20 ms 帧）。
+pub(super) const INITIAL_TARGET_MS: u64 = 20;
+/// **中等抖动档**：`observe()` 在「抖动 ≤ 一帧」时选用的深度（40 ms）。
 ///
 /// 由 M2 的抗抖动口径决定 —— 不要拿起步延迟的需求去改它（那正是第 114 轮拆分的理由）。
-pub(super) const DEFAULT_TARGET_FRAMES: usize = 2;
-pub(super) const MAX_TARGET_FRAMES: usize = 3;
-const STABLE_WINDOWS_TO_SHRINK: u32 = 30;
-const REORDER_CAPACITY: usize = 3;
+pub(super) const DEFAULT_TARGET_MS: u64 = 40;
+pub(super) const MAX_TARGET_MS: u64 = 120;
+const FULL_REORDER_MS: u64 = 60;
+const STABLE_WINDOWS_TO_SHRINK: u32 = 5;
+const REORDER_CAPACITY_MS: u64 = 60;
+// 发送端先发当前主包、再发上一帧副本。低缓冲档也须留出同批数据报的到达间隙，
+// 否则主包刚丢就被确认成洞，紧随其后的冗余副本永远赶不上解码游标。
+const REDUNDANT_REORDER_GRACE: Duration = Duration::from_millis(5);
 const DISCONTINUITY_FRAMES: u32 = 1_000;
+
+/// 毫秒保护垫 → 帧数：向上取整、至少一帧（20 ms → 20 ms 帧 1 帧 / 10 ms 帧 2 帧）。
+pub(super) fn frames_for_ms(ms: u64, frame_ms: u32) -> usize {
+    usize::try_from(ms.div_ceil(u64::from(frame_ms.max(1))))
+        .unwrap_or(usize::MAX)
+        .max(1)
+}
+
+/// 换档时按墙钟水位重换算帧数深度：旧帧长下的毫秒余量在新帧长下向上取整，并夹到新边界。
+pub(super) fn rescale_depth_frames(frames: usize, from_frame_ms: u32, to_frame_ms: u32) -> usize {
+    let depth_ms = u64::try_from(frames)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(u64::from(from_frame_ms.max(1)));
+    frames_for_ms(depth_ms, to_frame_ms).clamp(
+        frames_for_ms(MIN_TARGET_MS, to_frame_ms),
+        frames_for_ms(MAX_TARGET_MS, to_frame_ms),
+    )
+}
 
 /// 1 Hz 更新的目标深度控制器。
 ///
-/// 升档立即生效；降档要连续稳定 30 个窗口且每次只降一档，避免在阈值附近反复重缓冲。
+/// 升档立即生效；降档要连续稳定 5 个窗口且每次只降一档，避免把短时波动固化为长延迟。
 #[derive(Debug)]
 pub(super) struct AdaptiveJitterDepth {
     target_frames: usize,
     stable_windows: u32,
+    frame_ms: u32,
 }
 
 impl AdaptiveJitterDepth {
-    pub(super) const fn new() -> Self {
+    pub(super) fn new(frame_ms: u32) -> Self {
         Self {
             // 起步 = 最小档：出声延迟从这里开始（第 114 轮：与中等抖动档拆开）。
-            target_frames: INITIAL_TARGET_FRAMES,
+            target_frames: frames_for_ms(INITIAL_TARGET_MS, frame_ms),
             stable_windows: 0,
+            frame_ms: frame_ms.max(1),
         }
     }
 
@@ -61,24 +89,28 @@ impl AdaptiveJitterDepth {
         underruns: u32,
         frame_us: u32,
     ) -> usize {
-        let frame_us = frame_us.max(1);
+        let frame_us = u64::from(frame_us.max(1));
+        let min_frames = frames_for_ms(MIN_TARGET_MS, self.frame_ms);
+        let max_frames = frames_for_ms(MAX_TARGET_MS, self.frame_ms);
         let measured = jitter_p95_us.map(|jitter| {
-            if jitter <= frame_us / 4 {
-                MIN_TARGET_FRAMES
-            } else if jitter <= frame_us {
-                DEFAULT_TARGET_FRAMES
+            if u64::from(jitter) <= frame_us / 4 {
+                min_frames
+            } else if u64::from(jitter) <= frame_us {
+                frames_for_ms(DEFAULT_TARGET_MS, self.frame_ms)
             } else {
-                MAX_TARGET_FRAMES
+                usize::try_from(u64::from(jitter).div_ceil(frame_us) + 1)
+                    .unwrap_or(usize::MAX)
+                    .min(max_frames)
             }
         });
 
         let mut wanted = measured.unwrap_or(self.target_frames);
         if underruns > 0 {
-            wanted = wanted.max((self.target_frames + 1).min(MAX_TARGET_FRAMES));
+            wanted = wanted.max(self.target_frames);
         }
 
         if wanted > self.target_frames {
-            self.target_frames = wanted.min(MAX_TARGET_FRAMES);
+            self.target_frames = wanted.min(max_frames);
             self.stable_windows = 0;
         } else if wanted < self.target_frames && underruns == 0 && measured.is_some() {
             self.stable_windows = self.stable_windows.saturating_add(1);
@@ -95,21 +127,43 @@ impl AdaptiveJitterDepth {
 
     /// 接收播放线程的即时升档，防止 1 Hz 控制器随后用旧值把它覆盖。
     pub(super) fn raise_to(&mut self, target_frames: usize) {
-        let target_frames = target_frames.clamp(MIN_TARGET_FRAMES, MAX_TARGET_FRAMES);
+        let target_frames = target_frames.clamp(
+            frames_for_ms(MIN_TARGET_MS, self.frame_ms),
+            frames_for_ms(MAX_TARGET_MS, self.frame_ms),
+        );
         if target_frames > self.target_frames {
             self.target_frames = target_frames;
             self.stable_windows = 0;
         }
+    }
+
+    /// 帧长协商换档：更新换算基准，当前深度按墙钟水位重换算到新帧长。
+    pub(super) fn set_frame_ms(&mut self, frame_ms: u32) {
+        let frame_ms = frame_ms.max(1);
+        if frame_ms == self.frame_ms {
+            return;
+        }
+        self.target_frames = rescale_depth_frames(self.target_frames, self.frame_ms, frame_ms);
+        self.frame_ms = frame_ms;
+        self.stable_windows = 0;
     }
 }
 
 /// 仅当共享目标仍是控制器观察到的旧值时发布决策。
 ///
 /// 若播放线程在计算期间因欠载升档，比较交换会失败并保留更高的新值。
-pub(super) fn publish_target(shared: &AtomicUsize, observed: usize, desired: usize) -> usize {
+pub(super) fn publish_target(
+    shared: &AtomicUsize,
+    observed: usize,
+    desired: usize,
+    frame_ms: u32,
+) -> usize {
     match shared.compare_exchange(observed, desired, Ordering::Relaxed, Ordering::Relaxed) {
         Ok(_) => desired,
-        Err(current) => current.clamp(MIN_TARGET_FRAMES, MAX_TARGET_FRAMES),
+        Err(current) => current.clamp(
+            frames_for_ms(MIN_TARGET_MS, frame_ms),
+            frames_for_ms(MAX_TARGET_MS, frame_ms),
+        ),
     }
 }
 
@@ -126,15 +180,20 @@ pub(super) struct PlayoutDepthState {
     active_frames: usize,
     planned_frames: usize,
     holds_remaining: usize,
+    frame_ms: u32,
 }
 
 impl PlayoutDepthState {
-    pub(super) fn new(initial_frames: usize) -> Self {
-        let initial_frames = initial_frames.clamp(MIN_TARGET_FRAMES, MAX_TARGET_FRAMES);
+    pub(super) fn new(initial_frames: usize, frame_ms: u32) -> Self {
+        let initial_frames = initial_frames.clamp(
+            frames_for_ms(MIN_TARGET_MS, frame_ms),
+            frames_for_ms(MAX_TARGET_MS, frame_ms),
+        );
         Self {
             active_frames: initial_frames,
             planned_frames: initial_frames,
             holds_remaining: 0,
+            frame_ms: frame_ms.max(1),
         }
     }
 
@@ -157,7 +216,10 @@ impl PlayoutDepthState {
         requested_frames: usize,
         buffered_frames: usize,
     ) -> PlayoutDepthAction {
-        let requested_frames = requested_frames.clamp(MIN_TARGET_FRAMES, MAX_TARGET_FRAMES);
+        let requested_frames = requested_frames.clamp(
+            frames_for_ms(MIN_TARGET_MS, self.frame_ms),
+            frames_for_ms(MAX_TARGET_MS, self.frame_ms),
+        );
         if requested_frames < self.active_frames {
             let drop_frames = self
                 .active_frames
@@ -221,8 +283,9 @@ pub(super) struct ReorderBatch {
 
 /// 小型序号重排窗。
 ///
-/// 40 ms 及以下档位不额外等待；60 ms 档位拥有一帧真实余量，才允许等待最多一个帧周期。
-/// 无论目标深度如何，最多只保留三个未来包，防止异常序号或恶意流量无界占用内存。
+/// 40 ms 及以下档位遇到洞时最多等 5 ms，让紧随其后的冗余副本补洞；
+/// 60 ms 档位拥有一帧真实余量，允许等待最多一个帧周期。连续包始终立即交付。
+/// 无论目标深度如何，未来包占用封顶 60 ms 等值帧数，防止异常序号或恶意流量无界占用内存。
 ///
 /// **还有第二个等待理由（§8.1 的 NACK）**：当窗口里出现洞、且会话已经把重传请求发出去时，
 /// 由调用方通过 [`PacketReorderBuffer::set_retransmit_grace`] 给出一个有界等待窗口。
@@ -233,7 +296,12 @@ pub(super) struct PacketReorderBuffer {
     pending: Vec<EncodedAudioPacket>,
     recent_delivered: Vec<u32>,
     frame_period: Duration,
+    frame_ms: u32,
     target_frames: usize,
+    /// 给洞一整个帧周期重排余量的档位下限（60 ms 等值帧数）。
+    full_reorder_frames: usize,
+    /// 待排未来包的容量上限（60 ms 等值帧数）。
+    reorder_capacity: usize,
     /// 发现洞时给重传留的有界窗口（`Duration::ZERO` = 不等）。
     retransmit_grace: Duration,
     /// 当前这个洞是什么时候发现的；没有洞时为 `None`。
@@ -242,15 +310,18 @@ pub(super) struct PacketReorderBuffer {
 
 impl PacketReorderBuffer {
     pub(super) fn new(frame_period: Duration) -> Self {
+        let frame_ms = u32::try_from(frame_period.as_millis()).unwrap_or(20).max(1);
+        let reorder_capacity = frames_for_ms(REORDER_CAPACITY_MS, frame_ms);
         Self {
             expected_seq: None,
-            pending: Vec::with_capacity(REORDER_CAPACITY + 1),
-            recent_delivered: Vec::with_capacity(REORDER_CAPACITY * 2),
+            pending: Vec::with_capacity(reorder_capacity + 1),
+            recent_delivered: Vec::with_capacity(reorder_capacity * 2),
             frame_period,
-            // 同样取起步档：`reorder_wait()` 只在 `>= MAX_TARGET_FRAMES` 时才等一帧，
-            // 所以 1 与 2 的行为完全一致 —— 改它只是为了不再有第二个「初值」来源（它会
-            // 每秒被运行时写入的共享目标覆盖）。
-            target_frames: INITIAL_TARGET_FRAMES,
+            frame_ms,
+            // 起步档与共享播放目标一致；低档只为同批冗余副本留短暂重排窗口。
+            target_frames: frames_for_ms(INITIAL_TARGET_MS, frame_ms),
+            full_reorder_frames: frames_for_ms(FULL_REORDER_MS, frame_ms),
+            reorder_capacity,
             retransmit_grace: Duration::ZERO,
             gap_since: None,
         }
@@ -262,7 +333,10 @@ impl PacketReorderBuffer {
     }
 
     pub(super) fn set_target_frames(&mut self, target_frames: usize) {
-        self.target_frames = target_frames.clamp(MIN_TARGET_FRAMES, MAX_TARGET_FRAMES);
+        self.target_frames = target_frames.clamp(
+            frames_for_ms(MIN_TARGET_MS, self.frame_ms),
+            frames_for_ms(MAX_TARGET_MS, self.frame_ms),
+        );
     }
 
     pub(super) fn push(&mut self, seq: u32, payload: Vec<u8>, arrived_at: Instant) -> ReorderBatch {
@@ -298,7 +372,7 @@ impl PacketReorderBuffer {
         self.sort_pending();
         self.drain_contiguous(&mut batch.ready);
 
-        if self.reorder_wait().is_zero() || self.pending.len() > REORDER_CAPACITY {
+        if self.reorder_wait().is_zero() || self.pending.len() > self.reorder_capacity {
             self.force_earliest(&mut batch.ready);
         }
         self.refresh_gap(arrived_at);
@@ -334,10 +408,15 @@ impl PacketReorderBuffer {
     }
 
     fn reorder_wait(&self) -> Duration {
-        if self.target_frames >= MAX_TARGET_FRAMES {
+        if !self.has_gap() {
+            return Duration::ZERO;
+        }
+        if self.target_frames >= self.full_reorder_frames {
             return self.frame_period.max(self.gap_wait());
         }
-        self.gap_wait()
+        REDUNDANT_REORDER_GRACE
+            .min(self.frame_period)
+            .max(self.gap_wait())
     }
 
     /// 当前该给洞的等待时长：没有洞、或调用方没开窗口时为 0。
@@ -399,8 +478,8 @@ impl PacketReorderBuffer {
     }
 
     fn remember_delivered(&mut self, seq: u32) {
-        const RECENT_CAPACITY: usize = REORDER_CAPACITY * 2;
-        if self.recent_delivered.len() >= RECENT_CAPACITY {
+        let recent_capacity = self.reorder_capacity * 2;
+        if self.recent_delivered.len() >= recent_capacity {
             self.recent_delivered.remove(0);
         }
         self.recent_delivered.push(seq);
@@ -520,8 +599,9 @@ mod tests {
     fn depth_rises_immediately_and_shrinks_only_after_stable_hysteresis() {
         // 起步档与中等抖动档已拆成两个常量（第 114 轮）：这条测的是**升降档迟滞**，
         // 所以显式把起点抬到中等抖动档，不依赖 new() 的起步值 —— 否则一调起步延迟就会连带改这里。
-        let mut depth = AdaptiveJitterDepth::new();
-        depth.raise_to(DEFAULT_TARGET_FRAMES);
+        let mut depth = AdaptiveJitterDepth::new(20);
+        depth.raise_to(frames_for_ms(DEFAULT_TARGET_MS, 20));
+        depth.raise_to(3);
         assert_eq!(depth.observe(Some(2_000), 1, 20_000), 3);
         for _ in 0..STABLE_WINDOWS_TO_SHRINK - 1 {
             assert_eq!(depth.observe(Some(2_000), 0, 20_000), 3);
@@ -534,45 +614,203 @@ mod tests {
     }
 
     #[test]
+    fn one_playout_underrun_raises_only_once_at_ten_ms() {
+        let mut depth = AdaptiveJitterDepth::new(10);
+        depth.raise_to(3);
+        assert_eq!(depth.observe(Some(2_000), 1, 10_000), 3);
+        for _ in 0..STABLE_WINDOWS_TO_SHRINK - 1 {
+            assert_eq!(depth.observe(Some(2_000), 0, 10_000), 3);
+        }
+        assert_eq!(depth.observe(Some(2_000), 0, 10_000), 2);
+    }
+
+    #[test]
     fn a_fresh_controller_starts_at_the_minimum_depth() {
         // 起步档 = 最小档 = 20 ms：它是**出声延迟**的直接来源。这条断言防止有人把起步值
-        // 悄悄抬回中等抖动档 —— 那会白送一帧延迟（第 114 轮实测：回环 P50 +27.9 ms）。
-        let mut depth = AdaptiveJitterDepth::new();
-        assert_eq!(depth.target_frames, INITIAL_TARGET_FRAMES);
-        assert_eq!(INITIAL_TARGET_FRAMES, MIN_TARGET_FRAMES);
+        // 悄悄抬回中等抖动档 —— 那会白送一档延迟（第 114 轮实测：回环 P50 +27.9 ms）。
+        let mut depth = AdaptiveJitterDepth::new(20);
+        assert_eq!(depth.target_frames, frames_for_ms(INITIAL_TARGET_MS, 20));
+        assert_eq!(INITIAL_TARGET_MS, MIN_TARGET_MS);
         assert_eq!(
-            MIN_TARGET_FRAMES, 1,
-            "起步档就是一帧（20 ms 帧长下 = 20 ms）"
+            frames_for_ms(MIN_TARGET_MS, 20),
+            1,
+            "起步档就是 20 ms（20 ms 帧 = 1 帧，10 ms 帧 = 2 帧）"
         );
         // 还没有抖动测量时保持起步档，不得自己往上爬。
-        assert_eq!(depth.observe(None, 0, 20_000), MIN_TARGET_FRAMES);
+        assert_eq!(
+            depth.observe(None, 0, 20_000),
+            frames_for_ms(MIN_TARGET_MS, 20)
+        );
     }
 
     #[test]
     fn jitter_thresholds_map_to_twenty_forty_and_sixty_ms() {
-        let mut low = AdaptiveJitterDepth::new();
+        let mut low = AdaptiveJitterDepth::new(20);
         for _ in 0..STABLE_WINDOWS_TO_SHRINK {
             low.observe(Some(5_000), 0, 20_000);
         }
         assert_eq!(low.target_frames, 1);
 
-        let mut medium = AdaptiveJitterDepth::new();
+        let mut medium = AdaptiveJitterDepth::new(20);
         assert_eq!(medium.observe(Some(20_000), 0, 20_000), 2);
 
-        let mut high = AdaptiveJitterDepth::new();
+        let mut high = AdaptiveJitterDepth::new(20);
         assert_eq!(high.observe(Some(20_001), 0, 20_000), 3);
     }
 
     #[test]
+    fn renewed_jitter_or_missing_measurements_cancel_fast_recovery() {
+        let mut depth = AdaptiveJitterDepth::new(20);
+        depth.raise_to(6);
+        for _ in 0..4 {
+            assert_eq!(depth.observe(Some(2_000), 0, 20_000), 6);
+        }
+        assert_eq!(depth.observe(None, 0, 20_000), 6);
+        for _ in 0..4 {
+            assert_eq!(depth.observe(Some(2_000), 0, 20_000), 6);
+        }
+        assert_eq!(depth.observe(Some(2_000), 1, 20_000), 6);
+        for _ in 0..4 {
+            assert_eq!(depth.observe(Some(2_000), 0, 20_000), 6);
+        }
+        assert_eq!(depth.observe(Some(2_000), 0, 20_000), 5);
+    }
+
+    #[test]
+    fn burst_jitter_gets_bounded_headroom_and_eventually_returns_to_low_latency() {
+        let mut depth = AdaptiveJitterDepth::new(20);
+        assert_eq!(depth.observe(Some(70_000), 0, 20_000), 5);
+        assert_eq!(depth.observe(Some(u32::MAX), 1, 20_000), 6);
+        for _ in 0..25 {
+            depth.observe(Some(2_000), 0, 20_000);
+        }
+        assert_eq!(depth.target_frames, 1);
+    }
+
+    #[test]
+    fn ten_ms_frames_double_every_protection_pad() {
+        // 毫秒保护垫在两种帧长下的换算表：20 ms 档必须与拆分前的帧数常量一致（1/2/6/3/3），
+        // 10 ms 档全部翻倍（2/4/12/6/6），墙钟余量不随档位变化。
+        assert_eq!(frames_for_ms(MIN_TARGET_MS, 20), 1);
+        assert_eq!(frames_for_ms(INITIAL_TARGET_MS, 20), 1);
+        assert_eq!(frames_for_ms(DEFAULT_TARGET_MS, 20), 2);
+        assert_eq!(frames_for_ms(MAX_TARGET_MS, 20), 6);
+        assert_eq!(frames_for_ms(FULL_REORDER_MS, 20), 3);
+        assert_eq!(frames_for_ms(REORDER_CAPACITY_MS, 20), 3);
+
+        assert_eq!(frames_for_ms(MIN_TARGET_MS, 10), 2);
+        assert_eq!(frames_for_ms(INITIAL_TARGET_MS, 10), 2);
+        assert_eq!(frames_for_ms(DEFAULT_TARGET_MS, 10), 4);
+        assert_eq!(frames_for_ms(MAX_TARGET_MS, 10), 12);
+        assert_eq!(frames_for_ms(FULL_REORDER_MS, 10), 6);
+        assert_eq!(frames_for_ms(REORDER_CAPACITY_MS, 10), 6);
+    }
+
+    #[test]
+    fn ten_ms_controller_uses_doubled_depths() {
+        let mut depth = AdaptiveJitterDepth::new(10);
+        assert_eq!(depth.target_frames, 2, "起步档 20 ms 在 10 ms 帧下 = 2 帧");
+        assert_eq!(
+            depth.observe(Some(10_000), 0, 10_000),
+            4,
+            "中等抖动档 40 ms 在 10 ms 帧下 = 4 帧"
+        );
+
+        let mut high = AdaptiveJitterDepth::new(10);
+        high.raise_to(11);
+        assert_eq!(
+            high.observe(Some(u32::MAX), 1, 10_000),
+            12,
+            "上限 120 ms 在 10 ms 帧下 = 12 帧"
+        );
+    }
+
+    #[test]
+    fn ten_ms_reorder_buffer_repairs_reordering_at_sixty_ms_target() {
+        let now = Instant::now();
+        let mut buffer = PacketReorderBuffer::new(Duration::from_millis(10));
+        buffer.set_target_frames(6);
+        assert_eq!(seqs(&push(&mut buffer, 0, now)), [0]);
+        assert!(
+            push(&mut buffer, 2, now + Duration::from_millis(10))
+                .ready
+                .is_empty()
+        );
+        let repaired = push(&mut buffer, 1, now + Duration::from_millis(15));
+        assert_eq!(seqs(&repaired), [1, 2]);
+        assert_eq!(repaired.late_drops, 0);
+    }
+
+    #[test]
+    fn ten_ms_reorder_capacity_holds_six_future_packets() {
+        let now = Instant::now();
+        let mut buffer = PacketReorderBuffer::new(Duration::from_millis(10));
+        buffer.set_target_frames(6);
+        push(&mut buffer, 0, now);
+        // 60 ms 容量 = 6 帧：6 个未来包都留住，第 7 个越界才强迫放行最旧包。
+        for seq in 2..=7 {
+            assert!(
+                push(&mut buffer, seq, now).ready.is_empty(),
+                "序号 {seq} 应在 60 ms 容量内等待"
+            );
+        }
+        let overflow = push(&mut buffer, 9, now);
+        assert_eq!(seqs(&overflow), [2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn frame_length_switch_rescales_depth_by_wall_clock() {
+        // 混档换档（OPEN_STREAM 协商）：当前深度的**毫秒**水位不变，帧数跟着帧长重换算。
+        assert_eq!(rescale_depth_frames(1, 20, 10), 2, "20 ms → 2×10 ms");
+        assert_eq!(rescale_depth_frames(2, 10, 20), 1, "2×10 ms → 20 ms");
+        assert_eq!(rescale_depth_frames(6, 20, 10), 12, "120 ms → 12×10 ms");
+        assert_eq!(rescale_depth_frames(12, 10, 20), 6, "12×10 ms → 120 ms");
+        // 重换算结果始终夹在新帧长的边界内。
+        assert_eq!(rescale_depth_frames(usize::MAX, 20, 10), 12);
+        assert_eq!(rescale_depth_frames(0, 20, 10), 2);
+    }
+
+    #[test]
+    fn controller_switch_to_ten_ms_rescales_target_and_bounds() {
+        // 20 → 10：起步 1 帧（20 ms）重换算为 2 帧，随后 min/中等/上限边界全部按 10 ms 帧计。
+        let mut depth = AdaptiveJitterDepth::new(20);
+        depth.set_frame_ms(10);
+        assert_eq!(depth.target_frames, 2, "20 ms 水位在 10 ms 帧下 = 2 帧");
+        assert_eq!(depth.observe(Some(10_000), 0, 10_000), 4);
+        let mut high = AdaptiveJitterDepth::new(20);
+        high.raise_to(6);
+        high.set_frame_ms(10);
+        assert_eq!(high.target_frames, 12, "120 ms 水位在 10 ms 帧下 = 12 帧");
+        assert_eq!(
+            high.observe(Some(u32::MAX), 1, 10_000),
+            12,
+            "上限夹到 12 帧"
+        );
+    }
+
+    #[test]
+    fn controller_switch_to_twenty_ms_rescales_target_and_bounds() {
+        // 10 → 20：4 帧（40 ms）重换算为 2 帧，升档上限回到 6 帧。
+        let mut depth = AdaptiveJitterDepth::new(10);
+        depth.raise_to(4);
+        depth.set_frame_ms(20);
+        assert_eq!(depth.target_frames, 2, "40 ms 水位在 20 ms 帧下 = 2 帧");
+        assert_eq!(depth.observe(Some(u32::MAX), 1, 20_000), 6, "上限夹到 6 帧");
+        // 同帧长重设是幂等空操作。
+        depth.set_frame_ms(20);
+        assert_eq!(depth.target_frames, 6);
+    }
+
+    #[test]
     fn playout_rebuffer_holds_only_the_bounded_depth_deficit() {
-        let mut from_forty = PlayoutDepthState::new(2);
+        let mut from_forty = PlayoutDepthState::new(2, 20);
         assert_eq!(from_forty.action(3, 0), PlayoutDepthAction::Hold);
         assert_eq!(from_forty.action(3, 0), PlayoutDepthAction::Hold);
         assert_eq!(from_forty.action(3, 0), PlayoutDepthAction::Hold);
         assert_eq!(from_forty.action(3, 0), PlayoutDepthAction::Play);
         assert_eq!(from_forty.active_frames(), 3);
 
-        let mut from_twenty = PlayoutDepthState::new(1);
+        let mut from_twenty = PlayoutDepthState::new(1, 20);
         assert_eq!(from_twenty.action(3, 1), PlayoutDepthAction::Hold);
         assert_eq!(from_twenty.action(3, 2), PlayoutDepthAction::Hold);
         assert_eq!(from_twenty.action(3, 3), PlayoutDepthAction::Play);
@@ -581,7 +819,7 @@ mod tests {
 
     #[test]
     fn playout_rebuffer_finishes_early_when_target_depth_arrives() {
-        let mut state = PlayoutDepthState::new(2);
+        let mut state = PlayoutDepthState::new(2, 20);
         assert_eq!(state.action(3, 1), PlayoutDepthAction::Hold);
         assert_eq!(state.action(3, 3), PlayoutDepthAction::Play);
         assert_eq!(state.active_frames(), 3);
@@ -589,7 +827,7 @@ mod tests {
 
     #[test]
     fn max_depth_underrun_can_refill_without_another_depth_raise() {
-        let mut state = PlayoutDepthState::new(3);
+        let mut state = PlayoutDepthState::new(3, 20);
         state.refill_after_underrun(1);
 
         assert_eq!(state.action(3, 1), PlayoutDepthAction::Hold);
@@ -600,11 +838,11 @@ mod tests {
 
     #[test]
     fn playout_downshift_drops_only_real_excess_depth() {
-        let mut state = PlayoutDepthState::new(3);
+        let mut state = PlayoutDepthState::new(3, 20);
         assert_eq!(state.action(2, 3), PlayoutDepthAction::DropOldest(1));
         assert_eq!(state.active_frames(), 2);
 
-        let mut already_shallow = PlayoutDepthState::new(3);
+        let mut already_shallow = PlayoutDepthState::new(3, 20);
         assert_eq!(already_shallow.action(2, 2), PlayoutDepthAction::Play);
         assert_eq!(already_shallow.active_frames(), 2);
     }
@@ -612,7 +850,7 @@ mod tests {
     #[test]
     fn controller_publish_does_not_overwrite_concurrent_underrun_raise() {
         let shared = AtomicUsize::new(3);
-        assert_eq!(publish_target(&shared, 2, 1), 3);
+        assert_eq!(publish_target(&shared, 2, 1, 20), 3);
         assert_eq!(shared.load(Ordering::Relaxed), 3);
     }
     #[test]
@@ -667,14 +905,31 @@ mod tests {
     }
 
     #[test]
-    fn closing_the_grace_window_falls_back_to_immediate_delivery() {
-        // 会话循环在播放队列没余量时会把窗口设回 0：此时必须立刻回到「不等」的行为
+    fn closing_retransmit_grace_keeps_only_the_short_redundancy_window() {
         let mut buffer = PacketReorderBuffer::new(Duration::from_millis(20));
         buffer.set_retransmit_grace(Duration::from_millis(30));
         let start = Instant::now();
         push(&mut buffer, 0, start);
         buffer.set_retransmit_grace(Duration::ZERO);
         let batch = push(&mut buffer, 2, start + Duration::from_millis(20));
-        assert_eq!(seqs(&batch), vec![2], "窗口关闭后立刻交付，由掩盖兜底");
+        assert!(batch.ready.is_empty());
+        assert_eq!(
+            buffer.next_deadline(),
+            Some(start + Duration::from_millis(25))
+        );
+        assert!(
+            buffer
+                .flush_expired(start + Duration::from_millis(24))
+                .ready
+                .is_empty()
+        );
+        assert_eq!(
+            seqs(&buffer.flush_expired(start + Duration::from_millis(25))),
+            [2]
+        );
+        assert_eq!(
+            push(&mut buffer, 1, start + Duration::from_millis(26)).late_drops,
+            1
+        );
     }
 }

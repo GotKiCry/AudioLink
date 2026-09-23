@@ -25,7 +25,7 @@ class CapturePump(
     private val ring: CaptureRing,
     /** 目标声道数：协议固定 2（`docs/11-m1-contract.md` §7）。 */
     private val targetChannels: Int = PcmFrameAssembler.DEFAULT_CHANNEL_COUNT,
-    /** 每次从设备拉取的帧数；默认 20 ms，与内核一帧同长。 */
+    /** 每次从设备拉取的采样帧数；默认 480 帧（10 ms），覆盖最短 Opus 帧长。 */
     private val framesPerRead: Int = DEFAULT_FRAMES_PER_READ,
 ) {
 
@@ -146,7 +146,7 @@ class CapturePump(
     }
 
     companion object {
-        /** 默认每次拉 20 ms：与内核一帧同长，开流后第一次 `readPcm` 就能拿到整帧。 */
-        const val DEFAULT_FRAMES_PER_READ = 20
+        /** 默认每次拉 10 ms；不能把毫秒数 20 当作采样帧数传给 AudioRecord。 */
+        const val DEFAULT_FRAMES_PER_READ = CaptureFormat.SAMPLE_RATE_HZ * 10 / 1_000
     }
 }

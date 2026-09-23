@@ -21,7 +21,7 @@ use audiolink_audio::{
     AudioError, DeviceFormat, NullPlayout, PlayoutSink, PlayoutStats, SyntheticCapture,
 };
 use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::{ErrorCode, NodeId};
+use audiolink_types::NodeId;
 use tokio::net::UdpSocket;
 use tokio::task::JoinHandle;
 
@@ -165,24 +165,12 @@ async fn start_receiver(
     (engine, accept)
 }
 
-async fn connect_and_pair(
-    sender: &Arc<Engine>,
-    receiver: &Arc<Engine>,
-    addr: SocketAddr,
-) -> NodeId {
-    let mut events = receiver.subscribe();
+async fn connect_peer(sender: &Arc<Engine>, receiver: &Arc<Engine>, addr: SocketAddr) -> NodeId {
     let receiver_id = receiver.info().id;
-    let error = sender.connect(addr).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-            break pin;
-        }
-    };
     sender
-        .submit_pin(receiver_id, &pin)
+        .connect(addr)
         .await
-        .expect("PIN 配对");
+        .expect("连接应当直接成功（无认证）");
     receiver_id
 }
 
@@ -260,8 +248,8 @@ async fn group_sync_survives_link_loss() {
     let mut events_b = receiver_b.subscribe();
 
     let outcome = tokio::time::timeout(Duration::from_secs(90), async {
-        let id_a = connect_and_pair(&sender, &receiver_a, relay_a.addr).await;
-        let id_b = connect_and_pair(&sender, &receiver_b, relay_b.addr).await;
+        let id_a = connect_peer(&sender, &receiver_a, relay_a.addr).await;
+        let id_b = connect_peer(&sender, &receiver_b, relay_b.addr).await;
         wait_streaming(&sender, id_a).await;
         wait_streaming(&sender, id_b).await;
 
@@ -278,7 +266,7 @@ async fn group_sync_survives_link_loss() {
         (id_a, id_b)
     })
     .await
-    .expect("90 s 内必须完成配对、建组与开流");
+    .expect("90 s 内必须完成连接、建组与开流");
     let (_id_a, _id_b) = outcome;
 
     let a: Vec<Instant> = stamps_a
@@ -356,8 +344,8 @@ async fn group_sync_survives_heavy_loss() {
     let mut events_b = receiver_b.subscribe();
 
     let outcome = tokio::time::timeout(Duration::from_secs(90), async {
-        let id_a = connect_and_pair(&sender, &receiver_a, relay_a.addr).await;
-        let id_b = connect_and_pair(&sender, &receiver_b, relay_b.addr).await;
+        let id_a = connect_peer(&sender, &receiver_a, relay_a.addr).await;
+        let id_b = connect_peer(&sender, &receiver_b, relay_b.addr).await;
         wait_streaming(&sender, id_a).await;
         wait_streaming(&sender, id_b).await;
 
@@ -373,7 +361,7 @@ async fn group_sync_survives_heavy_loss() {
         tokio::time::sleep(Duration::from_secs(8)).await;
     })
     .await;
-    outcome.expect("90 s 内必须完成配对、建组与开流");
+    outcome.expect("90 s 内必须完成连接、建组与开流");
 
     let a: Vec<Instant> = stamps_a
         .lock()
@@ -451,9 +439,9 @@ async fn late_joiner_aligns_under_loss() {
     let mut events_c = receiver_c.subscribe();
 
     let outcome = tokio::time::timeout(Duration::from_secs(120), async {
-        let id_a = connect_and_pair(&sender, &receiver_a, relay_a.addr).await;
-        let id_b = connect_and_pair(&sender, &receiver_b, relay_b.addr).await;
-        let id_c = connect_and_pair(&sender, &receiver_c, relay_c.addr).await;
+        let id_a = connect_peer(&sender, &receiver_a, relay_a.addr).await;
+        let id_b = connect_peer(&sender, &receiver_b, relay_b.addr).await;
+        let id_c = connect_peer(&sender, &receiver_c, relay_c.addr).await;
         wait_streaming(&sender, id_a).await;
         wait_streaming(&sender, id_b).await;
         wait_streaming(&sender, id_c).await;
@@ -479,7 +467,7 @@ async fn late_joiner_aligns_under_loss() {
         tokio::time::sleep(Duration::from_secs(5)).await;
     })
     .await;
-    outcome.expect("120 s 内必须完成配对、建组、动态加入与开流");
+    outcome.expect("120 s 内必须完成连接、建组、动态加入与开流");
 
     let mut audible = Vec::new();
     let mut times: Vec<Vec<Instant>> = Vec::new();
@@ -564,7 +552,7 @@ async fn two_groups_hold_under_loss() {
     let outcome = tokio::time::timeout(Duration::from_secs(120), async {
         let mut ids = Vec::new();
         for ((receiver, _), relay) in receivers.iter().zip(relays.iter()) {
-            let id = connect_and_pair(&sender, receiver, relay.addr).await;
+            let id = connect_peer(&sender, receiver, relay.addr).await;
             wait_streaming(&sender, id).await;
             ids.push(id);
         }
@@ -588,7 +576,7 @@ async fn two_groups_hold_under_loss() {
         tokio::time::sleep(Duration::from_secs(6)).await;
     })
     .await;
-    outcome.expect("120 s 内必须完成四台配对、两个组与批量开流");
+    outcome.expect("120 s 内必须完成四台连接、两个组与批量开流");
 
     let mut audible = Vec::new();
     let mut times: Vec<Vec<Instant>> = Vec::new();

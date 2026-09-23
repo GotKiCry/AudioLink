@@ -63,6 +63,22 @@ class CapturePumpTest {
     private fun ring(capacity: Int = 64) = CaptureRing(capacity, channelCount = 2, topUpWaitMs = 0L)
 
     @Test
+    fun defaultReadSizeIsTenMillisecondsOfSampleFrames() {
+        val ring = ring(capacity = 960)
+        val source = FakeFloatSource(blocks = listOf(FloatArray(960) { 0.5f }))
+        val pump = CapturePump(source, ring)
+
+        assertTrue(pump.pumpOnce())
+        assertEquals(480L, pump.framesDelivered)
+        assertEquals(480, ring.availableFrames)
+    }
+
+    @Test
+    fun recordBufferSizingUsesTwentyMillisecondsOfSamples() {
+        assertEquals(7_680, AudioRecordSupport.bytesPerFrame(CaptureFormat.DEFAULT))
+    }
+
+    @Test
     fun floatBlockLandsInRingAsWholeFrames() {
         val ring = ring()
         val source = FakeFloatSource(blocks = listOf(floatArrayOf(1f, 2f, 3f, 4f)))

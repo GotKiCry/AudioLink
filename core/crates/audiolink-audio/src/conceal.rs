@@ -20,6 +20,7 @@ pub struct PcmConcealer {
     frame_samples: usize,
     lost_samples: usize,
     has_history: bool,
+    discontinuity: bool,
 }
 
 impl PcmConcealer {
@@ -37,13 +38,14 @@ impl PcmConcealer {
             frame_samples,
             lost_samples: 0,
             has_history: false,
+            discontinuity: false,
         })
     }
 
     /// 处理一帧成功解码的 PCM。若刚从丢包恢复，会原地交叉淡化帧首。
     pub fn process_good(&mut self, samples: &mut [f32]) -> Result<(), AudioError> {
         self.require_frame(samples)?;
-        if self.lost_samples > 0 {
+        if self.lost_samples > 0 || self.discontinuity {
             let overlap = CONCEAL_CROSSFADE_SAMPLES.min(self.frame_samples / CHANNELS as usize);
             for frame in 0..overlap {
                 let mix = (frame + 1) as f32 / overlap as f32;
@@ -59,6 +61,7 @@ impl PcmConcealer {
         let last = self.frame_samples - CHANNELS as usize;
         self.last_output.copy_from_slice(&samples[last..]);
         self.lost_samples = 0;
+        self.discontinuity = false;
         self.has_history = true;
         Ok(())
     }
@@ -102,12 +105,18 @@ impl PcmConcealer {
         self.lost_samples
     }
 
+    /// 主动追赶时间轴后平滑下一帧边界；不伪造丢包，也不输出额外补音。
+    pub fn note_discontinuity(&mut self) {
+        self.discontinuity = self.has_history;
+    }
+
     /// 丢弃历史（新流或长时间序号跳变时调用）。
     pub fn reset(&mut self) {
         self.history.fill(0.0);
         self.last_output.fill(0.0);
         self.lost_samples = 0;
         self.has_history = false;
+        self.discontinuity = false;
     }
 
     fn require_frame(&self, samples: &[f32]) -> Result<(), AudioError> {
@@ -131,6 +140,26 @@ mod tests {
 
     fn rms(samples: &[f32]) -> f32 {
         (samples.iter().map(|value| value * value).sum::<f32>() / samples.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn 主动跳过后平滑衔接且不伪造丢包() {
+        let mut concealer = PcmConcealer::new(20).unwrap();
+        let mut previous = vec![0.75; frame_interleaved(20)];
+        concealer.process_good(&mut previous).unwrap();
+        concealer.note_discontinuity();
+        assert_eq!(concealer.lost_samples(), 0);
+        let mut next = vec![-0.75; previous.len()];
+        concealer.process_good(&mut next).unwrap();
+        assert!((next[0] - 0.75).abs() < 0.02);
+        assert_eq!(next[CONCEAL_CROSSFADE_SAMPLES * 2], -0.75);
+        let mut unchanged = vec![0.25; previous.len()];
+        concealer.process_good(&mut unchanged).unwrap();
+        assert!(unchanged.iter().all(|sample| *sample == 0.25));
+        concealer.note_discontinuity();
+        concealer.reset();
+        concealer.process_good(&mut unchanged).unwrap();
+        assert!(unchanged.iter().all(|sample| *sample == 0.25));
     }
 
     #[test]

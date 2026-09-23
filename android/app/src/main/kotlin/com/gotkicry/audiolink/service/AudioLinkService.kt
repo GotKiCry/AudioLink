@@ -33,7 +33,6 @@ import com.gotkicry.audiolink.core.FfiException
 import com.gotkicry.audiolink.core.LocalStatus
 import com.gotkicry.audiolink.core.connect
 import com.gotkicry.audiolink.core.disconnectPeer
-import com.gotkicry.audiolink.core.displayedPin
 import com.gotkicry.audiolink.core.engineStart
 import com.gotkicry.audiolink.core.engineStop
 import com.gotkicry.audiolink.core.localPeerGain
@@ -41,7 +40,6 @@ import com.gotkicry.audiolink.core.peers
 import com.gotkicry.audiolink.core.setLocalPeerGain
 import com.gotkicry.audiolink.core.startSend
 import com.gotkicry.audiolink.core.stopSend
-import com.gotkicry.audiolink.core.submitPin
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -95,15 +93,6 @@ class AudioLinkService : Service() {
         /** 目标地址（`192.168.1.5` 或 `192.168.1.5:58290`）。 */
         const val EXTRA_TARGET_ADDR = "target_addr"
 
-        /** UI → 服务：提交对端屏幕上显示的 6 位 PIN（`connect` 返回 `1002` 之后）。 */
-        const val ACTION_SUBMIT_PIN = "com.gotkicry.audiolink.action.SUBMIT_PIN"
-
-        /** 用户输入的 6 位 PIN。 */
-        const val EXTRA_PIN = "pin"
-
-        /** 配对 PIN 位数（协议 §5：6 位数字）。**只用于本地格式校验**，权威在服务端 `PinGate`。 */
-        private const val PIN_LENGTH = 6
-
         /** 「已停止发送」的固定说法：与「已断开」严格区分（`stopSend` 只停流、保留连接）。 */
         private const val STOPPED_SENDING_NOTE = "已停止发送（连接保持）"
 
@@ -116,7 +105,7 @@ class AudioLinkService : Service() {
         /** UI → 服务：开始向当前对端推流。 */
         const val ACTION_START_SEND = "com.gotkicry.audiolink.action.START_SEND"
 
-        /** UI → 服务：停止推流（**保留连接与信任** —— 内核 `Engine::stop_send` 的语义）。 */
+        /** UI → 服务：停止推流（**保留连接** —— 内核 `Engine::stop_send` 的语义）。 */
         const val ACTION_STOP_SEND = "com.gotkicry.audiolink.action.STOP_SEND"
 
         // ---- 按设备控制（接收端多设备：每台独立音量 / 静音 / 断开）----
@@ -127,7 +116,7 @@ class AudioLinkService : Service() {
         /** UI → 服务：切换某台设备的本地静音（0 ⇄ 上一次的非零值）。 */
         const val ACTION_TOGGLE_MUTE = "com.gotkicry.audiolink.action.TOGGLE_MUTE"
 
-        /** UI → 服务：断开某台设备（**保留信任**；对端若是发起方会自己重拨回来）。 */
+        /** UI → 服务：断开某台设备（对端若是发起方会自己重拨回来）。 */
         const val ACTION_DISCONNECT_PEER = "com.gotkicry.audiolink.action.DISCONNECT_PEER"
 
         /** 目标设备的完整指纹（`PeerView.idHex`）—— 多设备时短码可能撞车。 */
@@ -150,15 +139,6 @@ class AudioLinkService : Service() {
                 Intent(context, AudioLinkService::class.java)
                     .setAction(ACTION_CONNECT)
                     .putExtra(EXTRA_TARGET_ADDR, addr),
-            )
-        }
-
-        /** UI 入口：提交对端屏幕上显示的 6 位 PIN（`1002 NOT_PAIRED` 之后继续**同一条**连接）。 */
-        fun submitPin(context: Context, pin: String) {
-            context.startService(
-                Intent(context, AudioLinkService::class.java)
-                    .setAction(ACTION_SUBMIT_PIN)
-                    .putExtra(EXTRA_PIN, pin),
             )
         }
 
@@ -291,9 +271,32 @@ class AudioLinkService : Service() {
          *
          * 为什么走"请求 + 每拍下发"而不是让 UI 直接持有播放器：AudioTrack 的亲和性纪律要求
          * 所有设备调用都发生在播放线程上，UI 线程只允许改一个标量意图。
+         *
+         * **初值恒为标准档（1440）**，不读持久化开关：这是**进程级**（companion）的标量，
+         * 没有 `Context` 可读设置 —— 而"本会话该用哪个默认值"这件事由 `onCreate` 里的
+         * [applyLowLatencyDefault] 在拿到 `Context` 之后落地。
+         * 类初始化里**不能**做设置读取，否则 first-touch 时机（可能在 UI 线程的任意一刻）
+         * 会变成一次磁盘 IO。
          */
         @Volatile
         private var requestedQueueTargetFrames: Int = LowLatencyPlayer.DEFAULT_QUEUE_TARGET_FRAMES
+
+        /**
+         * 低延迟档的**会话内镜像**（值来自 [LowLatencyPreference]，服务创建时读一次）。
+         *
+         * 与 [requestedQueueTargetFrames] 同域（companion）的理由：开关的读写都发生在
+         * **没有 Service 实例**的时刻 —— [setLowLatency] 由 UI 直接调用（此服务未必在跑），
+         * 而水位那个标量本来就是进程级的。
+         *
+         * **唯一消费者是引擎接线**（`engineStart` 现取，见那里的注释）。
+         * ⚠️ **UI 不许读它**：镜像在「服务从未跑过」的进程里还停在初值 `false`，而设置页
+         * 完全可能在这种进程里被打开（前台服务由用户点按钮才拉起）—— 那时显示的值是错的。
+         * UI 一律读 [LowLatencyPreference]（盘的唯一真相）。
+         *
+         * **不在读取处复读 SharedPreferences**：理由见 [setLowLatency] 第 1 条。
+         */
+        @Volatile
+        private var lowLatencyEnabled: Boolean = LowLatencyDefaults.DEFAULT_LOW_LATENCY
 
         /** UI 请求的一次性容量收缩（帧）；0 = 无请求。消费后清零。 */
         @Volatile
@@ -308,6 +311,32 @@ class AudioLinkService : Service() {
             requestedQueueTargetFrames = frames
         }
 
+        // ---- 低延迟档：持久化开关 + 水位默认值联动 ----
+
+        /**
+         * UI → 服务：切换低延迟档。**只落盘 + 更新水位默认值，不重启任何东西**。
+         *
+         * 三件事的顺序就是语义：
+         * 1. **落盘**（[LowLatencyPreference.setEnabled]）：这是"下次启动引擎生效"的载体 ——
+         *    引擎配置在 `engineStart` 里现读，所以值必须先在盘上；
+         * 2. **更新会话镜像**：让 UI 立刻看到新状态（否则开关会弹回旧值）；
+         * 3. **重置水位**到新档的默认值（[LowLatencyDefaults.queueTargetForSwitch]）：
+         *    这是"档位决定默认值"的唯一一次落地 —— 用户显式切档，覆盖旧的手动水位是正确的；
+         *    之后手动调节依旧优先（关系与理由见 [LowLatencyDefaults] 的类注释）。
+         *
+         * **为什么不重启引擎/前台服务**：正在播放或采集时重启会让用户的音频断一下，
+         * 为了"立即生效"付这个代价不值得（契约：下次启动引擎生效，UI 文案已写明）。
+         * 水位能在本会话立即生效，是因为它是纯 Kotlin 侧的下发值，不涉及内核帧长。
+         *
+         * 注意：这里**不碰** `player`/`AudioTrack` —— 只改 companion 的 @Volatile 标量，
+         * 实际下发给播放线程仍由 [refreshState] 每拍完成（亲和性纪律）。
+         */
+        fun setLowLatency(context: Context, enabled: Boolean) {
+            LowLatencyPreference.setEnabled(context, enabled)
+            lowLatencyEnabled = enabled
+            requestedQueueTargetFrames = LowLatencyDefaults.queueTargetForSwitch(enabled)
+        }
+
         /** UI → 播放器：请求把输出缓冲**容量**收缩到 [frames] 帧（路①；由播放线程执行）。 */
         fun requestBufferShrink(frames: Int) {
             requestedShrinkFrames = frames
@@ -319,13 +348,14 @@ class AudioLinkService : Service() {
         }
     }
 
+    @Volatile
     private var player: LowLatencyPlayer? = null
 
     /** 内核 PCM 的落地环：FFI 回调写它，播放线程读它。 */
     private val playoutRing = PcmRingBuffer(PLAYOUT_RING_FRAMES, CHANNEL_COUNT)
 
     /** FFI 接缝：内核 `PcmFeed.feedPcm` 的 Kotlin 实现（把 PCM 写进 [playoutRing]）。 */
-    private val pcmFeed = FfiPcmFeed(playoutRing)
+    private val pcmFeed = FfiPcmFeed(playoutRing, outputBufferState = { player?.bufferState() })
 
     // ---- 发送采集（FR-06/07）：采集出口与它的状态 ----
 
@@ -394,7 +424,18 @@ class AudioLinkService : Service() {
      */
     private var localSendStarted = false
 
-    /** 本实例的配对查询域；状态只在主线程发布，JNI 查询在 IO 上执行。 */
+    /**
+     * 上一拍见到的**协商帧长**（ms）；null = 未协商。
+     *
+     * 实例级而**不是** companion 级：它与「这一条流」同生共死，而服务重建 = 流已断
+     * （配置变更杀过服务、进程还在），此时从 null 重新起算是对的 —— 新引擎会重新协商。
+     * 水位那个标量是进程级的（见 companion 的 requestedQueueTargetFrames），两者域不同是刻意的。
+     *
+     * 只在主线程读写（[refreshState] 是唯一消费者），所以不加锁。
+     */
+    private var lastNegotiatedFrameMs: Int? = null
+
+    /** 本实例的对端查询域；状态只在主线程发布，JNI 查询在 IO 上执行。 */
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var destroyed = false
     private var engineStatus: LocalStatus? = null
@@ -411,6 +452,20 @@ class AudioLinkService : Service() {
                         // §13：把「这台设备具备哪些采集能力」告诉内核，由它带进握手协商 ——
                         // 不声明的话，内录/麦克风已经可用而对端永远不知道（见 [declaredCapabilities]）。
                         capabilities = declaredCapabilities(),
+                        // 传输档位：低延迟档 = 10 ms Opus 帧（内核 m1_low_delay_tight()），
+                        // 标准档 = 20 ms（内核默认，与升级前行为完全一致）。
+                        //
+                        // ⚠️ 这是**发送方向**的档位：本机推流时用它编码，`OPEN_STREAM.codec_prefs` 报出的也是它。
+                        // 接收方向**不再要求两端同档** —— 内核已实现帧长联动，接收端读对端报的帧长并跟随解码
+                        // （协商结果见 `PeerView.negotiatedFrameMs`，壳侧用它把播放水位一并跟到配套值，
+                        // 见 [applyNegotiatedFrameWatermark]）。
+                        //
+                        // **读会话镜像，不回读 SharedPreferences**：镜像的初值就是 onCreate 从盘上读来的
+                        // （applyLowLatencyDefault），用户点开关又会同步更新它。这样引擎启动不必做磁盘 IO
+                        // —— 注意这里已经在 `withContext(Dispatchers.IO)` 里，IO 本身不违规，
+                        // 真正的理由是**单一数据源**：盘上值与会话内镜像若有分歧（例如用户切了开关但写盘失败），
+                        // 应该以"用户这次会话看到的状态"为准，而不是悄悄用回盘上的旧值。
+                        lowLatency = AudioLinkService.lowLatencyEnabled,
                     ),
                     playout = pcmFeed,
                     capture = captureArgument(),
@@ -430,15 +485,15 @@ class AudioLinkService : Service() {
     private var lastError: String? = null
 
     /**
-     * 配对状态（PIN + 对端列表）的快照。
+     * 对端列表（内核 `peers()`）的快照。
      *
      * FFI 查询在 IO 线程运行；回到主线程后核对引擎代次，再与 UI 串行发布。
-     * 停止、重启或销毁后，不接受旧查询返回的 PIN。
+     * 停止、重启或销毁后，不接受旧查询返回的结果。
      */
-    private var pairingState: PairingUiState = PairingUiState()
+    private var peersState: PeerUiState = PeerUiState()
 
-    /** 正在跑的那次配对轮询；用它做"同一时刻只有一次在飞"的闸门（见 [refreshPairingAsync]）。 */
-    private var pairingJob: Job? = null
+    /** 正在跑的那次对端轮询；用它做"同一时刻只有一次在飞"的闸门（见 [refreshPeersAsync]）。 */
+    private var peersJob: Job? = null
 
     // ---- task-8：环统计的「区间增量」基线（累计值照旧保留）----
     private var ringOverflowBaseline: Long = 0
@@ -461,10 +516,67 @@ class AudioLinkService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        // 低延迟档：服务创建时把持久化的开关读进会话镜像，并让水位默认值跟上。
+        // 放在 onCreate 而不是引擎启动处，是因为**水位与档位是两件事**：水位在本会话立刻要生效，
+        // 而档位（帧长）要等下一次引擎启动（见 companion 的 setLowLatency 说明）。
+        applyLowLatencyDefault()
         // 区间口径要在**服务创建时**就起算：环计数从这个实例的 0 开始，
         // 若时长留在"未开始"状态，UI 会出现"区间时长 0 s 而增量 4000 万帧"这种自相矛盾的读数。
         ringWindowStartUptimeMs = SystemClock.uptimeMillis()
         refreshState()
+    }
+
+    /**
+     * 从持久化读一次低延迟档，落到会话镜像 + 水位默认值。
+     *
+     * **幂等，且刻意"覆盖式"**：每次服务创建都按盘上的值重置一次。
+     * 为什么不怕覆盖用户在本进程里手动拖过的水位：Service 重建意味着前台服务被杀过一轮
+     * （进程可能还活着、Activity 可能还在），此时回到"盘上档位对应的默认值"是可预期的行为；
+     * 而真要保留的话，那个"手动值"也没有被持久化过，本来活不过重建。
+     *
+     * 注意它**不**回写盘：读到的值就是盘上的值，回写只是多余的 IO。
+     */
+    private fun applyLowLatencyDefault() {
+        val enabled = LowLatencyPreference.isEnabled(this)
+        // 先写镜像再取默认值：两步都在主线程（onCreate），顺序不构成竞态，
+        // 但按"先状态、后派生"写更清楚 —— 水位默认值是镜像的函数。
+        AudioLinkService.lowLatencyEnabled = enabled
+        requestedQueueTargetFrames = LowLatencyDefaults.queueTargetFor(enabled)
+    }
+
+    /**
+     * 水位跟随**协商帧长**（帧长联动）—— 每拍在 [refreshState] 里消费一次 peers 快照。
+     *
+     * ## 它解决什么
+     * 帧长联动落地后，接收端的帧长由**发送端**决定，本端开关只管发送方向。水位是帧长的配套值
+     * （10 ms 帧配 960 帧输出目标），所以它必须跟着**协商结果**走，而不是跟着本端开关走。
+     * 否则「本端没开低延迟档、对端用 10 ms 推流」这条最常见的组合下，帧长是 10 ms 而水位停在
+     * 30 ms —— 帧长缩了、缓冲没缩，用户听到的改善被缓冲吃掉大半。
+     *
+     * ## 为什么是"重置默认值"而不是"持续下发"
+     * 优先级契约（[LowLatencyDefaults] 类注释）：**手动滑杆永远优先**。所以这里只在
+     * 「协商结果确立 / 变化」那一刻改一次 [requestedQueueTargetFrames]，之后用户拖滑杆就归用户。
+     * 每拍都按协商值覆盖的话，用户拖到 60 ms 稳一摇、下一拍就被按回 —— 滑杆等于坏了，
+     * 而症状是「拖了没用」，极难排查（这正是手动档位那条规则要防的同一个坑）。
+     *
+     * ## 幂等靠 [lastNegotiatedFrameMs]
+     * peers() 每 500 ms 一拍，同一个协商值会被反复读到。判断同时看新旧两个值（见
+     * [LowLatencyDefaults.shouldResetForNegotiatedFrame]），同值不重复重置。
+     *
+     * ## 断流不重置
+     * 流断掉时 `negotiatedFrameMs` 会变回 null —— **不重置**（同上那条契约：那是替用户改了一个
+     * 没人要求改的值）。所以这里把 null **照实记进** [lastNegotiatedFrameMs] 而不是跳过：
+     * 下一轮真的重新协商出结果时才会被认成「变化」。同时多流取首个非空值 —— 单对端是本项目
+     * 的常态（见 `startSend()` 的单对端兜底），多设备时"谁先在跑就跟随谁"是可预期的。
+     */
+    private fun applyNegotiatedFrameWatermark() {
+        val negotiated = peersState.peers.firstNotNullOfOrNull { it.negotiatedFrameMs }
+        val previous = lastNegotiatedFrameMs
+        if (negotiated == previous) return
+        lastNegotiatedFrameMs = negotiated
+        if (!LowLatencyDefaults.shouldResetForNegotiatedFrame(previous, negotiated)) return
+        // 到这一步 shouldReset 已保证映射存在（它内部先问了同一件事），这里不重复判 null。
+        requestedQueueTargetFrames = LowLatencyDefaults.queueTargetForNegotiatedFrame(negotiated) ?: return
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -525,13 +637,6 @@ class AudioLinkService : Service() {
                 startPlayback()
                 val addr = intent?.getStringExtra(EXTRA_TARGET_ADDR).orEmpty()
                 connectSender(addr)
-                return START_STICKY
-            }
-
-            ACTION_SUBMIT_PIN -> {
-                startForegroundWithTypes()
-                val pin = intent?.getStringExtra(EXTRA_PIN).orEmpty()
-                submitSenderPin(pin)
                 return START_STICKY
             }
 
@@ -613,9 +718,9 @@ class AudioLinkService : Service() {
         engineLifecycle.close()
         engineScope.cancel()
         stopPlayback()
-        pairingJob?.cancel()
-        pairingJob = null
-        pairingState = PairingUiState()
+        peersJob?.cancel()
+        peersJob = null
+        peersState = PeerUiState()
         // 服务已不在：UI 必须看到"停止"而不是最后一次的快照。
         _state.value = PlaybackUiState()
         super.onDestroy()
@@ -706,7 +811,7 @@ class AudioLinkService : Service() {
 
         if (CaptureWiring.requiresEngineRestart(previous, next) && engineStatus != null) {
             // 引擎在跑且「要不要采集」变了 → 必须重启才能换掉 capture 参数；
-            // 走现成的 stopEngine/startEngine（各自带配对快照清理与发布权限检查）。
+            // 走现成的 stopEngine/startEngine（各自带对端快照清理与发布权限检查）。
             stopEngine()
             startEngine()
         }
@@ -907,11 +1012,9 @@ class AudioLinkService : Service() {
                         connecting = false,
                         peerIdShort = peer.idShort,
                         peerState = peer.state,
-                        peerStateLabel = PairingStateMapper.stateLabel(peer.state),
-                        peerTrusted = peer.trusted,
+                        peerStateLabel = PeerStateMapper.stateLabel(peer.state),
                         // 本机主动连出去 = 本机在当接收端：这条会话不参与「接入即推」。
                         sessionInbound = false,
-                        awaitingPin = false,
                         note = null,
                         error = null,
                     )
@@ -1000,68 +1103,15 @@ class AudioLinkService : Service() {
     }
 
     /**
-     * 连接失败的处理：`1002 NOT_PAIRED` 走**提示**（引导输入 PIN），其余走错误。
-     *
-     * `1002` 不是失败：FFI 的 `connect` 文档写明「QUIC 握手与会话已经在，UI 提示用户输入 PIN
-     * 后调用 `submit_pin` 即可继续**同一条**连接」，所以它与真正的失败必须分开显示 ——
-     * 混在一起会让用户以为连接坏了，去反复重连（那反而会丢掉已完成的握手）。
+     * 连接失败的处理：一次连接尝试只有**成功**与**失败**两种结果（`connect` 不再有
+     * 「握手已建、等用户回一个码」的中间态），所以失败一律落到 [SenderUiState.error]。
      */
     private fun applyConnectFailure(error: Throwable) {
-        val code = ffiCodeOf(error)
-        val detail = ffiContextOf(error)
-        senderState = if (SenderStateMapper.connectFailureIsNotice(code)) {
-            senderState.copy(
-                connecting = false,
-                awaitingPin = true,
-                note = SenderStateMapper.noteForConnectFailure(code, detail),
-                error = null,
-            )
-        } else {
-            senderState.copy(
-                connecting = false,
-                awaitingPin = false,
-                note = null,
-                error = SenderStateMapper.noteForConnectFailure(code, detail),
-            )
-        }
-    }
-
-    /** 提交对端屏幕上显示的 6 位 PIN（`1002` 之后继续同一条连接）。 */
-    private fun submitSenderPin(pin: String) {
-        if (pin.length != PIN_LENGTH) {
-            senderState = senderState.copy(
-                error = "配对码应该是 $PIN_LENGTH 位数字",
-                note = null,
-            )
-            refreshState()
-            return
-        }
-        val generation = engineLifecycle.generation
-        engineScope.launch {
-            val outcome = withContext(Dispatchers.IO) {
-                try {
-                    submitPin(pin)
-                    Result.success(Unit)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (t: Throwable) {
-                    Result.failure(t)
-                }
-            }
-            if (destroyed || !engineLifecycle.isCurrent(generation)) return@launch
-            outcome.fold(
-                onSuccess = {
-                    senderState = senderState.copy(awaitingPin = false, note = null, error = null)
-                },
-                onFailure = { error ->
-                    senderState = senderState.copy(
-                        note = null,
-                        error = SenderStateMapper.noteForSendFailure(ffiCodeOf(error), ffiContextOf(error)),
-                    )
-                },
-            )
-            refreshState()
-        }
+        senderState = senderState.copy(
+            connecting = false,
+            note = null,
+            error = SenderStateMapper.noteForConnectFailure(ffiCodeOf(error), ffiContextOf(error)),
+        )
     }
 
     /** 开始推流。 */
@@ -1069,7 +1119,7 @@ class AudioLinkService : Service() {
         // 单对端语义的兜底：`startSend()` **不带 peer 参数**，内核按 `current_peer()`（优先 streaming、
         // 否则第一个）选对端 —— 本机若同时还有一条入站会话，就可能发到错误的设备上。
         // 宁可让用户看到一句人话，也不静默发错（见 [SenderStateMapper.sessionGate]）。
-        val gate = SenderStateMapper.sessionGate(senderState.peerIdShort, pairingState.peers)
+        val gate = SenderStateMapper.sessionGate(senderState.peerIdShort, peersState.peers)
         if (gate != SendGate.Allowed) {
             senderState = senderState.copy(error = SenderStateMapper.gateNote(gate), note = null)
             refreshState()
@@ -1147,7 +1197,7 @@ class AudioLinkService : Service() {
      * 推流按钮能不能用 —— 而 Service 在 JVM 单测里跑不起来。留在这里的只有两件 Service 自己的事。
      */
     private fun syncSenderWithPeers() {
-        val next = SenderStateMapper.sessionAfterPeers(senderState, pairingState.peers)
+        val next = SenderStateMapper.sessionAfterPeers(senderState, peersState.peers)
         if (next == null) return
         // localSendStarted 是 Service 私有的「本机点过开始推流」意图标记，纯逻辑层不持有它：
         // 会话真的消失（登记过的对端不在表里了）时一并归零，免得下次连上还被当成"正在推流"。
@@ -1162,7 +1212,11 @@ class AudioLinkService : Service() {
      * 同一份错误处理），所以"自动"与"手动"在链路上完全同构，出问题的表现也一致 ——
      * 不存在"手动能报错、自动悄悄失败"这种事。
      *
-     * 六道判定条件全在 [SenderStateMapper.shouldAutoStartSend]（纯逻辑，单测逐条钉住）。
+     * 五道判定条件全在 [SenderStateMapper.shouldAutoStartSend]（纯逻辑，单测逐条钉住）。
+     *
+     * ⚠️ 现状：这条路径在 Android 上**不会触发** —— 判定要求先观测到 `peerState == idle`，
+     * 而引擎的活会话状态从不报 `idle`（详见 [SenderStateMapper.shouldAutoStartSend] 的口径说明
+     * 与 docs/72 遗留项）。保留下面这个调用是照原样保留既有行为，不是本轮新增的自动推流。
      * 这里只补一件它管不了的事：**先记账，再发起** —— `startSender()` 是异步的，从发起到
      * `sending = true` 之间隔着几拍刷新，不先记账每一拍都会再触发一次。
      *
@@ -1202,9 +1256,9 @@ class AudioLinkService : Service() {
 
     /** 立即清除旧快照；底层停止进入进程级队列，不随服务销毁而取消。 */
     private fun stopEngine() {
-        pairingJob?.cancel()
-        pairingJob = null
-        pairingState = PairingUiState()
+        peersJob?.cancel()
+        peersJob = null
+        peersState = PeerUiState()
         engineLifecycle.stop()
     }
 
@@ -1315,11 +1369,16 @@ class AudioLinkService : Service() {
         val captureNote = captureNotice
             ?: CaptureWiring.captureNote(captureSelection, captureSnapshot)
         val engine = engineStatus
-        // 发送方向：会话状态以 pairingState.peers 为权威（同一拍里刚刷新，见 syncSenderWithPeers）。
+        // 发送方向：会话状态以 peersState.peers 为权威（同一拍里刚刷新，见 syncSenderWithPeers）。
         syncSenderWithPeers()
-        // 「接入即推」必须排在会话同步**之后**：它依赖这一拍刚刷新的 peerState / peerTrusted。
+        // 「接入即推」必须排在会话同步**之后**：它依赖这一拍刚刷新的 peerIdShort / peerState。
         maybeAutoStartSend(captureSnapshot.state)
-        val pairing = pairingState
+        val peerTable = peersState
+
+        // 帧长联动：接收方向的协商结果可能刚确立或刚变化 —— 那会让水位默认值换一个值。
+        // 必须排在下面那次下发**之前**：这是"重置默认值"的一次性落地，晚一拍的话
+        // 本拍下发的还是旧默认值（用户会看到水位慢半拍）。
+        applyNegotiatedFrameWatermark()
 
         // task-8：把 UI 的请求下发给播放器（设备调用本身仍在播放线程里做）。
         val active = player
@@ -1384,9 +1443,8 @@ class AudioLinkService : Service() {
             engineCanReceive = engine?.canReceive == true,
             engineCanSend = engine?.canSend == true,
             engineError = engineError,
-            pairingPin = pairing.pin,
-            peers = pairing.peers,
-            pairingNote = pairing.note,
+            peers = peerTable.peers,
+            peersNote = peerTable.note,
 
             // ---- 发送采集（FR-06/07）----
             captureSelection = captureSelection,
@@ -1414,42 +1472,34 @@ class AudioLinkService : Service() {
                 // 通知失败不该影响音频路径（用户关掉通知权限时系统本就会丢弃）。
             }
         }
-        // 配对面板是"按需拉"的：主线程只读快照，真正的 FFI 调用丢到 IO（见 refreshPairingAsync）。
-        refreshPairingAsync()
+        // 会话表是"按需拉"的：主线程只读快照，真正的 FFI 调用丢到 IO（见 refreshPeersAsync）。
+        refreshPeersAsync()
     }
 
     /**
-     * 拉一次配对状态（内核 `displayedPin()` + `peers()`），映射后写进 [pairingState]。
+     * 拉一次对端列表（内核 `peers()`），映射后写进 [peersState]。
      *
      * 三个刻意的设计：
-     * 1. **在 IO 线程调 FFI**：`displayedPin()` / `peers()` 是跨 JNA 的同步调用，每 500 ms 在主线程走一次
+     * 1. **在 IO 线程调 FFI**：`peers()` 是跨 JNA 的同步调用，每 500 ms 在主线程走一次
      *    是拿 UI 流畅度换便利；这里只让主线程读 `@Volatile` 快照。
      * 2. **catch Throwable（不是 Exception）**：`.so` 缺失/ABI 不匹配时 JNA 抛 `UnsatisfiedLinkError`（Error），
      *    漏掉它会让**服务进程崩掉** —— 而正确行为是"服务活着，把原因显示出来"。
      * 3. **一次只飞一个**：引擎里 `peers()` 要拿会话表，UI 刷新是 500 ms 一跳，不设闸门会在引擎卡顿时堆积调用；
-     *    用 [pairingJob] 做闸门，慢的时候自然是"降频"，不会排队。
+     *    用 [peersJob] 做闸门，慢的时候自然是"降频"，不会排队。
      *
-     * 引擎没起来时**不动 FFI**：那会儿没有会话也没有 PIN，调用只会抛 `NOT_STARTED`，
-     * 把"引擎没启动"渲染成"配对出错"是纯噪声。
+     * 引擎没起来时**不动 FFI**：那会儿没有会话，调用只会抛 `NOT_STARTED`，
+     * 把"引擎没启动"渲染成"读对端失败"是纯噪声。
      */
-    private fun refreshPairingAsync() {
-        if (destroyed || pairingJob?.isActive == true) return
+    private fun refreshPeersAsync() {
+        if (destroyed || peersJob?.isActive == true) return
         if (engineStatus == null) {
-            pairingState = PairingUiState()
+            peersState = PeerUiState()
             return
         }
         val generation = engineLifecycle.generation
-        pairingJob = engineScope.launch {
+        peersJob = engineScope.launch {
             val result = withContext(Dispatchers.IO) {
-                var pin: String? = null
                 var note: String? = null
-                try {
-                    pin = displayedPin()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (t: Throwable) {
-                    note = "读取配对 PIN 失败：${t.javaClass.simpleName}: ${t.message}"
-                }
 
                 var snapshots: List<PeerSnapshot> = emptyList()
                 try {
@@ -1461,21 +1511,23 @@ class AudioLinkService : Service() {
                             name = peer.name,
                             addr = peer.addr,
                             state = peer.state,
-                            trusted = peer.trusted,
                             // 遥测：首屏「延迟 / 码率 / 丢包」三个读数的唯一来源（字段说明见 PeerUi）。
                             // UInt -> Long：内核给的是无符号，转宽比截断安全。
                             e2eLatencyUs = peer.telemetry.e2eLatencyUs.toLong(),
+                            rttUs = peer.telemetry.rttUs.toLong(),
                             bitrateBps = peer.telemetry.bitrateBps.toLong(),
                             lossPct = peer.telemetry.lossPct,
+                            // 协商帧长：UByte? -> Int? 的窄化就发生在这一行（离 FFI 最近的地方）。
+                            // **不用 0 当哨兵**：null 与「0 ms」必须是两件事（见 PeerSnapshot 的注释）。
+                            negotiatedFrameMs = peer.negotiatedFrameMs?.toInt(),
                         )
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (t: Throwable) {
-                    val reason = "读取对端列表失败：${t.javaClass.simpleName}: ${t.message}"
-                    note = if (note == null) reason else "$note；$reason"
+                    note = "读取对端列表失败：${t.javaClass.simpleName}: ${t.message}"
                 }
-                val mapped = PairingStateMapper.map(pin = pin, snapshots = snapshots, error = note)
+                val mapped = PeerStateMapper.map(snapshots).copy(note = note)
                 // 本机增益每拍读回：内核才是真值（用户可能在别处改过、或对面看到的数不一样），
                 // 壳侧只缓存一件事 —— "取消静音回到多少"（用户拍板：内核不记，壳侧记）。
                 // 读失败（例如 .so 与绑定不匹配）时降级成 null（= 没设过），不把整块状态带塌。
@@ -1490,7 +1542,7 @@ class AudioLinkService : Service() {
             }
             // 此检查与发布都在主线程，停止不能插入两者之间。
             if (engineStatus == null || !engineLifecycle.isCurrent(generation)) return@launch
-            pairingState = result
+            peersState = result
             refreshState()
         }
     }

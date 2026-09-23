@@ -272,12 +272,12 @@ mod tests {
         let available = UpdateCheckView {
             current_version: "0.1.0".into(),
             version: Some("0.1.1".into()),
-            notes: Some("修了配对超时".into()),
+            notes: Some("修了连接超时".into()),
             pub_date: Some("2026-09-17".into()),
         };
         assert_eq!(
             serde_json::to_string(&available).expect("serialize"),
-            r#"{"currentVersion":"0.1.0","version":"0.1.1","notes":"修了配对超时","pubDate":"2026-09-17"}"#
+            r#"{"currentVersion":"0.1.0","version":"0.1.1","notes":"修了连接超时","pubDate":"2026-09-17"}"#
         );
     }
 

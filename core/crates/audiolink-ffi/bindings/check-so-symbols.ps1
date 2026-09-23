@@ -9,10 +9,17 @@
 #   ③ jniLibs ↔ APK：Gradle 的 merged_native_libs / merged_jni_libs 会吃缓存，assembleRelease 打过旧 .so。
 #   ④ 绑定 ↔ 老 .so：旧 .so 里没有新函数的 checksum 符号（符号存在性检查能抓到这一种）。
 #
-# 用法：pwsh core/crates/audiolink-ffi/bindings/check-so-symbols.ps1 [-SkipSourceSync]
+# 用法：pwsh core/crates/audiolink-ffi/bindings/check-so-symbols.ps1 [-SkipSourceSync] [-OnlySourceSync]
+#   -SkipSourceSync：跳过第 ① 环（省一次宿主 dll 编译）。
+#   -OnlySourceSync：只跑第 ① 环就退出 —— 打包脚本（tools/package-android.ps1）拿它当「绑定量校验」前置。
 # 退出码非 0 = 有环节不同源，先修再装机。
 
-param([switch]$SkipSourceSync)
+param(
+    [switch]$SkipSourceSync,
+    # 只跑第 ① 环就退出：给打包脚本当「绑定量校验」用 —— 那时 jniLibs / APK 还是上一轮的产物，
+    # 跑 ②③④ 只会得到误导性的红。
+    [switch]$OnlySourceSync
+)
 
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -52,6 +59,15 @@ if ($SkipSourceSync) {
         }
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     } finally { Pop-Location }
+}
+
+if ($OnlySourceSync) {
+    if ($failed.Count -gt 0) {
+        Write-Host "绑定与源码不同源：先按 README 重新生成，再重跑。" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "第 ① 环同源（-OnlySourceSync）。" -ForegroundColor Green
+    exit 0
 }
 
 $symbols = Select-String -Path $kt -Pattern "(uniffi_audiolink_ffi_checksum_[a-z_]+)\(" |

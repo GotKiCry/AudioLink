@@ -43,7 +43,7 @@ internal object AudioRecordSupport {
     /** 带宽余量：按 4 个协议帧（80 ms）申请，避免设备以「最小缓冲」跑（那会频繁溢出）。 */
     const val BUFFER_FRAMES = 4
 
-    internal const val FRAMES_PER_PROTOCOL_FRAME = 20
+    internal const val FRAMES_PER_PROTOCOL_FRAME = CaptureFormat.SAMPLE_RATE_HZ * 20 / 1_000
 
     /**
      * 要求的最小缓冲字节数；`<= 0` 一律当「不支持这个格式」处理。

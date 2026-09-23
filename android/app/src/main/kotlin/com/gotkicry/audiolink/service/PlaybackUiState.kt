@@ -89,18 +89,11 @@ data class PlaybackUiState(
     /** 引擎侧错误（启动失败 / 停止失败 / `.so` 加载失败）。与播放错误分开显示，便于定位。 */
     val engineError: String? = null,
 
-    // ---- 配对（§5）----
-    /**
-     * 当前要展示给用户的 6 位配对 PIN（内核 `displayedPin()` 原值，未加工）。
-     *
-     * `null` = 当前没有配对在进行 —— UI 据此**不占位**，而不是显示一个空框。
-     * PIN 来自内核当前连接的同步快照，Kotlin 侧不自己造 PIN。
-     */
-    val pairingPin: String? = null,
-    /** 已连接对端（内核 `peers()`，映射成纯 Kotlin 模型；见 [PeerUi]）。 */
+    // ---- 对端（内核 `peers()` 的会话表）----
+    /** 当前对端（内核 `peers()`，映射成纯 Kotlin 模型；见 [PeerUi]）。 */
     val peers: List<PeerUi> = emptyList(),
-    /** 取 PIN / 对端列表失败时的人话原因；`null` = 正常。 */
-    val pairingNote: String? = null,
+    /** 取对端列表失败时的人话原因；`null` = 正常。 */
+    val peersNote: String? = null,
 
     // ---- 发送采集（FR-06/07）----
     /**
@@ -129,10 +122,4 @@ data class PlaybackUiState(
     // ---- 发送方向（本机 → 对端，FR-17 / §8）----
     /** 连接 + 推流的状态快照；字段含义见 [SenderUiState]。 */
     val sender: SenderUiState = SenderUiState(),
-) {
-    /**
-     * [pairingPin] 是否已经没有对应的活跃配对会话 —— 口径与理由见
-     * [PairingUiState.pinIsStale]（兼容旧版残留及两次查询间的连接状态变化）。
-     */
-    val pinIsStale: Boolean get() = PairingStateMapper.pinIsStale(pairingPin, peers)
-}
+)

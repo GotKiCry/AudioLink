@@ -91,54 +91,35 @@ pub struct GroupView {
 pub struct PeerView {
     /// 对端指纹短码（8 hex）；也是 `start_send` 的入参 `id_short`。
     pub id_short: String,
-    /// 对端自报节点名（配对前可能是占位名）。
+    /// 对端自报节点名。
     pub name: String,
     /// 对端 QUIC 端点 `ip:port`。
     pub addr: String,
     pub state: PeerState,
-    /// 是否已在信任库（`docs/02-architecture.md` §8：白名单命中 = 免交互直连）。
-    pub trusted: bool,
     /// 本机主动连接该主机，只收听，不自动回传声音。
     pub receiving: bool,
     /// §13 能力协商结果；`None` = 还没走完能力交换（握手阶段的对端就是 `None`）。
     pub capabilities: Option<PeerCapabilitiesView>,
     /// 重连成功次数（FR-27 回执；0 表示从未重连）。界面据此显示已重连几次。
     pub reconnects: u64,
+    /// 已连接会话的质量；接收反馈缺失时不伪造零丢包。
+    pub quality: Option<PeerQualityView>,
+    /// **本条流**协商生效的 Opus 帧长（ms，10 / 20）；None = 还没开流 / 还没协商，
+    /// 或本机对这条流是**发送端**（发送方向恒用本地档，见 Engine::negotiated_frame_ms）。
+    ///
+    /// 为什么必须让界面看见它：帧长不一致的典型症状是「声音发闷 / 断续，但遥测全绿」，
+    /// 而遥测里的数字都是本机**本地**口径，分辨不出来 —— 这个字段是「协商到底生效了没有」
+    /// 的唯一直接读数。
+    pub negotiated_frame_ms: Option<u8>,
 }
 
-/// 一条**已配对设备**（`list_trusted_peers` 的元素）。
-///
-/// 与 [PeerView] 的区别在数据来源：`PeerView` 来自**会话表**（当前连着或在握手的对端），
-/// 这份来自**信任库**（白名单）—— 换机后残留的旧记录、很久没连过的设备只在这里出现，
-/// 而它们正是「取消配对」要覆盖的对象。
-///
-/// `id_short` 与 `PeerView.idShort` 是**同一口径**（`NodeId::short()`），所以两处可以共用
-/// 同一个移除入口（界面不必知道自己拿的 id 来自哪一侧）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TrustedPeerView {
-    /// 指纹短码（与 `PeerView.idShort` 同一口径）。
-    pub id_short: String,
-    /// 配对时记下的展示名（对端自报，仅展示）。
-    pub name: String,
-    /// `windows` / `android` / `unknown`。
-    pub platform: String,
-    /// 首次配对成功的 Unix 秒（只用于展示「何时配对」）。
-    pub paired_at_unix: u64,
-}
-
-/// 移除设备（`revoke_trust`）的结果。
-///
-/// 为什么不返回 `null`：这是一次**不可逆**的隐私操作，界面必须能如实说出「做了什么」——
-/// 尤其 `removed = false`（本来就不在信任库里）与 `forgotLastPeer = true`（顺手清掉了
-/// 「上次设备」记录）是两件用户会关心的事，静默返回等于让人无法判断是否生效。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RevokeTrustResult {
-    /// 是否真的从信任库里删掉了（`false` = 本来就不在，幂等）。
-    pub removed: bool,
-    /// 是否顺手清掉了「上次设备」记录（它原本指向这台被移除的设备）。
-    pub forgot_last_peer: bool,
+pub struct PeerQualityView {
+    pub rtt_us: Option<u32>,
+    pub loss_pct_x100: Option<u16>,
+    pub underruns: Option<u32>,
+    pub buffer_level_us: Option<u32>,
 }
 
 /// §13 能力协商结果（给界面看的形式）。
@@ -174,6 +155,8 @@ pub struct TelemetryView {
     pub jitter_us: u64,
     /// 丢包率（百分数，`0.10` = 0.1%）。
     pub loss_pct: f64,
+    /// 当前是否有接收端反馈；false 时 loss / buffer / underruns 不能作为有效读数。
+    pub receiver_report: bool,
     /// 实际编码码率（bps）。
     pub bitrate_bps: u64,
     /// 播放环水位（µs）。
@@ -196,6 +179,7 @@ impl TelemetryView {
             rtt_us: 0,
             jitter_us: 0,
             loss_pct: 0.0,
+            receiver_report: false,
             bitrate_bps: 0,
             buffer_level_us: 0,
             underruns: 0,
@@ -206,31 +190,10 @@ impl TelemetryView {
     }
 }
 
-/// `audiolink://pair-required` 的载荷（契约 §6）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PairRequiredPayload {
-    /// 发起配对的对端短指纹。
-    pub id_short: String,
-    /// 对端名字（展示用，便于用户确认"是和谁配对"）。
-    pub name: String,
-    /// 需要用户核对/输入的 6 位数字码。
-    pub pin: String,
-}
-
 /// `start_send` 的返回（契约 §6：字段名就是 `stream_id`，snake_case）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct StartSendResult {
     pub stream_id: u32,
-}
-
-/// `submit_pin` 的返回（契约 §6：**始终成功返回**，配对失败走 `ok: false` + 人话 `reason`，
-/// 这样 UI 能直接显示"还可尝试 N 次"而不用解析错误码）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SubmitPinResult {
-    pub ok: bool,
-    /// 成功时为 `""`；失败时是给用户看的整句原因（不允许"未知错误"）。
-    pub reason: String,
 }
 
 /// 导出用的遥测样本：前端累积的**历史**，一行一个采样点。
@@ -331,7 +294,7 @@ mod tests {
         let json = serde_json::to_string(&TelemetryView::zeros(2)).expect("serialize");
         assert_eq!(
             json,
-            r#"{"peers":2,"rttUs":0,"jitterUs":0,"lossPct":0.0,"bitrateBps":0,"bufferLevelUs":0,"underruns":0,"e2eLatencyUs":0,"e2eP50Us":0,"e2eP95Us":0}"#
+            r#"{"peers":2,"rttUs":0,"jitterUs":0,"lossPct":0.0,"receiverReport":false,"bitrateBps":0,"bufferLevelUs":0,"underruns":0,"e2eLatencyUs":0,"e2eP50Us":0,"e2eP95Us":0}"#
         );
     }
 
@@ -343,17 +306,20 @@ mod tests {
             name: "客厅 R1".into(),
             addr: "192.168.1.23:58290".into(),
             state: PeerState::Handshaking,
-            trusted: false,
             receiving: false,
+            quality: None,
+            negotiated_frame_ms: None,
             capabilities: None,
         };
         assert_eq!(
             serde_json::to_string(&peer).expect("serialize"),
-            r#"{"idShort":"3f9a1c0b","name":"客厅 R1","addr":"192.168.1.23:58290","state":"handshaking","trusted":false,"receiving":false,"capabilities":null,"reconnects":0}"#
+            r#"{"idShort":"3f9a1c0b","name":"客厅 R1","addr":"192.168.1.23:58290","state":"handshaking","receiving":false,"capabilities":null,"reconnects":0,"quality":null,"negotiatedFrameMs":null}"#
         );
 
         // 协商完成后的形状：字段名与嵌套名都要钉住 —— 前端按 `agreedKeys` / `missingKeys`
         // 决定置灰，按 `missingOnPeer` 写说明；这几个名字漂一个，界面就静默失效。
+        // `negotiatedFrameMs` 一起钉住：它是「帧长联动到底生效了没有」的唯一读数，
+        // 名字漂了前端只会拿到 undefined，界面退化成永远的占位符。
         let negotiated = PeerView {
             capabilities: Some(PeerCapabilitiesView {
                 local: "Opus 编码、音频采集".into(),
@@ -363,11 +329,13 @@ mod tests {
                 agreed_keys: vec!["opus".into()],
                 missing_keys: vec!["capture".into()],
             }),
+            // 本端作接收端、对端报 10 ms → 协商生效值必须是 10，而不是本地档。
+            negotiated_frame_ms: Some(10),
             ..peer
         };
         assert_eq!(
             serde_json::to_string(&negotiated).expect("serialize"),
-            r#"{"idShort":"3f9a1c0b","name":"客厅 R1","addr":"192.168.1.23:58290","state":"handshaking","trusted":false,"receiving":false,"capabilities":{"local":"Opus 编码、音频采集","peer":"Opus 编码、音频播放","agreed":"Opus 编码","missingOnPeer":["音频采集"],"agreedKeys":["opus"],"missingKeys":["capture"]},"reconnects":0}"#
+            r#"{"idShort":"3f9a1c0b","name":"客厅 R1","addr":"192.168.1.23:58290","state":"handshaking","receiving":false,"capabilities":{"local":"Opus 编码、音频采集","peer":"Opus 编码、音频播放","agreed":"Opus 编码","missingOnPeer":["音频采集"],"agreedKeys":["opus"],"missingKeys":["capture"]},"reconnects":0,"quality":null,"negotiatedFrameMs":10}"#
         );
 
         let local = LocalStatus {
@@ -387,15 +355,6 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&StartSendResult { stream_id: 7 }).expect("serialize"),
             r#"{"stream_id":7}"#
-        );
-        assert_eq!(
-            serde_json::to_string(&PairRequiredPayload {
-                id_short: "3f9a1c0b".into(),
-                name: "客厅 R1".into(),
-                pin: "482913".into(),
-            })
-            .expect("serialize"),
-            r#"{"idShort":"3f9a1c0b","name":"客厅 R1","pin":"482913"}"#
         );
     }
 
@@ -424,6 +383,7 @@ mod tests {
             rtt_us: 1_500,
             jitter_us: 250,
             loss_pct: 0.25,
+            receiver_report: true,
             bitrate_bps: 320_000,
             buffer_level_us: 40_000,
             underruns: 3,
@@ -673,33 +633,6 @@ mod notices_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
     use super::*;
-
-    /// 已配对设备列表是**前端契约**：字段名错了界面就永远读到空值（静默空列表）。
-    #[test]
-    fn trusted_peer_json_shape_matches_contract() {
-        let json = serde_json::to_string(&TrustedPeerView {
-            id_short: "3f9a1c0b".to_string(),
-            name: "旧手机".to_string(),
-            platform: "android".to_string(),
-            paired_at_unix: 1_700_000_000,
-        })
-        .expect("序列化已配对设备");
-        assert_eq!(
-            json,
-            r#"{"idShort":"3f9a1c0b","name":"旧手机","platform":"android","pairedAtUnix":1700000000}"#
-        );
-    }
-
-    /// 移除设备的结果是**前端契约**：字段名错了界面就永远读不到真实值（静默谎报）。
-    #[test]
-    fn revoke_result_json_shape_matches_contract() {
-        let json = serde_json::to_string(&RevokeTrustResult {
-            removed: true,
-            forgot_last_peer: false,
-        })
-        .expect("序列化移除结果");
-        assert_eq!(json, r#"{"removed":true,"forgotLastPeer":false}"#);
-    }
 
     #[test]
     fn found_notices_report_source_and_size() {

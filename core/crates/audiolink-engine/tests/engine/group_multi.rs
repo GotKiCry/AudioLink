@@ -23,7 +23,7 @@ use audiolink_audio::{
     AudioError, DeviceFormat, NullPlayout, PlayoutSink, PlayoutStats, SyntheticCapture,
 };
 use audiolink_engine::{Engine, EngineConfig, EngineEvent, SessionState};
-use audiolink_types::{ErrorCode, NodeId};
+use audiolink_types::NodeId;
 use tokio::task::JoinHandle;
 
 /// 数非静音样本的播放端。
@@ -100,20 +100,12 @@ async fn start_receiver(
     (engine, accept)
 }
 
-async fn connect_and_pair(sender: &Arc<Engine>, receiver: &Arc<Engine>) -> NodeId {
-    let mut events = receiver.subscribe();
+async fn connect_peer(sender: &Arc<Engine>, receiver: &Arc<Engine>) -> NodeId {
     let receiver_id = receiver.info().id;
-    let error = sender.connect(receiver.local_addr()).await.unwrap_err();
-    assert_eq!(error.code(), ErrorCode::NotPaired, "首次连接必须先要 PIN");
-    let pin = loop {
-        if let EngineEvent::DisplayPin { pin, .. } = events.recv().await.unwrap() {
-            break pin;
-        }
-    };
     sender
-        .submit_pin(receiver_id, &pin)
+        .connect(receiver.local_addr())
         .await
-        .expect("PIN 配对");
+        .expect("连接应当直接成功（无认证）");
     receiver_id
 }
 
@@ -185,8 +177,8 @@ async fn two_groups_keep_their_own_epochs() {
     let outcome = tokio::time::timeout(std::time::Duration::from_secs(90), async {
         let mut ids = Vec::new();
         for ((receiver, _), event_rx) in receivers.iter().zip(events.iter_mut()) {
-            let id = connect_and_pair(&sender, receiver).await;
-            // 配对阶段会收到 DisplayPin 等事件，订阅是复用的，这里只取排播事件所以不冲突。
+            let id = connect_peer(&sender, receiver).await;
+            // 订阅是复用的：这里只取排播事件，与连接期的其它事件不冲突。
             let _ = event_rx;
             ids.push(id);
         }
@@ -215,7 +207,7 @@ async fn two_groups_keep_their_own_epochs() {
         ids
     })
     .await
-    .expect("90 s 内必须完成四台配对、两个组与批量开流");
+    .expect("90 s 内必须完成四台连接、两个组与批量开流");
     assert_eq!(outcome.len(), 4);
 
     let scheduled: Vec<Option<(u64, i64)>> = events.iter_mut().map(first_scheduled).collect();
