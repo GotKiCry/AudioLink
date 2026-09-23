@@ -23,6 +23,19 @@
 //! 要判「起步少攒一帧是否更易欠载」，得用更长档 + 多次重复，或者在真机弱网上量
 //! （本机回环零丢包零抖动，本来就不覆盖这条路径）。
 
+//! # 稳态水位结算
+//!
+//! 发送时钟、本机播放节拍与设备音频时钟是三个独立时钟域，全链路没有速率补偿：
+//! ppm 级的供给/消费残差只能积在播放队列里。稳态（档位不变）下队列原本**只涨不跌**，
+//! 直到撞上队列上限，然后以「投递失败 → 欠载 → 120 ms 淡出掩盖」的失控形式释放
+//! （真机 30 min 水位 43 → 276 ms，见 docs/12 §11）。
+//!
+//! 结算机制：稳态下水位持续超出目标一整帧摆幅达 500 ms 时，播放层丢掉最旧一帧 ——
+//! 游标正常推进、记 `depth_drops`、边界走既有 2.5 ms 平滑，把失控释放换成有界的内容跳过。
+//! 盈余存在多久结算就发生多久，结算频率自然等于速率差。与被移除的两版护栏
+//! （docs/12 §11.12/§11.14，代价 7×/103×）的区别：持续窗口过滤突发、每次只结算一帧、
+//! 且目标之上永远保留一整帧抖动摆幅，绝不连续抽干余量制造新的欠载。
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -44,6 +57,12 @@ const REORDER_CAPACITY_MS: u64 = 60;
 // 否则主包刚丢就被确认成洞，紧随其后的冗余副本永远赶不上解码游标。
 const REDUNDANT_REORDER_GRACE: Duration = Duration::from_millis(5);
 const DISCONTINUITY_FRAMES: u32 = 1_000;
+/// 稳态水位结算的盈余门槛：水位高出目标这么多帧才认定为持续盈余
+/// （目标之上保留一整帧摆幅，正常抖动永远不触发结算）。
+const SETTLE_EXCESS_FRAMES: usize = 1;
+/// 盈余必须持续满一个窗口才结算一帧，结算后重新计时 —— 结算频率自然跟随速率差，
+/// 与被移除的「每拍丢一帧」护栏（docs/12 §11.12，代价 7×）相区别。
+const SETTLE_EXCESS_WINDOW: Duration = Duration::from_millis(500);
 
 /// 毫秒保护垫 → 帧数：向上取整、至少一帧（20 ms → 20 ms 帧 1 帧 / 10 ms 帧 2 帧）。
 pub(super) fn frames_for_ms(ms: u64, frame_ms: u32) -> usize {
@@ -181,6 +200,8 @@ pub(super) struct PlayoutDepthState {
     planned_frames: usize,
     holds_remaining: usize,
     frame_ms: u32,
+    /// 稳态水位结算：水位首次越过「目标 + 摆幅」的时刻；回落或结算后清零。
+    settle_since: Option<Instant>,
 }
 
 impl PlayoutDepthState {
@@ -194,6 +215,7 @@ impl PlayoutDepthState {
             planned_frames: initial_frames,
             holds_remaining: 0,
             frame_ms: frame_ms.max(1),
+            settle_since: None,
         }
     }
 
@@ -208,13 +230,16 @@ impl PlayoutDepthState {
     pub(super) fn refill_after_underrun(&mut self, buffered_frames: usize) {
         self.planned_frames = self.active_frames;
         self.holds_remaining = self.active_frames.saturating_sub(buffered_frames);
+        self.settle_since = None;
     }
 
     /// 升档用有界静音建立余量；降档只在确有积压时丢最旧帧，让目标深度真实下降。
+    /// 稳态下做水位结算：持续盈余丢最旧一帧（见模块文档「稳态水位结算」）。
     pub(super) fn action(
         &mut self,
         requested_frames: usize,
         buffered_frames: usize,
+        now: Instant,
     ) -> PlayoutDepthAction {
         let requested_frames = requested_frames.clamp(
             frames_for_ms(MIN_TARGET_MS, self.frame_ms),
@@ -228,6 +253,7 @@ impl PlayoutDepthState {
             self.active_frames = requested_frames;
             self.planned_frames = requested_frames;
             self.holds_remaining = 0;
+            self.settle_since = None;
             return if drop_frames > 0 {
                 PlayoutDepthAction::DropOldest(drop_frames)
             } else {
@@ -235,6 +261,17 @@ impl PlayoutDepthState {
             };
         }
         if requested_frames == self.active_frames {
+            // 稳态水位结算：盈余持续满窗口才丢一帧；期间任意一拍回落即重新计时。
+            if buffered_frames > requested_frames + SETTLE_EXCESS_FRAMES {
+                let since = *self.settle_since.get_or_insert(now);
+                if now.saturating_duration_since(since) >= SETTLE_EXCESS_WINDOW {
+                    self.settle_since = None;
+                    self.holds_remaining = 0;
+                    return PlayoutDepthAction::DropOldest(1);
+                }
+            } else {
+                self.settle_since = None;
+            }
             if buffered_frames >= requested_frames {
                 self.holds_remaining = 0;
                 return PlayoutDepthAction::Play;
@@ -246,6 +283,7 @@ impl PlayoutDepthState {
             return PlayoutDepthAction::Play;
         }
 
+        self.settle_since = None;
         if requested_frames != self.planned_frames {
             self.planned_frames = requested_frames;
             self.holds_remaining = requested_frames.saturating_sub(buffered_frames);
@@ -803,48 +841,129 @@ mod tests {
 
     #[test]
     fn playout_rebuffer_holds_only_the_bounded_depth_deficit() {
+        let now = Instant::now();
         let mut from_forty = PlayoutDepthState::new(2, 20);
-        assert_eq!(from_forty.action(3, 0), PlayoutDepthAction::Hold);
-        assert_eq!(from_forty.action(3, 0), PlayoutDepthAction::Hold);
-        assert_eq!(from_forty.action(3, 0), PlayoutDepthAction::Hold);
-        assert_eq!(from_forty.action(3, 0), PlayoutDepthAction::Play);
+        assert_eq!(from_forty.action(3, 0, now), PlayoutDepthAction::Hold);
+        assert_eq!(from_forty.action(3, 0, now), PlayoutDepthAction::Hold);
+        assert_eq!(from_forty.action(3, 0, now), PlayoutDepthAction::Hold);
+        assert_eq!(from_forty.action(3, 0, now), PlayoutDepthAction::Play);
         assert_eq!(from_forty.active_frames(), 3);
 
         let mut from_twenty = PlayoutDepthState::new(1, 20);
-        assert_eq!(from_twenty.action(3, 1), PlayoutDepthAction::Hold);
-        assert_eq!(from_twenty.action(3, 2), PlayoutDepthAction::Hold);
-        assert_eq!(from_twenty.action(3, 3), PlayoutDepthAction::Play);
+        assert_eq!(from_twenty.action(3, 1, now), PlayoutDepthAction::Hold);
+        assert_eq!(from_twenty.action(3, 2, now), PlayoutDepthAction::Hold);
+        assert_eq!(from_twenty.action(3, 3, now), PlayoutDepthAction::Play);
         assert_eq!(from_twenty.active_frames(), 3);
     }
 
     #[test]
     fn playout_rebuffer_finishes_early_when_target_depth_arrives() {
+        let now = Instant::now();
         let mut state = PlayoutDepthState::new(2, 20);
-        assert_eq!(state.action(3, 1), PlayoutDepthAction::Hold);
-        assert_eq!(state.action(3, 3), PlayoutDepthAction::Play);
+        assert_eq!(state.action(3, 1, now), PlayoutDepthAction::Hold);
+        assert_eq!(state.action(3, 3, now), PlayoutDepthAction::Play);
         assert_eq!(state.active_frames(), 3);
     }
 
     #[test]
     fn max_depth_underrun_can_refill_without_another_depth_raise() {
+        let now = Instant::now();
         let mut state = PlayoutDepthState::new(3, 20);
         state.refill_after_underrun(1);
 
-        assert_eq!(state.action(3, 1), PlayoutDepthAction::Hold);
-        assert_eq!(state.action(3, 2), PlayoutDepthAction::Hold);
-        assert_eq!(state.action(3, 3), PlayoutDepthAction::Play);
+        assert_eq!(state.action(3, 1, now), PlayoutDepthAction::Hold);
+        assert_eq!(state.action(3, 2, now), PlayoutDepthAction::Hold);
+        assert_eq!(state.action(3, 3, now), PlayoutDepthAction::Play);
         assert_eq!(state.active_frames(), 3);
     }
 
     #[test]
     fn playout_downshift_drops_only_real_excess_depth() {
+        let now = Instant::now();
         let mut state = PlayoutDepthState::new(3, 20);
-        assert_eq!(state.action(2, 3), PlayoutDepthAction::DropOldest(1));
+        assert_eq!(state.action(2, 3, now), PlayoutDepthAction::DropOldest(1));
         assert_eq!(state.active_frames(), 2);
 
         let mut already_shallow = PlayoutDepthState::new(3, 20);
-        assert_eq!(already_shallow.action(2, 2), PlayoutDepthAction::Play);
+        assert_eq!(already_shallow.action(2, 2, now), PlayoutDepthAction::Play);
         assert_eq!(already_shallow.active_frames(), 2);
+    }
+
+    #[test]
+    fn steady_state_settles_sustained_excess_one_frame_per_window() {
+        let start = Instant::now();
+        let mut state = PlayoutDepthState::new(2, 20);
+        // 持续盈余（目标 2 帧、水位 5 帧）：窗口内不结算，到点结算一帧，然后重新计时。
+        assert_eq!(state.action(2, 5, start), PlayoutDepthAction::Play);
+        assert_eq!(
+            state.action(
+                2,
+                5,
+                start + SETTLE_EXCESS_WINDOW - Duration::from_millis(1)
+            ),
+            PlayoutDepthAction::Play
+        );
+        assert_eq!(
+            state.action(2, 5, start + SETTLE_EXCESS_WINDOW),
+            PlayoutDepthAction::DropOldest(1)
+        );
+        // 结算后窗口重置：水位仍超标也不连丢。
+        let after = start + SETTLE_EXCESS_WINDOW + Duration::from_millis(20);
+        assert_eq!(state.action(2, 4, after), PlayoutDepthAction::Play);
+        assert_eq!(
+            state.action(2, 4, after + SETTLE_EXCESS_WINDOW),
+            PlayoutDepthAction::DropOldest(1)
+        );
+    }
+
+    #[test]
+    fn transient_excess_restarts_the_settlement_window() {
+        let start = Instant::now();
+        let mut state = PlayoutDepthState::new(2, 20);
+        assert_eq!(state.action(2, 5, start), PlayoutDepthAction::Play);
+        // 突发回落 → 计时清零；再次超标要重新计满一个窗口才结算。
+        assert_eq!(
+            state.action(2, 2, start + Duration::from_millis(300)),
+            PlayoutDepthAction::Play
+        );
+        let again = start + Duration::from_millis(400);
+        assert_eq!(state.action(2, 5, again), PlayoutDepthAction::Play);
+        assert_eq!(
+            state.action(2, 5, again + SETTLE_EXCESS_WINDOW),
+            PlayoutDepthAction::DropOldest(1)
+        );
+    }
+
+    #[test]
+    fn one_frame_swing_above_target_never_settles() {
+        // 目标之上的一整帧摆幅是正常抖动：永不结算（与被移除的「每拍丢帧」护栏相区别）。
+        let start = Instant::now();
+        let mut state = PlayoutDepthState::new(2, 20);
+        for beat in 0..100u64 {
+            assert_eq!(
+                state.action(2, 3, start + Duration::from_millis(beat * 20)),
+                PlayoutDepthAction::Play
+            );
+        }
+    }
+
+    #[test]
+    fn gear_change_resets_the_settlement_window() {
+        let start = Instant::now();
+        let mut state = PlayoutDepthState::new(3, 20);
+        assert_eq!(state.action(3, 6, start), PlayoutDepthAction::Play);
+        // 降档按自身口径丢一帧，同时结算计时清零。
+        assert_eq!(
+            state.action(2, 6, start + Duration::from_millis(300)),
+            PlayoutDepthAction::DropOldest(1)
+        );
+        // 新档位下的超标重新计窗口：不到点不结算。
+        let raised = start + Duration::from_millis(600);
+        assert_eq!(state.action(2, 5, raised), PlayoutDepthAction::Play);
+        assert_eq!(
+            state.action(2, 5, raised + SETTLE_EXCESS_WINDOW),
+            PlayoutDepthAction::DropOldest(1)
+        );
     }
 
     #[test]

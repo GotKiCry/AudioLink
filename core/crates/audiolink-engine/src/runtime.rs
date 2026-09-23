@@ -2804,6 +2804,11 @@ fn session_encoder_main(
     frame_tx: mpsc::Sender<EncodedFrame>,
     ready_tx: std::sync::mpsc::Sender<Result<(), AudioLinkError>>,
 ) {
+    // 2 ms 轮询采集枢纽：Windows 默认定时器粒度（15.6 ms）下 sleep(2 ms) 实际会睡到
+    // 15.6 ms，醒来一次把积压帧整批编码发出，接收侧的到达间隔因此成簇。与播放线程同一口径
+    // 把粒度提到 1 ms（见 docs/70）。
+    #[cfg(windows)]
+    let _timer_resolution = TimerResolutionGuard::new();
     let mut encoder = match OpusEncoder::new(codec) {
         Ok(encoder) => encoder,
         Err(error) => {
@@ -4841,7 +4846,7 @@ fn spawn_playout_thread(
     }
 }
 
-/// 播放节拍期间把 Windows 系统定时器粒度提到 1 ms：默认 15.6 ms 粒度下
+/// 播放节拍与编码轮询期间把 Windows 系统定时器粒度提到 1 ms：默认 15.6 ms 粒度下
 /// `std::thread::sleep` 的误差会超过一整个 10 ms 帧（见 docs/70）。离开作用域即还原。
 #[cfg(windows)]
 struct TimerResolutionGuard;
@@ -4849,7 +4854,7 @@ struct TimerResolutionGuard;
 #[cfg(windows)]
 impl TimerResolutionGuard {
     fn new() -> Self {
-        // 播放节拍 1 ms 定时器粒度，见 docs/70。无指针参数，与 Drop 里的 timeEndPeriod 成对。
+        // 1 ms 定时器粒度，见 docs/70。无指针参数，与 Drop 里的 timeEndPeriod 成对。
         #[allow(unsafe_code)]
         unsafe {
             windows::Win32::Media::timeBeginPeriod(1);
@@ -4861,7 +4866,7 @@ impl TimerResolutionGuard {
 #[cfg(windows)]
 impl Drop for TimerResolutionGuard {
     fn drop(&mut self) {
-        // 播放节拍 1 ms 定时器粒度，见 docs/70。与 new() 里的 timeBeginPeriod(1) 对称。
+        // 1 ms 定时器粒度，见 docs/70。与 new() 里的 timeBeginPeriod(1) 对称。
         #[allow(unsafe_code)]
         unsafe {
             windows::Win32::Media::timeEndPeriod(1);
@@ -5188,7 +5193,7 @@ fn playout_main(
         let depth_action = if scheduled_mode {
             PlayoutDepthAction::Play
         } else {
-            depth_state.action(requested_target, buffered_frames)
+            depth_state.action(requested_target, buffered_frames, Instant::now())
         };
         match depth_action {
             PlayoutDepthAction::Hold => {
@@ -5382,10 +5387,10 @@ fn apply_playout_gain(
     }
 }
 
-/// 抖动深度**降档**：丢掉控制器要求的最旧 `count` 拍。
+/// 控制器主动丢帧：抖动深度**降档**、积压回收与稳态水位结算共用这一入口，丢掉最旧 `count` 拍。
 ///
 /// 记账口径（第 85 轮拆分）：这一路径记 [`TelemetryAggregator::record_depth_drop`]，**不**记
-/// `late_drops` —— 降档是控制器为了降低排队延迟做出的**主动策略选择**，与链路质量无关，
+/// `late_drops` —— 降档/回收/结算都是控制器为了约束排队延迟做出的**主动策略选择**，与链路质量无关，
 /// 干净回环上每次降档都会发生一次（t≈30 s 首次降档）。`late_drops` 只留给「帧到得太晚」，
 /// 即 `take_due_frame` 对落后于播放游标的帧的记账（保持原样，一字未改）。
 ///
