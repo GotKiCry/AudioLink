@@ -215,6 +215,11 @@ fun DiagnosticsDeck(
         DiagSection(title = strings.diagCounters) {
             KeyValueRow(strings.diagUnderrunsSystem, state.trackUnderruns.toString())
             KeyValueRow(strings.diagUnderrunsSource, state.sourceUnderruns.toString())
+            state.peers.firstOrNull { it.state == "streaming" || it.state == "degraded" }?.let { peer ->
+                KeyValueRow(strings.diagScheduleSlips, peer.scheduleSlips.toString())
+                KeyValueRow(strings.diagQueueRejects, peer.queueRejects.toString())
+                KeyValueRow(strings.diagCursorCatchups, peer.cursorCatchups.toString())
+            }
             KeyValueRow(strings.diagFramesWritten, state.framesWritten.toString())
             KeyValueRow(strings.diagSilenceFrames, state.silenceFrames.toString())
             KeyValueRow(strings.diagFramesDropped, state.framesDropped.toString())

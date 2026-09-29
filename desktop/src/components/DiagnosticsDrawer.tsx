@@ -15,6 +15,7 @@ import type { ReactNode } from "react";
 import type { LocalStatus } from "../types";
 import { t } from "../i18n";
 import { IconChevron } from "./icons";
+import { Panel } from "./Panel";
 
 interface DiagnosticsDrawerProps {
   open: boolean;
@@ -75,7 +76,7 @@ export function DiagnosticsDrawer({ open, onClose, local, children }: Diagnostic
         <button
           type="button"
           onClick={onClose}
-          className="al-btn ml-auto h-7 gap-1.5 px-2.5 text-caption"
+          className="al-btn al-btn-md ml-auto gap-1.5"
         >
           <IconChevron className="h-3.5 w-3.5 rotate-180" />
           <span className="text-caption font-semibold text-text-secondary">{t("banner.close")}</span>
@@ -84,24 +85,21 @@ export function DiagnosticsDrawer({ open, onClose, local, children }: Diagnostic
 
       <div className="grid min-h-0 flex-1 auto-rows-min grid-cols-1 gap-3 overflow-y-auto p-4 xl:grid-cols-2">
         {/* 身份铭牌：排障第一眼要看的四条读数，排在 children 之前 —— 背板第一格是"这是哪台机器"。 */}
-        <section aria-labelledby="diag-identity-heading" className="al-card p-3">
-          <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <h2
-              id="diag-identity-heading"
-              className="text-caption font-semibold text-text-secondary text-body"
-            >
-              {t("diag.identity")}
-            </h2>
+        <Panel
+          id="diag-identity"
+          title={t("diag.identity")}
+          meta={
             <span className="min-w-0 truncate text-body text-text-primary">
               {identityValue(local, (status) => status.name)}
             </span>
-          </header>
+          }
+        >
           <dl className="mt-2 grid grid-cols-[max-content_minmax(0,1fr)] items-baseline gap-x-4 gap-y-1 text-caption">
             <IdentityRow label={t("diag.identity_fp")} value={identityValue(local, (status) => status.idShort)} />
             <IdentityRow label={t("diag.identity_listen")} value={identityValue(local, (status) => status.addr)} />
             <IdentityRow label={t("diag.identity_lan")} value={identityValue(local, (status) => status.lanAddrs?.join(", ") || status.displayAddr)} />
           </dl>
-        </section>
+        </Panel>
 
         {children}
       </div>

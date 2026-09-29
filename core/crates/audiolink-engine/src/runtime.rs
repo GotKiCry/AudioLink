@@ -89,7 +89,7 @@ use crate::runtime::nack::{
 use crate::runtime::sink_watchdog::SinkWatchdog;
 use crate::session::{SessionEvent, SessionMachine, SessionState};
 use crate::silence::{SilenceSegment, SilenceSnapshot, frame_peak};
-use crate::telemetry::TelemetryAggregator;
+use crate::telemetry::{TelemetryAggregator, UnderrunBreakdown};
 
 /// 采集源工厂：**在采集线程内**调用；返回值全程不跨线程（`CaptureSource` 是 `!Send`）。
 ///
@@ -1395,6 +1395,18 @@ impl Engine {
         Some(telemetry.depth_drops())
     }
 
+    /// `underruns` 三个独立写入源的分量账（本机视角，按 `peer` 隔离）；对端不存在 → `None`。
+    ///
+    /// docs/73 §2 的 P0 诊断口径：A 线播放节拍超时 / B 线满队列拒收 / C 线游标追赶分开计数，
+    /// 现场直接给出各自份额，不再凭聚合值反推机制（v1 的教训，见 docs/73 §3）。
+    ///
+    /// **为什么不在 `StreamStats` 里**：同 [`Self::depth_drops`]，那是冻结的 wire 载荷。
+    pub fn underrun_breakdown(&self, peer: NodeId) -> Option<UnderrunBreakdown> {
+        let peers = self.inner.peers.lock().ok()?;
+        let telemetry = peers.get(&peer)?.telemetry.lock().ok()?;
+        Some(telemetry.underrun_breakdown())
+    }
+
     /// **连续静音**（「长断音」）统计快照（本机视角，按 `peer` 隔离）；对端不存在 → `None`。
     ///
     /// 回答的是「最长连续静音多久、此刻是否正在静音」—— 累计计数（`underruns` / `plc_count`）
@@ -1976,6 +1988,8 @@ async fn run_session(
     let mut adaptive_jitter = AdaptiveJitterDepth::new(rx_state.frame_ms);
     let mut arrival_jitter = SampleStats::new(256);
     let mut last_adaptive_underruns = 0u32;
+    // docs/73 P0：underruns 三分量的上次读数（变化门控的 1 Hz 日志用；健康链路零噪声）。
+    let mut last_breakdown = UnderrunBreakdown::default();
     let mut playback: Option<PlayoutHandle> = None;
     let mut next_stream_id: u32 = 1;
 
@@ -2471,7 +2485,7 @@ async fn run_session(
                 let estimate = clock_estimate_of(&session);
                 let adaptive_jitter_p95 = arrival_jitter.summary().map(|summary| summary.p95);
                 arrival_jitter.clear();
-                let snapshot = match session.telemetry.lock() {
+                let (snapshot, breakdown, depth_drops) = match session.telemetry.lock() {
                     Ok(mut telemetry) => {
                         // rtt_us 只有一种口径：**QUIC 平滑 RTT**（`docs/03-protocol.md` §10 的定义），
                         // 收敛与否都一样。§6 的代表 RTT / quality / 分位数走 clock_estimate() 与
@@ -2486,10 +2500,28 @@ async fn run_session(
                             );
                         }
                         telemetry.roll();
-                        telemetry.snapshot()
+                        let snapshot = telemetry.snapshot();
+                        let breakdown = telemetry.underrun_breakdown();
+                        (snapshot, breakdown, telemetry.depth_drops())
                     }
-                    Err(_) => StreamStats::default(),
+                    Err(_) => (StreamStats::default(), UnderrunBreakdown::default(), 0),
                 };
+
+                // docs/73 P0：三分量只在「有增量」时打一行 —— 健康链路全程静默，
+                // 病态链路 1 Hz 可见；现场走这条日志读数（desktop 经 tauri-plugin-log 可见）。
+                if breakdown != last_breakdown {
+                    tracing::info!(
+                        peer = %session.id.short(),
+                        underruns = snapshot.underruns,
+                        schedule_slip = breakdown.schedule_slips,
+                        queue_reject = breakdown.queue_rejects,
+                        cursor_catchup = breakdown.cursor_catchups,
+                        depth_drops,
+                        buffer_level_us = snapshot.buffer_level_us,
+                        "欠载分量（A 节拍超时 / B 满队拒收 / C 游标追赶，docs/73 P0）"
+                    );
+                    last_breakdown = breakdown;
+                }
 
                 let new_underruns = snapshot.underruns.saturating_sub(last_adaptive_underruns);
                 last_adaptive_underruns = snapshot.underruns;
@@ -3022,6 +3054,8 @@ type PlayoutSyncHandle = Arc<Mutex<PlayoutSync>>;
 /// 播放管线句柄：发送端（会话任务）+ 停止标志 + 线程句柄 + §7 排播状态。
 struct PlayoutHandle {
     frames: Sender<PlaybackFrame>,
+    /// 尚未处理的第一次满队列拒收序号；高位标记有效，避免序号 0 与未拒收混淆。
+    rejected_seq: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     join: Option<std::thread::JoinHandle<()>>,
     sync: PlayoutSyncHandle,
@@ -3097,8 +3131,27 @@ impl PlayoutHandle {
 
     /// 非阻塞投递一帧；返回 `false` 表示队列已满（调用方负责计 `late_drops`）。
     fn try_push(&self, frame: PlaybackFrame) -> bool {
-        self.frames.try_send(frame).is_ok()
+        let seq = frame.seq;
+        match self.frames.try_send(frame) {
+            Ok(()) => true,
+            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                note_rejected_seq(&self.rejected_seq, seq);
+                false
+            }
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => false,
+        }
     }
+}
+
+fn note_rejected_seq(rejected_seq: &AtomicU64, seq: u32) {
+    // 连续满队列时保留第一个洞：后来拒收的序号可能已在队头之后，
+    // 若覆盖第一个，播放线程就无法辨认眼前这个缺口。
+    let _ = rejected_seq.compare_exchange(
+        0,
+        (1u64 << 32) | u64::from(seq),
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
 }
 
 /// 句柄被 drop 即收工：停线程、还混音源号、owner 让位。
@@ -3421,6 +3474,9 @@ struct ReceiveReport {
     lost: u32,
     plc: u32,
     late_drops: u32,
+    /// B 线分量（docs/73 §2 P0）：`late_drops` 里「因待播队列满被 `try_push` 拒收」的那部分
+    /// （`late_drops` 还包含「包本身就迟到」的另一部分，两者必须能分开数）。
+    queue_rejects: u32,
 }
 
 /// 接收方向**由帧长派生**的全部状态，打包成一个可以整体重建的单元。
@@ -3630,6 +3686,7 @@ impl AudioReceiver {
                 samples: self.pcm.clone(),
             }) {
                 report.late_drops = report.late_drops.saturating_add(1);
+                report.queue_rejects = report.queue_rejects.saturating_add(1);
             }
             report.plc = report.plc.saturating_add(1);
         }
@@ -3662,6 +3719,7 @@ impl AudioReceiver {
             samples: self.pcm[..decoded].to_vec(),
         }) {
             report.late_drops = report.late_drops.saturating_add(1);
+            report.queue_rejects = report.queue_rejects.saturating_add(1);
         }
         report
     }
@@ -3685,6 +3743,7 @@ fn receive_audio(
         telemetry.record_lost(report.lost);
         telemetry.record_plc_frames(report.plc);
         telemetry.record_late_drops(report.late_drops);
+        telemetry.record_queue_rejects(report.queue_rejects);
     }
 }
 
@@ -4752,6 +4811,8 @@ fn spawn_playout_thread(
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), AudioLinkError>>();
     let (frame_tx, frame_rx) = crossbeam_channel::bounded(PLAYBACK_QUEUE_FRAMES);
+    let rejected_seq = Arc::new(AtomicU64::new(0));
+    let thread_rejected_seq = Arc::clone(&rejected_seq);
     let stop = new_stop_flag();
     let thread_stop = Arc::clone(&stop);
     // §7 排播状态：会话任务写、播放线程读；默认关闭（没有组基准时一切照旧）。
@@ -4815,6 +4876,7 @@ fn spawn_playout_thread(
                 mix_source,
                 thread_slot,
                 frame_rx,
+                thread_rejected_seq,
                 ready_tx,
             );
         })
@@ -4825,6 +4887,7 @@ fn spawn_playout_thread(
     match ready_rx.recv_timeout(Duration::from_secs(5)) {
         Ok(Ok(())) => Ok(PlayoutHandle {
             frames: frame_tx,
+            rejected_seq,
             stop,
             join: Some(join),
             sync,
@@ -4894,6 +4957,7 @@ fn playout_main(
     mix_source: u32,
     mix_slot: Arc<PlayoutMixSlot>,
     frames: Receiver<PlaybackFrame>,
+    rejected_seq: Arc<AtomicU64>,
     ready_tx: std::sync::mpsc::Sender<Result<(), AudioLinkError>>,
 ) {
     #[cfg(windows)]
@@ -4979,6 +5043,8 @@ fn playout_main(
                 }
                 if let Ok(mut telemetry) = telemetry.lock() {
                     telemetry.record_underruns(missed);
+                    // A 线分量（docs/73 §2 P0）：节拍超时 —— 与 underruns 同事件、分开记账。
+                    telemetry.record_schedule_slips(missed);
                 }
                 next_write += period.saturating_mul(missed);
             }
@@ -5267,8 +5333,18 @@ fn playout_main(
             backlog.reset();
         }
 
-        match take_due_frame(&frames, &mut pending, &mut expected_seq, &telemetry) {
-            DueFrame::Ready(mut frame) => {
+        let due = take_due_frame_after_reject(
+            &frames,
+            &mut pending,
+            &mut expected_seq,
+            &telemetry,
+            (!scheduled_mode).then_some(rejected_seq.as_ref()),
+        );
+        if matches!(due, DueFrame::ReadyAfterRejectedGap(_)) {
+            playout_concealer.note_discontinuity();
+        }
+        match due {
+            DueFrame::Ready(mut frame) | DueFrame::ReadyAfterRejectedGap(mut frame) => {
                 playout_gap.on_ready();
                 let _ = playout_concealer.process_good(&mut frame.samples);
                 apply_playout_gain(&mut frame.samples, &gain_state, &local_gain_state);
@@ -5407,7 +5483,7 @@ fn drop_oldest_due_frames(
 ) -> bool {
     for _ in 0..count {
         match take_due_frame(frames, pending, expected_seq, telemetry) {
-            DueFrame::Ready(_) | DueFrame::Missing => {
+            DueFrame::Ready(_) | DueFrame::ReadyAfterRejectedGap(_) | DueFrame::Missing => {
                 if let Ok(mut telemetry) = telemetry.lock() {
                     telemetry.record_depth_drop();
                 }
@@ -5420,6 +5496,7 @@ fn drop_oldest_due_frames(
 
 enum DueFrame {
     Ready(PlaybackFrame),
+    ReadyAfterRejectedGap(PlaybackFrame),
     Missing,
     Disconnected,
 }
@@ -5468,6 +5545,16 @@ fn take_due_frame(
     expected_seq: &mut Option<u32>,
     telemetry: &Arc<Mutex<TelemetryAggregator>>,
 ) -> DueFrame {
+    take_due_frame_after_reject(frames, pending, expected_seq, telemetry, None)
+}
+
+fn take_due_frame_after_reject(
+    frames: &Receiver<PlaybackFrame>,
+    pending: &mut Option<PlaybackFrame>,
+    expected_seq: &mut Option<u32>,
+    telemetry: &Arc<Mutex<TelemetryAggregator>>,
+    rejected_seq: Option<&AtomicU64>,
+) -> DueFrame {
     loop {
         let frame = if let Some(frame) = pending.take() {
             frame
@@ -5496,8 +5583,37 @@ fn take_due_frame(
             return DueFrame::Ready(frame);
         }
         if distance < (1 << 31) {
+            // 满队列拒收已经给接收序号留下永久缺口。只有确知这个缺口包含被拒帧时，
+            // 才跳到现有队头；普通网络缺帧仍逐拍掩盖，不能误伤弱网恢复。
+            if let Some(rejected_seq) = rejected_seq {
+                let rejected = rejected_seq.load(Ordering::Relaxed);
+                let rejected_distance = (rejected as u32).wrapping_sub(expected);
+                if rejected >> 32 != 0 && rejected_distance < distance {
+                    let _ = rejected_seq.compare_exchange(
+                        rejected,
+                        0,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    );
+                    *expected_seq = Some(frame.seq.wrapping_add(1));
+                    return DueFrame::ReadyAfterRejectedGap(frame);
+                }
+                if rejected >> 32 != 0 && rejected_distance >= (1 << 31) {
+                    let _ = rejected_seq.compare_exchange(
+                        rejected,
+                        0,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    );
+                }
+            }
             *pending = Some(frame);
             *expected_seq = Some(expected.wrapping_add(1));
+            // C 线分量（docs/73 §2 P0）：游标追赶 —— 这一拍随后由调用方按 Missing 记
+            // 一次 underrun；这里单独记账，回答「追赶占欠载的多少」。
+            if let Ok(mut telemetry) = telemetry.lock() {
+                telemetry.record_cursor_catchup();
+            }
             return DueFrame::Missing;
         }
 

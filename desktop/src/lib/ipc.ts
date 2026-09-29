@@ -5,6 +5,8 @@
  * 散落在组件里就会"改了一个忘了一个"。组件只允许 import 本模块。
  *
  * 与 `desktop/src-tauri/src/lib.rs`（command 签名）和 `engine_bridge.rs`（事件名常量）对齐。
+ * 非 command 的原生面（窗口主题）同样收在这里（见文末「窗口主题」一节）：组件永远不 import
+ * `@tauri-apps/*`。
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -153,6 +155,34 @@ export const api = {
   leaveGroup: (idShort: string, groupId: number): Promise<null> =>
     invoke<null>("leave_group", { id_short: idShort, group_id: groupId }),
 };
+
+// --- 窗口主题（不是 command：核心窗口插件的原生 API 面） ---
+
+/**
+ * 是否跑在 Tauri 外壳里。
+ *
+ * 浏览器预览与 Vitest（jsdom）下没有 `__TAURI_INTERNALS__`：那里的原生能力一律跳过，
+ * 界面照样能用，只是"操作系统的地盘"归别人管。
+ */
+export function isTauriRuntime(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+/**
+ * 让**原生标题栏**跟随光照（需要 `core:window:allow-set-theme`，见 `capabilities/default.json`）。
+ *
+ * 它严格说不是 `invoke` / `listen`，但同属"与外壳的原生契约"：散在组件里同样会
+ * "改了一个忘了一个"，所以收在这里，前端其余地方一律不 import `@tauri-apps/*`。
+ *
+ * 权限没放开、窗口还没就绪等情况这里会 **reject** —— 调用方必须自己决定怎么告诉人，
+ * 不要再像以前那样把 ACL 拒绝当成"非 Tauri 环境"吞掉。
+ *
+ * `@tauri-apps/api/window` 走动态 import：非 Tauri 环境连模块都不加载（不必为 jsdom 兜底）。
+ */
+export async function setWindowTheme(theme: "light" | "dark"): Promise<void> {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().setTheme(theme);
+}
 
 /**
  * 订阅三个后端事件。

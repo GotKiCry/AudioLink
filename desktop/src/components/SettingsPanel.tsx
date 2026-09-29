@@ -7,8 +7,10 @@
  * 两个开关的状态都来自**系统/存储**（`autostart_enabled` / `auto_connect_state`），
  * 不是本地记住的布尔：用户在系统设置里改过之后，这里显示的必须仍然是真实状态。
  *
- * 视觉（On-Air Console）：开关行是背板上的一排拨杆位；拨杆只在"开"的时候上色，
- * 红色这类告警色不该在面板上常驻。
+ * 视觉：开关行是一排拨杆位；拨杆只在"开"的时候上色，红色这类告警色不该在面板上常驻。
+ * 字号与颜色只走语义 token（`text-*` / `accent-caution` / `al-well`），明暗由 `index.css`
+ * 的变量决定 —— 组件里没有任何一处写死的明暗假设。
+ * 本面板没有按钮，所以没有 `.al-btn-*` 档位可换；唯一的控件是原生 `select` 与 `checkbox`。
  */
 
 import { useEffect, useState } from "react";
@@ -16,6 +18,10 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/ipc";
 import { toCommandError, type AutoConnectPolicy } from "../types";
 import { LOCALES, setLocale, t, useLocale, type Locale } from "../i18n";
+import { Panel } from "./Panel";
+
+/** 三个本地开关的操作键：`busy` 按它分片，一个请求返回只会解锁它自己那一个。 */
+type SettingKey = "autostart" | "auto-connect" | "low-latency";
 
 interface SettingsPanelProps {
   /**
@@ -41,7 +47,14 @@ export function SettingsPanel({
    * 只在**下次启动引擎**时被 engine_config 读走，所以没必要让它进 hook。
    */
   const [lowLatency, setLowLatency] = useState<boolean | null>(null);
-  const [busy, setBusy] = useState(false);
+  /**
+   * 正在落盘的操作键（**不是一个布尔**）。
+   *
+   * 共用一个布尔有两个后果：① 切 A 时 B、C 一起变灰（用户以为界面卡了）；
+   * ② 并发时第一个请求返回就把布尔清掉 —— B 还在飞，界面却已经解锁（防连点失效）。
+   * 按键分片之后，每个开关只对自己的那次落盘负责。
+   */
+  const [pending, setPending] = useState<readonly SettingKey[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -62,16 +75,34 @@ export function SettingsPanel({
       .catch((raw: unknown) => setError(toCommandError(raw).message));
   }, []);
 
-  const toggleAutostart = (next: boolean): void => {
-    setBusy(true);
-    void api
-      .setAutostart(next)
+  /** 这个开关是否正在落盘（只影响它自己）。 */
+  const isPending = (key: SettingKey): boolean => pending.includes(key);
+
+  /**
+   * 一次「写设置」的公共外壳：入队 → 落盘 → 无论成败都只摘下**自己**那把锁。
+   *
+   * 这里只有一个 finally，而它摘的是自己那把锁 —— 这就是"提前解锁"的修法：
+   * A 返回时只会把 A 从集合里摘掉，还在飞的 B 仍然是 pending。
+   */
+  const writeSetting = (
+    key: SettingKey,
+    action: () => Promise<unknown>,
+    apply: () => void,
+  ): void => {
+    setPending((current) => (current.includes(key) ? current : [...current, key]));
+    void action()
       .then(() => {
-        setAutostart(next);
+        apply();
         setError(null);
       })
       .catch((raw: unknown) => setError(toCommandError(raw).message))
-      .finally(() => setBusy(false));
+      .finally(() =>
+        setPending((current) => current.filter((item) => item !== key)),
+      );
+  };
+
+  const toggleAutostart = (next: boolean): void => {
+    writeSetting("autostart", () => api.setAutostart(next), () => setAutostart(next));
   };
 
   /**
@@ -85,15 +116,9 @@ export function SettingsPanel({
   };
 
   const toggleAutoConnect = (next: boolean): void => {
-    setBusy(true);
-    void api
-      .setAutoConnect(next)
-      .then(() => {
-        setPolicy((current) => (current === null ? current : { ...current, enabled: next }));
-        setError(null);
-      })
-      .catch((raw: unknown) => setError(toCommandError(raw).message))
-      .finally(() => setBusy(false));
+    writeSetting("auto-connect", () => api.setAutoConnect(next), () =>
+      setPolicy((current) => (current === null ? current : { ...current, enabled: next })),
+    );
   };
 
   /**
@@ -105,29 +130,14 @@ export function SettingsPanel({
    * （set.low_latency_hint），不能省：用户改完发现没变化才是真的会困惑。
    */
   const toggleLowLatency = (next: boolean): void => {
-    setBusy(true);
-    void api
-      .setLowLatency(next)
-      .then(() => {
-        setLowLatency(next);
-        setError(null);
-      })
-      .catch((raw: unknown) => setError(toCommandError(raw).message))
-      .finally(() => setBusy(false));
+    writeSetting("low-latency", () => api.setLowLatency(next), () => setLowLatency(next));
   };
 
   return (
-    <section aria-labelledby="set-heading" className="al-card p-3">
-      <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h2 id="set-heading" className="text-caption font-semibold text-text-secondary text-body">
-          {t("set.title")}
-        </h2>
-      </header>
-      <p className="mt-0.5 text-caption leading-4 text-text-tertiary">{t("set.tray_hint")}</p>
-
+    <Panel id="set" title={t("set.title")} hint={t("set.tray_hint")}>
       <div className="mt-2 space-y-2 text-caption text-text-secondary">
         <label className="flex items-center justify-between gap-2">
-          <span className="text-caption font-semibold text-text-tertiary text-text-secondary">{t("set.language")}</span>
+          <span className="text-caption font-semibold text-text-secondary">{t("set.language")}</span>
           <select
             value={locale}
             onChange={(event) => changeLocale(event.target.value as Locale)}
@@ -145,7 +155,7 @@ export function SettingsPanel({
           <input
             type="checkbox"
             checked={autostart === true}
-            disabled={busy || autostart === null}
+            disabled={isPending("autostart") || autostart === null}
             onChange={(event) => toggleAutostart(event.target.checked)}
             className="accent-caution disabled:cursor-not-allowed"
           />
@@ -157,7 +167,7 @@ export function SettingsPanel({
           <input
             type="checkbox"
             checked={policy?.enabled === true}
-            disabled={busy || policy === null}
+            disabled={isPending("auto-connect") || policy === null}
             onChange={(event) => toggleAutoConnect(event.target.checked)}
             className="accent-caution disabled:cursor-not-allowed"
           />
@@ -174,7 +184,8 @@ export function SettingsPanel({
           <input
             type="checkbox"
             checked={autoBroadcast}
-            disabled={busy || autoBroadcastBusy}
+            // 自动推流有它自己的 busy（来自 useAudioLink）：本地在写别的设置时不该把它一起锁住
+            disabled={autoBroadcastBusy}
             onChange={(event) => onToggleAutoBroadcast(event.target.checked)}
             // 名字钉在开关自己身上：label 里还会追加"读取中…"，让它去拼 accessible name 会得到
             // 一个随忙碌态变化的字符串（读屏用户听到的名字忽长忽短）。
@@ -191,7 +202,7 @@ export function SettingsPanel({
           <input
             type="checkbox"
             checked={lowLatency === true}
-            disabled={busy || lowLatency === null}
+            disabled={isPending("low-latency") || lowLatency === null}
             onChange={(event) => toggleLowLatency(event.target.checked)}
             aria-label={t("set.low_latency")}
             className="accent-caution disabled:cursor-not-allowed"
@@ -206,6 +217,6 @@ export function SettingsPanel({
       {error === null ? null : (
         <p role="alert" className="mt-2 text-caption text-critical">{error}</p>
       )}
-    </section>
+    </Panel>
   );
 }

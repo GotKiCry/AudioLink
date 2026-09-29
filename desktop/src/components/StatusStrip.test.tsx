@@ -63,7 +63,7 @@ describe("状态汇总", () => {
     // 改坏：只认 streamingCount → 用户点了开始，状态条冷冷地说「未推流」，看起来像没反应。
     const { container } = strip({ streamingCount: 0 });
 
-    expect(screen.getByText(t("side.broadcasting_waiting"))).toBeTruthy();
+    expect(screen.getByText(t("share.waiting"))).toBeTruthy();
     expect(screen.queryByText(summary)).toBeNull();
     // 等待为中性色，不能显示正在发送的绿灯。
     expect(container.querySelector(".al-lamp")?.getAttribute("data-on")).toBe("off");

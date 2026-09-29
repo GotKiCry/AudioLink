@@ -140,7 +140,7 @@ export function PeerCard({
               type="button"
               disabled={busy}
               onClick={() => void onStop()}
-              className="al-btn h-9 gap-2 px-4 text-body"
+              className="al-btn al-btn-xl gap-2"
             >
               <IconPause className="h-4 w-4" />
               {busy ? t("peer.stopping") : t("peer.stop")}
@@ -150,7 +150,7 @@ export function PeerCard({
               type="button"
               disabled={busy || !canStart || peer.state !== "idle"}
               onClick={() => void onStart(peer.idShort)}
-              className="al-btn h-9 gap-2 px-4 text-body"
+              className="al-btn al-btn-xl gap-2"
             >
               <IconStart className="h-4 w-4" />
               {busy ? t("peer.starting") : paused ? t("peer.resume") : t("peer.start")}

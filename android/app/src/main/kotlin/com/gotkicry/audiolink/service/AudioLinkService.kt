@@ -1520,6 +1520,9 @@ class AudioLinkService : Service() {
                             // 协商帧长：UByte? -> Int? 的窄化就发生在这一行（离 FFI 最近的地方）。
                             // **不用 0 当哨兵**：null 与「0 ms」必须是两件事（见 PeerSnapshot 的注释）。
                             negotiatedFrameMs = peer.negotiatedFrameMs?.toInt(),
+                            scheduleSlips = peer.scheduleSlips.toLong(),
+                            queueRejects = peer.queueRejects.toLong(),
+                            cursorCatchups = peer.cursorCatchups.toLong(),
                         )
                     }
                 } catch (e: CancellationException) {

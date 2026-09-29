@@ -7,6 +7,10 @@
  *
  * portal 之后 **Tab 顺序会绕到页面底部**，所以这里配了焦点转移（红线 3）：
  * 打开时聚焦浮层内第一个可聚焦元素，关闭时把焦点还给触发按钮，Esc 关闭。
+ *
+ * **落盘失败的原因不在这里显示**：浮层一关（点外部 / Esc）它就永久消失了，而屏幕上留的
+ * 是乐观更新后的新背景，用户会以为改成功了。那条错误归内容区顶部的全局横幅
+ * （App 侧同时把背景回滚到已保存值），关掉浮层也还看得见。
  */
 
 import { useEffect, useLayoutEffect, useRef } from "react";
@@ -52,13 +56,11 @@ interface BackgroundPanelProps {
   theme: "dark" | "light";
   /** 触发按钮：定位用它的 rect，关闭时焦点还给它是红线 3 的另一半。 */
   anchor: HTMLElement | null;
-  /** 落盘失败的原因（人话整句，来自后端错误层）；null = 一切正常。 */
-  error: string | null;
   onChange: (next: BackgroundConfig) => void;
   onClose: () => void;
 }
 
-export function BackgroundPanel({ config, theme, anchor, error, onChange, onClose }: BackgroundPanelProps) {
+export function BackgroundPanel({ config, theme, anchor, onChange, onClose }: BackgroundPanelProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   /** 被「留空」清掉的第三个颜色：留住它，用户点「恢复」时还有得还。 */
   const lastC3 = useRef<string>("");
@@ -174,7 +176,7 @@ export function BackgroundPanel({ config, theme, anchor, error, onChange, onClos
                 {slot.index === 3 ? (
                   <button
                     type="button"
-                    className="al-btn al-btn-subtle ml-auto h-6 px-2 text-caption"
+                    className="al-btn al-btn-subtle al-btn-sm ml-auto"
                     aria-pressed={empty}
                     title={empty ? t("bg.c3_restore_hint") : t("bg.c3_blank_hint")}
                     onClick={() => {
@@ -255,7 +257,7 @@ export function BackgroundPanel({ config, theme, anchor, error, onChange, onClos
       <div className="mt-3 flex items-center gap-2">
         <button
           type="button"
-          className="al-btn al-btn-subtle h-6 px-2 text-caption"
+          className="al-btn al-btn-subtle al-btn-sm"
           title={t("bg.reset_hint")}
           onClick={() => {
             lastC3.current = "";
@@ -266,12 +268,6 @@ export function BackgroundPanel({ config, theme, anchor, error, onChange, onClos
           {t("bg.reset")}
         </button>
       </div>
-
-      {error === null ? null : (
-        <p role="alert" className="mt-2 text-caption text-critical">
-          {error}
-        </p>
-      )}
 
       <p className="mt-2.5 text-caption text-text-tertiary">{t("bg.hint")}</p>
     </div>

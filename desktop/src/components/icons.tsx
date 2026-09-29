@@ -79,17 +79,8 @@ export const IconThemeDark = ({ className }: IconProps) => (
 export const IconStart = ({ className }: IconProps) => (
   <Base className={className}><path d="M6.5 4.5 15.5 10 6.5 15.5Z" fill="currentColor" stroke="none" /></Base>
 );
-export const IconStop = ({ className }: IconProps) => (
-  <Base className={className}><rect x="5.5" y="5.5" width="9" height="9" /></Base>
-);
 export const IconPause = ({ className }: IconProps) => (
   <Base className={className}><path d="M7 5v10M13 5v10" strokeWidth={3} /></Base>
-);
-export const IconMic = ({ className }: IconProps) => (
-  <Base className={className}>
-    <rect x="8" y="2.5" width="4" height="8.5" rx="2" />
-    <path d="M5 9.5a5 5 0 0 0 10 0M10 14.5V17.5" />
-  </Base>
 );
 export const IconMonitor = ({ className }: IconProps) => (
   <Base className={className}>
@@ -97,21 +88,10 @@ export const IconMonitor = ({ className }: IconProps) => (
     <path d="M7 17h6M10 14v3" />
   </Base>
 );
-export const IconSpeaker = ({ className }: IconProps) => (
-  <Base className={className}>
-    <path d="M4 7.5h2.8L11 4.5v11L6.8 12.5H4Z" />
-    <path d="M14 7.5a3.5 3.5 0 0 1 0 5" />
-  </Base>
-);
 export const IconLink = ({ className }: IconProps) => (
   <Base className={className}>
     <path d="M3.5 10h9M10 6.5 13.5 10 10 13.5" />
     <path d="M15.5 4v12" />
-  </Base>
-);
-export const IconUnplug = ({ className }: IconProps) => (
-  <Base className={className}>
-    <path d="M4 6.5h12M8 6.5V4h4v2.5M5.5 6.5 6.8 17h6.4L14.5 6.5" />
   </Base>
 );
 export const IconRefresh = ({ className }: IconProps) => (

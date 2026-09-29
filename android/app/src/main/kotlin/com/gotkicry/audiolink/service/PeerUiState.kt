@@ -64,6 +64,9 @@ data class PeerUi(
      * 帧长不一致的典型症状是听感发闷/断续而遥测全绿，只看本端档位看不出来。
      */
     val negotiatedFrameMs: Int? = null,
+    val scheduleSlips: Long = 0L,
+    val queueRejects: Long = 0L,
+    val cursorCatchups: Long = 0L,
 )
 
 /**
@@ -106,6 +109,9 @@ data class PeerSnapshot(
      * 往后加字段不会挪位，插在中间会。
      */
     val negotiatedFrameMs: Int? = null,
+    val scheduleSlips: Long = 0L,
+    val queueRejects: Long = 0L,
+    val cursorCatchups: Long = 0L,
 )
 
 /**
@@ -172,6 +178,9 @@ object PeerStateMapper {
             bitrateBps = snapshot.bitrateBps,
             lossPct = snapshot.lossPct,
             negotiatedFrameMs = snapshot.negotiatedFrameMs,
+            scheduleSlips = snapshot.scheduleSlips,
+            queueRejects = snapshot.queueRejects,
+            cursorCatchups = snapshot.cursorCatchups,
         )
     }
 }

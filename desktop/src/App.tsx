@@ -18,13 +18,13 @@ import { Sidebar } from "./components/Sidebar";
 import { StatusStrip } from "./components/StatusStrip";
 import { TelemetryPanel } from "./components/TelemetryPanel";
 import { UpdatePanel } from "./components/UpdatePanel";
-import type { BroadcastStatus } from "./lib/broadcast";
 import { DEFAULT_BACKGROUND, normalizeBackground } from "./lib/background";
+import { deriveBroadcastStatus } from "./lib/broadcast";
 import { api } from "./lib/ipc";
 import { useAudioLink } from "./lib/useAudioLink";
 import { useTheme } from "./lib/useTheme";
 import { detectLocale, setLocale, t, useLocale, type Locale } from "./i18n";
-import { toCommandError, type BackgroundConfig } from "./types";
+import { toCommandError, type BackgroundConfig, type CommandError } from "./types";
 
 export default function App() {
   const al = useAudioLink();
@@ -37,7 +37,12 @@ export default function App() {
   /** 用户配过的背景；null = 还没配过（用本主题的默认值，CSS 令牌与它同值）。 */
   const [background, setBackground] = useState<BackgroundConfig | null>(null);
   const [backgroundOpen, setBackgroundOpen] = useState(false);
-  const [backgroundError, setBackgroundError] = useState<string | null>(null);
+  /** 落盘失败的原因；null = 一切正常。**在全局渲染**，不留在浮层里（理由见下面的横幅注释）。 */
+  const [backgroundError, setBackgroundError] = useState<CommandError | null>(null);
+  /** 最近一次**确认落盘**的背景（null = 从没配过）；乐观更新失败时就是回滚的落点。 */
+  const savedBackground = useRef<BackgroundConfig | null>(null);
+  /** 保存请求序号：连续操作会并发多次保存，只有最新一次的结果算数（见 changeBackground）。 */
+  const backgroundSaveSeq = useRef(0);
   /** 浮层的定位锚 + 关闭时焦点归还的目标（红线 3 的两半都靠它）。 */
   const backgroundTrigger = useRef<HTMLButtonElement | null>(null);
 
@@ -68,7 +73,9 @@ export default function App() {
         if (cancelled || saved === null) {
           return;
         }
-        setBackground(normalizeBackground(saved, theme.resolved));
+        const normalized = normalizeBackground(saved, theme.resolved);
+        savedBackground.current = normalized;
+        setBackground(normalized);
       })
       .catch(() => {
         // 读设置失败不该打扰用户：用本主题的默认背景继续跑。
@@ -76,33 +83,70 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-    // 只在挂载时读一次：主题切换不会改变用户配过的背景（没配过时由 CSS 令牌跟着主题走）。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // 只在挂载时读一次；依赖数组留空是**有意**的（仓库没有 eslint 兜底，所以把取舍写在这里）：
+    // 主题切换不会改变用户配过的背景（没配过时由 CSS 令牌跟着主题走），
+    // 而跟着 theme.resolved 重跑会把用户配过的值按新主题再归一化一次 —— 那不是我们想要的。
   }, []);
 
   /** 生效的背景：用户配过就用他的，否则是本主题的默认值。 */
   const effectiveBackground = background ?? DEFAULT_BACKGROUND[theme.resolved];
 
+  /**
+   * 换背景：先落界面（取色要即时看得见效果），再发命令。
+   *
+   * 乐观更新的代价必须补上，否则「屏幕上是什么」与「settings.json 里是什么」会分家：
+   * - 失败 → 回滚到**最近一次确认落盘**的值（不是「上一次点的那一下」，因为并发保存里
+   *   先成功的那次就已经写进文件了，回滚必须回到文件里真实的那份）；
+   * - 序号过滤：拖动色轮 / 连点预设会并发多次保存，过期请求的回执一律丢弃，
+   *   免得一个旧失败把新结果覆盖掉。错误本身由全局横幅显示，不随浮层关闭而消失。
+   */
   const changeBackground = (next: BackgroundConfig): void => {
-    setBackground(next); // 先落界面：取色要即时看得见效果
+    const seq = (backgroundSaveSeq.current += 1);
+    setBackground(next);
     void api
       .setBackground(next)
-      .then(() => setBackgroundError(null))
-      .catch((raw: unknown) => setBackgroundError(toCommandError(raw).message));
+      .then(() => {
+        savedBackground.current = next;
+        if (seq === backgroundSaveSeq.current) {
+          setBackgroundError(null);
+        }
+      })
+      .catch((raw: unknown) => {
+        // 过期的失败：后面还有一次保存在路上，最终结果由它决定。
+        if (seq !== backgroundSaveSeq.current) {
+          return;
+        }
+        setBackgroundError(toCommandError(raw));
+        setBackground(savedBackground.current);
+      });
   };
 
   const streamingCount = al.peers.filter(
     (peer) => peer.state === "streaming" || peer.state === "degraded",
   ).length;
   const broadcastTargets = al.peers.filter((peer) => !peer.receiving && peer.state === "idle");
-  const status: BroadcastStatus = al.broadcastStopping ? "pausing"
-    : streamingCount > 0 ? "streaming"
-    : al.broadcastPaused ? "paused"
-    : !al.autoBroadcastReady || al.captureLoading ? "loading"
-    : !al.canStartCapture ? "unavailable"
-    : al.busyPeer !== null ? "starting"
-    : al.broadcastError !== null ? "error"
-    : al.autoBroadcast || al.broadcastRequested ? "waiting" : "manual";
+  /**
+   * 「本机此刻有没有条件开共享」——侧栏主按钮的**恢复**准入与卡片的**推流**准入是同一条规则
+   * （`deriveBroadcastAffordances` 的第二个参数也叫 canResume，那条规则的定义住在那里）。
+   *
+   * 所以在这里只算一次：原先两处各写一遍，改一处忘一处就会分家 ——
+   * 侧栏说「能恢复」而卡片是灰的，用户只会以为界面坏了。
+   */
+  const canResume = al.canStartCapture && !al.captureLocked;
+  // 九档的优先级顺序（pausing > streaming > paused > loading > unavailable > starting >
+  // error > waiting > manual）住在纯函数里，它自带穷举等价测试；这里只负责把原始 flag 递过去。
+  const status = deriveBroadcastStatus({
+    broadcastStopping: al.broadcastStopping,
+    streamingCount,
+    broadcastPaused: al.broadcastPaused,
+    autoBroadcastReady: al.autoBroadcastReady,
+    captureLoading: al.captureLoading,
+    canStartCapture: al.canStartCapture,
+    busyPeer: al.busyPeer,
+    broadcastError: al.broadcastError,
+    autoBroadcast: al.autoBroadcast,
+    broadcastRequested: al.broadcastRequested,
+  });
 
   return (
     <div className="al-shell text-text-primary">
@@ -114,7 +158,7 @@ export default function App() {
         local={al.local}
         status={status}
         autoBroadcast={al.autoBroadcast}
-        canResume={al.canStartCapture && !al.captureLocked}
+        canResume={canResume}
         streamingCount={streamingCount}
         captureDevices={al.captureDevices}
         selectedCaptureId={al.selectedCaptureId}
@@ -131,7 +175,7 @@ export default function App() {
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* z2 工具栏（52px）：自有底色 + blur(32px)，比 Mica 更实 */}
+        {/* z2 工具栏（60px，见 .al-toolbar 的 min-height）：自有底色 + blur(32px)，比 Mica 更实 */}
         <header className="al-toolbar al-chrome al-chrome-b">
           <StatusStrip
             status={status}
@@ -148,7 +192,7 @@ export default function App() {
               aria-haspopup="dialog"
               aria-expanded={backgroundOpen}
               title={t("bg.button")}
-              className="al-btn h-8 gap-1.5 px-3 text-caption"
+              className="al-btn al-btn-lg gap-1.5"
               onClick={(event) => {
                 // 不让这次点击冒泡到 document：浮层的「点外部关闭」监听就在那儿，
                 // 不拦住的话按钮会在同一帧里先开又关。
@@ -166,6 +210,17 @@ export default function App() {
           <div className="al-content-inner min-h-0 flex-1 overflow-y-auto">
             {al.error === null ? null : (
               <ErrorBanner error={al.error} onDismiss={al.dismissError} />
+            )}
+            {/*
+              背景落盘失败必须**在这一层**：原先它唯一的渲染点是壁纸浮层内部，
+              浮层一关（点外部 / Esc）这条错误就永久消失，而屏幕上留的是乐观更新后的新背景 ——
+              用户看到一份、settings.json 里是另一份，且没有任何去处。
+              现在它与推流错误同列在内容区顶部，关掉浮层也还在；
+              与此同时 changeBackground 已经把背景回滚到已保存值，所以这条横幅说的是
+              「刚才那次没存上」，不是「现在这份是坏的」，用户重开浮层再选一次即可。
+            */}
+            {backgroundError === null ? null : (
+              <ErrorBanner error={backgroundError} onDismiss={() => setBackgroundError(null)} />
             )}
             {al.notice === null ? null : (
               <NoticeBanner message={al.notice} onDismiss={al.dismissNotice} />
@@ -186,7 +241,10 @@ export default function App() {
               {al.peers.length === 0 ? (
                 <div className="al-devices-empty">
                   <p className="text-body leading-relaxed text-text-secondary">{t("devices.empty")}</p>
-                  <p className="mt-2 text-caption leading-relaxed text-text-tertiary">{t("devices.empty_hint")}</p>
+                  {/* 副文用 secondary 而不是 tertiary：它落在**主区的渐变背景**上（比侧栏亮），
+                      而 tertiary 是给侧栏那种更实的底准备的（报告 §一 实测深色下 tertiary
+                      在这个底上 3.73:1，不到 AA 正文门槛）。 */}
+                  <p className="mt-2 text-caption leading-relaxed text-text-secondary">{t("devices.empty_hint")}</p>
                 </div>
               ) : (
                 <div className="al-device-list">{al.peers.map((peer) => (
@@ -195,7 +253,7 @@ export default function App() {
                     peer={peer}
                     busy={al.broadcastStopping || al.busyPeer === peer.idShort}
                     paused={al.broadcastPaused}
-                    canStart={al.canStartCapture && !al.captureLocked}
+                    canStart={canResume}
                     onStart={al.startSend}
                     onStop={al.stopSend}
                     onGain={(gain) => void al.setPeerGain(peer.idShort, gain)}
@@ -204,9 +262,23 @@ export default function App() {
               )}
             </section>
 
-            <details className="al-receive-section" onToggle={(event) => setReceiveOpen(event.currentTarget.open)}>
+            {/* 折叠区：React state 是唯一真相（`open` 是它的投影），但内容**始终挂载**。
+                原先按 state 条件渲染，收起就卸载 ConnectToHost —— 手输地址与已发现列表
+                每次展开都归零（实测复现）。state 另一个用途是暂停收起时的发现轮询：
+                收起不等于卸载，状态留着，轮询停了（每次轮询都会 setHosts 一个新数组，
+                白跑一轮就白重渲染一次）。 */}
+            <details
+              className="al-receive-section"
+              open={receiveOpen}
+              onToggle={(event) => setReceiveOpen(event.currentTarget.open)}
+            >
               <summary>{t("connect.title")}</summary>
-              {receiveOpen && <ConnectToHost connecting={al.connecting} connectedIds={al.peers.map((peer) => peer.idShort)} onConnect={al.connect} />}
+              <ConnectToHost
+                active={receiveOpen}
+                connecting={al.connecting}
+                connectedIds={al.peers.map((peer) => peer.idShort)}
+                onConnect={al.connect}
+              />
             </details>
           </div>
 
@@ -228,11 +300,18 @@ export default function App() {
               exporting={al.exportingTelemetry}
               onExport={() => void al.exportTelemetryLog()}
             />
+            {/*
+              ⚠️ 这个 onRefresh **不能**用 `void` 包住：GroupPanel 拿它返回的 promise 当
+              「刷新正在飞」的锁（内部 `await onRefresh()`，锁到刷新结束）。吞掉 promise
+              等于这把锁不存在 —— 只剩组件自己那半把，挡不住用户单独狂点刷新。
+              相邻的 onCreate / onJoin / onLeave 不交 promise 是**有意**的：它们没有跨点击
+              连点的问题，进行中状态由 `busy` prop 承担，那三处的 void 不是漏改。
+            */}
             <GroupPanel
               peers={al.peers}
               groups={al.groups}
               busy={al.groupBusy}
-              onRefresh={() => void al.refreshGroups()}
+              onRefresh={() => al.refreshGroups()}
               onCreate={(idShorts, leadMs) => void al.createGroup(idShorts, leadMs)}
               onJoin={(idShort, groupId) => void al.joinGroup(idShort, groupId)}
               onLeave={(idShort, groupId) => void al.leaveGroup(idShort, groupId)}
@@ -251,13 +330,13 @@ export default function App() {
       {/*
         z4 背景浮层：portal 到 body（组件内部 createPortal），只在这里决定要不要挂载。
         anchor 传触发按钮：定位按它的 rect 算，关闭时焦点也还给它是红线 3 的另一半。
+        落盘失败的原因**不在这里**渲染 —— 它归内容区顶部的全局横幅，关掉浮层也还在。
       */}
       {backgroundOpen ? (
         <BackgroundPanel
           config={effectiveBackground}
           theme={theme.resolved}
           anchor={backgroundTrigger.current}
-          error={backgroundError}
           onChange={changeBackground}
           onClose={() => setBackgroundOpen(false)}
         />

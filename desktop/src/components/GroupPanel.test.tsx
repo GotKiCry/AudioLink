@@ -9,7 +9,7 @@
  *
  * 每条用例都写了"改坏什么会让它红"；说不出来的断言一律没写。
  */
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { GroupMemberView, GroupView, PeerCapabilitiesView, PeerView } from "../types";
@@ -297,5 +297,86 @@ describe("空态（用户唯一的引导）", () => {
 
     expect(screen.queryByText(t("group.no_peers"))).toBeNull();
     expect(screen.getByText(t("group.none"))).toBeTruthy();
+  });
+});
+
+describe("提前量输入的边界 + 刷新防连点", () => {
+  it("清空提前量：建组按钮禁用，且不会发出一次 lead 为 0 的建组", () => {
+    // 改坏：state 改回 `Number(event.target.value)` → 清空立刻变 0，按钮照旧可点，
+    // 于是"排播余量为 0"的组被建出来（发送端来不及等到那个时刻 → 整段丢掉）。
+    const handlers = panel({ peers: [peer("aaaa0001")] });
+
+    fireEvent.click(within(rowOf("device-aaaa0001")).getByRole("checkbox"));
+    fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "" } });
+
+    const create = screen.getByRole("button", { name: t("group.create", { count: 1 }) }) as HTMLButtonElement;
+    expect(create.disabled).toBe(true);
+
+    fireEvent.click(create);
+    expect(handlers.onCreate).not.toHaveBeenCalled();
+  });
+
+  it("提前量超上限收敛到 2000（`max` 属性只是提示，执行约束的是提交那一刻）", () => {
+    const handlers = panel({ peers: [peer("aaaa0001")] });
+
+    fireEvent.click(within(rowOf("device-aaaa0001")).getByRole("checkbox"));
+    fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "99999" } });
+    fireEvent.click(screen.getByRole("button", { name: t("group.create", { count: 1 }) }));
+
+    expect(handlers.onCreate).toHaveBeenCalledWith(["aaaa0001"], 2000);
+  });
+
+  it("清空再填回：按原文提交（不被换成默认值，也不被 clamp 掉合法值）", () => {
+    // 改坏：把"未填"回落成 DEFAULT_LEAD_MS → 用户填 600，建出来的组却是 120。
+    const handlers = panel({ peers: [peer("aaaa0001")] });
+
+    fireEvent.click(within(rowOf("device-aaaa0001")).getByRole("checkbox"));
+    fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "" } });
+    fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "600" } });
+    fireEvent.click(screen.getByRole("button", { name: t("group.create", { count: 1 }) }));
+
+    expect(handlers.onCreate).toHaveBeenCalledWith(["aaaa0001"], 600);
+  });
+
+  it("刷新进行中再点：只触发一次（`onRefresh` 交出 promise 时锁到刷新结束）", async () => {
+    // 改坏：去掉 refreshing 判断 → 连点两下就发两次 list_groups；
+    // 而在这之前，刷新按钮连 disabled 都没有。
+    let settle: () => void = () => undefined;
+    const onRefresh = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    render(
+      <GroupPanel
+        peers={[]}
+        groups={[]}
+        busy={false}
+        onRefresh={onRefresh}
+        onCreate={vi.fn()}
+        onJoin={vi.fn()}
+        onLeave={vi.fn()}
+      />,
+    );
+
+    const refresh = screen.getByRole("button", { name: t("group.refresh") }) as HTMLButtonElement;
+    fireEvent.click(refresh);
+    fireEvent.click(refresh);
+
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    expect(refresh.disabled).toBe(true);
+
+    await act(async () => {
+      settle();
+    });
+    await waitFor(() => expect(refresh.disabled).toBe(false));
+  });
+
+  it("建组进行中（busy）时刷新按钮也锁住（那时列表本来就会被重拉一次）", () => {
+    panel({ peers: [peer("aaaa0001")], busy: true });
+
+    const refresh = screen.getByRole("button", { name: t("group.refresh") }) as HTMLButtonElement;
+    expect(refresh.disabled).toBe(true);
   });
 });

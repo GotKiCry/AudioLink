@@ -7,10 +7,17 @@ import { IconRefresh } from "./icons";
 interface Props {
   connecting: boolean;
   connectedIds: string[];
+  /**
+   * 所在的折叠区是否展开（默认展开）。
+   *
+   * 收起时**暂停轮询但保留状态**：组件并没有卸载（已发现的主机、刷新状态都还在），
+   * 只是不再每秒问一次 —— 每次轮询都会 `setHosts` 一个新数组，白跑一轮就是白重渲染一次。
+   */
+  active?: boolean;
   onConnect: (addr: string) => Promise<boolean>;
 }
 
-export function DiscoveredHosts({ connecting, connectedIds, onConnect }: Props) {
+export function DiscoveredHosts({ connecting, connectedIds, active = true, onConnect }: Props) {
   const [hosts, setHosts] = useState<DiscoveredHost[]>([]);
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -20,6 +27,10 @@ export function DiscoveredHosts({ connecting, connectedIds, onConnect }: Props) 
   const pending = useRef(false);
 
   useEffect(() => {
+    // 收起时不轮询（状态留着，理由见 active 的说明）。
+    if (!active) {
+      return;
+    }
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const settled = setTimeout(() => { if (!cancelled) setRefreshing(false); }, 3500);
@@ -38,7 +49,7 @@ export function DiscoveredHosts({ connecting, connectedIds, onConnect }: Props) 
     };
     void poll(refreshVersion > 0);
     return () => { cancelled = true; clearTimeout(timer); clearTimeout(settled); };
-  }, [refreshVersion]);
+  }, [refreshVersion, active]);
 
   function refresh() {
     setHosts([]); setFailed(false); setLoaded(false); setRefreshing(true);
@@ -57,7 +68,7 @@ export function DiscoveredHosts({ connecting, connectedIds, onConnect }: Props) 
     <section className="pt-4" aria-labelledby="discovery-heading">
       <div className="flex items-center justify-between gap-3">
         <h3 id="discovery-heading" className="text-body font-semibold">{t("discovery.title")}</h3>
-        <button type="button" className="al-btn h-8 gap-2 px-3 text-caption"
+        <button type="button" className="al-btn al-btn-lg gap-2"
           disabled={refreshing || connecting || selected !== null} onClick={refresh}
           aria-label={t("discovery.refresh")}>
           <IconRefresh className="h-3.5 w-3.5" />
@@ -78,7 +89,7 @@ export function DiscoveredHosts({ connecting, connectedIds, onConnect }: Props) 
                 <p className="num break-all text-caption text-text-secondary">{host.addr}</p>
                 {!host.compatible && <p className="mt-1 text-caption text-caution">{t("discovery.incompatible")}</p>}
               </div>
-              <button type="button" className="al-btn h-9 shrink-0 px-3 text-body"
+              <button type="button" className="al-btn al-btn-xl shrink-0"
                 aria-label={`${t("connect.submit")} ${host.name}`}
                 disabled={connecting || selected !== null || connected || !host.compatible}
                 onClick={() => void connect(host)}>

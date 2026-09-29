@@ -7,24 +7,62 @@
  *
  * 为什么不引入状态库：M1 的状态就 6 个字段，React 自带 useState 足够；
  * 引 zustand/jotai 只会多一层需要同步的真相（而且遥测是"覆盖式最新值"，天然适合 setState）。
+ *
+ * ## 内部结构（对外仍是**一个** hook、**一份**契约）
+ *
+ * `AudioLinkController` 是冻结的对外契约，一个字段都不能变；实现的域边界在 `src/lib/state/`：
+ *
+ * | 文件 | 管什么 |
+ * |---|---|
+ * | `state/shell.ts` | 版本 / 身份 / 对端 / 遥测流 / 错误与回执 + 首屏水合 + 事件订阅 + 自动重连 + `connect` |
+ * | `state/settings.ts` | 自动推流偏好的持久化（含"设置读回前不许自动推流"） |
+ * | `state/broadcast.ts` | 推流状态机：意图 / 暂停 / 停止 / 忙碌 / 错误 + 单路发送的同步占位 |
+ * | `state/capture.ts` | 采集设备枚举、选择、当前设备、`canStartCapture` |
+ * | `state/autoStart.ts` | 自动推流决策（条件横跨采集与推流两个域，所以单独一个文件） |
+ * | `state/groups.ts` | 同步组（M3 / FR-22） |
+ * | `state/alignment.ts` | 多源对齐快照（M4，1 Hz 轮询） |
+ * | `state/telemetryExport.ts` | 遥测历史导出 CSV |
+ * | `state/shared.ts` | 跨域共享的写入口与桥类型（`SetError` / `SendGate` / `PeersTap` …） |
+ * | `state/reductions.ts` | 两个纯归约（`appendTelemetryRow` / `upsert`），本文件原样 re-export |
+ *
+ * 这个文件只剩三件事：**契约、桥、编排**。
+ *
+ * 为什么域之间还会咬合：采集的可用性喂给推流，推流的锁定态喂给采集 —— 是**双向**的。
+ * 环用两个桥打破，都摆在本文件的编排函数里：
+ * - `sendGate`：采集侧写 `canStartCapture` / `selectedCaptureId` / 刷新函数，推流侧在**事件回调**里读；
+ * - `peersTap` / `groupsTap`：事件订阅只注册一次，回调必须从 ref 里取**最新**实现，
+ *   否则它会永远指向首帧那份闭包 —— 那正是"点了没反应"类问题的来源。
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
-import { api, subscribeEvents } from "./ipc";
-import {
-  toCommandError,
-  type AlignmentView,
-  type CommandError,
-  type CaptureDeviceView,
-  type GroupView,
-  type LocalStatus,
-  type PeerView,
-  type TelemetryRow,
-  type TelemetryView,
-  telemetryRowOf,
+import { useAlignmentState } from "./state/alignment";
+import { useAutoBroadcastStart } from "./state/autoStart";
+import { useBroadcastState } from "./state/broadcast";
+import { useCaptureState } from "./state/capture";
+import { useGroupsState } from "./state/groups";
+import { useSettingsState } from "./state/settings";
+import { useShellState } from "./state/shell";
+import { useTelemetryExport } from "./state/telemetryExport";
+import type { GroupsTap, PeersTap, SendGate } from "./state/shared";
+import type {
+  AlignmentView,
+  CaptureDeviceView,
+  CommandError,
+  GroupView,
+  LocalStatus,
+  PeerView,
+  TelemetryRow,
+  TelemetryView,
 } from "../types";
-import { t } from "../i18n";
+
+/**
+ * 纯归约与常量仍由**本模块**对外提供（`reductions.test.ts` 的 import 路径不变）。
+ *
+ * 实现搬去 `state/reductions.ts` 是唯一能让 `state/shell.ts` 直接用它们而不成环的办法：
+ * 否则就是 `useAudioLink` → `state/shell` → `useAudioLink`。对外看不出位置变化。
+ */
+export { TELEMETRY_HISTORY_LIMIT, appendTelemetryRow, upsert } from "./state/reductions";
 
 export interface AudioLinkController {
   /** 外壳版本号（`version` command）。 */
@@ -106,489 +144,109 @@ export interface AudioLinkController {
 }
 
 /**
- * 遥测历史的长度上限：500 ms 一个采样点 × 600 = **5 分钟**曲线。
+ * 对外唯一入口：把八个子 hook 按依赖顺序串起来，再按 `AudioLinkController` 逐字段组装。
  *
- * 为什么是 5 分钟：这是「看出趋势、又不用翻页」的尺度；更长的历史由导出的 CSV 承担。
+ * 顺序不是随意的 —— 变的是"谁能看见谁"：
+ * shell 先立（其他人要它的 setError / setNotice / peers）
+ * → settings（推流要读开关）
+ * → broadcast（采集要读它的锁定态）
+ * → capture（推流要读它的门控，经 `sendGate` 桥）
+ * → 自动推流决策（两边都齐了）
+ * → 组 / 对齐 / 导出（彼此独立，只依赖 shell 的写入口）。
  */
-export const TELEMETRY_HISTORY_LIMIT = 600;
-
-/**
- * 追加一个采样点并截断到上限（纯函数）。
- *
- * 导出只为单测（`src/lib/reductions.test.ts`）：**截断方向**（丢最旧、留最新）是
- * 界面上看不出来的 —— 写反了曲线只是「冻结在最初 5 分钟」，不报错、不崩溃。
- * 注意：这里不注入时钟（`Date.now()` 在调用点），所以断言只钉顺序与长度，不钉时刻。
- */
-export function appendTelemetryRow(history: TelemetryRow[], view: TelemetryView): TelemetryRow[] {
-  const next = [...history, telemetryRowOf(view, Date.now())];
-  return next.length > TELEMETRY_HISTORY_LIMIT
-    ? next.slice(next.length - TELEMETRY_HISTORY_LIMIT)
-    : next;
-}
-
-/**
- * 把单个对端并入列表（事件到达前先本地乐观更新，避免"点了没反应"）。
- *
- * 导出只为单测：它必须是**不可变**更新 —— 直接改数组元素会让 React 拿不到新引用，
- * 卡片状态与按钮就停在旧值上（点了没反应，且不报错）。
- */
-export function upsert(peers: PeerView[], peer: PeerView): PeerView[] {
-  const index = peers.findIndex((item) => item.idShort === peer.idShort);
-  if (index < 0) {
-    return [...peers, peer];
-  }
-  const next = [...peers];
-  next[index] = peer;
-  return next;
-}
-
 export function useAudioLink(): AudioLinkController {
-  const [version, setVersion] = useState("");
-  const [local, setLocal] = useState<LocalStatus | null>(null);
-  const [peers, setPeers] = useState<PeerView[]>([]);
-  const [telemetry, setTelemetry] = useState<TelemetryView | null>(null);
-  const [telemetryHistory, setTelemetryHistory] = useState<TelemetryRow[]>([]);
-  const [groups, setGroups] = useState<GroupView[]>([]);
-  const [alignment, setAlignment] = useState<AlignmentView | null>(null);
-  const [alignmentBusy, setAlignmentBusy] = useState(false);
-  const [groupBusy, setGroupBusy] = useState(false);
-  const [exportingTelemetry, setExportingTelemetry] = useState(false);
-  const [error, setError] = useState<CommandError | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [connecting, setConnecting] = useState(false);
-  const [busyPeer, setBusyPeer] = useState<string | null>(null);
-  const [captureDevices, setCaptureDevices] = useState<CaptureDeviceView[]>([]);
-  const [captureLoading, setCaptureLoading] = useState(true);
-  const [captureError, setCaptureError] = useState<CommandError | null>(null);
-  const [selectedCaptureId, setSelectedCaptureId] = useState("");
-  const [activeCapture, setActiveCapture] = useState<CaptureDeviceView | null>(null);
-  /** 推流意图：见 AudioLinkController.broadcastRequested 的说明。 */
-  const [broadcastRequested, setBroadcastRequested] = useState(false);
-  /** 「接入即自动推流」：默认开（用户明确要的默认行为），真实值随后端设置水合并覆盖。 */
-  const [autoBroadcast, setAutoBroadcastState] = useState(true);
-  const [autoBroadcastBusy, setAutoBroadcastBusy] = useState(false);
-  const [autoBroadcastReady, setAutoBroadcastReady] = useState(false);
-  const [broadcastPaused, setBroadcastPaused] = useState(false);
-  const [broadcastStopping, setBroadcastStopping] = useState(false);
-  const [broadcastError, setBroadcastError] = useState<CommandError | null>(null);
-  const pausedRef = useRef(false);
-  const sendPendingRef = useRef<Promise<void> | null>(null);
-  const stopPendingRef = useRef<Promise<void> | null>(null);
-  const activeSendRef = useRef<string | null>(null);
-  const reconnectsRef = useRef(new Map<string, number>());
-  const preferenceRevision = useRef(0);
-  const captureRequest = useRef(0);
-  const activeRequest = useRef(0);
-  /** 这一轮里**已经自动发起过**的设备：同一台只发一次，事件抖动不再重复调 start_send。 */
-  const autoStartedRef = useRef<Set<string>>(new Set());
-  const captureLocked = broadcastStopping || busyPeer !== null || peers.some((peer) => peer.state === "streaming" || peer.state === "degraded");
-  const selectedCapture = captureDevices.find((device) => selectedCaptureId === "" ? device.isDefault : device.id === selectedCaptureId);
-  const canStartCapture = !captureLoading && captureError === null && selectedCapture !== undefined && selectedCapture.unavailableReason === null;
+  // 桥 1：采集侧派生值 → 推流侧（推流只在事件回调里读，见 SendGate 的说明）。
+  const sendGate = useRef<SendGate>({
+    canStartCapture: false,
+    selectedCaptureId: "",
+    refreshActiveCapture: async () => undefined,
+  });
+  // 桥 2：订阅回调要调的后置域动作（订阅只注册一次，必须取最新实现）。
+  const peersTap: PeersTap = useRef<(next: PeerView[]) => void>(() => undefined);
+  const groupsTap: GroupsTap = useRef<() => void>(() => undefined);
 
-  const refreshCaptureDevices = useCallback(async () => {
-    const request = ++captureRequest.current;
-    setCaptureLoading(true);
-    setCaptureError(null);
-    try {
-      const devices = await api.listCaptureDevices();
-      if (request === captureRequest.current) setCaptureDevices(devices);
-    } catch (raw) {
-      if (request === captureRequest.current) setCaptureError(toCommandError(raw));
-    } finally {
-      if (request === captureRequest.current) setCaptureLoading(false);
-    }
-  }, []);
+  const shell = useShellState(peersTap, groupsTap);
+  const settings = useSettingsState(shell.setError);
+  const broadcast = useBroadcastState(sendGate, shell.setError);
 
-  const refreshActiveCapture = useCallback(async () => {
-    const request = ++activeRequest.current;
-    try {
-      const device = await api.activeCaptureDevice();
-      if (request === activeRequest.current) setActiveCapture(device);
-    } catch (raw) {
-      if (request === activeRequest.current) setError(toCommandError(raw));
-    }
-  }, []);
+  const captureLocked = broadcast.broadcastStopping || broadcast.busyPeer !== null ||
+    shell.peers.some((peer) => peer.state === "streaming" || peer.state === "degraded");
+  const capture = useCaptureState(captureLocked, shell.setError);
 
+  // 门控镜像：必须排在自动推流 effect **之前**，这样同一个提交里推流读到的是这一帧的值。
   useEffect(() => {
-    void refreshCaptureDevices();
-    return () => { captureRequest.current += 1; activeRequest.current += 1; };
-  }, [refreshCaptureDevices]);
+    sendGate.current = {
+      canStartCapture: capture.canStartCapture,
+      selectedCaptureId: capture.selectedCaptureId,
+      refreshActiveCapture: capture.refreshActiveCapture,
+    };
+  }, [capture.canStartCapture, capture.selectedCaptureId, capture.refreshActiveCapture]);
 
+  useAutoBroadcastStart({
+    peers: shell.peers,
+    autoBroadcast: settings.autoBroadcast,
+    autoBroadcastReady: settings.autoBroadcastReady,
+    broadcastRequested: broadcast.broadcastRequested,
+    broadcastPaused: broadcast.broadcastPaused,
+    canStartCapture: capture.canStartCapture,
+    captureLocked,
+  }, broadcast.autoStart);
+
+  const groups = useGroupsState(shell.setError, shell.setNotice);
+  const alignment = useAlignmentState(shell.peers.length, shell.setError, shell.setNotice);
+  const telemetryExport = useTelemetryExport(shell.telemetryHistory, shell.setError, shell.setNotice);
+
+  // 桥 2 的镜像：两个动作都是空依赖的 useCallback，所以这个 effect 只会跑一次。
   useEffect(() => {
-    void refreshActiveCapture();
-  }, [captureLocked, refreshActiveCapture]);
-
-  useEffect(() => {
-    // M5：启动时试一次自动重连（FR-31）。静默失败是刻意的 —— 用户什么都没点，
-    // 不该在开机时弹一条「连不上」的错误横幅；连上了才给一句轻提示。
-    void api
-      .tryAutoConnect()
-      .then((peer) => {
-        if (peer !== null) {
-          setNotice(t("toast.auto_connected", { peer: peer.idShort }));
-        }
-      })
-      .catch(() => undefined);
-
-    // 自动推流开关同样存在设置文件里；读不到（老内核还没有这条命令）就保持默认开 ——
-    // 自动推流在前端执行，不该因为一个持久化读不到就静默失效。
-    const revision = preferenceRevision.current;
-    let cancelled = false;
-    void api
-      .autoBroadcastState()
-      .then((enabled) => {
-        if (!cancelled && revision === preferenceRevision.current) setAutoBroadcastState(enabled);
-      })
-      .catch(() => undefined)
-      .finally(() => { if (!cancelled) setAutoBroadcastReady(true); });
-    return () => { cancelled = true; };
-  }, []);
-
-  const refreshAlignment = useCallback(async (): Promise<void> => {
-    const next = await api.alignment().catch(() => null);
-    if (next !== null) {
-      setAlignment(next);
-    }
-  }, []);
-
-  useEffect(() => {
-    // M4 对齐快照：读数本身在引擎里**每包**更新，但界面只需要看趋势 —— 按 1 Hz 拉，
-    // 事件驱动反而会变成「每包一次 IPC」。没有对端时不空转。
-    if (peers.length === 0) {
-      setAlignment(null);
-      return;
-    }
-    void refreshAlignment();
-    const timer = window.setInterval(() => void refreshAlignment(), 1000);
-    return () => window.clearInterval(timer);
-  }, [peers.length, refreshAlignment]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let peersUpdated = false;
-    // 订阅在挂载时就绪：对端列表、遥测与同步组都靠事件推进。
-    const unsubscribe = subscribeEvents({
-      // §7 同步组变化（建组 / 成员加入退出）：顺手拉一次最新组列表。
-      // 为什么不做轮询：这是低频人工动作，事件驱动既省 IPC 也不会漏。
-      onGroupUpdated: () => {
-        void refreshGroups();
-      },
-      onPeers: (next) => {
-        peersUpdated = true;
-        // 断开或重连才重置本轮尝试；重复 idle/握手事件不能反复打开采集。
-        for (const id of autoStartedRef.current) {
-          const peer = next.find((item) => item.idShort === id);
-          if (!peer || peer.state === "failed" || (peer.reconnects ?? 0) > (reconnectsRef.current.get(id) ?? 0)) {
-            autoStartedRef.current.delete(id);
-            if (activeSendRef.current === id) activeSendRef.current = null;
-          }
-        }
-        reconnectsRef.current = new Map(next.map((peer) => [peer.idShort, peer.reconnects ?? 0]));
-        setPeers(next);
-      },
-      onTelemetry: (view) => {
-        setTelemetry(view);
-        setTelemetryHistory((current) => appendTelemetryRow(current, view));
-      },
-      onError: (raw) => setError(toCommandError(raw)),
-    });
-
-    // 首屏水合：事件流只会推"之后的变化"，不拉一次初始值卡片会是空的
-    void (async () => {
-      try {
-        const [ver, status, peerList, snapshot] = await Promise.all([
-          api.version(),
-          api.localStatus(),
-          api.listPeers(),
-          api.telemetry(),
-        ]);
-        if (cancelled) return;
-        setVersion(ver);
-        setLocal(status);
-        // 初始化请求可能晚于连接事件返回，旧快照不能抹掉刚接入的设备。
-        if (!peersUpdated) setPeers(peerList);
-        setTelemetry(snapshot);
-      } catch (raw) {
-        if (!cancelled) setError(toCommandError(raw));
-      }
-    })();
-
-    return () => { cancelled = true; unsubscribe(); };
-  }, []);
-
-  const connect = useCallback(async (addr: string): Promise<boolean> => {
-    setError(null);
-    setNotice(null);
-    setConnecting(true);
-    try {
-      const peer = await api.connect(addr);
-      setPeers((prev) => upsert(prev, peer));
-      return true;
-    } catch (raw) {
-      setError(toCommandError(raw));
-      return false;
-    } finally {
-      setConnecting(false);
-    }
-  }, []);
-
-  // 桌面外壳当前只支持一路发送。同步占位防止同一帧的自动/手动操作重复启动。
-  const requestSend = useCallback((idShort: string): Promise<void> => {
-    if (sendPendingRef.current || stopPendingRef.current || activeSendRef.current || !canStartCapture) {
-      return Promise.resolve();
-    }
-    autoStartedRef.current.add(idShort);
-    setBroadcastRequested(true);
-    setBroadcastError(null);
-    setError(null);
-    setBusyPeer(idShort);
-    const operation = (async () => {
-      try {
-        await api.startSend(idShort, selectedCaptureId === "" ? null : selectedCaptureId);
-        activeSendRef.current = idShort;
-        await refreshActiveCapture();
-      } catch (raw) {
-        setBroadcastRequested(false);
-        setBroadcastError(toCommandError(raw));
-        setError(toCommandError(raw));
-      } finally {
-        sendPendingRef.current = null;
-        setBusyPeer(null);
-      }
-    })();
-    sendPendingRef.current = operation;
-    return operation;
-  }, [canStartCapture, selectedCaptureId, refreshActiveCapture]);
-
-  const startSend = useCallback((idShort: string): Promise<void> => {
-    if (stopPendingRef.current) return stopPendingRef.current;
-    pausedRef.current = false;
-    setBroadcastPaused(false);
-    return requestSend(idShort);
-  }, [requestSend]);
-
-  const stopSend = useCallback((): Promise<void> => {
-    // 先关自动入口，再等待已经发出的 start 完成，最后 stop；慢握手不能越过用户的暂停。
-    pausedRef.current = true;
-    setBroadcastPaused(true);
-    setBroadcastRequested(false);
-    setBroadcastError(null);
-    if (stopPendingRef.current) return stopPendingRef.current;
-    setBroadcastStopping(true);
-    setError(null);
-    const operation = (async () => {
-      try {
-        await sendPendingRef.current;
-        await api.stopSend();
-        activeSendRef.current = null;
-        await refreshActiveCapture();
-      } catch (raw) {
-        // 保留暂停意图，禁止自动重启；真实对端状态仍提供再次暂停的入口。
-        setError(toCommandError(raw));
-      } finally {
-        // 停止可能已生效但回执失败；是否仍在发送以 peers 为准，不留下阻塞恢复的旧占位。
-        activeSendRef.current = null;
-        stopPendingRef.current = null;
-        setBroadcastStopping(false);
-      }
-    })();
-    stopPendingRef.current = operation;
-    return operation;
-  }, [refreshActiveCapture]);
-
-  const startBroadcast = useCallback((idShorts: string[]): void => {
-    if (stopPendingRef.current || sendPendingRef.current || activeSendRef.current) return;
-    pausedRef.current = false;
-    setBroadcastPaused(false);
-    setBroadcastRequested(true);
-    setBroadcastError(null);
-    setError(null);
-    autoStartedRef.current.clear();
-    const target = idShorts[0];
-    if (target) void requestSend(target);
-  }, [requestSend]);
-
-  const stopBroadcast = stopSend;
-
-  useEffect(() => {
-    if (!autoBroadcastReady || (!autoBroadcast && !broadcastRequested) || pausedRef.current ||
-        !canStartCapture || captureLocked || activeSendRef.current) return;
-    const target = peers.find((peer) => !peer.receiving && peer.state === "idle" &&
-      !autoStartedRef.current.has(peer.idShort));
-    if (target) void requestSend(target.idShort);
-  }, [peers, autoBroadcast, autoBroadcastReady, broadcastRequested, broadcastPaused,
-      canStartCapture, captureLocked, requestSend]);
-
-  const setAutoBroadcastEnabled = useCallback((enabled: boolean): void => {
-    preferenceRevision.current += 1;
-    setAutoBroadcastState(enabled);
-    // 自动偏好与本次暂停独立：调整设置不会意外取消暂停。
-    setAutoBroadcastBusy(true);
-    void api.setAutoBroadcast(enabled)
-      .catch((raw: unknown) => setError(toCommandError(raw)))
-      .finally(() => setAutoBroadcastBusy(false));
-  }, []);
-
-  const dismissError = useCallback(() => setError(null), []);
-  const dismissNotice = useCallback(() => setNotice(null), []);
-
-  /** 导出遥测历史：成功用 notice 报路径，失败用 error 报人话原因。 */
-  const exportTelemetryLog = useCallback(async (): Promise<void> => {
-    if (telemetryHistory.length === 0) {
-      setNotice(t("toast.no_telemetry"));
-      return;
-    }
-    setExportingTelemetry(true);
-    try {
-      const path = await api.exportTelemetry(telemetryHistory);
-      setNotice(t("toast.exported", { count: telemetryHistory.length, path }));
-    } catch (raw) {
-      setError(toCommandError(raw));
-    } finally {
-      setExportingTelemetry(false);
-    }
-  }, [telemetryHistory]);
-
-  /** §4.1：调对端音量。渐变 200 ms：拖滑块不该有咔哒声。 */
-  const setPeerGain = useCallback(async (idShort: string, gain: number): Promise<void> => {
-    try {
-      await api.setPeerGain(idShort, gain, 200);
-      setNotice(t("toast.gain", { peer: idShort, pct: Math.round(gain * 100) }));
-    } catch (raw) {
-      setError(toCommandError(raw));
-    }
-  }, []);
-
-  /** 刷新同步组列表（M3）：操作后由调用方刷新，UI 不自己缓存真相。 */
-  const refreshGroups = useCallback(async (): Promise<void> => {
-    try {
-      setGroups(await api.listGroups());
-    } catch (raw) {
-      setError(toCommandError(raw));
-    }
-  }, []);
-
-  /** 建组：把点名的对端组成临时同步组（提前量给排播留余量）。 */
-  const createGroup = useCallback(
-    async (idShorts: string[], leadMs: number): Promise<void> => {
-      if (idShorts.length === 0) {
-        setNotice(t("toast.pick_peer"));
-        return;
-      }
-      setGroupBusy(true);
-      try {
-        const groupId = await api.createGroup(idShorts, leadMs);
-        setNotice(t("toast.group_created", { id: groupId, count: idShorts.length }));
-      } catch (raw) {
-        setError(toCommandError(raw));
-      } finally {
-        await refreshGroups();
-        setGroupBusy(false);
-      }
-    },
-    [refreshGroups],
-  );
-
-  /** 成员动态加入：运行中的其它成员不受影响（§7 / FR-22）。 */
-  const joinGroup = useCallback(
-    async (idShort: string, groupId: number): Promise<void> => {
-      setGroupBusy(true);
-      try {
-        await api.joinGroup(idShort, groupId);
-        setNotice(t("toast.group_joined", { peer: idShort, id: groupId }));
-      } catch (raw) {
-        setError(toCommandError(raw));
-      } finally {
-        await refreshGroups();
-        setGroupBusy(false);
-      }
-    },
-    [refreshGroups],
-  );
-
-  /**
-   * M4：广播共同基准。接收端才是基准来源 —— 所以这个动作只在混音方按（docs/39）。
-   *
-   * 成功后 1 s 内的轮询就会把新读数带回来，这里不再手动拉一次（避免两处真相）。
-   */
-  const broadcastEpoch = useCallback(
-    async (leadMs: number): Promise<void> => {
-      setAlignmentBusy(true);
-      try {
-        const sent = await api.broadcastEpoch(leadMs);
-        setNotice(t("toast.epoch_sent", { count: sent, lead: leadMs }));
-      } catch (raw) {
-        setError(toCommandError(raw));
-      } finally {
-        await refreshAlignment();
-        setAlignmentBusy(false);
-      }
-    },
-    [refreshAlignment],
-  );
-
-  /** 成员退出：组空了引擎会自己清掉条目。 */
-  const leaveGroup = useCallback(
-    async (idShort: string, groupId: number): Promise<void> => {
-      setGroupBusy(true);
-      try {
-        await api.leaveGroup(idShort, groupId);
-        setNotice(t("toast.group_left", { peer: idShort, id: groupId }));
-      } catch (raw) {
-        setError(toCommandError(raw));
-      } finally {
-        await refreshGroups();
-        setGroupBusy(false);
-      }
-    },
-    [refreshGroups],
-  );
+    peersTap.current = broadcast.reconcilePeers;
+    groupsTap.current = groups.refreshGroups;
+  }, [broadcast.reconcilePeers, groups.refreshGroups]);
 
   return {
-    version,
-    local,
-    peers,
-    telemetry,
-    telemetryHistory,
-    groups,
-    groupBusy,
-    alignment,
-    alignmentBusy,
-    broadcastEpoch,
-    setPeerGain,
-    refreshGroups,
-    createGroup,
-    joinGroup,
-    leaveGroup,
-    exportTelemetryLog,
-    exportingTelemetry,
-    error,
-    notice,
-    connecting,
-    busyPeer,
-    captureDevices,
-    captureLoading,
-    captureError,
-    selectedCaptureId,
-    activeCapture,
+    version: shell.version,
+    local: shell.local,
+    peers: shell.peers,
+    telemetry: shell.telemetry,
+    telemetryHistory: shell.telemetryHistory,
+    groups: groups.groups,
+    groupBusy: groups.groupBusy,
+    alignment: alignment.alignment,
+    alignmentBusy: alignment.alignmentBusy,
+    broadcastEpoch: alignment.broadcastEpoch,
+    setPeerGain: shell.setPeerGain,
+    refreshGroups: groups.refreshGroups,
+    createGroup: groups.createGroup,
+    joinGroup: groups.joinGroup,
+    leaveGroup: groups.leaveGroup,
+    exportTelemetryLog: telemetryExport.exportTelemetryLog,
+    exportingTelemetry: telemetryExport.exportingTelemetry,
+    error: shell.error,
+    notice: shell.notice,
+    connecting: shell.connecting,
+    busyPeer: broadcast.busyPeer,
+    captureDevices: capture.captureDevices,
+    captureLoading: capture.captureLoading,
+    captureError: capture.captureError,
+    selectedCaptureId: capture.selectedCaptureId,
+    activeCapture: capture.activeCapture,
     captureLocked,
-    canStartCapture,
-    selectCapture: (id) => { if (!captureLocked) setSelectedCaptureId(id); },
-    refreshCaptureDevices,
-    connect,
-    startSend,
-    stopSend,
-    broadcastRequested,
-    broadcastPaused,
-    broadcastStopping,
-    broadcastError,
-    autoBroadcastReady,
-    startBroadcast,
-    stopBroadcast,
-    autoBroadcast,
-    autoBroadcastBusy,
-    setAutoBroadcast: setAutoBroadcastEnabled,
-    dismissError,
-    dismissNotice,
+    canStartCapture: capture.canStartCapture,
+    selectCapture: capture.selectCapture,
+    refreshCaptureDevices: capture.refreshCaptureDevices,
+    connect: shell.connect,
+    startSend: broadcast.startSend,
+    stopSend: broadcast.stopSend,
+    broadcastRequested: broadcast.broadcastRequested,
+    broadcastPaused: broadcast.broadcastPaused,
+    broadcastStopping: broadcast.broadcastStopping,
+    broadcastError: broadcast.broadcastError,
+    autoBroadcastReady: settings.autoBroadcastReady,
+    startBroadcast: broadcast.startBroadcast,
+    stopBroadcast: broadcast.stopBroadcast,
+    autoBroadcast: settings.autoBroadcast,
+    autoBroadcastBusy: settings.autoBroadcastBusy,
+    setAutoBroadcast: settings.setAutoBroadcast,
+    dismissError: shell.dismissError,
+    dismissNotice: shell.dismissNotice,
   };
 }

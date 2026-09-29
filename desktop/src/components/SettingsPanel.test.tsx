@@ -3,7 +3,7 @@
  *
  * mock 的是组件唯一的对外通道 `../lib/ipc`，断言的是**用户看到什么**，而不是某次调用发生没发生。
  */
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/ipc", () => ({
@@ -25,6 +25,7 @@ import { SettingsPanel } from "./SettingsPanel";
 const autostartEnabled = vi.mocked(api.autostartEnabled);
 const autoConnectState = vi.mocked(api.autoConnectState);
 const lowLatencyState = vi.mocked(api.lowLatencyState);
+const setAutostart = vi.mocked(api.setAutostart);
 const setLowLatency = vi.mocked(api.setLowLatency);
 
 /**
@@ -115,5 +116,84 @@ describe("低延迟档（M6）", () => {
       name: t("set.low_latency"),
     })) as HTMLInputElement;
     expect(toggle.disabled).toBe(true);
+  });
+});
+
+describe("落盘中的开关（按键分片，共用一个布尔的两个坑）", () => {
+  it("切一个开关时另外两个照常可点（不再一起变灰）", async () => {
+    let settle: (value: null) => void = () => undefined;
+    setAutostart.mockReturnValue(
+      new Promise<null>((resolve) => {
+        settle = resolve;
+      }),
+    );
+    panel();
+
+    const autostart = (await screen.findByRole("checkbox", {
+      name: t("set.autostart"),
+    })) as HTMLInputElement;
+    await waitFor(() => expect(autostart.disabled).toBe(false));
+
+    fireEvent.click(autostart);
+    await waitFor(() => expect(autostart.disabled).toBe(true));
+
+    // 改坏：改回共用一个 `busy` 布尔 → 下面两个也会跟着禁用，用户以为界面卡了。
+    const lowLatency = screen.getByRole("checkbox", {
+      name: t("set.low_latency"),
+    }) as HTMLInputElement;
+    const autoBroadcast = screen.getByRole("checkbox", {
+      name: t("set.auto_broadcast"),
+    }) as HTMLInputElement;
+    expect(lowLatency.disabled).toBe(false);
+    expect(autoBroadcast.disabled).toBe(false);
+
+    await act(async () => {
+      settle(null);
+    });
+    await waitFor(() => expect(autostart.disabled).toBe(false));
+  });
+
+  it("并发落盘：A 返回不会解锁还在飞的 B（提前解锁）", async () => {
+    // 改坏：`finally(() => setBusy(false))` 共用一个布尔 → A 一回来就把标志清掉，
+    // B 还在飞、界面却已经解锁，用户能对着一个未落盘的开关再点一次。
+    let settleAutostart: (value: null) => void = () => undefined;
+    let settleLowLatency: (value: null) => void = () => undefined;
+    setAutostart.mockReturnValue(
+      new Promise<null>((resolve) => {
+        settleAutostart = resolve;
+      }),
+    );
+    setLowLatency.mockReturnValue(
+      new Promise<null>((resolve) => {
+        settleLowLatency = resolve;
+      }),
+    );
+    panel();
+
+    const autostart = (await screen.findByRole("checkbox", {
+      name: t("set.autostart"),
+    })) as HTMLInputElement;
+    const lowLatency = (await screen.findByRole("checkbox", {
+      name: t("set.low_latency"),
+    })) as HTMLInputElement;
+    await waitFor(() => expect(autostart.disabled).toBe(false));
+    await waitFor(() => expect(lowLatency.disabled).toBe(false));
+
+    fireEvent.click(autostart);
+    fireEvent.click(lowLatency);
+    await waitFor(() => expect(autostart.disabled).toBe(true));
+    expect(lowLatency.disabled).toBe(true);
+
+    // 先回来的只该解锁它自己
+    await act(async () => {
+      settleAutostart(null);
+    });
+    await waitFor(() => expect(autostart.disabled).toBe(false));
+    expect(lowLatency.disabled).toBe(true);
+
+    await act(async () => {
+      settleLowLatency(null);
+    });
+    await waitFor(() => expect(lowLatency.disabled).toBe(false));
   });
 });

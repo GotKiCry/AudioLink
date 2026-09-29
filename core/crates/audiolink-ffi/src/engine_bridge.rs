@@ -158,6 +158,12 @@ pub struct PeerView {
     /// 是听感发闷/断续而遥测全绿，只看 `telemetry.frame_ms`（那是本端**本地**档位）看不出来。
     /// 两者不等，就是「本端跟随了对端的帧长」的证据。
     pub negotiated_frame_ms: Option<u8>,
+    /// 本机播放线程错过的节拍数；仅统计本端，不来自对端反馈。
+    pub schedule_slips: u32,
+    /// 本机待播队列满时拒收的帧数。
+    pub queue_rejects: u32,
+    /// 本机播放游标逐拍越过序号缺口的次数。
+    pub cursor_catchups: u32,
 }
 
 /// 遥测快照（`telemetry()`；字段尽可能对齐桌面契约 §6 的 `TelemetryView`）。
@@ -415,6 +421,7 @@ fn peer_view(engine: &Engine, status: PeerStatus) -> PeerView {
     // 协商帧长**不在** `PeerStatus` 里（加公开字段会让外部结构体字面量编译失败），
     // 所以在这里按 peer 查一次 —— 这一跳正是「有没有真的传到外壳」的边界。
     let negotiated_frame_ms = engine.negotiated_frame_ms(status.id);
+    let breakdown = engine.underrun_breakdown(status.id).unwrap_or_default();
     PeerView {
         id_short: status.id.short(),
         id_hex: status.id.to_hex(),
@@ -423,6 +430,9 @@ fn peer_view(engine: &Engine, status: PeerStatus) -> PeerView {
         state: status.state.name().to_string(),
         telemetry: TelemetryView::from_stats(&status.stats, 1),
         negotiated_frame_ms,
+        schedule_slips: breakdown.schedule_slips,
+        queue_rejects: breakdown.queue_rejects,
+        cursor_catchups: breakdown.cursor_catchups,
     }
 }
 

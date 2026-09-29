@@ -9,7 +9,6 @@ import { describe, expect, it } from "vitest";
 
 import { t } from "./i18n";
 import {
-  PEER_STATE_STYLE,
   bpsToKbps,
   peerStateLabel,
   telemetryRowOf,
@@ -111,7 +110,7 @@ describe("telemetryRowOf（CSV 导出行的形状）", () => {
   });
 });
 
-describe("状态文案与样式表（UI 规格 §5：不允许只靠颜色传达状态）", () => {
+describe("状态文案（UI 规格 §5：不允许只靠颜色传达状态）", () => {
   const states: PeerState[] = ["idle", "handshaking", "streaming", "degraded", "failed"];
 
   it("每个状态都有非空文案，且不是把 i18n 键名当文案显示", () => {
@@ -122,15 +121,5 @@ describe("状态文案与样式表（UI 规格 §5：不允许只靠颜色传达
       expect(label.length).toBeGreaterThan(0);
       expect(label).not.toContain("state.");
     }
-  });
-
-  it("每个状态都有非空图标（色觉障碍用户也要能分辨状态）", () => {
-    for (const state of states) {
-      expect(PEER_STATE_STYLE[state].icon.trim().length).toBeGreaterThan(0);
-    }
-  });
-
-  it("样式表覆盖全部状态（漏一个 → `undefined` 会被拼进 className）", () => {
-    expect(Object.keys(PEER_STATE_STYLE).sort()).toEqual([...states].sort());
   });
 });

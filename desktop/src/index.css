@@ -76,6 +76,12 @@
   --al-global-ease-standard: cubic-bezier(0.33, 0, 0.67, 1);
   --al-global-ease-decelerate: cubic-bezier(0.1, 0.9, 0.2, 1);
   --al-global-ease-accelerate: cubic-bezier(0.9, 0.1, 1, 0.2);
+  /* 控件槽位高度五档：按钮尺寸档与取色器槽位共用（.al-btn-* 的契约高度） */
+  --al-global-slot-xs: 20px;
+  --al-global-slot-sm: 24px;
+  --al-global-slot-md: 28px;
+  --al-global-slot-lg: 32px;
+  --al-global-slot-xl: 36px;
   /* 选择项底色（原生下拉需要不透明底） */
   --al-global-option-dark: #2b2d34;
   --al-global-option-light: #ffffff;
@@ -123,7 +129,7 @@
   --al-surface-sunken: var(--al-global-grey-10);
   --al-surface-layer: rgba(58, 58, 58, 0.298);        /* LayerFillColorDefault */
   --al-surface-control: rgba(255, 255, 255, 0.0605);  /* ControlFillColorDefault */
-  --al-surface-control-hover: rgba(255, 255, 255, 0.0832);
+  --al-surface-control-hover: rgba(255, 255, 255, 0.12);   /* 与 --al-ctrl-fill-hover 同值：同一语义 */
   --al-surface-control-pressed: rgba(255, 255, 255, 0.0326);
   --al-surface-control-disabled: rgba(255, 255, 255, 0.0419);
   --al-surface-subtle-hover: rgba(255, 255, 255, 0.0605);
@@ -154,9 +160,14 @@
   --al-stroke-focus-outer: var(--al-global-white);
   --al-stroke-focus-inner: rgba(0, 0, 0, 0.702);
 
-  /* 控件填充（按钮 standard / subtle 的三态） */
+  /* 控件填充（按钮 standard / subtle 的三态）
+     hover 刻意不用官方 ControlFillColorSecondary(0.0832)：实测悬停「复制地址」前后
+     仅 162 px 越阈值（Δα 0.023 ≈ 合成后 ΔRGB 5，changedPct 0.019%，见 2026-09 审查 §二.2）。
+     0.12 → Δα 0.0595，在深色按钮底（合成后 ≈ RGB 38）上 ΔRGB ≈ 13，可明确感知；
+     与 subtle 档「0 → 0.0605」的幅度对齐，两类按钮 hover 强度一致。
+     浅色主题 Δα 0.22（合成后 ≈ ΔRGB 14），本就明显，维持原值。 */
   --al-ctrl-fill: rgba(255, 255, 255, 0.0605);
-  --al-ctrl-fill-hover: rgba(255, 255, 255, 0.0832);
+  --al-ctrl-fill-hover: rgba(255, 255, 255, 0.12);
   --al-ctrl-fill-pressed: rgba(255, 255, 255, 0.0326);
   --al-ctrl-fill-disabled: rgba(255, 255, 255, 0.0419);
 
@@ -166,6 +177,7 @@
   --al-accent-pressed: var(--al-global-accent-pressed);
   --al-accent-on: var(--al-text-on-accent);
   --al-accent-disabled: rgba(255, 255, 255, 0.1581);
+  --al-accent-edge: rgba(0, 0, 0, 0.14);   /* 实心 accent 按钮的底边加深；两主题同值，故只在 :root 声明 */
   --al-accent-glow: rgba(76, 194, 255, 0.40);
   --al-accent-halo: rgba(76, 194, 255, 0.16);
   --al-ambient: rgba(76, 194, 255, 0.075);
@@ -233,8 +245,15 @@
   --al-surface-control-hover: rgba(255, 255, 255, 0.84);
   --al-surface-control-pressed: rgba(255, 255, 255, 0.50);
   --al-surface-control-disabled: rgba(0, 0, 0, 0.0373);
-  --al-surface-subtle-hover: rgba(0, 0, 0, 0.0373);
-  --al-surface-subtle-pressed: rgba(0, 0, 0, 0.0698);
+  /* subtle hover：旧值 0.0373 在浅色玻璃上只合成 ΔRGB≈8，比深色档（0.0605 → ΔRGB≈13）
+     弱一档 —— segmented 与图标键因此几乎看不出指针落在哪。提到 0.0605（与深色同 α，
+     只是方向相反）：在实测背景 RGB(190,214,244) 上合成 ΔRGB≈(11.5, 12.9, 14.8)，两主题对齐。
+     按下必须与悬停**可分**：0.0698 时与 hover 只差 Δ0.0093（ΔRGB≈2），等于把「看不见」换成
+     「分不清」。0.12 让 hover→pressed 的 ΔRGB≈12.8，与 standard 按钮（浅色 0.84→0.50 白，
+     ΔRGB≈12.3）同节奏。深色主题 pressed 比 hover 更暗（0.0605→0.0390）是 Fluent 的
+     「按压回落」语义、与官方 ControlFillColorTertiary(0.0326) 同谱系，方向一致，不做对称调整。 */
+  --al-surface-subtle-hover: rgba(0, 0, 0, 0.0605);
+  --al-surface-subtle-pressed: rgba(0, 0, 0, 0.12);
   --al-surface-input-active: var(--al-global-white);
   --al-surface-smoke: rgba(0, 0, 0, 0.302);
 
@@ -246,8 +265,20 @@
   --al-option-bg: var(--al-global-option-light);
 
   --al-text-primary: #1b1b1b;
-  --al-text-secondary: #5d5d63;
-  --al-text-tertiary: #616166;
+  /* 浅色主题的字落在「彩色壁纸 + 半透明玻璃」上，不是白底，而且**字越小越吃亏**：
+     12px 小字在实测口径（区域 P5/P95）下 P5 像素只有约 76% 覆盖率
+     （反解自「这台电脑」：令牌 (74,74,82) 的 P5 落在 (110,111,117)），14px 正文稀释小得多，
+     所以不能只看「对纯白的理论值」。
+     实测背景：主区 RGB(190,214,244)、侧栏 RGB(222,227,234)~RGB(227,242,255)。
+     现值对最不利的侧栏 12px 小字：secondary 5.24:1、tertiary 4.77:1（P5 口径）；
+     对纯白 #313138 12.91:1 / #383840 11.62:1，对主区背景 8.67 / 7.81:1。
+     ⚠️ tertiary 必须比 secondary 浅（L 更大）：只压 tertiary 会让层级反转，
+        所以这两档只能一起走，并保持约 7 的色差。
+     ⚠️ 提高 --al-chrome-fill 不透明度解决不了它：反解壁纸 RGB(168,181,200) 后测算，
+        alpha 提到 1.00（完全不透明、牺牲红线 4）旧 tertiary 也只有 4.61:1，0.75 只有 4.16:1。
+     ⚠️ 壁纸可由用户自配，以上对比度只对默认壁纸成立。 */
+  --al-text-secondary: #313138;
+  --al-text-tertiary: #383840;
   --al-text-disabled: rgba(0, 0, 0, 0.3614);
   --al-text-on-accent: #ffffff;
 
@@ -465,12 +496,6 @@
 
   /* 读数、指纹、地址：等宽 + 定宽数字，刷新时不跳 */
   .num { font-family: var(--al-font-num); font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
-
-  /* type ramp 组件类（字号只取 12 / 14 / 20 / 28） */
-  .t-cap   { font-size: 12px; line-height: 16px; }
-  .t-body  { font-size: 14px; line-height: 20px; }
-  .t-lead  { font-size: 14px; line-height: 20px; }
-  .t-title { font-size: 20px; line-height: 28px; font-weight: 600; }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -522,7 +547,6 @@
     backdrop-filter: blur(32px) saturate(150%);
   }
   .al-chrome-b { border-bottom: 1px solid var(--al-chrome-line); }
-  .al-chrome-r { border-right: 1px solid var(--al-chrome-line); }
   .al-chrome-t { border-top: 1px solid var(--al-chrome-line); }
 
   /* 内容区：一处极淡的 accent 环境光（右上角），只做氛围，不做装饰色块 */
@@ -578,14 +602,10 @@
   /* 红线 3 · 玻璃不许嵌套：chrome（侧栏 / 工具栏）与实色面内部的卡片不再自建
      backdrop —— 父层已经在做模糊，子层再糊一次是双层 backdrop-filter，模糊两次
      且语义混乱。层次改由「填充 + 描边」表达（这两层填充本来就在）。 */
-  .al-chrome .al-card,
-  .al-flat .al-card {
+  .al-chrome .al-card {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
-
-  /* 连续卡片组成的列表：相邻卡片不重复描边 */
-  .al-card + .al-card { margin-top: 0; }
 
   /* ── 下沉槽：输入框 / 下拉 / 读数窗 / 列表底 ────────────────────────────── */
   .al-well {
@@ -639,6 +659,22 @@
   .al-btn:active:not(:disabled) { background-color: var(--al-ctrl-fill-pressed); }
   .al-btn:disabled { cursor: default; background-color: var(--al-ctrl-fill-disabled); border-color: var(--al-stroke-control); color: var(--al-text-disabled); box-shadow: none; }
 
+  /* ── 按钮尺寸档：xs 20 / sm 24 / md 28 / lg 32 / xl 36 ──────────────────────
+     这五个类名与五档高度是**跨文件契约**（组件按它们替换手写的 h-* / px-* / text-*），
+     不要改名、不要调高度。只负责尺寸，不碰颜色 / 描边 / focus / disabled 行为，
+     因此必须与 .al-btn 及其变体（-subtle / -accent / -danger）组合使用。
+     ⚠️ 替换时要把原来的 h-* / px-* / text-* 工具类一并删掉：Tailwind 的 utilities 层
+     优先级高于本层（components），留着工具类会盖掉这里的尺寸。
+     归档对照：h-5→xs、h-6→sm、h-7→md、h-8→lg、h-9→xl。
+     ⏳ 例外：**两处** h-10（40px）—— Sidebar.tsx 的侧栏主行动键、CaptureSourcePanel.tsx 的刷新键。
+        不造第 6 档的理由：前者是侧栏最重要的动作，缩到 36px 属可见的设计改动，不值得为「归档完整」而改它。
+        （2026-09-23 更正：原注释写「仅此一处」，实为两处 —— 由重构队友替换时发现并上报。） */
+  .al-btn-xs { height: var(--al-global-slot-xs); padding: 0 6px;  font-size: var(--text-caption); line-height: 16px; }
+  .al-btn-sm { height: var(--al-global-slot-sm); padding: 0 8px;  font-size: var(--text-caption); line-height: 16px; }
+  .al-btn-md { height: var(--al-global-slot-md); padding: 0 10px; font-size: var(--text-caption); line-height: 16px; }
+  .al-btn-lg { height: var(--al-global-slot-lg); padding: 0 12px; font-size: var(--text-body);    line-height: 20px; }
+  .al-btn-xl { height: var(--al-global-slot-xl); padding: 0 16px; font-size: var(--text-body);    line-height: 20px; }
+
   /* subtle：默认透明，hover 才有填充（图标键 / 行内动作） */
   .al-btn-subtle { background-color: transparent; border-color: transparent; }
   .al-btn-subtle:hover:not(:disabled) { background-color: var(--al-surface-subtle-hover); border-color: transparent; }
@@ -648,7 +684,7 @@
   .al-btn-accent {
     background-color: var(--al-accent);
     border-color: transparent;
-    border-bottom-color: rgba(0, 0, 0, 0.14);
+    border-bottom-color: var(--al-accent-edge);
     color: var(--al-accent-on);
     font-weight: 600;
     box-shadow: 0 0 0 1px var(--al-accent-halo), 0 4px 14px -4px var(--al-accent-glow);
@@ -777,7 +813,10 @@
   .al-pop-title { margin: 0 0 8px; color: var(--al-text-secondary); font-weight: 600; }
   .al-pop-label { margin: 0 0 4px; color: var(--al-text-secondary); }
 
-  /* ── 对话框：遮罩用 Smoke 纯色（不用 blur），主体用浮层材质 ────────────── */
+  /* ── 对话框：遮罩用 Smoke 纯色（不用 blur），主体用浮层材质 ──────────────
+     ⚠️ 全仓零引用（2026-09 审查 §四），但**刻意保留**：它是唯一表达「模态遮罩 +
+     Acrylic 主体」的样式，且文件末尾 prefers-reduced-transparency 降级块已与
+     .al-dialog 耦合（删它要同时改降级块）。若 M1 结束仍无模态，再两处一起删。 */
   .al-scrim {
     position: fixed;
     inset: 0;
@@ -807,25 +846,7 @@
     line-height: 36px;
     font-weight: 600;
   }
-  /* 分组标签：12/16、Semibold、次要文字（不是全大写，也不是斜体） */
-  .silk    { font-size: 12px; line-height: 16px; font-weight: 600; color: var(--al-text-secondary); }
-  .silk-sm { font-size: 12px; line-height: 16px; font-weight: 600; color: var(--al-text-tertiary); }
-
-  /* ── 面板内的读数网格（遥测）───────────────────────────────────────────── */
-  .al-grid-metric { border-top: 1px solid var(--al-stroke-divider); border-left: 1px solid var(--al-stroke-divider); }
-
-  /* ── 标签 / 徽标：pill 白名单（标签、开关轨道、滑块轨道、头像）──────────── */
-  .al-tag {
-    display: inline-flex;
-    align-items: center;
-    padding: 1px 8px 2px;
-    border: 1px solid var(--al-stroke-control);
-    border-radius: 9999px;
-    background-color: var(--al-ctrl-fill);
-    color: var(--al-text-secondary);
-  }
-
-  /* ── 色块（背景浮层的预设 / 取色器）：32px 槽位，2px 圆角 ──────────────── */
+  /* ── 色块（背景浮层的预设 / 取色器）：预设 24px（组件侧 h-6 w-6），取色器 32px ── */
   .al-swatch {
     flex: none;
     padding: 0;
@@ -840,10 +861,10 @@
   .al-swatch:hover { border-color: var(--al-stroke-control-strong); }
   .al-swatch[aria-pressed="true"] { border-color: transparent; box-shadow: 0 0 0 2px var(--al-accent); }
 
-  /* 取色器：32px 方形槽位（原生 input[type=color] 的外观在 WebView2 里各版本不一致） */
-  input[type="color"].al-swatch-color { width: 32px; height: 32px; }
+  /* 取色器：与按钮 lg 档同高的方形槽位（原生 input[type=color] 在 WebView2 里各版本外观不一致） */
+  input[type="color"].al-swatch-color { width: var(--al-global-slot-lg); height: var(--al-global-slot-lg); }
   input[type="color"].al-swatch-color::-webkit-color-swatch-wrapper { padding: 3px; }
-  input[type="color"].al-swatch-color::-webkit-color-swatch { border: 0; border-radius: 2px; }
+  input[type="color"].al-swatch-color::-webkit-color-swatch { border: 0; border-radius: var(--al-radius-small); }
 
   /* 预设色块：三个颜色是**数据**（lib/background.ts），由组件注入自定义属性，
      组合规则仍然写在样式表里 —— 组件里不出现裸色值。 */

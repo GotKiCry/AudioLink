@@ -88,3 +88,33 @@ it("refresh can recover a failed discovery scan", async () => {
   await screen.findByText("Studio");
   expect(scan).toHaveBeenLastCalledWith(true);
 });
+
+it("所在折叠区收起（active=false）时停轮询，但已发现的主机留着", async () => {
+  // 折叠区改成「内容始终挂载」之后，收起 **不等于** 卸载：列表与刷新状态都要留着
+  // （每次展开都归零正是这次要修的那件事）。但轮询必须停 —— 收起时没人看这份列表，
+  // 每次轮询都会 setHosts 一个新数组，白跑一轮就是白重渲染一次。
+  // 这条把两半一起钉住：收起期间零调用，展开后同一份列表还在。
+  vi.useFakeTimers();
+  const scan = vi.mocked(api.discoveredHosts);
+  const { rerender } = render(
+    <DiscoveredHosts connecting={false} connectedIds={[]} active={false} onConnect={vi.fn()} />,
+  );
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+  expect(scan).not.toHaveBeenCalled();
+
+  rerender(<DiscoveredHosts connecting={false} connectedIds={[]} active onConnect={vi.fn()} />);
+  await act(async () => {});
+  expect(scan).toHaveBeenCalledTimes(1);
+  expect(screen.getByText("Studio")).toBeTruthy();
+
+  rerender(<DiscoveredHosts connecting={false} connectedIds={[]} active={false} onConnect={vi.fn()} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+  expect(scan).toHaveBeenCalledTimes(1);
+
+  // 再展开：列表还在（不是重头开始），轮询重新起步
+  rerender(<DiscoveredHosts connecting={false} connectedIds={[]} active onConnect={vi.fn()} />);
+  await act(async () => {});
+  expect(scan).toHaveBeenCalledTimes(2);
+  expect(screen.getByText("Studio")).toBeTruthy();
+});

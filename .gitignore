@@ -62,6 +62,7 @@ logs/
 # 设计规范与可运行样张在 docs/design/ 下 —— 那些是长期资产，要入库。
 .impeccable/
 .tmp-shots/
+.ui-lab/
 
 # ---------- IDE / OS ----------
 .vscode/

@@ -14,14 +14,14 @@ import { LOCALES, currentLocale, detectLocale, setLocale, t, useLocale } from ".
 
 describe("t 的占位符语义", () => {
   it("缺变量时把占位符原样留在文案里（绝不显示 undefined）", () => {
-    // 改坏：把 hasOwnProperty 判断删掉 → 中文用户看到「本机「undefined」」这种整句崩坏。
+    // 改坏：把 hasOwnProperty 判断删掉 → 中文用户看到「将采集：undefined」这种整句崩坏。
     setLocale("zh-CN");
-    expect(t("status.local")).toContain("{name}");
-    expect(t("status.local", {})).toContain("{name}");
-    expect(t("status.local", {})).not.toContain("undefined");
+    expect(t("cap.selected")).toContain("{name}");
+    expect(t("cap.selected", {})).toContain("{name}");
+    expect(t("cap.selected", {})).not.toContain("undefined");
 
     setLocale("en-US");
-    expect(t("status.local", {})).toContain("{name}");
+    expect(t("cap.selected", {})).toContain("{name}");
   });
 
   it("给全变量时替换干净（结果里不残留花括号）", () => {

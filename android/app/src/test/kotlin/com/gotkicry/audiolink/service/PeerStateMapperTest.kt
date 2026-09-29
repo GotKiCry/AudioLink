@@ -29,6 +29,9 @@ class PeerStateMapperTest {
                     lossPct = 1.5,
                     rttUs = 3_000L,
                     negotiatedFrameMs = 10,
+                    scheduleSlips = 7L,
+                    queueRejects = 2L,
+                    cursorCatchups = 3L,
                 ),
             ),
         ).single()
@@ -38,6 +41,9 @@ class PeerStateMapperTest {
         assertEquals(192_000L, peer.bitrateBps)
         assertEquals(1.5, peer.lossPct, 0.0)
         assertEquals("协商帧长也要跟着过来（诊断行靠它）", 10, peer.negotiatedFrameMs)
+        assertEquals(7L, peer.scheduleSlips)
+        assertEquals(2L, peer.queueRejects)
+        assertEquals(3L, peer.cursorCatchups)
     }
 
     @Test

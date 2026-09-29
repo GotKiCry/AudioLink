@@ -66,7 +66,7 @@ export function HostAddressCard({ local }: { local: LocalStatus | null }) {
           </span>
           <button type="button" onClick={() => void copy()} disabled={!ready}
             title={ready ? undefined : t("host.addr_missing")}
-            className="al-btn h-8 gap-1.5 px-3 text-caption">
+            className="al-btn al-btn-lg gap-1.5">
             <IconLink className="h-3.5 w-3.5" />
             {copied && ready ? t("host.copied") : t("host.copy")}
           </button>

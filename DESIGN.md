@@ -360,7 +360,7 @@ AudioLink 把任意节点的声音低延迟、可同步地推给局域网内的�
 |---|---|
 | 材质 | z0–z4 五层已在 `desktop/src/index.css` 实现：`z0 .al-desktop`（用户可配背景）、`z1 .al-mica`（blur 60）、`z2 .al-chrome`（blur 32）、`z3 .al-card`（blur 16 + veil）、`z4 .al-pop`（blur 40）。各层不透明度取本文件上文「材质填充」表的最终值 |
 | 令牌命名 | 两层：`--al-global-*`（原始值）→ `--al-*`（语义 alias），`@theme` 暴露 `--color-*` / `--radius-*` / `--text-*` / `--ease-fluent`，组件只写语义工具类（`bg-surface-card` / `text-text-secondary` / `border-stroke-control` / `rounded-control` / `text-body`） |
-| 玻璃嵌套 | `.al-chrome .al-card` 与 `.al-flat .al-card` 的 `backdrop-filter: none`：侧栏 / 工具栏 / 抽屉内的卡片只留填充与描边。实证：`aside .al-card` 计算值 `none`，`main .al-card` 为 `blur(16px) saturate(1.4)` |
+| 玻璃嵌套 | `.al-chrome .al-card` 的 `backdrop-filter: none`：侧栏 / 工具栏 / 抽屉内的卡片只留填充与描边。实证：`aside .al-card` 计算值 `none`，`main .al-card` 为 `blur(16px) saturate(1.4)`（2026-09-23 更正：原并列的 `.al-flat .al-card` 全仓零引用、选择器永不匹配，已随死样式清理删除） |
 | 浮层 | `BackgroundPanel` 走 `createPortal(document.body)` + 焦点转移（打开聚焦首个可聚焦元素、关闭归还触发按钮、Esc 关闭）。实证：浮层祖先链上带 backdrop-filter 的元素**只有它自己** |
 | 页面标题 | `.al-page-title` = 28 / 36 / 600（Title 档） |
 | 状态灯 idle | 独立 `--al-idle`（深 #9A9BA3 / 浅 #82838C），`.al-lamp[data-on]` 四态各有 halo + glow |

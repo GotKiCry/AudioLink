@@ -28,7 +28,7 @@ export function StatusStrip({ status, telemetry, streamingCount, telemetryOpen, 
       ) : null}
       <button type="button" onClick={onToggleTelemetry} aria-expanded={telemetryOpen}
         aria-controls="telemetry-panel" aria-label={toggleLabel} title={toggleLabel}
-        className="al-btn ml-auto h-8 gap-1.5 px-2.5 text-caption">
+        className="al-btn al-btn-lg ml-auto gap-1.5">
         {t("status.telemetry", { arrow: "" }).trim()}
         <IconChevron className={`h-3.5 w-3.5 transition-transform duration-200 ${telemetryOpen ? "rotate-180" : ""}`} />
       </button>

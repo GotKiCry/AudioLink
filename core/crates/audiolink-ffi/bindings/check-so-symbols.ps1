@@ -34,7 +34,15 @@ if (-not (Test-Path $kt)) { throw "找不到生成的绑定：$kt（先按 READM
 
 $failed = @()
 
-# ---- ① 绑定是否与**当前源码**同步：用当前源码编库 → 生成到临时目录 → 与入库的 .kt 逐字节比对 ----
+# ---- ① 绑定是否与**当前源码**同步：用当前源码编库 → 生成到临时目录 → 比对规范化文本 ----
+# 本地没有 ktlint 时 UniFFI 模板会留下行尾空格和末尾空行；它们不影响绑定语义。
+function Read-NormalizedBinding([string]$path) {
+    $content = [System.IO.File]::ReadAllText($path)
+    $content = $content.Replace("`r`n", "`n")
+    $content = [regex]::Replace($content, '(?m)[ \t]+$', '')
+    return $content.TrimEnd("`n") + "`n"
+}
+
 Write-Host "── ① 绑定 ↔ 当前源码 ──"
 if ($SkipSourceSync) {
     Write-Host "  已跳过（-SkipSourceSync）" -ForegroundColor DarkGray
@@ -49,13 +57,13 @@ if ($SkipSourceSync) {
             --out-dir $tmp --config core/crates/audiolink-ffi/uniffi.toml --no-format 2>&1 | Out-Null
         $fresh = Join-Path $tmp "com\gotkicry\audiolink\core\audiolink_ffi.kt"
         if (-not (Test-Path $fresh)) { throw "生成物没出现在临时目录：$fresh" }
-        $a = (Get-FileHash $kt).Hash
-        $b = (Get-FileHash $fresh).Hash
+        $a = Read-NormalizedBinding $kt
+        $b = Read-NormalizedBinding $fresh
         if ($a -ne $b) {
             Write-Host "  入库的绑定与当前源码**不同源**（请重新生成：见 README「重新生成」）" -ForegroundColor Red
             $failed += 'bindings 落后于源码'
         } else {
-            Write-Host "  入库的绑定与当前源码逐字节一致  OK" -ForegroundColor Green
+            Write-Host "  入库的绑定与当前源码一致（忽略模板尾部空白）  OK" -ForegroundColor Green
         }
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     } finally { Pop-Location }

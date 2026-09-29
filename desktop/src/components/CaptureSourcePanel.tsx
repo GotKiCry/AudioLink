@@ -16,7 +16,7 @@ interface CaptureSourcePanelProps {
 /**
  * 采集源面板 —— 本机总线上的输入端。
  *
- * 布局按**本机总线侧栏**（约 300px 宽）重排：原来是"标题在左、控件在右"的横向两栏，
+ * 布局按**本机总线侧栏**（276px，见 `.al-sidebar` 的 width）重排：原来是"标题在左、控件在右"的横向两栏，
  * 在窄列里会挤成一行两三个字，所以改成纵向堆叠，控件撑满整列。
  */
 export function CaptureSourcePanel({ devices, selectedId, active, loading, locked, error, onSelect, onRefresh }: CaptureSourcePanelProps) {
@@ -54,8 +54,10 @@ export function CaptureSourcePanel({ devices, selectedId, active, loading, locke
             </option>
           ))}
         </select>
-        {/* 侧栏只有 280px：文字按钮会把下拉框挤到读不出设备名，所以做成图标键，
-            可访问名与 title 仍然是那句完整的「刷新设备」。 */}
+        {/* 侧栏只有 276px：文字按钮会把下拉框挤到读不出设备名，所以做成图标键，
+            可访问名与 title 仍然是那句完整的「刷新设备」。
+            这个键是 40px 见方，**不套 .al-btn-* 档位**：五档（20/24/28/32/36）
+            里没有第 6 档，index.css 那边明确留待设计确认，此处原样保留 h-10 w-10。 */}
         <button
           type="button"
           onClick={() => void onRefresh()}

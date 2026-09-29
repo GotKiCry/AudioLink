@@ -31,7 +31,7 @@ export function AppearanceSwitcher({ mode, onCycle }: AppearanceSwitcherProps) {
       onClick={onCycle}
       aria-label={t("appearance.theme", { mode: label })}
       title={t("appearance.theme", { mode: label })}
-      className="al-btn h-8 w-8"
+      className="al-btn al-btn-lg w-8"
     >
       <Icon className="h-4 w-4" />
     </button>

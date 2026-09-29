@@ -7,7 +7,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import type { PeerView } from "../types";
+import { peerStateLabel, type PeerState, type PeerView } from "../types";
 import { t } from "../i18n";
 import { PeerCard } from "./PeerCard";
 
@@ -165,5 +165,33 @@ describe("协商帧长（帧长联动的直接读数）", () => {
     card({ receiving: true, quality });
 
     expect(screen.getByText("—")).toBeTruthy();
+  });
+});
+
+describe("状态不只靠颜色传达（UI 规格 §5）", () => {
+  const states: PeerState[] = ["idle", "handshaking", "streaming", "degraded", "failed"];
+
+  it.each(states)("%s：状态行同时给出图标与文案", (state) => {
+    // 这条接住原先挂在 `types.ts` 的 PEER_STATE_STYLE 上的那两条保障（那张表已删：它与
+    // 这里的 STATE_VISUAL 是同一件事的两份写法，还用 "○◌▶!×" 冒充图标）。
+    // 保障转移到**真正渲染状态的地方**：色觉障碍用户靠图标 + 文字分辨状态，
+    // 缺任何一半，这张卡就只剩颜色在说话。
+    const { container } = render(
+      <PeerCard
+        peer={peer({ state })}
+        busy={false}
+        canStart
+        onStart={vi.fn(async () => undefined)}
+        onStop={vi.fn(async () => undefined)}
+        onGain={vi.fn()}
+      />,
+    );
+    const label = peerStateLabel(state);
+
+    expect(label.length).toBeGreaterThan(0);
+    expect(label).not.toContain("state.");
+    expect(container.textContent).toContain(label);
+    // 图标是 SVG，不是 Unicode 符号（icons.tsx 纪律 1）
+    expect(screen.getByText(label).closest("span")?.querySelector("svg")).not.toBeNull();
   });
 });

@@ -44,6 +44,7 @@ fn deliver_reorder_batch(
         total.lost = total.lost.saturating_add(report.lost);
         total.plc = total.plc.saturating_add(report.plc);
         total.late_drops = total.late_drops.saturating_add(report.late_drops);
+        total.queue_rejects = total.queue_rejects.saturating_add(report.queue_rejects);
     }
     total
 }
@@ -112,6 +113,11 @@ fn missing_tick_advances_cursor_and_late_frame_is_never_played() {
         DueFrame::Missing
     ));
     assert_eq!(expected, Some(8));
+    assert_eq!(
+        stats.lock().unwrap().underrun_breakdown().cursor_catchups,
+        1,
+        "C 线：队头帧超前游标一拍，记一次游标追赶（docs/73 §2）"
+    );
     assert!(matches!(
         take_due_frame(&rx, &mut pending, &mut expected, &stats),
         DueFrame::Ready(PlaybackFrame { seq: 8, .. })
@@ -122,6 +128,62 @@ fn missing_tick_advances_cursor_and_late_frame_is_never_played() {
     ));
     assert_eq!(expected, Some(10));
     assert_eq!(stats.lock().unwrap().snapshot().late_drops, 1);
+}
+
+#[test]
+fn full_queue_rejection_recovers_at_the_next_accepted_frame() {
+    let (tx, rx) = crossbeam_channel::bounded(2);
+    let stats = telemetry();
+    let rejected = AtomicU64::new(0);
+    let mut pending = None;
+    let mut expected = Some(0);
+
+    tx.send(frame(0)).unwrap();
+    tx.send(frame(1)).unwrap();
+    let lost = frame(2);
+    assert!(tx.try_send(lost).is_err());
+    note_rejected_seq(&rejected, 2);
+    note_rejected_seq(&rejected, 4);
+    assert_eq!(rejected.load(Ordering::Relaxed) as u32, 2);
+    for seq in 0..2 {
+        assert!(matches!(
+            take_due_frame_after_reject(&rx, &mut pending, &mut expected, &stats, Some(&rejected)),
+            DueFrame::Ready(PlaybackFrame { seq: played, .. }) if played == seq
+        ));
+    }
+    tx.send(frame(3)).unwrap();
+    assert!(matches!(
+        take_due_frame_after_reject(&rx, &mut pending, &mut expected, &stats, Some(&rejected)),
+        DueFrame::ReadyAfterRejectedGap(PlaybackFrame { seq: 3, .. })
+    ));
+    assert_eq!(expected, Some(4));
+    assert_eq!(rejected.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        stats.lock().unwrap().underrun_breakdown().cursor_catchups,
+        0
+    );
+
+    tx.send(frame(5)).unwrap();
+    assert!(matches!(
+        take_due_frame_after_reject(&rx, &mut pending, &mut expected, &stats, Some(&rejected)),
+        DueFrame::Missing
+    ));
+    assert_eq!(expected, Some(5), "普通网络缺帧仍须逐拍掩盖");
+}
+
+#[test]
+fn rejected_gap_recovery_preserves_wrapping_sequence_order() {
+    let (tx, rx) = crossbeam_channel::bounded(2);
+    let stats = telemetry();
+    let rejected = AtomicU64::new((1u64 << 32) | u64::from(u32::MAX));
+    let mut pending = None;
+    let mut expected = Some(u32::MAX);
+    tx.send(frame(0)).unwrap();
+    assert!(matches!(
+        take_due_frame_after_reject(&rx, &mut pending, &mut expected, &stats, Some(&rejected)),
+        DueFrame::ReadyAfterRejectedGap(PlaybackFrame { seq: 0, .. })
+    ));
+    assert_eq!(expected, Some(1));
 }
 
 #[test]
@@ -200,7 +262,9 @@ fn sequence_cursor_and_stale_detection_cross_u32_wrap() {
 
     for wanted in [u32::MAX, 0, 1] {
         match take_due_frame(&rx, &mut pending, &mut expected, &stats) {
-            DueFrame::Ready(frame) => assert_eq!(frame.seq, wanted),
+            DueFrame::Ready(frame) | DueFrame::ReadyAfterRejectedGap(frame) => {
+                assert_eq!(frame.seq, wanted);
+            }
             DueFrame::Missing | DueFrame::Disconnected => panic!("应播放序号 {wanted}"),
         }
     }
@@ -438,6 +502,7 @@ fn packet_gap_emits_non_silent_concealment_before_recovery_frame() {
             lost: 1,
             plc: 1,
             late_drops: 0,
+            queue_rejects: 0,
         }
     );
     assert_eq!(
@@ -455,6 +520,25 @@ fn packet_gap_emits_non_silent_concealment_before_recovery_frame() {
     assert_eq!(stale.late_drops, 1);
     assert_eq!(stale.expected, 0);
     assert_eq!(output.len(), before, "迟到包不得再次扰动解码器或播放时间轴");
+}
+
+#[test]
+fn full_queue_rejection_is_booked_apart_from_plain_late_drops() {
+    // B 线（docs/73 §2 P0）：待播队列满（emit 拒收）与「包本身迟到」共用 late_drops，
+    // 但必须能在 queue_rejects 里单独数出来 —— 这是满队列拒收第一次被直接观测。
+    let packets = encoded_packets(2);
+    let mut receiver = AudioReceiver::new(CodecConfig::m1_default()).unwrap();
+
+    let rejected = receiver.receive(0, &packets[0], |_frame| false);
+    assert_eq!(rejected.late_drops, 1, "拒收仍按原口径记 late_drops");
+    assert_eq!(rejected.queue_rejects, 1, "同一事件另记 B 线分量");
+
+    // 包本身迟到（序号在接收游标之后）不是队列拒收，不得污染 queue_rejects。
+    let accepted = receiver.receive(1, &packets[1], |_frame| true);
+    assert_eq!(accepted.queue_rejects, 0);
+    let stale = receiver.receive(0, &packets[0], |_frame| false);
+    assert_eq!(stale.late_drops, 1);
+    assert_eq!(stale.queue_rejects, 0, "迟到包不走 emit,与队列满无关");
 }
 
 #[test]
@@ -757,6 +841,7 @@ fn scripted_playout_at_depth(
             owner: AtomicU32::new(0),
         }),
         rx,
+        Arc::new(AtomicU64::new(0)),
         ready_tx,
     );
     ready_rx.recv().unwrap().unwrap();
@@ -928,6 +1013,7 @@ fn android_backlog_feedback_reduces_total_queue_without_output_underruns() {
             owner: AtomicU32::new(0),
         }),
         rx,
+        Arc::new(AtomicU64::new(0)),
         ready_tx,
     );
     ready_rx.recv().unwrap().unwrap();

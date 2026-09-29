@@ -21,7 +21,9 @@ workspace 的全部跨平台内核 crate;各 crate 职责表与依赖方向见�
 
 - 单元测试在各 src 文件的 `#[cfg(test)] mod tests`;
 - 集成测试在 `core/crates/audiolink-engine/tests/engine/`(按主题一文件,入口 `main.rs`);
-- `tests/water_level_repro.rs` 是 `#[ignore]` 的手动复现装置(设 `WATER_SECS` 控制时长),不进 CI。
+- `tests/water_level_repro.rs` 是 `#[ignore]` 的手动复现装置(设 `WATER_SECS` 控制时长),不进 CI;
+  `tests/p0_realsink_probe.rs` 同为 `#[ignore]` 手动装置(真 WASAPI sink × 10 ms 帧的节拍超时探针,
+  仅 Windows,见 docs/74 §6)。
 
 ## 内核硬规则
 

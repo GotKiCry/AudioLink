@@ -2,6 +2,8 @@ import { useState } from "react";
 
 import type { GroupView, PeerView } from "../types";
 import { t } from "../i18n";
+import { parseLeadMs, type LeadBounds } from "../lib/leadInput";
+import { Panel } from "./Panel";
 
 /**
  * 临时同步组面板（M3 交付物 4 / FR-22）。
@@ -9,15 +11,22 @@ import { t } from "../i18n";
  * 边界：**勾选成组 + 动态加入退出**。成员同步质量展示与真机三台同时出声的验收属 M3 后续项；
  * 引擎侧的组账本与事件已经就绪，本组件只做展示与动作。
  *
- * 视觉（On-Air Console）：这块面板原先整块硬编码深色（`bg-neutral-900/50` + `text-neutral-*`）——
- * 在这个世界里所有面板都是同一台机器的面板，所以它和其它面板一样只消费语义 token，
- * 深色/浅色由 `index.css` 的变量决定，组件里没有任何一处写死的明暗假设。
+ * 视觉：这块面板原先整块硬编码深色（`bg-neutral-900/50` + `text-neutral-*`）—— 面板之间没有
+ * 材质差别，所以它和其它面板一样只消费语义 token，深色/浅色由 `index.css` 的变量决定，
+ * 组件里没有任何一处写死的明暗假设。
+ * 按钮尺寸一律用 `.al-btn-*` 档位类，且不留 `h-* / px-* / text-*`：utilities 层在
+ * components 层之上，留着会把档位高度盖回去。
  */
 interface GroupPanelProps {
   peers: PeerView[];
   groups: GroupView[];
   busy: boolean;
-  onRefresh: () => void;
+  /**
+   * 刷新组列表。返回 promise 时按钮会保持禁用直到刷新结束；返回 `void` 时退化为
+   * "点完即解锁" —— 调用方要做真防连点，把 promise 交出来即可
+   * （`onRefresh={() => al.refreshGroups()}`，而不是 `() => void al.refreshGroups()`）。
+   */
+  onRefresh: () => void | Promise<void>;
   onCreate: (idShorts: string[], leadMs: number) => void;
   onJoin: (idShort: string, groupId: number) => void;
   onLeave: (idShort: string, groupId: number) => void;
@@ -52,6 +61,21 @@ function qualityStyle(quality: string): { className: string; text: string } {
   }
 }
 
+/** 建组时的默认提前量（ms）：给排播留余量（见 `group.summary` 的 lead 字段）。 */
+const DEFAULT_LEAD_MS = 120;
+
+/** 输入框的取值域：与 `min` / `max` 属性是同一条约束（属性只是提示，真正执行的是 parseLeadMs）。 */
+const MIN_LEAD_MS = 0;
+const MAX_LEAD_MS = 2000;
+
+/**
+ * 本面板的取值域。
+ *
+ * 解析规则本身（空串 = 未填、超范围收敛、0 合法）在 `lib/leadInput.ts`，与对齐面板共用一份 ——
+ * 两个面板之间只有这里的数字不同（建组的域是建组契约的一部分，比对齐面板窄）。
+ */
+const LEAD_BOUNDS: LeadBounds = { min: MIN_LEAD_MS, max: MAX_LEAD_MS, fallback: DEFAULT_LEAD_MS };
+
 export function GroupPanel({
   peers,
   groups,
@@ -62,7 +86,11 @@ export function GroupPanel({
   onLeave,
 }: GroupPanelProps) {
   const [selected, setSelected] = useState<string[]>([]);
-  const [leadMs, setLeadMs] = useState(120);
+  // 存用户看到的原文；`lead` 是**提交时**才算出来的（valid: false = 还没填好）
+  const [leadText, setLeadText] = useState(String(DEFAULT_LEAD_MS));
+  const lead = parseLeadMs(leadText, LEAD_BOUNDS);
+  /** 「刷新」正在飞（与 `busy` 是两件事：建组 / 加入 / 退出也走 busy）。 */
+  const [refreshing, setRefreshing] = useState(false);
 
   const selectable = peers.filter((peer) => peer.state !== "idle");
 
@@ -85,44 +113,74 @@ export function GroupPanel({
     );
   };
 
+  /**
+   * 刷新按钮：连点不重复触发。
+   *
+   * 两道锁各管一段 —— `busy`（建组 / 加入 / 退出进行中：它们内部本来就会重拉一次列表，
+   * 这时再点刷新纯属重复）与 `refreshing`（单纯点刷新时的那次飞行）。
+   * `refreshing` 等的是 `onRefresh` 返回的 promise：调用方交出来就锁到刷新结束；
+   * 只给 `void` 的话它锁不住跨点击的连点（那时防连点只能靠调用方自己）。
+   */
+  const refresh = (): void => {
+    if (busy || refreshing) {
+      return;
+    }
+    setRefreshing(true);
+    void (async () => {
+      try {
+        await onRefresh();
+      } finally {
+        setRefreshing(false);
+      }
+    })();
+  };
+
   return (
-    <section aria-labelledby="group-heading" className="al-card p-3">
-      <header className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h2 id="group-heading" className="text-caption font-semibold text-text-secondary text-body">
-          {t("group.title")}
-        </h2>
+    <Panel
+      id="group"
+      title={t("group.title")}
+      meta={
         <span className="flex items-baseline gap-1.5">
-          <span className="text-caption font-semibold text-text-tertiary text-text-secondary">{t("tm.peers")}</span>
+          <span className="text-caption font-semibold text-text-secondary">{t("tm.peers")}</span>
           <span className="num text-caption text-text-secondary">{peers.length}</span>
         </span>
+      }
+      right={
         <button
           type="button"
-          className="al-btn ml-auto h-7 shrink-0 px-2.5 text-caption text-text-primary"
-          onClick={onRefresh}
+          disabled={busy || refreshing}
+          className="al-btn al-btn-md text-text-primary disabled:cursor-not-allowed"
+          onClick={refresh}
         >
           {t("group.refresh")}
         </button>
-      </header>
-
-      <div className="mb-2 flex flex-wrap items-center gap-2 text-caption text-text-secondary">
-        <label htmlFor="group-lead" className="text-caption font-semibold text-text-tertiary text-text-secondary">
+      }
+    >
+      {/* 提前量：建组与加入都按它排播，所以放在按钮旁边、同一条基线上 */}
+      <div className="mt-2 mb-2 flex flex-wrap items-center gap-2 text-caption text-text-secondary">
+        <label htmlFor="group-lead" className="text-caption font-semibold text-text-secondary">
           {t("group.lead")}
         </label>
         <input
           id="group-lead"
           type="number"
-          min={0}
-          max={2000}
-          value={leadMs}
-          onChange={(event) => setLeadMs(Number(event.target.value))}
+          min={MIN_LEAD_MS}
+          max={MAX_LEAD_MS}
+          value={leadText}
+          onChange={(event) => setLeadText(event.target.value)}
           className="al-well num w-20 rounded-control px-2 py-1 text-right text-caption text-text-primary"
         />
         <span className="num text-text-tertiary">ms</span>
         <button
           type="button"
-          disabled={busy || selected.length === 0}
-          className="al-btn al-btn-accent ml-auto h-7 shrink-0 px-2.5 text-caption disabled:cursor-not-allowed"
-          onClick={() => onCreate(selected, leadMs)}
+          // 提前量没填（空串 / 非数字）时不给建组：按钮灰着，比发一个用户没看见的值诚实
+          disabled={busy || selected.length === 0 || !lead.valid}
+          className="al-btn al-btn-accent al-btn-md ml-auto shrink-0 disabled:cursor-not-allowed"
+          onClick={() => {
+            if (lead.valid) {
+              onCreate(selected, lead.value);
+            }
+          }}
         >
           {busy ? t("group.busy") : t("group.create", { count: selected.length })}
         </button>
@@ -195,7 +253,7 @@ export function GroupPanel({
                       </span>
                       <button
                         type="button"
-                        className="al-btn al-btn-danger h-5 px-1.5 text-caption text-text-secondary"
+                        className="al-btn al-btn-danger al-btn-xs text-text-secondary"
                         onClick={() => onLeave(member.idShort, group.groupId)}
                       >
                         {t("group.leave")}
@@ -214,7 +272,7 @@ export function GroupPanel({
                     <button
                       key={peer.idShort}
                       type="button"
-                      className="al-btn h-5 px-1.5 text-caption text-text-secondary"
+                      className="al-btn al-btn-xs text-text-secondary"
                       onClick={() => onJoin(peer.idShort, group.groupId)}
                     >
                       + {peer.name}
@@ -225,6 +283,6 @@ export function GroupPanel({
           ))}
         </ul>
       )}
-    </section>
+    </Panel>
   );
 }

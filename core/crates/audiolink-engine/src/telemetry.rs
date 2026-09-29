@@ -26,6 +26,43 @@ pub const DEFAULT_E2E_WINDOW: usize = 1_200;
 /// 到达间隔抖动样本窗口的默认容量（同样按 24 秒估）。
 pub const DEFAULT_JITTER_WINDOW: usize = 1_200;
 
+/// `underruns` 的三个独立写入源的分量账（docs/73 §2，P0 诊断口径）。
+///
+/// 三个分量**进程内可见、刻意不进 [`StreamStats`]**（那是冻结的 wire schema，理由同
+/// `TelemetryAggregator::depth_drops` 字段的注释）：
+///
+/// - `schedule_slips`（**A 线**）：播放线程回到循环顶部时发现 `next_write` 已成过去，
+///   批量跳过的播放拍数 —— 回答「播放节拍是否真的在超时」；
+/// - `queue_rejects`（**B 线**）：待播队列满、`try_push` 拒收的帧数 —— 回答「满队列拒收
+///   是否真的在发生」（此前从未被直接观测到）。它**不进 `underruns`**：被拒的帧按既有口径
+///   记在 `late_drops` 里，这里只是同一件事的分量账；
+/// - `cursor_catchups`（**C 线**）：队头帧超前播放游标、播放层逐拍越过时各记一次
+///   （`take_due_frame` 的追赶分支；同一拍由调用方按 `Missing` 记一次 `underruns`）。
+///
+/// 分解关系：`Δunderruns ≈ Δschedule_slips + Δcursor_catchups + 空队列欠载`（余量）。
+/// 注意 `cursor_catchups` 里可能混有 ≤ `depth_drops` 次降档/回收路径上的追赶（那一拍记的是
+/// `depth_drops` 而非 `underruns`）——对照 `depth_drops` 的增量即可校正，不影响量级判断。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct UnderrunBreakdown {
+    /// A 线：播放节拍超时跳过的拍数。
+    pub schedule_slips: u32,
+    /// B 线：满队列拒收的帧数（不占 `underruns`，同帧另记 `late_drops`）。
+    pub queue_rejects: u32,
+    /// C 线：播放游标追赶的拍数（同拍另记一次 `underruns`）。
+    pub cursor_catchups: u32,
+}
+
+impl UnderrunBreakdown {
+    /// `self − earlier` 的逐字段饱和差（累计计数回绕/重置时不出负数）。
+    pub fn saturating_delta_since(self, earlier: Self) -> Self {
+        Self {
+            schedule_slips: self.schedule_slips.saturating_sub(earlier.schedule_slips),
+            queue_rejects: self.queue_rejects.saturating_sub(earlier.queue_rejects),
+            cursor_catchups: self.cursor_catchups.saturating_sub(earlier.cursor_catchups),
+        }
+    }
+}
+
 /// 1 Hz 遥测聚合器。
 ///
 /// 用法：实时路径每秒调若干次 `record_*` / `set_*`，然后**每秒调一次 [`Self::roll`]**，
@@ -63,6 +100,13 @@ pub struct TelemetryAggregator {
     depth_drops: u32,
     plc_count: u32,
     nack_count: u32,
+
+    // ---- underruns 分量账（docs/73 §2 P0；进程内口径，不进 StreamStats，理由同 depth_drops）----
+    // 三个写入点各自独立记账，语义见 UnderrunBreakdown 的文档；underruns 本身原样保留，
+    // 它是 soak-runner 的验收口径，不许改语义。
+    schedule_slips: u32,
+    queue_rejects: u32,
+    cursor_catchups: u32,
 
     /// **连续静音**（「长断音」）统计 —— M2 待决口径第 ④ 条。
     ///
@@ -113,6 +157,9 @@ impl TelemetryAggregator {
             depth_drops: 0,
             plc_count: 0,
             nack_count: 0,
+            schedule_slips: 0,
+            queue_rejects: 0,
+            cursor_catchups: 0,
             silence: SilenceTracker::default(),
             rtt_us: 0,
             clock_offset_us: 0,
@@ -215,6 +262,24 @@ impl TelemetryAggregator {
     /// 记录一次重传请求（M2 起启用；M1 恒为 0）。
     pub fn record_nack(&mut self) {
         self.nack_count = self.nack_count.saturating_add(1);
+    }
+
+    /// A 线分量（docs/73 §2）：播放线程一次跳过 `count` 个已过期的播放拍。
+    ///
+    /// 与 [`Self::record_underruns`] 同一事件的两本账：`underruns` 保持原语义不变，
+    /// 这里只回答「其中有多少来自节拍超时」。
+    pub fn record_schedule_slips(&mut self, count: u32) {
+        self.schedule_slips = self.schedule_slips.saturating_add(count);
+    }
+
+    /// B 线分量（docs/73 §2）：满队列拒收 `count` 帧（同一批帧仍按原口径记 `late_drops`）。
+    pub fn record_queue_rejects(&mut self, count: u32) {
+        self.queue_rejects = self.queue_rejects.saturating_add(count);
+    }
+
+    /// C 线分量（docs/73 §2）：播放游标追赶越过一拍（同一拍仍按原口径记一次 `underruns`）。
+    pub fn record_cursor_catchup(&mut self) {
+        self.cursor_catchups = self.cursor_catchups.saturating_add(1);
     }
 
     /// 记录一拍播放输出：`peak` 是这一拍**写出去**的 PCM 峰值，`synthetic` = 这一拍是引擎补的
@@ -343,6 +408,15 @@ impl TelemetryAggregator {
         self.depth_drops
     }
 
+    /// `underruns` 三分量账的当前读数（**不在 [`StreamStats`] 里**，见 [`UnderrunBreakdown`]）。
+    pub const fn underrun_breakdown(&self) -> UnderrunBreakdown {
+        UnderrunBreakdown {
+            schedule_slips: self.schedule_slips,
+            queue_rejects: self.queue_rejects,
+            cursor_catchups: self.cursor_catchups,
+        }
+    }
+
     /// 端到端窗口内的样本数（判断「有没有跑够样本」用）。
     pub fn e2e_samples(&self) -> usize {
         self.e2e.len()
@@ -361,6 +435,9 @@ impl TelemetryAggregator {
         self.depth_drops = 0;
         self.plc_count = 0;
         self.nack_count = 0;
+        self.schedule_slips = 0;
+        self.queue_rejects = 0;
+        self.cursor_catchups = 0;
         self.silence.reset();
         self.loss_pct_x100 = 0;
         self.bitrate_bps = 0;
@@ -507,6 +584,47 @@ mod tests {
         aggregator.reset();
         assert_eq!(aggregator.depth_drops(), 0, "会话重建必须清零");
         assert_eq!(aggregator.snapshot().late_drops, 0);
+    }
+
+    #[test]
+    fn underrun_breakdown_tracks_the_three_sources_apart() {
+        // docs/73 §2 P0：三个写入源分开记账，且不得改动 underruns 的原口径。
+        let mut aggregator = TelemetryAggregator::with_windows(1, codec(), 64, 64);
+
+        aggregator.record_underruns(3); // A 线事件：同一事件记两本账
+        aggregator.record_schedule_slips(3);
+        aggregator.record_underrun(); // C 线事件：同一事件记两本账
+        aggregator.record_cursor_catchup();
+        aggregator.record_late_drop(); // B 线事件：late_drops + queue_rejects
+        aggregator.record_queue_rejects(1);
+
+        let breakdown = aggregator.underrun_breakdown();
+        assert_eq!(breakdown.schedule_slips, 3);
+        assert_eq!(breakdown.queue_rejects, 1);
+        assert_eq!(breakdown.cursor_catchups, 1);
+        assert_eq!(aggregator.snapshot().underruns, 4, "underruns 口径不变");
+        assert_eq!(aggregator.snapshot().late_drops, 1, "late_drops 口径不变");
+
+        let delta = breakdown.saturating_delta_since(UnderrunBreakdown {
+            schedule_slips: 1,
+            queue_rejects: 5, // 超过当前值：饱和到 0，不出负数
+            cursor_catchups: 1,
+        });
+        assert_eq!(
+            delta,
+            UnderrunBreakdown {
+                schedule_slips: 2,
+                queue_rejects: 0,
+                cursor_catchups: 0,
+            }
+        );
+
+        aggregator.reset();
+        assert_eq!(
+            aggregator.underrun_breakdown(),
+            UnderrunBreakdown::default(),
+            "会话重建必须清零"
+        );
     }
 
     #[test]

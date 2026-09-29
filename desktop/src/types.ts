@@ -72,8 +72,11 @@ export interface PeerView {
   state: PeerState;
   /** 本机主动连接该主机收听声音，不向它自动回传音频。 */
   receiving?: boolean;
-  /** 重连成功次数（0 = 从未重连）：界面据此显示回执。 */
-  /** 重连成功次数（Rust 侧总是序列化它；此处声明为可选，因为测试夹具用 Partial<PeerView> 展开构造）。 */
+  /**
+   * 重连成功次数：**0 表示从未重连**，不是「未知」（消费方对它做 `?? 0` 兜底）。
+   *
+   * 声明为可选而不是必填：Rust 侧总是序列化它，但测试夹具用 `Partial<PeerView>` 展开构造。
+   */
   reconnects?: number;
   /** §13 能力协商结果；null = 还没走完能力交换（握手中就是 null）。 */
   capabilities: PeerCapabilitiesView | null;
@@ -215,6 +218,9 @@ function isIpv6Host(host: string): boolean {
  *
  * **写成函数而不是常量**：语言可以在运行期切换，而模块级常量会把文案固定在**加载那一刻**的语言上 ——
  * 切换语言后整个界面都变了、只有这几个字不动，这类 bug 一眼看不出来。
+ *
+ * 状态的**视觉**映射（灯色 / 文字色 / 图标）不在这里：它住在真正渲染它的
+ * `components/PeerCard.tsx`（`STATE_VISUAL`），那份映射旁边就是用到它的 JSX。
  */
 export function peerStateLabel(state: PeerState): string {
   const key: Record<PeerState, MessageKey> = {
@@ -226,15 +232,6 @@ export function peerStateLabel(state: PeerState): string {
   };
   return t(key[state]);
 }
-
-/** 状态样式：颜色 + 图标（**不允许只靠颜色传达信息**，见 UI 规格 §5 视觉验收清单）。 */
-export const PEER_STATE_STYLE: Record<PeerState, { dot: string; text: string; icon: string }> = {
-  idle: { dot: "bg-idle", text: "text-text-tertiary", icon: "○" },
-  handshaking: { dot: "bg-accent animate-pulse", text: "text-text-secondary", icon: "◌" },
-  streaming: { dot: "bg-success", text: "text-success", icon: "▶" },
-  degraded: { dot: "bg-caution", text: "text-caution", icon: "!" },
-  failed: { dot: "bg-critical", text: "text-critical", icon: "×" },
-};
 
 /** µs → ms 显示（1 位小数）。契约里所有时延都是 µs，展示层统一换算。 */
 export function usToMs(us: number): string {

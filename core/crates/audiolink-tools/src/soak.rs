@@ -28,6 +28,7 @@
 
 use std::fmt::Write as _;
 
+use audiolink_engine::UnderrunBreakdown;
 use audiolink_types::StreamStats;
 use serde_json::{Value, json};
 
@@ -235,6 +236,12 @@ pub struct SoakSample {
     /// 它**不在 `StreamStats` 里**（那是冻结的 wire 载荷，追加字段会打断旧版本节点），
     /// 由调用方从 `Engine::depth_drops` 读出来一起送进来。
     pub depth_drops: u32,
+    /// **接收侧** `underruns` 三个写入源的分量账（A 节拍超时 / B 满队拒收 / C 游标追赶，
+    /// docs/73 §2 的 P0 诊断口径）。
+    ///
+    /// 与 `depth_drops` 同样的存在理由：进程内观测、**不参与判定**，由调用方从
+    /// `Engine::underrun_breakdown` 读出来一起送进来；报告按首末差给出分量占比。
+    pub underrun_breakdown: UnderrunBreakdown,
 }
 
 /// 异常种类。
@@ -329,6 +336,8 @@ pub struct CoarseSample {
     pub stats: StreamStats,
     /// 当时的降档主动丢帧累计值（趋势用；与 `stats.late_drops` 并列）。
     pub depth_drops: u32,
+    /// 当时的欠载三分量累计值（趋势用；口径见 `SoakSample::underrun_breakdown`）。
+    pub underrun_breakdown: UnderrunBreakdown,
 }
 
 /// 汇总（报告里 summary 段的数据源）。
@@ -350,6 +359,10 @@ pub struct SoakSummary {
     ///
     /// 单列可见、**不参与判定**（阈值口径待定，见 `depth_drops_judged`）。
     pub depth_drops: u32,
+    /// 欠载三分量的（首、末）读数（观测窗内取差即各分量份额；`None` = 尚未采样）。
+    ///
+    /// 单列可见、**不参与判定** —— 与 `depth_drops` 同口径的进程内观测账。
+    pub underrun_breakdown: Option<(UnderrunBreakdown, UnderrunBreakdown)>,
     /// 判定。
     pub verdict: &'static str,
 }
@@ -426,6 +439,10 @@ pub struct SoakMonitor {
     previous_state: Option<&'static str>,
     /// 末次采样读到的降档主动丢帧累计值（报告用；不参与判定）。
     last_depth_drops: u32,
+    /// 首次采样的完整观测值：三分量与欠载的**首末差**从它算起（报告用；不参与判定）。
+    first_sample: Option<SoakSample>,
+    /// 末次采样读到的欠载三分量累计值（报告用；不参与判定）。
+    last_breakdown: UnderrunBreakdown,
     /// 单次采样（1 s 桶）内新增欠载的最大值 —— 「最坏的那一秒补了多少拍静音」。
     /// 只做可见（换算连续静音下界用），**不参与判定**。
     max_underruns_per_sample: u32,
@@ -457,6 +474,8 @@ impl SoakMonitor {
             previous: None,
             previous_state: None,
             last_depth_drops: 0,
+            first_sample: None,
+            last_breakdown: UnderrunBreakdown::default(),
             max_underruns_per_sample: 0,
             codec_adaptations: Vec::new(),
             follow_codec_target: true,
@@ -597,12 +616,18 @@ impl SoakMonitor {
                 at_secs: sample.at_secs,
                 stats,
                 depth_drops: sample.depth_drops,
+                underrun_breakdown: sample.underrun_breakdown,
             });
         }
 
         // 主动丢帧只如实记录、不参与判定：它是控制器每次降档必现的策略代价，
         // 阈值口径待定（Lead 决策），所以这里既不算违规也不悄悄丢掉这个数。
         self.last_depth_drops = sample.depth_drops;
+        // 欠载三分量同理：观测账，首末差即各分量份额（docs/73 §2）。
+        if self.first_sample.is_none() {
+            self.first_sample = Some(sample);
+        }
+        self.last_breakdown = sample.underrun_breakdown;
         self.previous = Some(stats);
     }
 
@@ -799,6 +824,9 @@ impl SoakMonitor {
             last_violation: self.last_violation,
             final_stats: self.previous,
             depth_drops: self.last_depth_drops,
+            underrun_breakdown: self
+                .first_sample
+                .map(|first| (first.underrun_breakdown, self.last_breakdown)),
             // 判定看**按类计数**而不是留存条数：配额为 0 时现场一条不留，
             // 但异常确实发生过，判定不能因此变绿。
             verdict: if self.kind_counts.iter().all(|count| *count == 0) {
@@ -832,6 +860,7 @@ impl SoakMonitor {
                     "bucket": sample.bucket,
                     "at_secs": sample.at_secs,
                     "stats": stats_json(sample.stats, sample.depth_drops),
+                    "underrun_breakdown": breakdown_json(sample.underrun_breakdown),
                 })
             })
             .collect();
@@ -873,6 +902,33 @@ impl SoakMonitor {
             .map_or(0, |stats| u64::from(stats.underruns));
         let underrun_ratio = underrun_pct_x100(underruns, beats);
 
+        // 欠载三分量（docs/73 §2 P0）：首末差即观测窗内各分量的份额；余量 = 空队列欠载。
+        // 只占报告位、不参与判定（与 depth_drops 同口径的进程内观测账）。
+        let breakdown_section = summary.underrun_breakdown.map(|(first, last)| {
+            let delta = last.saturating_delta_since(first);
+            let delta_underruns = summary
+                .final_stats
+                .map_or(0, |stats| stats.underruns)
+                .saturating_sub(
+                    self.first_sample
+                        .map_or(0, |sample| sample.stats.underruns),
+                );
+            let delta_depth_drops = summary
+                .depth_drops
+                .saturating_sub(self.first_sample.map_or(0, |sample| sample.depth_drops));
+            json!({
+                "first": breakdown_json(first),
+                "last": breakdown_json(last),
+                "delta": breakdown_json(delta),
+                "delta_underruns": delta_underruns,
+                "delta_depth_drops": delta_depth_drops,
+                "queue_empty_residual": delta_underruns
+                    .saturating_sub(delta.schedule_slips)
+                    .saturating_sub(delta.cursor_catchups),
+                "note": "A=schedule_slips B=queue_rejects C=cursor_catchups；B 不占 underruns（同帧另记 late_drops）；C 里可能混 ≤ delta_depth_drops 次降档路径追赶",
+            })
+        });
+
         let report = json!({
             "tool": "soak-runner",
             "started_at_unix": meta.started_at_unix,
@@ -898,6 +954,7 @@ impl SoakMonitor {
                 // 阈值口径待定，严格档的零容忍只挂在 late_drops 上。
                 "depth_drops": summary.depth_drops,
                 "depth_drops_judged": false,
+                "underrun_breakdown": breakdown_section,
                 // 静音（欠载）这条判据的三个数：实际比例 / 判据用的绝对预算 / 预算的比例来源。
                 // `max_underrun_pct_x100 == 0` 表示这次没按比例给预算（严格档按绝对值 0 判）。
                 "underrun_pct_x100": underrun_ratio,
@@ -964,6 +1021,45 @@ impl SoakMonitor {
             summary.final_stats.map_or(0, |stats| stats.late_drops),
             summary.depth_drops,
         );
+        if let Some((first, last)) = summary.underrun_breakdown {
+            let delta = last.saturating_delta_since(first);
+            let delta_underruns = summary
+                .final_stats
+                .map_or(0, |stats| stats.underruns)
+                .saturating_sub(self.first_sample.map_or(0, |sample| sample.stats.underruns));
+            let queue_empty = delta_underruns
+                .saturating_sub(delta.schedule_slips)
+                .saturating_sub(delta.cursor_catchups);
+            let delta_depth_drops = summary
+                .depth_drops
+                .saturating_sub(self.first_sample.map_or(0, |sample| sample.depth_drops));
+            let pct = |part: u32| {
+                if delta_underruns == 0 {
+                    0.0
+                } else {
+                    f64::from(part) / f64::from(delta_underruns) * 100.0
+                }
+            };
+            let _ = writeln!(
+                out,
+                "欠载三分量（docs/73 §2，观测窗内增量，Δunderruns = {delta_underruns}）："
+            );
+            let _ = writeln!(
+                out,
+                "  A 节拍超时 {}（{:.1}%）· C 游标追赶 {}（{:.1}%）· 空队列欠载 ≈ {}（{:.1}%）",
+                delta.schedule_slips,
+                pct(delta.schedule_slips),
+                delta.cursor_catchups,
+                pct(delta.cursor_catchups),
+                queue_empty,
+                pct(queue_empty),
+            );
+            let _ = writeln!(
+                out,
+                "  B 满队拒收 {}（不占 underruns，同帧另记 late_drops）；C 里可能混 ≤ {} 次降档路径追赶（Δdepth_drops）",
+                delta.queue_rejects, delta_depth_drops,
+            );
+        }
         let total: u64 = summary.kind_counts.iter().sum();
         let _ = writeln!(
             out,
@@ -1140,6 +1236,15 @@ fn stats_json(stats: StreamStats, depth_drops: u32) -> Value {
         "depth_drops": depth_drops,
     })
 }
+
+/// 欠载三分量的 JSON 形状（docs/73 §2 的 A/B/C；进程内口径，不是 wire 载荷）。
+fn breakdown_json(breakdown: UnderrunBreakdown) -> Value {
+    json!({
+        "schedule_slips": breakdown.schedule_slips,
+        "queue_rejects": breakdown.queue_rejects,
+        "cursor_catchups": breakdown.cursor_catchups,
+    })
+}
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -1165,6 +1270,19 @@ mod tests {
             state: STREAMING,
             stats,
             depth_drops,
+            underrun_breakdown: UnderrunBreakdown::default(),
+        }
+    }
+
+    /// 带欠载三分量的采样（docs/73 §2 分量账的用例用）。
+    fn sample_breakdown(
+        at_secs: u64,
+        stats: StreamStats,
+        underrun_breakdown: UnderrunBreakdown,
+    ) -> SoakSample {
+        SoakSample {
+            underrun_breakdown,
+            ..sample_depth(at_secs, stats, 0)
         }
     }
 
@@ -1373,6 +1491,56 @@ mod tests {
             "摘要必须点名异常种类：{text}"
         );
         assert!(text.contains("判定 failed"));
+    }
+
+    #[test]
+    fn underrun_breakdown_is_reported_but_never_judged() {
+        // docs/73 §2 P0：三分量是观测账 —— 必须进摘要与 JSON 报告（首末差 + 余量），
+        // 但任何非零分量本身都不构成异常（判定仍只看 underruns 等既有口径）。
+        let mut monitor = SoakMonitor::new(SoakThresholds::default(), 160_000);
+        monitor.observe(sample_breakdown(
+            0,
+            stats(160_000),
+            UnderrunBreakdown::default(),
+        ));
+
+        let mut sick = stats(160_000);
+        sick.underruns = 0; // 注意：三分量动了，underruns 可以不动（B 线不占 underruns）
+        monitor.observe(sample_breakdown(
+            1,
+            sick,
+            UnderrunBreakdown {
+                schedule_slips: 40,
+                queue_rejects: 9,
+                cursor_catchups: 7,
+            },
+        ));
+
+        assert!(
+            monitor.violations().is_empty(),
+            "三分量不参与判定：只有它们动时不该记异常"
+        );
+        let summary = monitor.summary();
+        let (first, last) = summary.underrun_breakdown.expect("有采样就该有首末读数");
+        assert_eq!(first, UnderrunBreakdown::default());
+        assert_eq!(last.schedule_slips, 40);
+
+        let text = monitor.summary_text(&meta());
+        assert!(text.contains("A 节拍超时 40"), "摘要要给分量：{text}");
+        assert!(text.contains("B 满队拒收 9"), "B 线必须单列：{text}");
+
+        let parsed: Value = serde_json::from_str(&monitor.report_json(&meta())).unwrap();
+        let section = &parsed["summary"]["underrun_breakdown"];
+        assert_eq!(section["delta"]["schedule_slips"], 40);
+        assert_eq!(section["delta"]["queue_rejects"], 9);
+        assert_eq!(section["delta"]["cursor_catchups"], 7);
+        assert_eq!(section["delta_underruns"], 0);
+        // 余量 = Δunderruns − ΔA − ΔC，饱和不为负（这里 0 − 47 必须夹到 0）。
+        assert_eq!(section["queue_empty_residual"], 0);
+        assert!(
+            parsed["coarse"][0]["underrun_breakdown"]["schedule_slips"].is_number(),
+            "粗采样要带分量趋势"
+        );
     }
 
     #[test]

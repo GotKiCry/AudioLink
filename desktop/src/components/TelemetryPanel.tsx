@@ -8,14 +8,17 @@
  *
  * 数据来自 `audiolink://telemetry` 事件（后端 500 ms 节流），或首屏 `telemetry` 命令的快照。
  *
- * 视觉（On-Air Console）：指标格 = 机箱背部的一格一格读数 —— 1px `line` 网格隔开、
- * 数字一律 `.num`（刷新时不跳字）；缺失读数写「—」并降一级亮度，而不是写 0
- * （0 看着像"链路完美"，而面板最容易骗人的地方正是这里）。
+ * 视觉：指标格是 1px `line` 网格隔开的一格一格读数，数字一律 `.num`（刷新时不跳字）；
+ * 缺失读数写「—」并降一级亮度，而不是写 0（0 看着像"链路完美"，而面板最容易骗人的地方
+ * 正是这里）。字号与颜色只走语义 token，明暗由 `index.css` 的变量决定。
+ * 按钮尺寸一律用 `.al-btn-*` 档位类，且不留 `h-* / px-* / text-*`：utilities 层在
+ * components 层之上，留着会把档位高度盖回去。
  */
 
 import type { TelemetryRow, TelemetryView } from "../types";
 import { bpsToKbps, usToMs } from "../types";
 import { t } from "../i18n";
+import { Panel } from "./Panel";
 
 interface TelemetryPanelProps {
   telemetry: TelemetryView | null;
@@ -73,11 +76,11 @@ export function sparklinePoints(values: number[]): string {
 }
 
 /**
- * 一条折线：下沉的机箱窗口里的一段走线。
+ * 一条折线：下沉窗口里的一段走线。
  *
  * 纵轴按**本窗口最大值**归一化：遥测的关注点是「趋势与尖峰」，不是绝对刻度；
  * 因此不画网格与坐标轴，只把「最新值」写在右上角（数字面板里有精确值）。
- * 线用 `silk-2`（中性丝印色）：数据本身不带"好/坏"语义，别让曲线的颜色冒充状态灯。
+ * 线用中性丝印色（`text-text-secondary`）：数据本身不带"好/坏"语义，别让曲线的颜色冒充状态灯。
  */
 function Sparkline({ label, unit, values, latest }: SparklineProps) {
   // 空串 = 画不出来：不足两个点、或窗口内全零（画出来是假线）
@@ -132,26 +135,29 @@ export function TelemetryPanel({ telemetry, history, open, exporting, onExport }
   const last = history.at(-1) ?? null;
 
   return (
-    // id 保留给状态条的 aria-controls（"遥测"方键指向这块面板）
-    <section id="telemetry-readout" aria-labelledby="telemetry-heading" className="al-card p-3">
-      <header className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h2 id="telemetry-heading" className="text-caption font-semibold text-text-secondary text-body">
-          {t("tm.title")}
-        </h2>
+    // 不需要自己的 section id：状态条按钮的 `aria-controls="telemetry-panel"` 指的是
+    // **抽屉容器**（DiagnosticsDrawer 上那个 id），语义正确、链路有效；
+    // 这里曾手写过 `telemetry-readout`，全仓零引用 —— 已删，留着只会误导下一个人去找它。
+    <Panel
+      id="telemetry"
+      title={t("tm.title")}
+      meta={
         <span className="flex items-baseline gap-1.5">
-          <span className="text-caption font-semibold text-text-tertiary text-text-secondary">{t("tm.peers")}</span>
+          <span className="text-caption font-semibold text-text-secondary">{t("tm.peers")}</span>
           <span className="num text-caption text-text-secondary">{tele === null ? DASH : tele.peers}</span>
         </span>
+      }
+      right={
         <button
           type="button"
           onClick={onExport}
           disabled={exporting || history.length === 0}
-          className="al-btn ml-auto h-7 shrink-0 px-2.5 text-caption text-text-primary disabled:cursor-not-allowed"
+          className="al-btn al-btn-md text-text-primary disabled:cursor-not-allowed"
         >
           {exporting ? t("tm.exporting") : t("tm.export", { count: history.length })}
         </button>
-      </header>
-
+      }
+    >
       <p className="mt-1 mb-2 text-caption text-text-tertiary">{t("tm.footer", { count: history.length })}</p>
 
       {/* 网格线靠「容器上/左边框 + 每格右/下边框」拼出来：最后一格不满行时不会露出一块底色 */}
@@ -159,7 +165,8 @@ export function TelemetryPanel({ telemetry, history, open, exporting, onExport }
         <Metric label={t("tm.peers")} value={tele === null ? DASH : String(tele.peers)} />
         <Metric label="RTT" value={tele === null || idle ? DASH : usToMs(tele.rttUs)} unit="ms" />
         <Metric label={t("tm.jitter")} value={tele === null || idle ? DASH : usToMs(tele.jitterUs)} unit="ms" />
-        <Metric label={t("quality.loss")} value={tele === null || noReceiver ? DASH : tele.lossPct.toFixed(2)} unit="%" />
+        {/* 网格里的标签都短（对端数 / RTT / 抖动 …），所以这里用 tm 域的短标签「丢包」+ 单位 `%` */}
+        <Metric label={t("tm.loss")} value={tele === null || noReceiver ? DASH : tele.lossPct.toFixed(2)} unit="%" />
         <Metric label={t("tm.bitrate")} value={tele === null || idle ? DASH : bpsToKbps(tele.bitrateBps)} unit="kbps" />
         <Metric label={t("tm.buffer")} value={tele === null || noReceiver ? DASH : usToMs(tele.bufferLevelUs)} unit="ms" />
         <Metric label={t("tm.underruns")} value={tele === null || noReceiver ? DASH : String(tele.underruns)} unit={t("tm.count")} />
@@ -197,6 +204,6 @@ export function TelemetryPanel({ telemetry, history, open, exporting, onExport }
 
       {idle ? <p className="mt-2 text-caption text-text-tertiary">{t("tm.idle")}</p> : null}
       {!idle && noE2e ? <p className="mt-2 text-caption text-text-tertiary">{t("quality.e2e_unavailable")}</p> : null}
-    </section>
+    </Panel>
   );
 }

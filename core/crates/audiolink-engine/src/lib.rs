@@ -66,4 +66,4 @@ pub use silence::{
     MIN_SILENCE_MS, SILENCE_PEAK_THRESHOLD, SilenceSegment, SilenceSnapshot, SilenceTracker,
     frame_peak,
 };
-pub use telemetry::TelemetryAggregator;
+pub use telemetry::{TelemetryAggregator, UnderrunBreakdown};

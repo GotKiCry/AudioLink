@@ -8,11 +8,17 @@ import { DiscoveredHosts } from "./DiscoveredHosts";
 interface ConnectToHostProps {
   connecting: boolean;
   connectedIds?: string[];
+  /**
+   * 所在的折叠区是否展开（默认展开）。
+   *
+   * 收起**不卸载本组件** —— 否则手输的地址每次展开都归零；这里只用来让发现列表停轮询。
+   */
+  active?: boolean;
   /** 返回 true 表示命令已被接受（失败原因由上层统一展示，避免同一错误显示两遍）。 */
   onConnect: (addr: string) => Promise<boolean>;
 }
 
-export function ConnectToHost({ connecting, connectedIds = [], onConnect }: ConnectToHostProps) {
+export function ConnectToHost({ connecting, connectedIds = [], active = true, onConnect }: ConnectToHostProps) {
   const [addr, setAddr] = useState("");
   const filled = addr.trim() !== "";
   // 只提示、不拦截：前端判据（IP / IP:端口）比内核窄，拿它禁用提交等于用一个更严的规则
@@ -21,7 +27,7 @@ export function ConnectToHost({ connecting, connectedIds = [], onConnect }: Conn
 
   return (
     <>
-      <DiscoveredHosts connecting={connecting} connectedIds={connectedIds} onConnect={onConnect} />
+      <DiscoveredHosts connecting={connecting} connectedIds={connectedIds} active={active} onConnect={onConnect} />
       <form
         aria-labelledby="connect-host-heading"
         className="flex flex-wrap items-start gap-3 pt-4"
@@ -86,7 +92,7 @@ export function ConnectToHost({ connecting, connectedIds = [], onConnect }: Conn
           disabled={connecting || !filled}
           // 禁用的按钮不可聚焦，悬停是它唯一能解释"为什么点不动"的渠道
           title={filled ? undefined : t("manual.address_hint")}
-          className="al-btn mt-5 h-9 gap-2 px-4 text-body"
+          className="al-btn al-btn-xl mt-5 gap-2"
         >
           <IconLink className="h-4 w-4" />
           {connecting ? t("manual.connecting") : t("connect.submit")}

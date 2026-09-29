@@ -12,8 +12,11 @@
  * ③ **错误不拼**：失败原因一律来自后端 `CommandError.message`（错误层已翻译成人话），
  *    这里只用 `toCommandError` 兜底归一化，不拼字符串。
  *
- * 视觉（On-Air Console）：进行中由一盏呼吸灯表达（`.al-lamp[data-on="busy"]`），
- * 有新版时整块内容是机器内部的一个下沉窗口 + 琥珀边框（注意，不是危险 —— 危险才用 `live`）。
+ * 视觉：进行中由一盏呼吸灯表达（`.al-lamp[data-on="busy"]`），有新版时整块内容是下沉窗口
+ * 加琥珀边框（注意，不是危险 —— 危险才用 `live`）。字号与颜色只走语义 token，明暗由
+ * `index.css` 的变量决定。
+ * 按钮尺寸一律用 `.al-btn-*` 档位类，且不留 `h-* / px-* / text-*`：utilities 层在
+ * components 层之上，留着会把档位高度盖回去。
  */
 
 import { useState } from "react";
@@ -21,6 +24,7 @@ import { useState } from "react";
 import { api } from "../lib/ipc";
 import { toCommandError, type UpdateCheckView } from "../types";
 import { t } from "../i18n";
+import { Panel } from "./Panel";
 
 /** 读数缺失时的占位（与其它诊断面板同一条约定）。 */
 const DASH = "—";
@@ -63,40 +67,42 @@ export function UpdatePanel() {
       .catch((raw: unknown) => {
         setError(toCommandError(raw).message);
         setConfirming(false);
-        setInstalling(false);
-      });
+      })
+      // 卸下"进行中"必须在**所有**出口上发生：只写在 catch 里的话，一旦 install_update
+      // 真的 resolve，`working`（= checking || installing）就永远是 true ——
+      // 「检查更新」永久禁用、进度文案停在「正在下载并验证…」，而用户看到的是一个死界面。
+      // 放在 finally 里，成功、失败、抛异常三条路都收得回来。
+      .finally(() => setInstalling(false));
   };
 
   const pending = view !== null && view.version !== null ? view.version : null;
   const working = checking || installing;
 
   return (
-    <section aria-labelledby="upd-heading" className="al-card p-3">
-      <header className="flex flex-wrap items-start gap-x-3 gap-y-2">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <h2 id="upd-heading" className="text-caption font-semibold text-text-secondary text-body">
-              {t("upd.title")}
-            </h2>
-            <span className="num text-caption text-text-tertiary">
-              {view === null ? DASH : view.currentVersion}
-            </span>
-          </div>
-          <p className="mt-0.5 text-caption leading-4 text-text-tertiary">{t("upd.hint")}</p>
-        </div>
-        <span className="ml-auto flex shrink-0 items-center gap-2">
+    <Panel
+      id="upd"
+      align="start"
+      title={t("upd.title")}
+      hint={t("upd.hint")}
+      meta={
+        <span className="num text-caption text-text-tertiary">
+          {view === null ? DASH : view.currentVersion}
+        </span>
+      }
+      right={
+        <>
           {working ? <span className="al-lamp h-2 w-2" data-on="busy" /> : null}
           <button
             type="button"
             onClick={check}
             disabled={working}
-            className="al-btn h-7 px-2.5 text-caption text-text-primary disabled:cursor-not-allowed"
+            className="al-btn al-btn-md text-text-primary disabled:cursor-not-allowed"
           >
             {checking ? t("upd.checking") : t("upd.check")}
           </button>
-        </span>
-      </header>
-
+        </>
+      }
+    >
       <div className="mt-2 space-y-2 text-caption">
         {error === null ? null : (
           <p role="alert" className="text-critical">{error}</p>
@@ -138,7 +144,7 @@ export function UpdatePanel() {
                     type="button"
                     disabled={installing}
                     onClick={() => install(pending)}
-                    className="al-btn al-btn-accent h-7 px-2.5 text-caption disabled:cursor-not-allowed"
+                    className="al-btn al-btn-accent al-btn-md disabled:cursor-not-allowed"
                   >
                     {installing ? t("upd.installing") : t("upd.confirm")}
                   </button>
@@ -146,7 +152,7 @@ export function UpdatePanel() {
                     type="button"
                     disabled={installing}
                     onClick={() => setConfirming(false)}
-                    className="al-btn h-7 px-2.5 text-caption text-text-secondary disabled:cursor-not-allowed"
+                    className="al-btn al-btn-md text-text-secondary disabled:cursor-not-allowed"
                   >
                     {t("upd.cancel")}
                   </button>
@@ -156,7 +162,7 @@ export function UpdatePanel() {
               <button
                 type="button"
                 onClick={() => setConfirming(true)}
-                className="al-btn mt-2 h-7 px-2.5 text-caption text-caution"
+                className="al-btn al-btn-md mt-2 text-caution"
               >
                 {t("upd.install", { version: pending })}
               </button>
@@ -164,6 +170,6 @@ export function UpdatePanel() {
           </div>
         )}
       </div>
-    </section>
+    </Panel>
   );
 }

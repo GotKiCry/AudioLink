@@ -18,7 +18,7 @@ Tauri 2 桌面外壳(仅 Windows x64)。只做**编排 + UI 适配**,音频/网�
 | `src/lib/useAudioLink.ts` | 唯一状态 hook(不用 zustand/jotai,文件头有理由) |
 | `src/i18n.ts` | 中英文案唯一来源;缺键 = 编译错误 |
 | `src/components/` | 组件与同目录 `X.test.tsx` |
-| `index.html` | 头部注释冻结设计语言(「播出调音台」,以此为准,勿看 `docs/design/fluent-2.md`) |
+| `index.html` | 外壳入口，**不声明设计语言**；外观唯一语言 = Fluent 2，权威在 `src/index.css` 头部与 `docs/design/fluent-2.md` |
 
 契约铁律:UI 只走 command/event;视图/命令签名改动需三端齐动。`stream_id` 等 snake_case 字段是契约原文,勿「修正」。
 

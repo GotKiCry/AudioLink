@@ -1,6 +1,6 @@
 import type { CaptureDeviceView, CommandError, LocalStatus } from "../types";
 import { t } from "../i18n";
-import { broadcastHints, broadcastLabels, broadcastLamp, type BroadcastStatus } from "../lib/broadcast";
+import { broadcastHints, broadcastLabels, broadcastLamp, deriveBroadcastAffordances, type BroadcastStatus } from "../lib/broadcast";
 import { CaptureSourcePanel } from "./CaptureSourcePanel";
 import { IconMonitor, IconPause, IconStart } from "./icons";
 
@@ -26,10 +26,11 @@ interface SidebarProps {
 export function Sidebar({ version, local, status, streamingCount, autoBroadcast, canResume,
   captureDevices, selectedCaptureId, activeCapture, captureLoading, captureLocked,
   captureError, onSelectCapture, onRefreshCapture, onBroadcast, onStopBroadcast }: SidebarProps) {
-  const canPause = status === "streaming" || status === "starting" || status === "waiting";
-  const disabled = status === "loading" || status === "pausing" || (!canPause && !canResume);
-  const label = status === "pausing" ? t("peer.stopping") : canPause ? t("side.stop_broadcast")
-    : status === "error" ? t("share.retry") : status === "manual" ? t("share.start") : t("side.broadcast");
+  // 主按钮的三项由纯函数折算（与 status 同一层，自带穷举等价测试）。两条用法约定：
+  // `label` 是 **i18n 键**、不是成品文案（纯函数不依赖当前语言），所以这里要 t() 一次 ——
+  // 直接渲染会把 "side.stop_broadcast" 印在按钮上；`disabled` 里**已经含 canResume**，
+  // 不要再叠一次判断，那会变成第三处真相。图标不在函数职责内，按 canPause 这一侧自选。
+  const { canPause, disabled, label } = deriveBroadcastAffordances(status, canResume);
 
   return (
     <aside aria-label={t("side.local")} className="al-sidebar al-chrome">
@@ -56,7 +57,7 @@ export function Sidebar({ version, local, status, streamingCount, autoBroadcast,
           <button type="button" disabled={disabled} onClick={canPause ? onStopBroadcast : onBroadcast}
             className={`al-btn mt-4 h-10 w-full gap-2 text-body ${canPause ? "" : "al-btn-accent"}`}>
             {canPause || status === "pausing" ? <IconPause className="h-4 w-4" /> : <IconStart className="h-4 w-4" />}
-            {label}
+            {t(label)}
           </button>
           <p className="mt-2 text-caption text-text-tertiary">
             {autoBroadcast ? t("share.automatic") : t("share.manual")}

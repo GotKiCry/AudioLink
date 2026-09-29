@@ -471,6 +471,9 @@ async fn run(
         //（那是冻结的 wire 载荷，追加字段会让旧版本节点解码报错），只能在同进程里读
         // 接收侧引擎的账本。
         let depth_drops = engine_b.depth_drops(peer_on_b).unwrap_or(0);
+        // 欠载三分量（docs/73 §2 P0）：A 节拍超时 / B 满队拒收 / C 游标追赶 —— 同属进程内账本，
+        // 摘要与 JSON 报告按首末差给出分量占比。
+        let underrun_breakdown = engine_b.underrun_breakdown(peer_on_b).unwrap_or_default();
 
         // 自适应目标：**总是**观测（不只是「跟随期望值」那一路）——
         // 它是「自适应到底动没动、往哪边」的唯一直接证据（docs/22 §13）。
@@ -504,6 +507,7 @@ async fn run(
                 state,
                 stats,
                 depth_drops,
+                underrun_breakdown,
             });
         }
 
@@ -514,6 +518,7 @@ async fn run(
                 stats,
                 monitor.violations().len(),
                 depth_drops,
+                underrun_breakdown,
             );
         }
     }
@@ -600,10 +605,12 @@ fn print_progress(
     stats: StreamStats,
     violations: usize,
     depth_drops: u32,
+    breakdown: audiolink_engine::UnderrunBreakdown,
 ) {
     // 「迟到」与「主动丢」并排打印：前者是真迟到（网络 / 调度），后者是降档的策略代价。
+    // 尾部三个是欠载三分量（docs/73 §2）：A 节拍超时 / B 满队拒收 / C 游标追赶。
     print!(
-        "\r    t={}s  {:<13} 码率 {:>7} bps  丢包 {:>3}  欠载 {:>3}  掩盖 {:>3}  迟到 {:>3}  主动丢 {:>3}  NACK {:>3}  异常 {}   ",
+        "\r    t={}s  {:<13} 码率 {:>7} bps  丢包 {:>3}  欠载 {:>3}  掩盖 {:>3}  迟到 {:>3}  主动丢 {:>3}  NACK {:>3}  异常 {} | A {} B {} C {}   ",
         at_secs,
         state,
         stats.bitrate_bps,
@@ -614,6 +621,9 @@ fn print_progress(
         depth_drops,
         stats.nack_count,
         violations,
+        breakdown.schedule_slips,
+        breakdown.queue_rejects,
+        breakdown.cursor_catchups,
     );
     // 长跑里进度行必须及时可见：stdout 默认行缓冲，这里显式冲刷。
     use std::io::Write as _;
