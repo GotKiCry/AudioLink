@@ -82,16 +82,16 @@ class LowLatencyDefaultsTest {
             LowLatencyDefaults.queueTargetForSwitch(lowLatency = true),
         )
         assertEquals(
-            "切回标准档同样要回到 30 ms，否则用户的滑杆会停在 20 ms 上，与档位名实不符",
+            "切回标准档同样要回到 30 ms，否则水位会停在 20 ms 上，与档位名实不符",
             1_440,
             LowLatencyDefaults.queueTargetForSwitch(lowLatency = false),
         )
     }
 
     @Test
-    fun userFreeChoiceIsRepresentable() {
-        // 滑杆的合法取值域里必须能表达"不设目标"（0）—— 档位的默认值**不是**这个值，
-        // 两者不能混（0 在滑杆上代表"满灌"，是 A/B 对照的一侧，与档位无关）。
+    fun defaultTargetsAreRealWatermarks() {
+        // 0（满灌/不设目标）是一个合法的运行状态，但档位的默认值**不能**是它 ——
+        // 默认就满灌等于把延迟地板交还给"尽力写满"，档位名实不符。
         assertTrue("档位不该把水位默认值定成 0（那是满灌/Hold 档，不是延迟档）",
             LowLatencyDefaults.queueTargetFor(true) > 0)
         assertTrue("标准档同理，默认值必须是真实水位", LowLatencyDefaults.queueTargetFor(false) > 0)
@@ -145,7 +145,7 @@ class LowLatencyDefaultsTest {
      *
      * 为什么写成一张表而不是几条散断言：这张表**就是接口**。
      * 「断流不重置」与「重复同值不重置」这两条如果只测其中一条，另一条改坏了照样全绿 ——
-     * 而它们坑的恰恰是**手动滑杆**（用户拖了没用），真机上最难归因的一类问题。
+     * 而判错的后果（水位被莫名按回默认值）在真机上最难归因。
      */
     @Test
     fun resetTruthTableIsPinned() {
@@ -174,8 +174,8 @@ class LowLatencyDefaultsTest {
     @Test
     fun disconnectNeverResetsTheWatermark() {
         // 单独再钉一次「断流不重置」，因为它与真值表里其它行的**代价**不同：
-        // 真值表里判错的其它行顶多让水位慢一拍；这一行判错 = 每断一次流就把用户手动调好的
-        // 水位按回默认值，而用户完全不知道是谁改的（症状就是滑杆「拖了没用」）。
+        // 真值表里判错的其它行顶多让水位慢一拍；这一行判错 = 每断一次流就把水位按回默认值，
+        // 没有任何报错，最难归因。
         for (previous in listOf<Int?>(null, 10, 20, 15)) {
             assertFalse(
                 "协商帧长从 " + previous + " 变回 null（断流）时绝不能动水位",

@@ -29,13 +29,10 @@ import com.gotkicry.audiolink.service.AudioLinkService
 import com.gotkicry.audiolink.service.PlaybackUiState
 import com.gotkicry.audiolink.ui.components.AlButton
 import com.gotkicry.audiolink.ui.components.AppIcons
-import com.gotkicry.audiolink.ui.components.Choice
-import com.gotkicry.audiolink.ui.components.ChoiceGroup
 import com.gotkicry.audiolink.ui.components.DiagSection
 import com.gotkicry.audiolink.ui.components.ExpandablePanel
 import com.gotkicry.audiolink.ui.components.KeyValueRow
 import com.gotkicry.audiolink.ui.components.LampTone
-import com.gotkicry.audiolink.ui.components.SilkLabel
 import com.gotkicry.audiolink.ui.components.StatusBadge
 import com.gotkicry.audiolink.ui.i18n.LocalStrings
 import com.gotkicry.audiolink.ui.i18n.diagnosticsSummary
@@ -261,7 +258,7 @@ fun DiagnosticsDeck(
             )
         }
 
-        // ── 输出队列水位（延迟杠杆） ────────────────────────────────
+        // ── 输出队列水位 ─────────────────────────────────────────
         DiagSection(title = strings.diagQueue) {
             KeyValueRow(
                 strings.diagQueueCapacity,
@@ -278,38 +275,6 @@ fun DiagnosticsDeck(
                 } else {
                     "${state.queueTargetFrames} ${strings.diagFramesUnit}（${framesToMs(state.queueTargetFrames)}）"
                 },
-            )
-            KeyValueRow(
-                label = strings.diagQueueShrink,
-                value = if (state.shrinkGrantedFrames < 0) {
-                    strings.diagQueueShrinkNone
-                } else {
-                    "${state.shrinkGrantedFrames} ${strings.diagFramesUnit}（${framesToMs(state.shrinkGrantedFrames)}）"
-                },
-            )
-            SilkLabel(strings.diagQueueTargetLabel)
-            ChoiceGroup(
-                options = listOf(
-                    Choice(0, strings.leverFull),
-                    Choice(960, "20ms"),
-                    Choice(1_440, "30ms"),
-                    Choice(1_920, "40ms"),
-                    Choice(2_880, "60ms"),
-                ),
-                selected = state.queueTargetFrames,
-                onSelect = { AudioLinkService.setQueueTargetFrames(it) },
-            )
-            SilkLabel(strings.diagQueueShrinkLabel)
-            ChoiceGroup(
-                options = listOf(
-                    Choice(960, "20ms"),
-                    Choice(1_440, "30ms"),
-                    Choice(1_920, "40ms"),
-                    Choice(state.bufferCapacityFrames, strings.leverRestore),
-                ),
-                // 收缩是**一次性动作**，没有「当前值」可高亮 —— 结果看上面那行「容量收缩结果」。
-                selected = null,
-                onSelect = { AudioLinkService.requestBufferShrink(it) },
             )
             Text(
                 text = strings.diagQueueNote,

@@ -193,7 +193,7 @@ class AudioLinkService : Service() {
          * UI → 服务：请求切换发送源（FR-38 的「关闭 / 系统内录 / 麦克风」）；`null` = 关闭。
          *
          * 为什么是「请求式」（UI 只登记意图，服务在 500 ms 拍点上消费）而不是 UI 直接调服务方法：
-         * 与 task-8 的 `requestedQueueTargetFrames` 同源 —— Activity 与服务生命周期互相独立，
+         * 与 `requestedQueueTargetFrames` 同源 —— Activity 与服务生命周期互相独立，
          * UI 不该被逼着绑定服务；而真正要动的三件事（引擎启动参数、前台服务类型位、采集设备）
          * 都必须在服务自己的线程与状态里完成。
          */
@@ -264,13 +264,16 @@ class AudioLinkService : Service() {
             context.stopService(Intent(context, AudioLinkService::class.java))
         }
 
-        // ---- task-8：延迟杠杆的 UI 入口（请求式：UI 只登记意图，由服务下发给播放器）----
+        // ---- 输出队列水位默认值（请求式标量，服务每拍下发给播放器）----
 
         /**
-         * UI 请求的队列目标深度（帧）。服务每拍把它下发给播放器。
+         * 当前生效的队列目标深度（帧）。服务每拍把它下发给播放器。
          *
-         * 为什么走"请求 + 每拍下发"而不是让 UI 直接持有播放器：AudioTrack 的亲和性纪律要求
-         * 所有设备调用都发生在播放线程上，UI 线程只允许改一个标量意图。
+         * 为什么走"请求 + 每拍下发"而不是直接持有播放器：AudioTrack 的亲和性纪律要求
+         * 所有设备调用都发生在播放线程上，别的线程只允许改一个标量意图。
+         *
+         * 取值只有一个来源 —— [LowLatencyDefaults] 的默认值规则（档位切换 / 协商帧长确立时重置）；
+         * 诊断页曾经的手动滑杆已随 task-8 结论下线（2026-10，见 docs/12 §2.1b 与 §11.15）。
          *
          * **初值恒为标准档（1440）**，不读持久化开关：这是**进程级**（companion）的标量，
          * 没有 `Context` 可读设置 —— 而"本会话该用哪个默认值"这件事由 `onCreate` 里的
@@ -298,18 +301,9 @@ class AudioLinkService : Service() {
         @Volatile
         private var lowLatencyEnabled: Boolean = LowLatencyDefaults.DEFAULT_LOW_LATENCY
 
-        /** UI 请求的一次性容量收缩（帧）；0 = 无请求。消费后清零。 */
-        @Volatile
-        private var requestedShrinkFrames: Int = 0
-
         /** UI 请求：把环统计的「区间增量」基线挪到当前值。 */
         @Volatile
         private var ringWindowResetRequested: Boolean = false
-
-        /** UI → 播放器：设置输出设备队列目标深度（帧）。0 = 满灌（A/B 对照侧）。 */
-        fun setQueueTargetFrames(frames: Int) {
-            requestedQueueTargetFrames = frames
-        }
 
         // ---- 低延迟档：持久化开关 + 水位默认值联动 ----
 
@@ -321,8 +315,7 @@ class AudioLinkService : Service() {
          *    引擎配置在 `engineStart` 里现读，所以值必须先在盘上；
          * 2. **更新会话镜像**：让 UI 立刻看到新状态（否则开关会弹回旧值）；
          * 3. **重置水位**到新档的默认值（[LowLatencyDefaults.queueTargetForSwitch]）：
-         *    这是"档位决定默认值"的唯一一次落地 —— 用户显式切档，覆盖旧的手动水位是正确的；
-         *    之后手动调节依旧优先（关系与理由见 [LowLatencyDefaults] 的类注释）。
+         *    这是"档位决定默认值"的唯一一次落地（关系与理由见 [LowLatencyDefaults] 的类注释）。
          *
          * **为什么不重启引擎/前台服务**：正在播放或采集时重启会让用户的音频断一下，
          * 为了"立即生效"付这个代价不值得（契约：下次启动引擎生效，UI 文案已写明）。
@@ -335,11 +328,6 @@ class AudioLinkService : Service() {
             LowLatencyPreference.setEnabled(context, enabled)
             lowLatencyEnabled = enabled
             requestedQueueTargetFrames = LowLatencyDefaults.queueTargetForSwitch(enabled)
-        }
-
-        /** UI → 播放器：请求把输出缓冲**容量**收缩到 [frames] 帧（路①；由播放线程执行）。 */
-        fun requestBufferShrink(frames: Int) {
-            requestedShrinkFrames = frames
         }
 
         /** UI → 服务：把「溢出/读空」的区间增量基线挪到当前值（累计值不受影响）。 */
@@ -530,9 +518,8 @@ class AudioLinkService : Service() {
      * 从持久化读一次低延迟档，落到会话镜像 + 水位默认值。
      *
      * **幂等，且刻意"覆盖式"**：每次服务创建都按盘上的值重置一次。
-     * 为什么不怕覆盖用户在本进程里手动拖过的水位：Service 重建意味着前台服务被杀过一轮
-     * （进程可能还活着、Activity 可能还在），此时回到"盘上档位对应的默认值"是可预期的行为；
-     * 而真要保留的话，那个"手动值"也没有被持久化过，本来活不过重建。
+     * Service 重建意味着前台服务被杀过一轮（进程可能还活着、Activity 可能还在），
+     * 此时回到"盘上档位对应的默认值"是可预期的行为 —— 水位没有其它来源可保留。
      *
      * 注意它**不**回写盘：读到的值就是盘上的值，回写只是多余的 IO。
      */
@@ -554,18 +541,17 @@ class AudioLinkService : Service() {
      * 30 ms —— 帧长缩了、缓冲没缩，用户听到的改善被缓冲吃掉大半。
      *
      * ## 为什么是"重置默认值"而不是"持续下发"
-     * 优先级契约（[LowLatencyDefaults] 类注释）：**手动滑杆永远优先**。所以这里只在
-     * 「协商结果确立 / 变化」那一刻改一次 [requestedQueueTargetFrames]，之后用户拖滑杆就归用户。
-     * 每拍都按协商值覆盖的话，用户拖到 60 ms 稳一摇、下一拍就被按回 —— 滑杆等于坏了，
-     * 而症状是「拖了没用」，极难排查（这正是手动档位那条规则要防的同一个坑）。
+     * 水位的唯一来源就是 [LowLatencyDefaults] 的默认值规则（诊断页手动滑杆已随 task-8 结论
+     * 下线，见 docs/12 §2.1b），所以这里只在「协商结果确立 / 变化」那一刻改一次
+     * [requestedQueueTargetFrames] —— 单一写入点、改完即静止，比每拍覆盖更好归因。
      *
      * ## 幂等靠 [lastNegotiatedFrameMs]
      * peers() 每 500 ms 一拍，同一个协商值会被反复读到。判断同时看新旧两个值（见
      * [LowLatencyDefaults.shouldResetForNegotiatedFrame]），同值不重复重置。
      *
      * ## 断流不重置
-     * 流断掉时 `negotiatedFrameMs` 会变回 null —— **不重置**（同上那条契约：那是替用户改了一个
-     * 没人要求改的值）。所以这里把 null **照实记进** [lastNegotiatedFrameMs] 而不是跳过：
+     * 流断掉时 `negotiatedFrameMs` 会变回 null —— **不重置**（断流不是「换档」，没有理由动水位）。
+     * 所以这里把 null **照实记进** [lastNegotiatedFrameMs] 而不是跳过：
      * 下一轮真的重新协商出结果时才会被认成「变化」。同时多流取首个非空值 —— 单对端是本项目
      * 的常态（见 `startSend()` 的单对端兜底），多设备时"谁先在跑就跟随谁"是可预期的。
      */
@@ -1380,18 +1366,10 @@ class AudioLinkService : Service() {
         // 本拍下发的还是旧默认值（用户会看到水位慢半拍）。
         applyNegotiatedFrameWatermark()
 
-        // task-8：把 UI 的请求下发给播放器（设备调用本身仍在播放线程里做）。
-        val active = player
-        if (active != null) {
-            active.setQueueTargetFrames(requestedQueueTargetFrames)
-            val shrink = requestedShrinkFrames
-            if (shrink > 0) {
-                requestedShrinkFrames = 0
-                active.requestBufferShrink(shrink)
-            }
-        }
+        // 把当前水位默认值下发给播放器（设备调用本身仍在播放线程里做）。
+        player?.setQueueTargetFrames(requestedQueueTargetFrames)
 
-        // task-8：「区间增量」的基线。清零只挪基线，**不动内核计数** ——
+        // 「区间增量」的基线。清零只挪基线，**不动内核计数** ——
         // 累计值是一个跨会话的事实，改它就是改口径（纪律：不许为了好看换口径）。
         if (ringWindowResetRequested) {
             ringWindowResetRequested = false
@@ -1433,8 +1411,6 @@ class AudioLinkService : Service() {
             queuedFrames = snapshot?.queuedFrames ?: 0,
             queueTargetFrames = snapshot?.queueTargetFrames ?: 0,
             bufferCapacityFrames = snapshot?.bufferCapacityFrames ?: 0,
-            shrinkGrantedFrames = snapshot?.shrinkGrantedFrames
-                ?: LowLatencyPlayer.SHRINK_NOT_ATTEMPTED,
             lastError = lastError ?: player?.lastFailureReason,
             engineRunning = engine != null,
             engineName = engine?.name.orEmpty(),

@@ -73,21 +73,18 @@ class LowLatencyPlayer(
         /**
          * 队列目标 = 不设目标 = **旧的"尽力写满"行为**。
          *
-         * 刻意留成合法取值（而不是拿 `-1` 当"未设置"）：A/B 对照要在同一条连接里来回切，
-         * "不设目标"本身就是要测的一侧，不能是个非法状态。
+         * 刻意留成合法取值（而不是拿 `-1` 当"未设置"）："不设目标"是写入门控判据的一种状态，
+         * 不是错误，不需要单独的错误通道。
          */
         const val QUEUE_TARGET_UNLIMITED = 0
-
-        /** 容量收缩尚未执行过的哨兵值（合法的帧数不会是负数）。 */
-        const val SHRINK_NOT_ATTEMPTED = -1
 
         /**
          * 标准档默认保留 30 ms 输出余量；与内核的全链积压回收配套，避免延迟搬到上游。
          *
          * **契约：这个常量恒为 1440，不随「低延迟档」开关变化**（低延迟档用它自己的常量）。
-         * 理由：这是播放器暴露给外界的「标准档」定义，被 `AudioLinkService` 的初始值与
-         * `DiagnosticsDeck` 的滑杆选项（"30ms"）各自引用。让它随全局设置浮动，会让同一个名字
-         * 在不同时刻代表不同的毫秒数 —— 诊断读数与滑杆高亮会跟着飘，这类"值是活的"最容易被误读。
+         * 理由：这是播放器暴露给外界的「标准档」定义，被 `AudioLinkService` 的初始值引用。
+         * 让它随全局设置浮动，会让同一个名字在不同时刻代表不同的毫秒数 —— 诊断读数
+         * 会跟着飘，这类"值是活的"最容易被误读。
          */
         const val DEFAULT_QUEUE_TARGET_FRAMES = 1_440
 
@@ -193,19 +190,12 @@ class LowLatencyPlayer(
     /**
      * 队列目标深度（帧）。[QUEUE_TARGET_UNLIMITED] = 不设目标（旧的"尽力写满"）。
      *
-     * 为什么是运行时可变的 `@Volatile` 而不是构造参数：A/B 对照要在**同一条连接里前后切换**，
-     * 重启播放器会把播放环清空、也会打断正在测的那条链路 —— 那样两份数字就不是同一条件下采的了。
+     * 为什么是运行时可变的 `@Volatile` 而不是构造参数：档位切换 / 协商帧长确立要在
+     * **同一条连接里**改水位默认值（服务每拍下发一次），重启播放器会把播放环清空、
+     * 也会打断正在放的那条链路。
      */
     @Volatile
     private var queueTargetFrames: Int = DEFAULT_QUEUE_TARGET_FRAMES
-
-    /** 待执行的容量收缩请求（帧）；`0` = 无请求。由播放线程取走执行（`AudioTrack` 亲和性）。 */
-    @Volatile
-    private var pendingShrinkFrames: Int = 0
-
-    /** 最近一次容量收缩后设备给回的实际帧数；[SHRINK_NOT_ATTEMPTED] = 没试过。 */
-    @Volatile
-    private var shrinkGrantedFrames: Int = SHRINK_NOT_ATTEMPTED
 
     @Volatile
     private var lastFailure: String? = null
@@ -222,7 +212,7 @@ class LowLatencyPlayer(
         this.source = source
     }
 
-    // ---------------------------------------------------------------- task-8：延迟杠杆（运行时可控）
+    // ---------------------------------------------------------------- 队列水位门控（运行时可控）
 
     /**
      * 设置**队列目标深度**（帧）。[QUEUE_TARGET_UNLIMITED]（0）= 不设目标、尽力写满（旧行为）。
@@ -230,8 +220,7 @@ class LowLatencyPlayer(
      * 会被夹到 `[0, 设备容量]`：目标超过容量没有意义，只会让门控永远为真、退化成满灌。
      * 容量在 `play()` 之前未知（为 0），此时先记下请求，建好 track 后再夹一次。
      *
-     * 刻意**不**重启播放器：切档只改一个 `@Volatile`，下一拍生效 —— 这样 A/B 对照
-     * 可以在同一条连接里前后各测一段，避免"两次安装/两次配对"带来的环境漂移。
+     * 刻意**不**重启播放器：切档只改一个 `@Volatile`，下一拍生效。
      */
     fun setQueueTargetFrames(frames: Int) {
         val cap = bufferCapacityFrames
@@ -240,19 +229,6 @@ class LowLatencyPlayer(
 
     /** 当前队列目标（帧）；[QUEUE_TARGET_UNLIMITED] = 满灌。 */
     val queueTarget: Int get() = queueTargetFrames
-
-    /**
-     * 请求把设备缓冲**容量**收缩到 [frames] 帧（task-8 的路①：`setBufferSizeInFrames`）。
-     *
-     * 只登记请求，真正执行在播放线程 —— `AudioTrack` 的一切调用都必须发生在它自己的线程上
-     * （并且框架要求 track 处于播放态）。执行结果（是否生效、FAST 是否还在）会通过
-     * [stats] 的 [PlaybackStats.shrinkGrantedFrames] / [PlaybackStats.performanceMode] 如实回报。
-     *
-     * `0` 表示"取消未执行的请求"。
-     */
-    fun requestBufferShrink(frames: Int) {
-        pendingShrinkFrames = frames.coerceAtLeast(0)
-    }
 
     /**
      * 启动播放（同步返回启动结果）。
@@ -421,7 +397,6 @@ class LowLatencyPlayer(
         queuedFrames = queuedFrames,
         queueTargetFrames = queueTargetFrames,
         bufferCapacityFrames = bufferCapacityFrames,
-        shrinkGrantedFrames = shrinkGrantedFrames,
     )
 
     /** [PcmSink] 实现：非阻塞写一块，`0` 表示"这轮写不进"（输出缓冲满，调用方稍后再来）。 */
@@ -454,33 +429,29 @@ class LowLatencyPlayer(
     /**
      * 播放线程主循环。
      *
-     * 两种节奏，靠 [queueTargetFrames] 切换 —— 这正是 task-8 的 A/B 两侧：
+     * 两种节奏，靠 [queueTargetFrames] 切换：
      *
      * - **满灌（[QUEUE_TARGET_UNLIMITED]，旧行为）**：每轮都试着写，写不进就歇 1 ms。
      *   稳态下队列被灌到容量上限（真机 3844 帧 = 80.08 ms），flinger 报 Latency=101.00 ms。
-     *   延迟地板是**这个策略**给的，不是容量的错。
+     *   延迟地板是**这个策略**给的，不是容量的错（task-8 实测，docs/12 §2.1b）。
      * - **水位门控（target > 0）**：只在 `queued ≤ target − chunk` 时补一块
      *   （判据见 [QueueWatermark.shouldWrite]），补不上就睡 1 ms 再看。
      *   稳态下队列稳定在 `[target − chunk, target]`，延迟随之降到目标档。
-     *
-     * 为什么满灌模式不也走节拍：那一侧是**对照组**，必须与 task-3/5 的基线逐字一致，
-     * 改节奏就等于把对照组也动了，A/B 就不成立了。
      */
     private fun runPlayoutLoop(localTrack: AudioTrack) {
-        val loop = PlayoutLoop(source, this, channelCount, chunkFrames, counters)
+        // 供给活动探针：源是播放环时用它自己的「距上次内核写入」判定（PcmRingBuffer.producerActive）——
+        // 没开播/关流后播放线程仍在空转，那段时间的读空不该记成供给欠载（2026-10 现场：
+        // 暂停推流期间供给欠载以 ~10 次/s 虚增）。其它源（如 EmptyPcmSource）保持旧口径。
+        val supplyActive: () -> Boolean = (source as? PcmRingBuffer)
+            ?.let { ring -> { ring.producerActive() } }
+            ?: { true }
+        val loop = PlayoutLoop(source, this, channelCount, chunkFrames, counters, supplyActive)
         val startGate = PlaybackStartGate()
         var startThreshold = startThresholdFrames(localTrack)
         watermark.reset()
         var ticks = 0
 
         while (running) {
-            // 路① 的容量收缩请求：必须在播放线程执行（AudioTrack 亲和性 + 框架要求播放态）。
-            val shrink = pendingShrinkFrames
-            if (shrink > 0) {
-                pendingShrinkFrames = 0
-                applyBufferShrink(localTrack, shrink)
-            }
-
             // 队列水位：每轮采一次 head position —— 廉价 JNI，且是门控的唯一依据。
             watermark.advanceHead(localTrack.playbackHeadPosition)
             queuedFrames = watermark.queuedFrames.toInt()
@@ -523,23 +494,6 @@ class LowLatencyPlayer(
                 }
             }
         }
-    }
-
-    /**
-     * 执行容量收缩（路①）：`setBufferSizeInFrames(目标)`，读回实际生效值。
-     *
-     * **只改容量、不改写入策略** —— 如果写入仍是"尽力写满"，容量收缩只是把上限压低，
-     * 队列照样会被灌到新的上限。所以路① 与路② 是两个独立杠杆，A/B 把它们的组合都量一遍。
-     */
-    private fun applyBufferShrink(localTrack: AudioTrack, frames: Int) {
-        val capacity = localTrack.bufferCapacityInFrames
-        val want = frames.coerceIn(0, capacity)
-        val granted = localTrack.setBufferSizeInFrames(want)
-        shrinkGrantedFrames = granted
-        actualBufferFrames = localTrack.bufferSizeInFrames
-        bufferCapacityFrames = capacity
-        // 收缩后框架**可能把性能模式改掉**（丢了 FAST 就白搭）；如实重采，UI 上看得到。
-        performanceMode = localTrack.performanceMode
     }
 
     private fun startThresholdFrames(localTrack: AudioTrack): Int =

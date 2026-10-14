@@ -248,12 +248,7 @@ data class UiStrings(
     val diagQueueCapacity: String,
     val diagQueueLevel: String,
     val diagQueueTarget: String,
-    val diagQueueShrink: String,
-    val diagQueueShrinkNone: String,
-    val diagQueueTargetLabel: String,
-    val diagQueueShrinkLabel: String,
     val leverFull: String,
-    val leverRestore: String,
     val diagQueueNote: String,
 
     val diagSelfTest: String,
@@ -505,20 +500,16 @@ private val Zh = UiStrings(
     diagRingWindowSeconds = "区间时长",
     diagRingReset = "区间清零",
     diagRingNote = "区间增量 = 自上次清零以来的增量（前后各读一次相减）—— 用它区分「历史上丢过一大段」" +
-        "与「现在正在持续丢」；累计值不受清零影响（口径不许为了好看而改）。",
+        "与「现在正在持续丢」；累计值不受清零影响（口径不许为了好看而改）。" +
+        "读空只在推流中计数：暂停/未连接时播放泵空转不计欠载。",
 
-    diagQueue = "输出队列水位（task-8 延迟杠杆）",
+    diagQueue = "输出队列水位",
     diagQueueCapacity = "设备容量",
     diagQueueLevel = "设备队列水位",
     diagQueueTarget = "队列目标",
-    diagQueueShrink = "容量收缩结果",
-    diagQueueShrinkNone = "未执行",
-    diagQueueTargetLabel = "路② 队列目标（控注水深度，下一拍生效）",
-    diagQueueShrinkLabel = "路① 容量收缩（play() 后 setBufferSizeInFrames；丢了 FAST 就点「恢复容量」回滚）",
     leverFull = "满灌",
-    leverRestore = "恢复容量",
-    diagQueueNote = "容量是「最多能压多少」，水位是「现在压了多少」—— 低延迟模式生效 ≠ 缓冲小：" +
-        "真机上容量 3844 帧（80.1 ms）而队列被灌满，flinger 才会报 Latency=101 ms。",
+    diagQueueNote = "容量是「最多能压多少」，水位是「现在压了多少」，目标深度由档位与协商帧长自动给出 —— " +
+        "真机上的延迟地板由水位决定，不是容量（低延迟模式生效 ≠ 缓冲小）。",
 
     diagSelfTest = "内核自检（协议 golden vectors）",
     diagSelfTestIdle = "尚未自检。自检验的是协议编解码层，不依赖引擎与连接 —— 服务未启动也能跑。",
@@ -749,21 +740,17 @@ private val En = UiStrings(
     diagRingWindowSeconds = "Window length",
     diagRingReset = "Reset window",
     diagRingNote = "Window delta = change since the last reset (two reads subtracted). It separates a big chunk dropped " +
-        "in the past from drops happening right now. Totals are never rewritten by a reset.",
+        "in the past from drops happening right now. Totals are never rewritten by a reset. " +
+        "Starvation is only counted while streaming: an idle pump is not an underrun.",
 
-    diagQueue = "Output queue level (latency lever)",
+    diagQueue = "Output queue level",
     diagQueueCapacity = "Device capacity",
     diagQueueLevel = "Queue level",
     diagQueueTarget = "Queue target",
-    diagQueueShrink = "Shrink result",
-    diagQueueShrinkNone = "not attempted",
-    diagQueueTargetLabel = "Lever 2 — queue target (controls fill depth, next tick)",
-    diagQueueShrinkLabel = "Lever 1 — capacity shrink (setBufferSizeInFrames after play(); tap Restore to roll back)",
     leverFull = "Full",
-    leverRestore = "Restore",
-    diagQueueNote = "Capacity is how much can be squeezed; level is how much is held right now. Low-latency mode being " +
-        "active does not mean the buffer is small: on real devices capacity was 3844 frames (80.1 ms) with a full " +
-        "queue, which is when flinger reports Latency=101 ms.",
+    diagQueueNote = "Capacity is how much can be squeezed; level is how much is held right now. The target depth " +
+        "follows the profile and the negotiated frame length automatically — on real devices the latency floor is " +
+        "set by the level, not the capacity (low-latency mode being active does not mean the buffer is small).",
 
     diagSelfTest = "Kernel self-test (protocol golden vectors)",
     diagSelfTestIdle = "Not run yet. It exercises the protocol codec only — no engine or connection needed, so it works " +

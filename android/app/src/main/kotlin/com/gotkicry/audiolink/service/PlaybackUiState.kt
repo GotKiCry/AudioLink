@@ -55,15 +55,13 @@ data class PlaybackUiState(
     /** 区间起点到现在的时长（秒）；区间刚开始时为 0。 */
     val ringWindowSeconds: Long = 0,
 
-    // ---- 输出设备队列水位（task-8 延迟杠杆）----
+    // ---- 输出设备队列水位 ----
     /** 设备队列**当前水位**（帧）—— 与 [actualBufferFrames]（容量）是两件事。 */
     val queuedFrames: Int = 0,
     /** 当前队列目标深度（帧）；0 = 不设目标（旧的"尽力写满"）。 */
     val queueTargetFrames: Int = 0,
     /** 设备容量上限（帧）。 */
     val bufferCapacityFrames: Int = 0,
-    /** 最近一次容量收缩后设备给回的实际帧数；-1 = 未执行过。 */
-    val shrinkGrantedFrames: Int = -1,
 
     /** 最近一次错误（启动失败 / 播放线程异常）。 */
     val lastError: String? = null,
