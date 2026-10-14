@@ -64,14 +64,14 @@ export function useTheme(): ThemeController {
       // 隐私模式：本次会话照样生效，只是记不住。
     }
 
-    // 原生标题栏跟着光照走（这是操作系统的地盘，我们只报告光照）。
+    // 窗框暗色属性跟着光照走（无边框窗口仍有 DWM 画的描边/阴影，我们只报告光照）。
     // 非 Tauri 环境（测试 / 浏览器预览）静默跳过；调用**真的失败**必须留痕 ——
     // 以前这里把任何失败都当成「非 Tauri」吞掉，于是 ACL 没放开也无人知晓
     // （即 .ui-lab/UI-REVIEW-desktop-20260923.md §二.1 的标题栏不跟随）。
     if (isTauriRuntime()) {
       void setWindowTheme(resolved).catch((error: unknown) => {
         console.warn(
-          "[audiolink] window theme not applied; the native title bar will not follow the light/dark axis:",
+          "[audiolink] window theme not applied; the window frame will not follow the light/dark axis:",
           error,
         );
       });

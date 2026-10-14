@@ -275,6 +275,45 @@ describe("自动共享的时序与恢复", () => {
     await emit([peer()]);
     await waitFor(() => expect(startSend).toHaveBeenCalledTimes(2));
   });
+  it("对端被杀后同身份立刻重连（peer 不消失、无 failed）：状态掉出活跃档即恢复自动推流", async () => {
+    // 真机路径：旧连接要等 idle 超时才判死，新连接同身份原位顶替会话表项 ——
+    // 没有断开事件、没有 failed、reconnects 也不变。唯一的可见线索是外壳的推流标记
+    // 失效后状态从 streaming 掉回 handshaking/idle。
+    await mount();
+    await emit([peer()]);
+    await waitFor(() => expect(startSend).toHaveBeenCalledOnce());
+    await emit([peer({ state: "streaming" })]);
+
+    await emit([peer({ state: "handshaking" })]);
+    expect(startSend).toHaveBeenCalledOnce();
+    await emit([peer({ state: "idle" })]);
+    await waitFor(() => expect(startSend).toHaveBeenCalledTimes(2));
+  });
+  it("顶替可能被一次快照直接观测成 streaming → idle（中间态被跳过也要恢复）", async () => {
+    // 事件驱动的刷新不保证看见 handshaking 那一拍：顶替与握手完成之间可能没有任何
+    // 一次刷新。无论中间态是否被观测到，恢复都不能依赖它。
+    await mount();
+    await emit([peer()]);
+    await waitFor(() => expect(startSend).toHaveBeenCalledOnce());
+    await emit([peer({ state: "streaming" })]);
+
+    await emit([peer({ state: "idle" })]);
+    await waitFor(() => expect(startSend).toHaveBeenCalledTimes(2));
+  });
+  it("链路抖动（streaming → degraded → streaming）不重置记账、不重复推流", async () => {
+    // degraded 是「还活着但不健康」，不是「会话换了」：FR-27 重连期间视图会经过
+    // degraded，若把它当成重置信号，内核接回流之后外壳会再发一次 start_send（Busy）。
+    await mount();
+    await emit([peer()]);
+    await waitFor(() => expect(startSend).toHaveBeenCalledOnce());
+    await emit([peer({ state: "streaming" })]);
+    await emit([peer({ state: "degraded" })]);
+    await emit([peer({ state: "streaming" })]);
+    await emit([peer({ state: "degraded" })]);
+    await emit([peer({ state: "streaming" })]);
+
+    expect(startSend).toHaveBeenCalledOnce();
+  });
   it("启动失败不会伪装成推流或循环重试，用户可以重试", async () => {
     startSend.mockRejectedValueOnce({ code: 2001, message: "Capture unavailable", detail: "capture" });
     const { result } = await mount();

@@ -45,11 +45,18 @@ export function useBroadcastState(sendGate: RefObject<SendGate>, setError: SetEr
   const reconnectsRef = useRef(new Map<string, number>());
   /** 这一轮里**已经自动发起过**的设备：同一台只发一次，事件抖动不再重复调 start_send。 */
   const autoStartedRef = useRef<Set<string>>(new Set());
+  /** 每台设备**上一拍**观测到的状态：会话被静默顶替时，唯一的可见线索是状态从活跃档掉下来。 */
+  const prevStatesRef = useRef(new Map<string, PeerView["state"]>());
 
   /**
    * 对端列表到达时的记账（`audiolink://peer`，借用 shell 的订阅回调执行）。
    *
    * 断开或重连才重置本轮尝试；重复 idle/握手事件不能反复打开采集。
+   *
+   * 静默顶替（对端进程被杀后立刻重连）：旧连接要等 idle 超时才判死，新连接以同一身份
+   * **原位顶替**会话表项 —— peer 不消失、不报 failed、reconnects 不变，上面的既有条件
+   * 全都抓不住它。但旧推流已随旧会话死亡，外壳的推流标记失效后状态会从 streaming/degraded
+   * 掉回 handshaking/idle —— 这个迁移就是「该重新自动推流了」的信号。
    */
   const reconcilePeers = useCallback((next: PeerView[]): void => {
     for (const id of autoStartedRef.current) {
@@ -59,7 +66,17 @@ export function useBroadcastState(sendGate: RefObject<SendGate>, setError: SetEr
         if (activeSendRef.current === id) activeSendRef.current = null;
       }
     }
+    for (const peer of next) {
+      const prev = prevStatesRef.current.get(peer.idShort);
+      const wasLive = prev === "streaming" || prev === "degraded";
+      const isLive = peer.state === "streaming" || peer.state === "degraded";
+      if (wasLive && !isLive) {
+        autoStartedRef.current.delete(peer.idShort);
+        if (activeSendRef.current === peer.idShort) activeSendRef.current = null;
+      }
+    }
     reconnectsRef.current = new Map(next.map((peer) => [peer.idShort, peer.reconnects ?? 0]));
+    prevStatesRef.current = new Map(next.map((peer) => [peer.idShort, peer.state]));
   }, []);
 
   // 桌面外壳当前只支持一路发送。同步占位防止同一帧的自动/手动操作重复启动。

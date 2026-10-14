@@ -34,7 +34,8 @@ export function Sidebar({ version, local, status, streamingCount, autoBroadcast,
 
   return (
     <aside aria-label={t("side.local")} className="al-sidebar al-chrome">
-      <div className="al-brand">
+      {/* 侧栏顶条与工具栏同高（60px），同属沉浸式顶栏的拖拽区（窗口无边框，靠这里拖窗口） */}
+      <div className="al-brand" data-tauri-drag-region="deep">
         <IconMonitor className="h-5 w-5 text-accent" />
         <span className="text-body font-semibold">AudioLink</span>
         <span className="num ml-auto text-caption text-text-tertiary">{version ? `v${version}` : "…"}</span>

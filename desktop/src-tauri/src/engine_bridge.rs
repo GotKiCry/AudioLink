@@ -323,18 +323,27 @@ impl EngineBridge {
         // M1 单路推流：契约的 `stop_send` 不收参数，所以"推给谁"必须由外壳记住。
         if let Some(active) = lock(&self.cache).sending {
             return Err(CommandError::busy(
-                if active == peer {
+                if active.peer == peer {
                     "已经在给这个设备推流了"
                 } else {
                     "已有正在进行的推流，请先停止"
                 },
                 format!(
                     "start_send: active={} target={}",
-                    active.short(),
+                    active.peer.short(),
                     peer.short()
                 ),
             ));
         }
+
+        // 世代号要在推流建立**之前**读：顶替若发生在 `engine.start_send` 期间，
+        // 之后读会把新会话的世代号记进标记，已死的推流就失效不了了（见 `SendMark`）。
+        let generation = engine.session_generation(peer).ok_or_else(|| {
+            CommandError::bad_request(
+                "会话刚好断开了，请等设备重新接入后再试",
+                format!("start_send: session vanished before send: {}", peer.short()),
+            )
+        })?;
 
         let devices = capture::list_devices().await?;
         capture::validate_selection(&devices, capture_device_id.as_deref())?;
@@ -360,7 +369,7 @@ impl EngineBridge {
             });
         }
 
-        lock(&self.cache).sending = Some(peer);
+        lock(&self.cache).sending = Some(SendMark { peer, generation });
         let (peers, _) = refresh(&engine, &self.cache);
         emit_peer(&self.app, &self.cache, &peers);
 
@@ -378,14 +387,14 @@ impl EngineBridge {
     pub async fn stop_send(&self) -> Result<(), CommandError> {
         let _operation = self.send_operation.lock().await;
         let engine = self.engine().await?;
-        let Some(peer) = lock(&self.cache).sending else {
+        let Some(mark) = lock(&self.cache).sending else {
             return Ok(());
         };
         // 先清标记：即使引擎侧报错（比如会话已经没了），UI 也不该卡在"推流中"。
         lock(&self.cache).sending = None;
         lock(&self.capture).opened = None;
         let result = engine
-            .stop_send(peer)
+            .stop_send(mark.peer)
             .await
             .map_err(|error| engine_error("stop_send", &error));
         let (peers, _) = refresh(&engine, &self.cache);
@@ -930,6 +939,39 @@ fn node_name() -> String {
 // 视图缓存与聚合
 // ---------------------------------------------------------------------------
 
+/// 「本机正在推流」的标记：推给谁 + 推流开始时那条会话的世代号。
+///
+/// 为什么必须带世代号：对端进程被杀后立刻重连时，新连接以同一身份**原位顶替**会话表项
+/// （peer 不消失、无断开事件，见引擎 `PeerSession::generation` 的注释），而旧推流已随
+/// 旧会话死亡。只按 NodeId 记账的话，这个标记会挂在新会话上永远不失效 —— 视图把已死的
+/// 推流显示成「推送中」，自动推流也被「activeSendRef 还在」永久挡住（真机症状：对端卡片
+/// 有 RTT、显示推送中，却没有声音也恢复不了）。世代号变了 = 那条推流死了，标记作废。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SendMark {
+    peer: NodeId,
+    /// `engine.start_send` 调用**前**读到的世代号：顶替若发生在推流建立期间，
+    /// 读在之后会把新会话的世代号记进来，已死的推流就再也失效不了。
+    generation: u64,
+}
+
+/// 推流标记是否仍然活着（纯函数，单测钉住三种判负）。
+///
+/// * 对端从会话表消失 → 死（原有口径）；
+/// * **出站**会话：内核的 FR-27 重连监督会自己重拨并把流接回（`reconnect_once` 会重新
+///   `start_send`），世代变了推流也是活的 → 按 NodeId 继续有效；
+/// * **入站**会话：没有内核级恢复路径，世代号一变 = 旧推流已随旧会话死亡 → 死。
+fn send_mark_live(
+    mark: &SendMark,
+    status: Option<&PeerStatus>,
+    current_generation: Option<u64>,
+) -> bool {
+    let Some(status) = status else { return false };
+    if status.initiated_locally {
+        return true;
+    }
+    current_generation == Some(mark.generation)
+}
+
 /// 外壳侧的派生状态。
 ///
 /// 为什么不每次都重新问引擎：`peers()` 给的是引擎快照，而**契约视图需要三样引擎没有的东西** ——
@@ -940,7 +982,7 @@ struct Cache {
     /// 最近一次算出的遥测视图（`telemetry` 的返回源）。
     telemetry: TelemetryView,
     /// 本机当前推流目标：契约的 `stop_send` 不收参数，所以只有这里知道"推给谁"。
-    sending: Option<NodeId>,
+    sending: Option<SendMark>,
     /// 最近一次已推送到前端的对端快照，用于"只在变化时推事件"。
     last_emitted_peers: Option<Vec<PeerView>>,
     /// 遥测节流闸门。
@@ -970,10 +1012,16 @@ fn refresh(engine: &Engine, cache: &Mutex<Cache>) -> (Vec<PeerView>, TelemetryVi
     let statuses = engine.peers();
     let mut guard = lock(cache);
 
-    // 对端消失（断开/被摘除）→ 推流标记自动作废，否则 UI 会永远停在"推送中"。
-    let sending = guard
-        .sending
-        .filter(|id| statuses.iter().any(|status| status.id == *id));
+    // 对端消失（断开/被摘除）或**入站会话被同身份新连接顶替**（世代号变了）→
+    // 推流标记作废，否则 UI 会永远停在"推送中"（顶替的细节见 `SendMark` 的注释）。
+    let sending = guard.sending.filter(|mark| {
+        send_mark_live(
+            mark,
+            statuses.iter().find(|status| status.id == mark.peer),
+            engine.session_generation(mark.peer),
+        )
+    });
+    let sending_peer = sending.map(|mark| mark.peer);
     guard.sending = sending;
 
     let reports: HashMap<NodeId, StreamStats> = statuses
@@ -991,7 +1039,7 @@ fn refresh(engine: &Engine, cache: &Mutex<Cache>) -> (Vec<PeerView>, TelemetryVi
         .iter()
         .map(|status| {
             // 本端作接收端时对端协商出的帧长；本端作发送端 / 未开流 → None（界面显示占位）。
-            let mut view = peer_view(status, sending, engine.negotiated_frame_ms(status.id));
+            let mut view = peer_view(status, sending_peer, engine.negotiated_frame_ms(status.id));
             if active_audio(status) {
                 let receiver = receiver_stats(status, &reports);
                 view.quality = Some(PeerQualityView {
@@ -1004,7 +1052,7 @@ fn refresh(engine: &Engine, cache: &Mutex<Cache>) -> (Vec<PeerView>, TelemetryVi
             view
         })
         .collect();
-    let telemetry = aggregate(&statuses, sending, &mut guard.e2e_windows, &reports);
+    let telemetry = aggregate(&statuses, sending_peer, &mut guard.e2e_windows, &reports);
 
     guard.peers = peers.clone();
     guard.telemetry = telemetry.clone();
@@ -1422,6 +1470,37 @@ mod tests {
         assert!(auto_broadcast_from(Some(&serde_json::json!("no"))));
         assert!(auto_broadcast_from(Some(&serde_json::json!(0))));
         assert!(auto_broadcast_from(Some(&serde_json::Value::Null)));
+    }
+
+    /// 推流标记的失效判定（`SendMark` / `send_mark_live`）：入站会话被同身份新连接
+    /// **原位顶替**时旧推流已死，但对端不消失、无断开事件 —— 世代号是唯一能识破的读数。
+    #[test]
+    fn send_mark_dies_when_inbound_session_is_replaced() {
+        let mark = SendMark {
+            peer: NodeId::from_bytes([7; 32]),
+            generation: 1,
+        };
+        let inbound = quality_status(7, false, 0);
+
+        // 会话在表里、世代号没变 → 活着。
+        assert!(send_mark_live(&mark, Some(&inbound), Some(1)));
+        // 世代号变了（对端进程被杀后同身份立刻重连，原位顶替）→ 旧推流已随旧会话死亡。
+        assert!(!send_mark_live(&mark, Some(&inbound), Some(2)));
+        // 对端从会话表消失 → 死（原有口径）。
+        assert!(!send_mark_live(&mark, None, None));
+    }
+
+    /// 出站会话是刻意的例外：内核的 FR-27 重连监督会自己重拨并把流接回
+    /// （`reconnect_once` 里重新 `start_send`），世代变了推流也活着 ——
+    /// 这时作废标记反而把真实的「推送中」打成假的 idle。
+    #[test]
+    fn send_mark_survives_outbound_reconnect_because_engine_resumes() {
+        let mark = SendMark {
+            peer: NodeId::from_bytes([8; 32]),
+            generation: 1,
+        };
+        let outbound = quality_status(8, true, 0);
+        assert!(send_mark_live(&mark, Some(&outbound), Some(2)));
     }
 
     #[test]

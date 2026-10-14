@@ -5,7 +5,7 @@
  * 散落在组件里就会"改了一个忘了一个"。组件只允许 import 本模块。
  *
  * 与 `desktop/src-tauri/src/lib.rs`（command 签名）和 `engine_bridge.rs`（事件名常量）对齐。
- * 非 command 的原生面（窗口主题）同样收在这里（见文末「窗口主题」一节）：组件永远不 import
+ * 非 command 的原生面（窗口主题、窗口控件）同样收在这里（见文末两节）：组件永远不 import
  * `@tauri-apps/*`。
  */
 
@@ -169,7 +169,10 @@ export function isTauriRuntime(): boolean {
 }
 
 /**
- * 让**原生标题栏**跟随光照（需要 `core:window:allow-set-theme`，见 `capabilities/default.json`）。
+ * 让窗框的暗色属性跟随光照（需要 `core:window:allow-set-theme`，见 `capabilities/default.json`）。
+ *
+ * 窗口已是沉浸式顶栏（decorations:false，没有原生标题栏），但这条仍然有用：
+ * 无边框窗口的 1px 窗框描边与阴影由 DWM 画，深浅随它走。
  *
  * 它严格说不是 `invoke` / `listen`，但同属"与外壳的原生契约"：散在组件里同样会
  * "改了一个忘了一个"，所以收在这里，前端其余地方一律不 import `@tauri-apps/*`。
@@ -182,6 +185,44 @@ export function isTauriRuntime(): boolean {
 export async function setWindowTheme(theme: "light" | "dark"): Promise<void> {
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   await getCurrentWindow().setTheme(theme);
+}
+
+// --- 窗口控件（沉浸式顶栏：decorations:false，系统不再画这三个按钮，由 WindowControls 自绘） ---
+
+/** 最小化到任务栏。 */
+export async function windowMinimize(): Promise<void> {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().minimize();
+}
+
+/** 最大化 / 还原（二态切换；当前状态用 `isWindowMaximized` 读，不自己猜）。 */
+export async function windowToggleMaximize(): Promise<void> {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().toggleMaximize();
+}
+
+/** 当前是否最大化 —— 窗口控件「最大化 ↔ 还原」图标的唯一真相来源。 */
+export async function isWindowMaximized(): Promise<boolean> {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  return getCurrentWindow().isMaximized();
+}
+
+/**
+ * 订阅窗口尺寸变化（最大化 / 还原 / 拖到屏幕边缘吸附都走它），返回取消订阅函数。
+ * 调用方卸载时必须取消（StrictMode 下 effect 跑两遍，不取消就是双份订阅）。
+ */
+export async function onWindowResized(handler: () => void): Promise<UnlistenFn> {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  return getCurrentWindow().onResized(handler);
+}
+
+/**
+ * 关闭窗口。**不等于退出**：Rust 侧把 CloseRequested 转成「隐藏到托盘」
+ * （lib.rs 的 on_window_event），真退出在托盘菜单 —— 与原生标题栏的 × 行为一致。
+ */
+export async function windowClose(): Promise<void> {
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  await getCurrentWindow().close();
 }
 
 /**

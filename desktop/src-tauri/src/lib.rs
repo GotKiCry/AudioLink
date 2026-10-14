@@ -30,6 +30,7 @@ mod view;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, State};
+use tauri_plugin_window_state::StateFlags;
 
 use engine_bridge::EngineBridge;
 use error::CommandError;
@@ -329,7 +330,14 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // 窗口状态：恢复位置/尺寸/最大化,但**不恢复 DECORATIONS** ——
+        // 装饰归 tauri.conf.json 管(沉浸式顶栏 decorations:false);
+        // 默认 StateFlags::all() 会把历史存档里的 decorated:true 盖回来。
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::all() & !StateFlags::DECORATIONS)
+                .build(),
+        )
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_autostart::Builder::default().build())
         .plugin(tauri_plugin_opener::init())

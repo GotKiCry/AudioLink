@@ -13,7 +13,7 @@ Tauri 2 桌面外壳(仅 Windows x64)。只做**编排 + UI 适配**,音频/网�
 | `src-tauri/src/{capture,discovery,settings,update}.rs` | WASAPI 枚举 / 发现 / 设置 / 更新 |
 | `src-tauri/tests/engine_seam.rs` | 接缝验证:两个真实 Engine 走 127.0.0.1 真 QUIC |
 | `src-tauri/tauri.conf.json` | 窗口/CSP/bundle(仅 nsis)/updater 配置 |
-| `src-tauri/capabilities/default.json` | 最小权限,刻意不给前端 `updater:*` |
+| `src-tauri/capabilities/default.json` | 最小权限,刻意不给前端 `updater:*`;窗口权限仅含沉浸式顶栏所需最小集 |
 | `src/lib/ipc.ts` | 前端**唯一**碰 `invoke`/`listen` 处;事件 `audiolink://peer\|telemetry\|groups` |
 | `src/lib/useAudioLink.ts` | 唯一状态 hook(不用 zustand/jotai,文件头有理由) |
 | `src/i18n.ts` | 中英文案唯一来源;缺键 = 编译错误 |

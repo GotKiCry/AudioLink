@@ -16,8 +16,8 @@ export function StatusStrip({ status, telemetry, streamingCount, telemetryOpen, 
   const streaming = status === "streaming" && streamingCount > 0;
   const toggleLabel = t("status.telemetry", { arrow: telemetryOpen ? "▾" : "▸" });
   return (
-    <section className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-1 text-caption">
-      <span className="inline-flex items-center gap-2 text-text-secondary">
+    <section className="flex min-w-0 flex-1 items-center gap-x-4 text-caption">
+      <span className="inline-flex items-center gap-2 whitespace-nowrap text-text-secondary">
         <span className="al-lamp h-2 w-2" data-on={broadcastLamp(status)} />
         {streaming ? t("status.streaming", { count: streamingCount }) : t(broadcastLabels[status])}
       </span>

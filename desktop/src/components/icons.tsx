@@ -109,3 +109,20 @@ export const IconBackground = ({ className }: IconProps) => (
     <path d="M3 13 11 3M3 17.5 17.5 3M8 17.5 17.5 8" />
   </Base>
 );
+
+/* ── 窗口控件（沉浸式顶栏）：与系统标题栏同一套几何语言 ── */
+export const IconMinimize = ({ className }: IconProps) => (
+  <Base className={className}><path d="M4.5 10h11" /></Base>
+);
+export const IconMaximize = ({ className }: IconProps) => (
+  <Base className={className}><rect x="5" y="5" width="10" height="10" /></Base>
+);
+export const IconRestore = ({ className }: IconProps) => (
+  <Base className={className}>
+    <path d="M7.5 7.5V4.5h8v8H12.5" />
+    <rect x="4.5" y="7.5" width="8" height="8" />
+  </Base>
+);
+export const IconClose = ({ className }: IconProps) => (
+  <Base className={className}><path d="M5.5 5.5l9 9M14.5 5.5l-9 9" /></Base>
+);

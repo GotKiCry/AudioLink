@@ -18,6 +18,7 @@ import { Sidebar } from "./components/Sidebar";
 import { StatusStrip } from "./components/StatusStrip";
 import { TelemetryPanel } from "./components/TelemetryPanel";
 import { UpdatePanel } from "./components/UpdatePanel";
+import { WindowControls } from "./components/WindowControls";
 import { DEFAULT_BACKGROUND, normalizeBackground } from "./lib/background";
 import { deriveBroadcastStatus } from "./lib/broadcast";
 import { api } from "./lib/ipc";
@@ -175,8 +176,10 @@ export default function App() {
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* z2 工具栏（60px，见 .al-toolbar 的 min-height）：自有底色 + blur(32px)，比 Mica 更实 */}
-        <header className="al-toolbar al-chrome al-chrome-b">
+        {/* z2 工具栏兼沉浸式顶栏（60px，见 .al-toolbar 的 min-height）：自有底色 + blur(32px)，比 Mica 更实。
+            窗口无边框（decorations:false），整行即拖拽区（deep = 空白与文字都可拖，按钮自动豁免），
+            双击空白切换最大化；最小化 / 最大化 / 关闭由最右侧的 WindowControls 自绘。 */}
+        <header className="al-toolbar al-chrome al-chrome-b" data-tauri-drag-region="deep">
           <StatusStrip
             status={status}
             telemetry={al.telemetry}
@@ -204,6 +207,7 @@ export default function App() {
               {t("bg.button")}
             </button>
           </div>
+          <WindowControls />
         </header>
 
         <main className="al-main flex min-h-0 flex-1 flex-col overflow-hidden">

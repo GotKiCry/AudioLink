@@ -231,6 +231,11 @@ const zh = {
   "topbar.theme_system": "跟随系统",
   "topbar.theme_light": "浅色",
   "topbar.theme_dark": "深色",
+  // 沉浸式顶栏的窗口控件（decorations:false，系统不再提供原生按钮）
+  "win.minimize": "最小化",
+  "win.maximize": "最大化",
+  "win.restore": "还原",
+  "win.close": "关闭",
   "diag.title": "设置与诊断",
   "diag.hint": "偏好设置、连接质量与设备详情",
   "diag.identity": "本机身份",
@@ -498,6 +503,11 @@ const en: Record<MessageKey, string> = {
   "topbar.theme_system": "Follow system",
   "topbar.theme_light": "Light",
   "topbar.theme_dark": "Dark",
+  // Immersive title bar window controls (decorations:false, the OS no longer draws them)
+  "win.minimize": "Minimize",
+  "win.maximize": "Maximize",
+  "win.restore": "Restore",
+  "win.close": "Close",
   "diag.title": "Settings & diagnostics",
   "diag.hint": "Preferences, connection quality, and device details",
   "diag.identity": "This device",

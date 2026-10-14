@@ -82,6 +82,9 @@
   --al-global-slot-md: 28px;
   --al-global-slot-lg: 32px;
   --al-global-slot-xl: 36px;
+  /* 窗口控件「关闭」的悬停/按下色：Windows 标题栏的系统语义色（深浅主题同值），见 .al-caption-btn */
+  --al-global-caption-close-hover: #c42b1c;
+  --al-global-caption-close-pressed: #f1707a;
   /* 选择项底色（原生下拉需要不透明底） */
   --al-global-option-dark: #2b2d34;
   --al-global-option-light: #ffffff;
@@ -562,7 +565,37 @@
   .al-share-control { margin-top: 24px; padding-bottom: 24px; border-bottom: 1px solid var(--al-stroke-divider); }
   .al-capture-panel { padding-top: 24px; }
   .al-sidebar-footer { padding: 18px 22px; border-top: 1px solid var(--al-stroke-divider); }
-  .al-toolbar { display: flex; flex-wrap: wrap; align-items: center; flex-shrink: 0; gap: 8px 16px; min-height: 60px; padding: 10px 12px 10px 24px; }
+  /* flex-wrap 必须是 nowrap:flex 的换行判定用的是**未收缩**的原始宽度 ——
+     即使遥测读数能 min-width:0 截断,只要原始宽度超了,按钮照样被折到第二行,
+     工具栏长高、下方内容区与「设置与诊断」抽屉整体下移。单行 + 读数截断才是正解。 */
+  .al-toolbar { display: flex; flex-wrap: nowrap; align-items: center; flex-shrink: 0; gap: 8px 16px; min-height: 60px; padding: 10px 12px 10px 24px; }
+  /* 工具栏恒为单行：遥测读数装不下就截断省略，绝不换行 —— 读数一换行，
+     min-height:60px 的工具栏就长高一倍，把下方内容区与「设置与诊断」抽屉整体顶下去。
+     （这正是删掉窄窗口媒体查询里 flex-basis:100% 的原因：默认窗口宽 1100 恒命中它，
+     每次开始推流、遥测首次插入 DOM 时都跳一次。） */
+  .al-status-metrics { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ── 窗口控件（沉浸式顶栏）：窗口无边框（decorations:false），最小化 / 最大化 / 关闭由前端自绘 ──
+     几何口径照 Windows 11 标题栏：46px 宽、整行高、贴窗口右上两角；
+     负边距抵掉 .al-toolbar 的 padding(10px 12px)，按钮才真的触到窗口边缘。 */
+  .al-caption { display: flex; align-self: stretch; margin: -10px -12px -10px 0; }
+  .al-caption-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 46px;
+    border: 0;
+    background-color: transparent;
+    color: var(--al-text-primary);
+    cursor: pointer;
+    transition: background-color var(--al-global-duration-fast) var(--al-global-ease-standard);
+  }
+  .al-caption-btn:hover { background-color: var(--al-surface-subtle-hover); }
+  .al-caption-btn:active { background-color: var(--al-surface-subtle-pressed); }
+  /* 关闭键悬停红是系统语义色，不参与主题轴；焦点环内收，否则贴边的按钮会把描边画出窗口外 */
+  .al-caption-btn[data-kind="close"]:hover { background-color: var(--al-global-caption-close-hover); color: var(--al-global-white); }
+  .al-caption-btn[data-kind="close"]:active { background-color: var(--al-global-caption-close-pressed); color: var(--al-global-black); }
+  .al-caption-btn:focus-visible { outline-offset: -2px; }
   .al-page-header { padding-top: 2px; }
   .al-connect-panel { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .9fr); gap: 24px; padding: 24px; border: 1px solid var(--al-stroke-divider); border-radius: var(--al-radius-overlay); background: var(--al-surface-card-solid); }
   .al-address-value { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 20px; }
@@ -898,7 +931,6 @@
   .al-content-inner { padding: 24px; gap: 24px; }
   .al-connect-panel { grid-template-columns: 1fr; gap: 20px; padding: 20px; }
   .al-connect-steps { gap: 8px; }
-  .al-status-metrics { flex-basis: 100%; }
 }
 
 @media (max-width: 760px) {
