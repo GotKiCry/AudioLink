@@ -253,10 +253,14 @@ try {
         if ([string]::IsNullOrWhiteSpace($remote)) { throw '清单里没有 version，无法判断版本语义' }
 
         # 判据与 tauri-plugin-updater 一致：只有 remote > current 才算「有更新」。
+        # 「新/旧」两个用例的 current 从远端版本**派生**，不写死：v1.0.0 流水线就是死在
+        # 写死的 0.9.9 上 —— 版本线在 0.x 时 0.9.9 确实「比远端新」，跨进 1.0.0 它就变成
+        # 「比远端旧」，用例的期望随即反转。主版本 +1 永远比远端新，0.0.0 永远比远端旧。
+        $remoteParts = Get-VersionParts $remote
         $cases = @(
-            @{ label = '远端更新'; current = '0.0.9'; expect = $true },
+            @{ label = '远端更新'; current = '0.0.0'; expect = $true },
             @{ label = '版本相同'; current = $remote; expect = $false },
-            @{ label = '远端更旧'; current = '0.9.9'; expect = $false }
+            @{ label = '远端更旧'; current = "$($remoteParts[0] + 1).0.0"; expect = $false }
         )
         foreach ($case in $cases) {
             $cmp = Compare-VersionCore $remote $case.current
