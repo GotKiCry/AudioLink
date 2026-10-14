@@ -80,8 +80,9 @@ use crate::payload::{
 use crate::runtime::backlog::{BacklogAction, PlayoutBacklog};
 use crate::runtime::jitter::{
     AdaptiveJitterDepth, EncodedAudioPacket, INITIAL_TARGET_MS, MAX_TARGET_MS, MIN_TARGET_MS,
-    PacketReorderBuffer, PlayoutDepthAction, PlayoutDepthState, ReorderBatch, frames_for_ms,
-    publish_target, rescale_depth_frames,
+    PacketReorderBuffer, PlayoutDepthAction, PlayoutDepthState, ReorderBatch,
+    conceal_ceiling_frames, frames_for_ms, playback_queue_frames, publish_target,
+    rescale_depth_frames,
 };
 use crate::runtime::nack::{
     MissingTracker, NACK_MAX_RTT_US, NACK_RETRANSMIT_GRACE, RetransmitBuffer,
@@ -102,8 +103,9 @@ pub type CaptureFactory =
 pub type PlayoutFactory =
     Arc<dyn Fn() -> Result<Box<dyn PlayoutSink>, AudioError> + Send + Sync + 'static>;
 
-/// 播放队列深度（帧数）。满了丢最旧 —— 与「宁可丢一帧，也不延迟出声」同一条原则（§7 第 1 条）。
-const PLAYBACK_QUEUE_FRAMES: usize = 16;
+// 播放队列容量由 `playback_queue_frames` 按帧长换算（300 ms 墙钟口径，下限 16 帧）。
+// 满了拒收新帧并标记缺口（播放端跳队头恢复，见 docs/75）—— 与「宁可丢一帧，也不延迟出声」
+// 同一条原则（§7 第 1 条）。批式到达为什么不撞顶：见 `tests/engine/queue_reject_burst.rs`。
 
 /// FR-12：本地增益变更的渐变时长（ms）。
 ///
@@ -492,6 +494,18 @@ enum SessionCommand {
 struct PeerSession {
     initiated_locally: bool,
     id: NodeId,
+    /// 会话世代号：每次 `create_session` 取一个全局递增值。
+    ///
+    /// 为什么需要它：对端进程被杀后立刻重连时，旧连接要等 idle_timeout 才判死，新连接以
+    /// **同一身份**进表、原位顶替旧表项（`peers.insert`），peer 不消失、无断开事件、
+    /// `reconnects` 也归新会话所有 —— 外壳没有任何现有读数能发现「这已经是另一条会话」。
+    /// 但旧会话上的推流已随旧任务死亡：不知道世代变了，外壳会把「推流中」的阴影标记
+    /// 一直挂在新会话上（桌面端 `Cache::sending` 曾因此把已死的推流显示成活着，
+    /// 自动推流被自己的记账永久挡住）。世代号是「会话实例换了没有」的确定性判据。
+    ///
+    /// 与 `addr` 的分工：两端 endpoint 都绑**固定端口**，重连前后 `ip:port` 不变，
+    /// 地址做不了这个判据。
+    generation: u64,
     name: Mutex<String>,
     addr: std::net::SocketAddr,
     machine: Mutex<SessionMachine>,
@@ -1371,6 +1385,27 @@ impl Engine {
             .ok()?
             .get(&peer)
             .and_then(|session| session.negotiated_frame_ms())
+    }
+
+    /// 指定对端**当前表项**的会话世代号；对端不存在 → `None`。
+    ///
+    /// 用途只有一个：让外壳分辨「这条会话还是不是我当初推流的那一条」。对端进程被杀后
+    /// 立刻重连时，新连接以同一身份**原位顶替**旧表项（peer 不消失、无断开事件），
+    /// 而旧会话上的推流已随旧任务死亡 —— 记下推流开始时的世代号、之后每次快照比对一次，
+    /// 变了就说明那条推流已经死了，阴影标记必须作废。
+    ///
+    /// # 为什么不放进 `PeerStatus`
+    ///
+    /// 与 [`Self::negotiated_frame_ms`] 同一纪律：`PeerStatus` 是全 pub 字面量结构体，
+    /// 外壳测试夹具直接构造它，加字段会打破那些字面量；世代号只对「是否正在推流」的
+    /// 判定有意义，按 peer 查询的访问器更贴合语义。
+    pub fn session_generation(&self, peer: NodeId) -> Option<u64> {
+        self.inner
+            .peers
+            .lock()
+            .ok()?
+            .get(&peer)
+            .map(|session| session.generation)
     }
 
     /// 指定对端的遥测（**本机视角**：本机聚合的 1 Hz 快照，含本机算出的时钟估计）。
@@ -2350,6 +2385,10 @@ async fn run_session(
                             &session,
                             &mut rx_state.audio_receiver,
                             &playback,
+                            conceal_ceiling_frames(
+                                jitter_depth.load(Ordering::Relaxed),
+                                rx_state.frame_ms,
+                            ),
                             batch,
                         );
 
@@ -2393,6 +2432,10 @@ async fn run_session(
                     &session,
                     &mut rx_state.audio_receiver,
                     &playback,
+                    conceal_ceiling_frames(
+                        jitter_depth.load(Ordering::Relaxed),
+                        rx_state.frame_ms,
+                    ),
                     batch,
                 );
             }
@@ -2545,6 +2588,7 @@ async fn run_session(
                     &session,
                     &mut rx_state.audio_receiver,
                     &playback,
+                    conceal_ceiling_frames(target_frames, rx_state.frame_ms),
                     batch,
                 );
 
@@ -2651,6 +2695,9 @@ fn open_stream_payload(codec: &CodecConfig, advertised_frame_ms: Option<u8>) -> 
     }
 }
 
+/// 会话世代号的全局计数器（每建一条会话取一个值；只增不减，回绕无实际风险）。
+static NEXT_SESSION_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 /// 建会话表项。对端展示名在收到 `HELLO` 之前只能用**短指纹**占位 ——
 /// 展示名是对端自报的，在拿到证书指纹之前任何名字都不可信。
 fn create_session(
@@ -2663,6 +2710,7 @@ fn create_session(
     let session = Arc::new(PeerSession {
         initiated_locally,
         id: peer_id,
+        generation: NEXT_SESSION_GENERATION.fetch_add(1, Ordering::Relaxed),
         name: Mutex::new(peer_id.short()),
         addr,
         machine: Mutex::new(SessionMachine::new()),
@@ -2841,6 +2889,7 @@ fn session_encoder_main(
     // 把粒度提到 1 ms（见 docs/70）。
     #[cfg(windows)]
     let _timer_resolution = TimerResolutionGuard::new();
+    boost_audio_thread_priority();
     let mut encoder = match OpusEncoder::new(codec) {
         Ok(encoder) => encoder,
         Err(error) => {
@@ -3054,8 +3103,8 @@ type PlayoutSyncHandle = Arc<Mutex<PlayoutSync>>;
 /// 播放管线句柄：发送端（会话任务）+ 停止标志 + 线程句柄 + §7 排播状态。
 struct PlayoutHandle {
     frames: Sender<PlaybackFrame>,
-    /// 尚未处理的第一次满队列拒收序号；高位标记有效，避免序号 0 与未拒收混淆。
-    rejected_seq: Arc<AtomicU64>,
+    /// 「没进队」序号（满队列拒收或占位帧让位）的多槽位标记集 —— 播放游标据此跳队头恢复。
+    rejected_marks: Arc<RejectedMarks>,
     stop: Arc<AtomicBool>,
     join: Option<std::thread::JoinHandle<()>>,
     sync: PlayoutSyncHandle,
@@ -3121,12 +3170,40 @@ impl PlayoutHandle {
     ///
     /// 这是**已解码、还没被播放线程取走**的帧数 —— 也就是引擎抖动缓冲本身。
     /// 起步按自适应目标攒 1--3 帧，此后每拍取走一帧；水位受调度抖动与收发速率差影响，
-    /// 上限为 `PLAYBACK_QUEUE_FRAMES`。它不包含 sink、Android PCM 环或 AudioTrack 的水位。
+    /// 上限为 [`playback_queue_frames`]（按本条流的帧长换算）。它不包含 sink、Android PCM 环或
+    /// AudioTrack 的水位。
     /// 曾经试过改用 `PlayoutSink::buffered_frames()`（播放器内部积压），但那是个**实现自定义**的量：
     /// 真实 WASAPI sink 与合成 sink 的语义不同，同一份遥测在两端会给出不可比的数字。
     /// 与其发布一个语义漂移的指标，不如发布一个定义精确的。
     fn depth_frames(&self) -> usize {
         self.frames.len()
+    }
+
+    /// 队列是否不该再收掩盖占位帧 —— 接收侧占位帧据此**让位**（不进队，缺口标记给播放端）。
+    ///
+    /// 为什么占位帧要让位（优先级倒置修复）：`AudioReceiver::receive` 对一个长度为 N 的洞
+    /// 会连发 N 帧掩盖、**最后**才是真实帧；若不加区分，占位帧会一路把队列顶到容量上限，
+    /// 把真实音频拒掉 —— 占位帧不进队，播放端对那个洞自己会掩盖；真实帧被挤掉才是真丢音频。
+    ///
+    /// 让位线有两条，先到先让：
+    /// ① 水位已达 `ceiling`（目标深度 + 一个重排窗，见 [`conceal_ceiling_frames`]）——
+    ///    占位帧的职责只是防止播放端走到洞时欠载，水位已够时它是纯压载；
+    /// ② 只剩最后一格 —— 兜底，把最后一格留给随后的真实帧。
+    ///
+    /// 单生产者（只有会话任务投递）：检查与投递之间队列只会被播放线程取短，没有反向竞态。
+    fn should_yield_conceal(&self, ceiling: usize) -> bool {
+        let len = self.frames.len();
+        len >= ceiling.max(1)
+            || self
+                .frames
+                .capacity()
+                .is_some_and(|capacity| len + 1 >= capacity)
+    }
+
+    /// 主动不进队的占位帧：把缺口标记给播放端（与满队列拒收同一条 [`RejectedMarks`] 恢复路径），
+    /// 游标走到缺口时一次跳到队头，而不是逐拍补掩盖。
+    fn note_dropped_seq(&self, seq: u32) {
+        self.rejected_marks.mark(seq);
     }
 
     /// 非阻塞投递一帧；返回 `false` 表示队列已满（调用方负责计 `late_drops`）。
@@ -3135,7 +3212,7 @@ impl PlayoutHandle {
         match self.frames.try_send(frame) {
             Ok(()) => true,
             Err(crossbeam_channel::TrySendError::Full(_)) => {
-                note_rejected_seq(&self.rejected_seq, seq);
+                self.rejected_marks.mark(seq);
                 false
             }
             Err(crossbeam_channel::TrySendError::Disconnected(_)) => false,
@@ -3143,15 +3220,80 @@ impl PlayoutHandle {
     }
 }
 
-fn note_rejected_seq(rejected_seq: &AtomicU64, seq: u32) {
-    // 连续满队列时保留第一个洞：后来拒收的序号可能已在队头之后，
-    // 若覆盖第一个，播放线程就无法辨认眼前这个缺口。
-    let _ = rejected_seq.compare_exchange(
-        0,
-        (1u64 << 32) | u64::from(seq),
-        Ordering::Relaxed,
-        Ordering::Relaxed,
-    );
+/// 被拒/让位缺口的**多槽位**标记集（docs/75 的单槽 `rejected_seq` 的继任者）。
+///
+/// 为什么单槽不够（2026-10-13 真机，docs/76）：播放游标比接收前沿落后「水位深度」
+/// （300 ms 容量下最多 30 个序号），单槽在这段窗口里只记得到一个缺口；而占位帧让位
+/// （`push_playback_frame`）与满队列拒收在弱网波动期**成簇**出现 —— 槽位被占时后到的
+/// 缺口标记被丢弃，播放端对它只能走「逐拍追赶（C 线）+ 深度 +1 升档 + Hold 补水」的
+/// 贵路径，听感卡顿与水位爬升由此而来（现场 1324 s：C 459 / B 1065）。
+///
+/// 写侧只有会话任务（单生产者），读侧只有播放线程（单消费者），全原子、免锁。
+/// 16 槽的依据：在窗缺口 ≤ 「队列容量 30 + 重排在飞 ~18」个序号里的洞数，
+/// 正常丢包形态远远装得下；槽满时轮转覆盖最旧 —— 被覆盖的那个洞退回贵路径，
+/// 与单槽时代的最坏行为相同，不会更糟。
+struct RejectedMarks {
+    slots: [AtomicU64; REJECTED_MARK_SLOTS],
+    /// 槽位全满时的轮转覆盖游标（设计上不该走到，见上）。
+    next_overwrite: AtomicUsize,
+}
+
+/// 见 [`RejectedMarks`]：在窗缺口数的两倍余量。
+const REJECTED_MARK_SLOTS: usize = 16;
+
+impl RejectedMarks {
+    fn new() -> Self {
+        Self {
+            slots: std::array::from_fn(|_| AtomicU64::new(0)),
+            next_overwrite: AtomicUsize::new(0),
+        }
+    }
+
+    /// 标记一个「不会进队」的序号。优先占空槽；槽满时轮转覆盖最旧（那个洞退回贵路径）。
+    ///
+    /// 高位是有效标记：避免序号 0 与空槽混淆。
+    fn mark(&self, seq: u32) {
+        let value = (1u64 << 32) | u64::from(seq);
+        for slot in &self.slots {
+            if slot
+                .compare_exchange(0, value, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return;
+            }
+        }
+        let slot = self.next_overwrite.fetch_add(1, Ordering::Relaxed) % REJECTED_MARK_SLOTS;
+        self.slots[slot].store(value, Ordering::Relaxed);
+    }
+
+    /// 播放游标眼前的缺口 `[expected, expected+distance)` 是否包含被标记的序号。
+    ///
+    /// 顺手做两件清洁：命中的槽清掉（缺口已被跳过，标记不得影响后面的洞）；
+    /// 落在游标**身后**的陈旧标记（永远等不到游标的洞）也清掉，槽位还给大家。
+    fn covers_gap(&self, expected: u32, distance: u32) -> bool {
+        let mut covered = false;
+        for slot in &self.slots {
+            let marked = slot.load(Ordering::Relaxed);
+            if marked >> 32 == 0 {
+                continue;
+            }
+            let rejected_distance = (marked as u32).wrapping_sub(expected);
+            if rejected_distance >= (1 << 31) {
+                slot.store(0, Ordering::Relaxed); // 已在游标身后：陈旧标记
+            } else if !covered && rejected_distance < distance {
+                slot.store(0, Ordering::Relaxed);
+                covered = true;
+            }
+        }
+        covered
+    }
+
+    #[cfg(test)]
+    fn is_marked(&self, seq: u32) -> bool {
+        self.slots
+            .iter()
+            .any(|slot| slot.load(Ordering::Relaxed) == (1u64 << 32) | u64::from(seq))
+    }
 }
 
 /// 句柄被 drop 即收工：停线程、还混音源号、owner 让位。
@@ -3296,6 +3438,7 @@ fn hub_main(
     ready_tx: std::sync::mpsc::Sender<Result<(), AudioLinkError>>,
     epoch_us: Arc<AtomicI64>,
 ) {
+    boost_audio_thread_priority();
     let mut capture = match factory() {
         Ok(capture) => capture,
         Err(error) => {
@@ -3476,7 +3619,23 @@ struct ReceiveReport {
     late_drops: u32,
     /// B 线分量（docs/73 §2 P0）：`late_drops` 里「因待播队列满被 `try_push` 拒收」的那部分
     /// （`late_drops` 还包含「包本身就迟到」的另一部分，两者必须能分开数）。
+    ///
+    /// 口径说明：掩盖占位帧在队列只剩一格时**主动让位**（见 [`Emission`] 与
+    /// `receive_audio`），让位不算拒收、不进这个计数 —— 这里的每次计数都有真音频损失。
     queue_rejects: u32,
+}
+
+/// `AudioReceiver::receive` 投递的帧类：接收侧掩盖占位帧 / 真实解码帧。
+///
+/// 为什么要分开标：对长度为 N 的序号洞，`receive` 连发 N 帧掩盖、**最后**才是真实帧。
+/// 队列只剩最后一格时占位帧必须让位（占位帧不进队，播放端对那个洞自己掩盖；真实帧被挤掉
+/// 才是真丢音频）—— 不加区分的话，占位帧会占掉最后的空位、把真实帧拒掉（优先级倒置）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Emission {
+    /// 接收侧掩盖生成的占位帧（可让位）。
+    Conceal,
+    /// 真实解码帧（队列的最后一格永远留给它）。
+    Real,
 }
 
 /// 接收方向**由帧长派生**的全部状态，打包成一个可以整体重建的单元。
@@ -3644,7 +3803,7 @@ impl AudioReceiver {
         &mut self,
         seq: u32,
         payload: &[u8],
-        mut emit: impl FnMut(PlaybackFrame) -> bool,
+        mut emit: impl FnMut(PlaybackFrame, Emission) -> bool,
     ) -> ReceiveReport {
         let mut report = ReceiveReport::default();
         let gap = match self.expected_seq {
@@ -3681,10 +3840,13 @@ impl AudioReceiver {
                 self.pcm.fill(0.0);
             }
             let missing_seq = seq.wrapping_sub(gap - missing);
-            if !emit(PlaybackFrame {
-                seq: missing_seq,
-                samples: self.pcm.clone(),
-            }) {
+            if !emit(
+                PlaybackFrame {
+                    seq: missing_seq,
+                    samples: self.pcm.clone(),
+                },
+                Emission::Conceal,
+            ) {
                 report.late_drops = report.late_drops.saturating_add(1);
                 report.queue_rejects = report.queue_rejects.saturating_add(1);
             }
@@ -3714,10 +3876,13 @@ impl AudioReceiver {
                 self.pcm.len()
             }
         };
-        if !emit(PlaybackFrame {
-            seq,
-            samples: self.pcm[..decoded].to_vec(),
-        }) {
+        if !emit(
+            PlaybackFrame {
+                seq,
+                samples: self.pcm[..decoded].to_vec(),
+            },
+            Emission::Real,
+        ) {
             report.late_drops = report.late_drops.saturating_add(1);
             report.queue_rejects = report.queue_rejects.saturating_add(1);
         }
@@ -3725,17 +3890,35 @@ impl AudioReceiver {
     }
 }
 
+/// 把一帧推进待播队列：掩盖占位帧在水位达到 `conceal_ceiling` 后让位（见 [`Emission`]）。
+///
+/// 让位不算拒收：返回 `true`（不进 `queue_rejects`），但缺口经 `note_dropped_seq` 标记给
+/// 播放端 —— 游标到点时跳队头，既不误记欠载也不拖长掩盖。
+fn push_playback_frame(
+    handle: &PlayoutHandle,
+    frame: PlaybackFrame,
+    emission: Emission,
+    conceal_ceiling: usize,
+) -> bool {
+    if emission == Emission::Conceal && handle.should_yield_conceal(conceal_ceiling) {
+        handle.note_dropped_seq(frame.seq);
+        return true;
+    }
+    handle.try_push(frame)
+}
+
 fn receive_audio(
     session: &Arc<PeerSession>,
     receiver: &mut AudioReceiver,
     playback: &Option<PlayoutHandle>,
+    conceal_ceiling: usize,
     seq: u32,
     payload: &[u8],
 ) {
-    let report = receiver.receive(seq, payload, |frame| {
+    let report = receiver.receive(seq, payload, |frame, emission| {
         playback
             .as_ref()
-            .is_none_or(|handle| handle.try_push(frame))
+            .is_none_or(|handle| push_playback_frame(handle, frame, emission, conceal_ceiling))
     });
 
     if let Ok(mut telemetry) = session.telemetry.lock() {
@@ -3751,6 +3934,7 @@ fn deliver_reordered_audio(
     session: &Arc<PeerSession>,
     receiver: &mut AudioReceiver,
     playback: &Option<PlayoutHandle>,
+    conceal_ceiling: usize,
     batch: ReorderBatch,
 ) {
     if batch.late_drops > 0
@@ -3759,7 +3943,7 @@ fn deliver_reordered_audio(
         telemetry.record_late_drops(batch.late_drops);
     }
     for EncodedAudioPacket { seq, payload, .. } in batch.ready {
-        receive_audio(session, receiver, playback, seq, &payload);
+        receive_audio(session, receiver, playback, conceal_ceiling, seq, &payload);
     }
 }
 
@@ -4637,10 +4821,12 @@ fn mixer_slot_for_frame(
     }
 
     let fresh = Arc::new(PlayoutMixSlot {
+        // 混音器每路缓冲与待播通道同一条容量口径（通道能装下的，混音器也必须装得下；
+        // 它溢出时丢最旧，不报错 —— 容量若比通道小就会静默丢音频）。
         mixer: Arc::new(Mutex::new(PcmMixer::new(
             format,
             frame_samples,
-            PLAYBACK_QUEUE_FRAMES,
+            playback_queue_frames(u32::try_from(frame_samples / 48).unwrap_or(20).max(1)),
         ))),
         frame_samples,
         owner: AtomicU32::new(0),
@@ -4810,9 +4996,9 @@ fn spawn_playout_thread(
     };
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), AudioLinkError>>();
-    let (frame_tx, frame_rx) = crossbeam_channel::bounded(PLAYBACK_QUEUE_FRAMES);
-    let rejected_seq = Arc::new(AtomicU64::new(0));
-    let thread_rejected_seq = Arc::clone(&rejected_seq);
+    let (frame_tx, frame_rx) = crossbeam_channel::bounded(playback_queue_frames(codec.frame_ms));
+    let rejected_marks = Arc::new(RejectedMarks::new());
+    let thread_rejected_marks = Arc::clone(&rejected_marks);
     let stop = new_stop_flag();
     let thread_stop = Arc::clone(&stop);
     // §7 排播状态：会话任务写、播放线程读；默认关闭（没有组基准时一切照旧）。
@@ -4876,7 +5062,7 @@ fn spawn_playout_thread(
                 mix_source,
                 thread_slot,
                 frame_rx,
-                thread_rejected_seq,
+                thread_rejected_marks,
                 ready_tx,
             );
         })
@@ -4887,7 +5073,7 @@ fn spawn_playout_thread(
     match ready_rx.recv_timeout(Duration::from_secs(5)) {
         Ok(Ok(())) => Ok(PlayoutHandle {
             frames: frame_tx,
-            rejected_seq,
+            rejected_marks,
             stop,
             join: Some(join),
             sync,
@@ -4937,6 +5123,28 @@ impl Drop for TimerResolutionGuard {
     }
 }
 
+/// Android：把音频实时线程（采集枢纽 / 编码 / 播放）的内核调度优先级提到
+/// `THREAD_PRIORITY_URGENT_AUDIO`（nice −19，与 Kotlin 侧 `LowLatencyPlayer` 播放线程同档）。
+///
+/// 默认优先级下这些线程与普通后台任务同级，会被抢占 —— 2026-10 真机现场的 A 线节拍超时
+/// 与其引起的播放环供给欠载同源于此。Windows 不需要这条：节拍精度由 [`TimerResolutionGuard`]
+/// 解决，WASAPI 自己的线程走 MMCSS。
+///
+/// 失败不致命（warn 后继续）：优先级是调度优化，不是正确性前提。
+#[cfg(target_os = "android")]
+fn boost_audio_thread_priority() {
+    // SAFETY：`setpriority(PRIO_PROCESS, 0, …)` 只作用于调用线程自身的调度属性，
+    // 不涉及任何内存访问；非零返回由下方显式处理。
+    #[allow(unsafe_code)]
+    let rc = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -19) };
+    if rc != 0 {
+        tracing::warn!(rc, "音频线程提优先级失败，按默认优先级继续");
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn boost_audio_thread_priority() {}
+
 #[allow(clippy::too_many_arguments)]
 fn playout_main(
     factory: &(dyn Fn() -> Result<Box<dyn PlayoutSink>, AudioError> + Send + Sync),
@@ -4957,11 +5165,12 @@ fn playout_main(
     mix_source: u32,
     mix_slot: Arc<PlayoutMixSlot>,
     frames: Receiver<PlaybackFrame>,
-    rejected_seq: Arc<AtomicU64>,
+    rejected_marks: Arc<RejectedMarks>,
     ready_tx: std::sync::mpsc::Sender<Result<(), AudioLinkError>>,
 ) {
     #[cfg(windows)]
     let _timer_resolution = TimerResolutionGuard::new();
+    boost_audio_thread_priority();
     let frame_ms_u32 = u32::try_from(frame_ms).unwrap_or(20);
     // 接收侧掩盖要等后续包到达才能发现洞；WiFi 暂停送包时，必须在播放截止时刻兜底。
     // 历史保存于增益之前，欠载时也重新应用当前音量，避免静音命令被旧音频绕过。
@@ -5338,7 +5547,7 @@ fn playout_main(
             &mut pending,
             &mut expected_seq,
             &telemetry,
-            (!scheduled_mode).then_some(rejected_seq.as_ref()),
+            (!scheduled_mode).then_some(rejected_marks.as_ref()),
         );
         if matches!(due, DueFrame::ReadyAfterRejectedGap(_)) {
             playout_concealer.note_discontinuity();
@@ -5553,7 +5762,7 @@ fn take_due_frame_after_reject(
     pending: &mut Option<PlaybackFrame>,
     expected_seq: &mut Option<u32>,
     telemetry: &Arc<Mutex<TelemetryAggregator>>,
-    rejected_seq: Option<&AtomicU64>,
+    rejected_marks: Option<&RejectedMarks>,
 ) -> DueFrame {
     loop {
         let frame = if let Some(frame) = pending.take() {
@@ -5583,29 +5792,13 @@ fn take_due_frame_after_reject(
             return DueFrame::Ready(frame);
         }
         if distance < (1 << 31) {
-            // 满队列拒收已经给接收序号留下永久缺口。只有确知这个缺口包含被拒帧时，
-            // 才跳到现有队头；普通网络缺帧仍逐拍掩盖，不能误伤弱网恢复。
-            if let Some(rejected_seq) = rejected_seq {
-                let rejected = rejected_seq.load(Ordering::Relaxed);
-                let rejected_distance = (rejected as u32).wrapping_sub(expected);
-                if rejected >> 32 != 0 && rejected_distance < distance {
-                    let _ = rejected_seq.compare_exchange(
-                        rejected,
-                        0,
-                        Ordering::Relaxed,
-                        Ordering::Relaxed,
-                    );
-                    *expected_seq = Some(frame.seq.wrapping_add(1));
-                    return DueFrame::ReadyAfterRejectedGap(frame);
-                }
-                if rejected >> 32 != 0 && rejected_distance >= (1 << 31) {
-                    let _ = rejected_seq.compare_exchange(
-                        rejected,
-                        0,
-                        Ordering::Relaxed,
-                        Ordering::Relaxed,
-                    );
-                }
+            // 满队列拒收 / 占位帧让位已经给接收序号留下永久缺口。只有确知这个缺口包含
+            // 被标记的序号时，才跳到现有队头；普通网络缺帧仍逐拍掩盖，不能误伤弱网恢复。
+            if let Some(rejected_marks) = rejected_marks
+                && rejected_marks.covers_gap(expected, distance)
+            {
+                *expected_seq = Some(frame.seq.wrapping_add(1));
+                return DueFrame::ReadyAfterRejectedGap(frame);
             }
             *pending = Some(frame);
             *expected_seq = Some(expected.wrapping_add(1));

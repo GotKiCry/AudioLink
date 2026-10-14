@@ -53,6 +53,13 @@ pub(super) const MAX_TARGET_MS: u64 = 120;
 const FULL_REORDER_MS: u64 = 60;
 const STABLE_WINDOWS_TO_SHRINK: u32 = 5;
 const REORDER_CAPACITY_MS: u64 = 60;
+/// 待播队列容量的「批量到达」余量（ms）：上限目标与重排容量之外，再留出一个 Wi-Fi 批次的洪峰。
+///
+/// Wi-Fi 节电/聚合让包**成批**到达（DTIM 节拍 ~100 ms 一批）：批到达瞬间，会话任务会把
+/// 批内全部帧一次性投进待播队列。容量的墙钟口径必须装下「深度已被抖动顶到上限」+「一整批」，
+/// 否则批式到达每批都撞满队列拒收（B 线）——现场 1767 s 314 次、本装置复现 30 s 297 次
+/// （`tests/engine/queue_reject_burst.rs`）。容量只是余量，不是延迟：水位由自适应目标深度决定。
+const QUEUE_BATCH_HEADROOM_MS: u64 = 120;
 // 发送端先发当前主包、再发上一帧副本。低缓冲档也须留出同批数据报的到达间隙，
 // 否则主包刚丢就被确认成洞，紧随其后的冗余副本永远赶不上解码游标。
 const REDUNDANT_REORDER_GRACE: Duration = Duration::from_millis(5);
@@ -63,6 +70,25 @@ const SETTLE_EXCESS_FRAMES: usize = 1;
 /// 盈余必须持续满一个窗口才结算一帧，结算后重新计时 —— 结算频率自然跟随速率差，
 /// 与被移除的「每拍丢一帧」护栏（docs/12 §11.12，代价 7×）相区别。
 const SETTLE_EXCESS_WINDOW: Duration = Duration::from_millis(500);
+
+/// 待播队列容量（帧数）：**墙钟口径**（上限目标 + 重排容量 + 批量到达余量）按帧长换算，下限 16 帧。
+///
+/// 10 ms 档 = 300 ms → 30 帧（旧固定值 16 只有 160 ms，深度顶到 120 ms 上限后余量仅 4 帧，
+/// 一个 ~100 ms 的 Wi-Fi 批次即溢出）；20 ms 档 = 15 → 夹到下限 16，维持历史行为不变。
+pub(super) fn playback_queue_frames(frame_ms: u32) -> usize {
+    const QUEUE_CAPACITY_MS: u64 = MAX_TARGET_MS + REORDER_CAPACITY_MS + QUEUE_BATCH_HEADROOM_MS;
+    frames_for_ms(QUEUE_CAPACITY_MS, frame_ms).max(16)
+}
+
+/// 掩盖占位帧的投递上限（帧数）：当前目标深度 + 重排容量。
+///
+/// 占位帧的唯一职责是防止播放端走到洞时欠载；水位已不低于「目标 + 一个重排窗」时，
+/// 继续投占位帧是纯压载 —— 它会把队列顶向容量、把随后的真实帧挤成满队列拒收（B 线）。
+/// 让位的缺口经 `note_dropped_seq` 标记给播放端，走 docs/75 的跳队头恢复。
+/// 与帧长联动：10 ms 档 = 目标 2~12 + 6 = 8~18 帧；20 ms 档 = 1~6 + 3 = 4~9 帧。
+pub(super) fn conceal_ceiling_frames(target_frames: usize, frame_ms: u32) -> usize {
+    target_frames.saturating_add(frames_for_ms(REORDER_CAPACITY_MS, frame_ms))
+}
 
 /// 毫秒保护垫 → 帧数：向上取整、至少一帧（20 ms → 20 ms 帧 1 帧 / 10 ms 帧 2 帧）。
 pub(super) fn frames_for_ms(ms: u64, frame_ms: u32) -> usize {
@@ -550,6 +576,30 @@ mod tests {
 
     fn seqs(batch: &ReorderBatch) -> Vec<u32> {
         batch.ready.iter().map(|packet| packet.seq).collect()
+    }
+
+    /// 批量到达余量的换算表：容量 = 上限目标 120 ms + 重排容量 60 ms + 批次余量 120 ms = 300 ms，
+    /// 下限 16 帧。只有 10 ms 档相对旧固定值（16 帧）变大；其余帧长维持历史行为。
+    #[test]
+    fn playback_queue_capacity_is_wall_clock_aware_with_a_floor() {
+        assert_eq!(playback_queue_frames(10), 30, "10 ms 档：300 ms → 30 帧");
+        assert_eq!(
+            playback_queue_frames(20),
+            16,
+            "20 ms 档：300 ms → 15 帧，夹到下限 16"
+        );
+        assert_eq!(playback_queue_frames(40), 16);
+        assert_eq!(playback_queue_frames(60), 16);
+    }
+
+    #[test]
+    fn conceal_ceiling_is_target_depth_plus_one_reorder_window() {
+        // 10 ms 档：目标 2~12 + 重排 6 = 8~18 帧；始终低于容量 30，给批式到达的真实帧留足余量。
+        assert_eq!(conceal_ceiling_frames(2, 10), 8);
+        assert_eq!(conceal_ceiling_frames(12, 10), 18);
+        // 20 ms 档：目标 1~6 + 重排 3 = 4~9 帧。
+        assert_eq!(conceal_ceiling_frames(1, 20), 4);
+        assert_eq!(conceal_ceiling_frames(6, 20), 9);
     }
 
     #[test]

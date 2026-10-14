@@ -40,6 +40,8 @@ mod network_outage;
 mod pcm_delivery;
 mod playout_recovery;
 mod playout_watermark;
+mod queue_reject_burst;
 mod receiver_epoch;
 mod reconnect_receipt;
+mod session_replacement;
 mod sink_watchdog;

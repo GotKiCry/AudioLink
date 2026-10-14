@@ -36,7 +36,7 @@ fn deliver_reorder_batch(
         ..ReceiveReport::default()
     };
     for EncodedAudioPacket { seq, payload, .. } in batch.ready {
-        let report = receiver.receive(seq, &payload, |frame| {
+        let report = receiver.receive(seq, &payload, |frame, _emission| {
             output.push(frame);
             true
         });
@@ -131,10 +131,14 @@ fn missing_tick_advances_cursor_and_late_frame_is_never_played() {
 }
 
 #[test]
-fn full_queue_rejection_recovers_at_the_next_accepted_frame() {
+fn full_queue_rejection_marks_every_gap_and_recovers_at_each_accepted_frame() {
+    // 多槽标记集（RejectedMarks）的语义：窗口内**每个**被拒序号都留下标记，
+    // 播放游标走到任一被标记的缺口都一次跳到队头。单槽时代第二个标记会被丢弃，
+    // 该缺口只能退回「逐拍追赶（C 线）+ 升档 + Hold 补水」的贵路径 —— docs/76
+    // 真机现场 C=459 的病灶。
     let (tx, rx) = crossbeam_channel::bounded(2);
     let stats = telemetry();
-    let rejected = AtomicU64::new(0);
+    let marks = RejectedMarks::new();
     let mut pending = None;
     let mut expected = Some(0);
 
@@ -142,45 +146,61 @@ fn full_queue_rejection_recovers_at_the_next_accepted_frame() {
     tx.send(frame(1)).unwrap();
     let lost = frame(2);
     assert!(tx.try_send(lost).is_err());
-    note_rejected_seq(&rejected, 2);
-    note_rejected_seq(&rejected, 4);
-    assert_eq!(rejected.load(Ordering::Relaxed) as u32, 2);
+    marks.mark(2);
+    marks.mark(4);
+    assert!(marks.is_marked(2));
+    assert!(marks.is_marked(4), "窗口内的每个缺口都必须留住标记");
     for seq in 0..2 {
         assert!(matches!(
-            take_due_frame_after_reject(&rx, &mut pending, &mut expected, &stats, Some(&rejected)),
+            take_due_frame_after_reject(&rx, &mut pending, &mut expected, &stats, Some(&marks)),
             DueFrame::Ready(PlaybackFrame { seq: played, .. }) if played == seq
         ));
     }
     tx.send(frame(3)).unwrap();
     assert!(matches!(
-        take_due_frame_after_reject(&rx, &mut pending, &mut expected, &stats, Some(&rejected)),
+        take_due_frame_after_reject(&rx, &mut pending, &mut expected, &stats, Some(&marks)),
         DueFrame::ReadyAfterRejectedGap(PlaybackFrame { seq: 3, .. })
     ));
     assert_eq!(expected, Some(4));
-    assert_eq!(rejected.load(Ordering::Relaxed), 0);
+    assert!(
+        !marks.is_marked(2),
+        "被跳过的缺口标记必须清掉，不得影响后面的洞"
+    );
+    assert!(marks.is_marked(4), "游标前方的缺口标记必须保留");
     assert_eq!(
         stats.lock().unwrap().underrun_breakdown().cursor_catchups,
         0
     );
 
+    // 第二个被拒缺口（4）同样被标记：游标走到它时也要直接跳，而不是逐拍掩盖。
     tx.send(frame(5)).unwrap();
     assert!(matches!(
-        take_due_frame_after_reject(&rx, &mut pending, &mut expected, &stats, Some(&rejected)),
+        take_due_frame_after_reject(&rx, &mut pending, &mut expected, &stats, Some(&marks)),
+        DueFrame::ReadyAfterRejectedGap(PlaybackFrame { seq: 5, .. })
+    ));
+    assert_eq!(expected, Some(6));
+    assert!(!marks.is_marked(4));
+
+    // 未标记的普通网络缺帧仍须逐拍掩盖，不能误伤弱网恢复。
+    tx.send(frame(7)).unwrap();
+    assert!(matches!(
+        take_due_frame_after_reject(&rx, &mut pending, &mut expected, &stats, Some(&marks)),
         DueFrame::Missing
     ));
-    assert_eq!(expected, Some(5), "普通网络缺帧仍须逐拍掩盖");
+    assert_eq!(expected, Some(7));
 }
 
 #[test]
 fn rejected_gap_recovery_preserves_wrapping_sequence_order() {
     let (tx, rx) = crossbeam_channel::bounded(2);
     let stats = telemetry();
-    let rejected = AtomicU64::new((1u64 << 32) | u64::from(u32::MAX));
+    let marks = RejectedMarks::new();
+    marks.mark(u32::MAX);
     let mut pending = None;
     let mut expected = Some(u32::MAX);
     tx.send(frame(0)).unwrap();
     assert!(matches!(
-        take_due_frame_after_reject(&rx, &mut pending, &mut expected, &stats, Some(&rejected)),
+        take_due_frame_after_reject(&rx, &mut pending, &mut expected, &stats, Some(&marks)),
         DueFrame::ReadyAfterRejectedGap(PlaybackFrame { seq: 0, .. })
     ));
     assert_eq!(expected, Some(1));
@@ -479,11 +499,11 @@ fn packet_gap_emits_non_silent_concealment_before_recovery_frame() {
     let packets = encoded_packets(4);
     let mut receiver = AudioReceiver::new(CodecConfig::m1_default()).unwrap();
     let mut output = Vec::new();
-    let first = receiver.receive(0, &packets[0], |frame| {
+    let first = receiver.receive(0, &packets[0], |frame, _emission| {
         output.push(frame);
         true
     });
-    let recovered = receiver.receive(2, &packets[2], |frame| {
+    let recovered = receiver.receive(2, &packets[2], |frame, _emission| {
         output.push(frame);
         true
     });
@@ -513,7 +533,7 @@ fn packet_gap_emits_non_silent_concealment_before_recovery_frame() {
     assert!(output[2].samples.iter().all(|sample| sample.is_finite()));
 
     let before = output.len();
-    let stale = receiver.receive(1, &packets[1], |frame| {
+    let stale = receiver.receive(1, &packets[1], |frame, _emission| {
         output.push(frame);
         true
     });
@@ -529,16 +549,149 @@ fn full_queue_rejection_is_booked_apart_from_plain_late_drops() {
     let packets = encoded_packets(2);
     let mut receiver = AudioReceiver::new(CodecConfig::m1_default()).unwrap();
 
-    let rejected = receiver.receive(0, &packets[0], |_frame| false);
+    let rejected = receiver.receive(0, &packets[0], |_frame, _emission| false);
     assert_eq!(rejected.late_drops, 1, "拒收仍按原口径记 late_drops");
     assert_eq!(rejected.queue_rejects, 1, "同一事件另记 B 线分量");
 
     // 包本身迟到（序号在接收游标之后）不是队列拒收，不得污染 queue_rejects。
-    let accepted = receiver.receive(1, &packets[1], |_frame| true);
+    let accepted = receiver.receive(1, &packets[1], |_frame, _emission| true);
     assert_eq!(accepted.queue_rejects, 0);
-    let stale = receiver.receive(0, &packets[0], |_frame| false);
+    let stale = receiver.receive(0, &packets[0], |_frame, _emission| false);
     assert_eq!(stale.late_drops, 1);
     assert_eq!(stale.queue_rejects, 0, "迟到包不走 emit,与队列满无关");
+}
+
+fn stub_playout_handle(
+    capacity: usize,
+) -> (
+    PlayoutHandle,
+    crossbeam_channel::Receiver<PlaybackFrame>,
+    Arc<RejectedMarks>,
+) {
+    let (tx, rx) = crossbeam_channel::bounded(capacity);
+    let rejected_marks = Arc::new(RejectedMarks::new());
+    let handle = PlayoutHandle {
+        frames: tx,
+        rejected_marks: Arc::clone(&rejected_marks),
+        stop: new_stop_flag(),
+        join: None,
+        sync: Arc::new(Mutex::new(PlayoutSync::default())),
+        gain: Arc::new(Mutex::new(GainState::new(1_000))),
+        mixer: None,
+        mix_source: None,
+        mix_slot: Arc::new(PlayoutMixSlot {
+            mixer: Arc::new(Mutex::new(PcmMixer::new(
+                MixFormat {
+                    sample_rate: 48_000,
+                    channels: 2,
+                },
+                960,
+                8,
+            ))),
+            frame_samples: 960,
+            owner: AtomicU32::new(0),
+        }),
+    };
+    (handle, rx, rejected_marks)
+}
+
+#[test]
+fn conceal_frames_yield_at_the_depth_ceiling() {
+    // 让位线 ①（B 线的主修复）：占位帧的职责只是防止播放端走到洞时欠载，水位达到
+    // 「目标深度 + 一个重排窗」后它就是纯压载 —— 必须让位，否则批式到达时占位帧把队列
+    // 顶到容量上限、把随后的真实帧挤成满队列拒收（复现：tests/engine/queue_reject_burst.rs）。
+    let (handle, rx, rejected_marks) = stub_playout_handle(8);
+    let ceiling = 3; // 例：10 ms 档低目标 2 + 重排窗 6 也只是 8，这里取更小的值钉语义。
+
+    // 水位低于上限：占位帧正常进队（它的防欠载职责还没完成）。
+    assert!(push_playback_frame(
+        &handle,
+        frame(0),
+        Emission::Real,
+        ceiling
+    ));
+    assert!(push_playback_frame(
+        &handle,
+        frame(1),
+        Emission::Conceal,
+        ceiling
+    ));
+    assert!(push_playback_frame(
+        &handle,
+        frame(2),
+        Emission::Conceal,
+        ceiling
+    ));
+    assert_eq!(rx.len(), 3);
+    assert!(handle.should_yield_conceal(ceiling));
+
+    // 水位达到上限：占位帧让位 —— 不进队、不记拒（返回 true），缺口标记给播放端。
+    assert!(push_playback_frame(
+        &handle,
+        frame(3),
+        Emission::Conceal,
+        ceiling
+    ));
+    assert_eq!(rx.len(), 3, "达到上限后占位帧不得再进队");
+    assert!(rejected_marks.is_marked(3), "让位的缺口必须标记给播放端");
+
+    // 真实帧不受上限约束：它永远可以尝试进队（队列远未满）。
+    assert!(push_playback_frame(
+        &handle,
+        frame(4),
+        Emission::Real,
+        ceiling
+    ));
+    let seqs: Vec<u32> = (0..4).map(|_| rx.recv().unwrap().seq).collect();
+    assert_eq!(seqs, [0, 1, 2, 4]);
+}
+
+#[test]
+fn conceal_frames_yield_the_last_queue_slot_to_real_audio() {
+    // 让位线 ②（兜底）：上限给得很高时，队列只剩一格仍要让位，把最后一格留给真实帧。
+    let (handle, rx, rejected_marks) = stub_playout_handle(4);
+
+    // 填满到只剩一格。
+    for seq in 0..3 {
+        assert!(push_playback_frame(
+            &handle,
+            frame(seq),
+            Emission::Real,
+            usize::MAX
+        ));
+    }
+    assert!(
+        handle.should_yield_conceal(usize::MAX),
+        "容量 4、水位 3：只剩一格，占位帧应当让位"
+    );
+
+    // 占位帧让位：不进队、不记拒（返回 true），但缺口被标记。
+    assert!(push_playback_frame(
+        &handle,
+        frame(3),
+        Emission::Conceal,
+        usize::MAX
+    ));
+    assert_eq!(rx.len(), 3, "占位帧不得占掉最后一格");
+    assert!(rejected_marks.is_marked(3), "让位的缺口必须标记给播放端");
+
+    // 真实帧拿下最后一格；队列真满之后，真实帧才被拒收（返回 false，由 receive() 记 B）。
+    assert!(push_playback_frame(
+        &handle,
+        frame(4),
+        Emission::Real,
+        usize::MAX
+    ));
+    assert!(!push_playback_frame(
+        &handle,
+        frame(5),
+        Emission::Real,
+        usize::MAX
+    ));
+
+    // 消费端验证：队里是 0,1,2,4 —— 占位帧 3 的位置是留给播放端跳过的洞。
+    let seqs: Vec<u32> = (0..4).map(|_| rx.recv().unwrap().seq).collect();
+    assert_eq!(seqs, [0, 1, 2, 4]);
 }
 
 #[test]
@@ -546,11 +699,11 @@ fn decode_failure_uses_pcm_concealment_and_sequence_wrap_remains_contiguous() {
     let packets = encoded_packets(2);
     let mut receiver = AudioReceiver::new(CodecConfig::m1_default()).unwrap();
     let mut output = Vec::new();
-    receiver.receive(u32::MAX, &packets[0], |frame| {
+    receiver.receive(u32::MAX, &packets[0], |frame, _emission| {
         output.push(frame);
         true
     });
-    let failed = receiver.receive(0, &[], |frame| {
+    let failed = receiver.receive(0, &[], |frame, _emission| {
         output.push(frame);
         true
     });
@@ -570,11 +723,11 @@ fn long_gap_is_bounded_and_does_not_fill_the_playback_queue_with_old_frames() {
     let packets = encoded_packets(2);
     let mut receiver = AudioReceiver::new(CodecConfig::m1_default()).unwrap();
     let mut output = Vec::new();
-    receiver.receive(0, &packets[0], |frame| {
+    receiver.receive(0, &packets[0], |frame, _emission| {
         output.push(frame);
         true
     });
-    let report = receiver.receive(1_000, &packets[1], |frame| {
+    let report = receiver.receive(1_000, &packets[1], |frame, _emission| {
         output.push(frame);
         true
     });
@@ -600,7 +753,7 @@ fn two_percent_deterministic_loss_has_no_hard_silence_or_sequence_hole() {
         if DROPPED.contains(&seq) {
             continue;
         }
-        let report = receiver.receive(seq as u32, packet, |frame| {
+        let report = receiver.receive(seq as u32, packet, |frame, _emission| {
             output.push(frame);
             true
         });
@@ -634,11 +787,11 @@ fn six_frame_burst_fades_instead_of_becoming_hard_silence() {
     let packets = encoded_packets(8);
     let mut receiver = AudioReceiver::new(CodecConfig::m1_default()).unwrap();
     let mut output = Vec::new();
-    receiver.receive(0, &packets[0], |frame| {
+    receiver.receive(0, &packets[0], |frame, _emission| {
         output.push(frame);
         true
     });
-    let report = receiver.receive(7, &packets[7], |frame| {
+    let report = receiver.receive(7, &packets[7], |frame, _emission| {
         output.push(frame);
         true
     });
@@ -841,7 +994,7 @@ fn scripted_playout_at_depth(
             owner: AtomicU32::new(0),
         }),
         rx,
-        Arc::new(AtomicU64::new(0)),
+        Arc::new(RejectedMarks::new()),
         ready_tx,
     );
     ready_rx.recv().unwrap().unwrap();
@@ -1013,7 +1166,7 @@ fn android_backlog_feedback_reduces_total_queue_without_output_underruns() {
             owner: AtomicU32::new(0),
         }),
         rx,
-        Arc::new(AtomicU64::new(0)),
+        Arc::new(RejectedMarks::new()),
         ready_tx,
     );
     ready_rx.recv().unwrap().unwrap();

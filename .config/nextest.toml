@@ -13,3 +13,14 @@ fail-fast = false
 [[profile.default.overrides]]
 filter = 'test(latency_budget)'
 success-output = "final"
+
+# B 线回归护栏（tests/engine/queue_reject_burst.rs）：30 s 真实 QUIC + 批式中继的实时实验。
+# 并发机上的短暂 CPU 饥荒能把播放节拍/会话任务拖出实时性（A 线尖峰、插座攒出超大批次），
+# 那是宿主噪声不是被测机制 —— 实时实验需要独占整机：threads-required=max 让 nextest
+# 不给它并排调度其它测试；retries 再挡一次残余抖动。机制真坏了时两次都会红。
+# 输出常驻可见：A/B/C 三分量与水位分布是这个实验的趋势读数（同 latency_budget 的先例）。
+[[profile.default.overrides]]
+filter = 'test(queue_rejects_under_wifi_style_bursts)'
+threads-required = "num-cpus"
+retries = 1
+success-output = "final"
