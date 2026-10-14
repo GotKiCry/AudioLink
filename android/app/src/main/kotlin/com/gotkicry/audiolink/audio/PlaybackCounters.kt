@@ -14,13 +14,16 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * ## 口径定义（每个数字都要能回答"它数的是什么"）
  *  - [framesWritten]：**来自数据源的有效音频帧**成功写进输出设备的总量（不含补的静音）；
- *  - [silenceFrames]：源欠载时为保持输出流连续而补写的静音帧（**不计入** [framesWritten]）；
+ *  - [silenceFrames]：源欠载时为保持输出流连续而补写的静音帧（**不计入** [framesWritten]），
  *    故"设备实际收到的帧数 = framesWritten + silenceFrames"；
+ *    **只在供给方活跃时计数**（与 [sourceUnderruns] 同一闸门）：没开播的空转补零不进这个口径；
  *  - [framesDropped]：推模式（`LowLatencyPlayer.write`）下非阻塞写没接受、调用方也不重试而丢弃的帧；
  *    拉模式（[PlayoutLoop]）**永不丢**（未写完的数据留在 pending 缓冲里下轮继续），所以它只反映推模式；
  *  - [writeErrors] / [lastWriteError]：输出设备返回负值错误的次数与最近一次错误码；
- *  - [sourceUnderruns]：一次读取拿不满请求量 = 一次供给欠载（次数口径）；
- *  - [starvedFrames]：这些欠载合计缺了多少帧（严重度口径）。
+ *  - [sourceUnderruns]：供给方**活跃期间**（播放环口径：距上次内核写入 ≤ 100 ms，
+ *    见 [PcmRingBuffer.producerActive]）一次读取拿不满请求量 = 一次供给欠载（次数口径）；
+ *    没有生产者（未开播/已关流）时的读空不计入 —— 那是"没开播"，不是"供给跟不上"；
+ *  - [starvedFrames]：这些欠载合计缺了多少帧（严重度口径），与 [sourceUnderruns] 同一闸门。
  */
 class PlaybackCounters {
 

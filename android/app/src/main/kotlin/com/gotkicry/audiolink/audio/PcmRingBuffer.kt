@@ -22,6 +22,13 @@ import java.util.concurrent.atomic.AtomicLong
  * 且没有真机压测就无法证明它是对的。正确性优先，低竞争锁是这里的工程最优解；
  * 等 M2 上真机、有 jcstress 级别的验证手段后再评估无锁版本。
  *
+ * ## 欠载计数只记「有生产者」的时段
+ * 服务常驻期间播放器一直在转，但内核的播放线程只在**推流中**存在 —— 暂停/未连接/断链重建
+ * 期间没有任何人写环。那段时间的读空不是"供给跟不上"，记进去只会污染诊断口径
+ * （2026-10 现场：暂停推流的间隙被记成 ~10 次/s 的供给欠载）。所以环自己记账：
+ * 距上次写入超过 [PRODUCER_GAP_NS] 即判定"没有生产者"，此后读空**不**计入
+ * [underrunCount] / [starvedFramesTotal]；写入恢复后计数自然恢复。
+ *
  * 线程安全：所有索引与数组访问都在内部锁下；统计计数用 `AtomicLong`（读侧不取锁）。
  */
 class PcmRingBuffer(
@@ -29,10 +36,22 @@ class PcmRingBuffer(
     val capacityFrames: Int,
     /** 声道数（M1 固定 2：`docs/11-m1-contract.md` §7 的 48 kHz / 2ch / FLOAT）。 */
     val channelCount: Int = DEFAULT_CHANNEL_COUNT,
+    /** 单调时钟（纳秒）；测试注入假时钟以驱动「生产者离开」的判定。 */
+    private val nowNanos: () -> Long = System::nanoTime,
 ) : PcmSource {
 
     companion object {
         const val DEFAULT_CHANNEL_COUNT = 2
+
+        /**
+         * 生产者活动判定窗口：健康推流下内核每 10/20 ms 写一次（缺数据时写的也是掩盖帧，
+         * 节拍不断），100 ms 没有任何写入只可能是播放线程不在了（关流/重建中）。
+         * 取 100 ms 而不是一两拍：留出调度抖动的余量，又不会把空闲期记成欠载。
+         */
+        const val PRODUCER_GAP_NS: Long = 100L * 1_000_000L
+
+        /** 「从未有人写过」的哨兵：此刻起读空一律不计数（服务刚启动、还没开播的正常状态）。 */
+        private const val NO_WRITE_YET: Long = Long.MIN_VALUE
     }
 
     init {
@@ -55,6 +74,10 @@ class PcmRingBuffer(
     private var readFrame = 0L
     private var writeFrame = 0L
 
+    /** 最近一次写入的单调时刻（纳秒）；[NO_WRITE_YET] = 从未写过。写侧在锁内更新，读侧免锁。 */
+    @Volatile
+    private var lastWriteNanos: Long = NO_WRITE_YET
+
     private val overflow = AtomicLong()
     private val underrunEvents = AtomicLong()
     private val starvedFrames = AtomicLong()
@@ -75,6 +98,16 @@ class PcmRingBuffer(
 
     /** 欠载时一共缺了多少帧（比 [underrunCount] 更能反映"断得有多狠"）。 */
     val starvedFramesTotal: Long get() = starvedFrames.get()
+
+    /**
+     * 生产者是否活跃：有人写过、且距上次写入不超过 [PRODUCER_GAP_NS]。
+     *
+     * 供给欠载只在这个前提下才有意义 —— 没有生产者时读空是"没开播"，不是"供给跟不上"。
+     */
+    fun producerActive(): Boolean {
+        val last = lastWriteNanos
+        return last != NO_WRITE_YET && nowNanos() - last <= PRODUCER_GAP_NS
+    }
 
     /**
      * 写入 [frames] 帧（从 `samples[0]` 起，交错）。
@@ -132,6 +165,7 @@ class PcmRingBuffer(
                 )
             }
             writeFrame += framesToWrite
+            lastWriteNanos = nowNanos()
         }
         return frames
     }
@@ -141,7 +175,8 @@ class PcmRingBuffer(
      *
      * 返回实际写进 [dst] 的**样本数**（见 [PcmSource] 的口径约定）：
      * 返回 `dst.size` = 读满；小于 `dst.size` = 供给不足，本方法**不补零**，
-     * 并要求 [underrunCount] 递增一次。补零/丢弃策略属于消费方 [PlayoutLoop]。
+     * 并在**生产者活跃**（[producerActive]）时要求 [underrunCount] 递增一次 ——
+     * 没有生产者的读空（未开播/已关流）不计数，语义见类注释。补零/丢弃策略属于消费方 [PlayoutLoop]。
      */
     override fun readInto(dst: FloatArray): Int {
         val wantFrames = PcmLayout.framesForSamples(dst.size, channelCount)
@@ -175,7 +210,7 @@ class PcmRingBuffer(
             }
         }
 
-        if (taken < wantFrames) {
+        if (taken < wantFrames && producerActive()) {
             underrunEvents.incrementAndGet()
             starvedFrames.addAndGet((wantFrames - taken).toLong())
         }

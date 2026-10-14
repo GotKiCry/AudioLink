@@ -167,4 +167,42 @@ class PlayoutLoopTest {
         assertEquals(0L, counters.framesWritten)
         assertEquals(0, sink.writes.size)
     }
+
+    @Test
+    fun starvationWhileSupplyInactiveStillPadsSilenceButCountsNothing() {
+        val counters = PlaybackCounters()
+        val source = FakeSource { 0 }
+        val sink = FakeSink { it }
+        val loop = PlayoutLoop(
+            source, sink, CHANNELS, CHUNK_FRAMES, counters,
+            supplyActive = { false }, // 没开播/已关流：泵空转不是欠载
+        )
+
+        assertTrue("空转也要补静音保持输出连续", loop.pumpOnce())
+
+        assertTrue("补出去的必须仍是静音", sink.writes[0].all { it == 0f })
+        assertEquals("空闲期不计供给欠载", 0L, counters.sourceUnderruns)
+        assertEquals(0L, counters.starvedFrames)
+        assertEquals("空闲期的补零不计静音填充", 0L, counters.silenceFrames)
+        assertEquals(0L, counters.framesWritten)
+    }
+
+    @Test
+    fun partialDataWhileSupplyInactiveCountsAudioButNotSilence() {
+        val counters = PlaybackCounters()
+        val halfSamples = PcmLayout.samplesForFrames(CHUNK_FRAMES / 2, CHANNELS)
+        val source = FakeSource { dst -> fillRamp(dst); halfSamples }
+        val sink = FakeSink { it }
+        val loop = PlayoutLoop(
+            source, sink, CHANNELS, CHUNK_FRAMES, counters,
+            supplyActive = { false },
+        )
+
+        assertTrue(loop.pumpOnce())
+
+        assertEquals("真实音频照常入账", (CHUNK_FRAMES / 2).toLong(), counters.framesWritten)
+        assertEquals("供给不活跃时缺口不记欠载", 0L, counters.sourceUnderruns)
+        assertEquals(0L, counters.silenceFrames)
+        assertEquals("后半块仍是静音（行为不变，只改记账）", 0f, sink.writes[0][halfSamples], 0f)
+    }
 }

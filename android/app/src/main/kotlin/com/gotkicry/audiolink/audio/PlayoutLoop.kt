@@ -13,6 +13,8 @@ package com.gotkicry.audiolink.audio
  * 2. **欠载补静音而不是空转**：源没数据时写静音，让输出流保持连续。这样设备侧不会因为缓冲被抽空而
  *    进入欠载恢复（那会带来额外的恢复延迟和爆音）；"我这边缺数据"这件事改由
  *    [PlaybackCounters.sourceUnderruns] 与 [PlaybackCounters.starvedFrames] 如实记录，指标更干净。
+ *    但**只在供给方活跃时记**（[supplyActive]）：没有生产者（未开播/已关流）的空转读空
+ *    不是供给问题，补的静音也只是"保持输出连续"的默认动作，两者都不该进欠载口径。
  * 3. **记账发生在"整块写完"之后**：一轮 chunk 可能被拆成多次非阻塞写，若每次只写一半就记账，
  *    音频帧与静音帧的构成会算不准；因此 [fill] 时先记下这一轮的构成，等 `pendingFrames` 归零再一次性入账。
  *
@@ -25,6 +27,11 @@ class PlayoutLoop(
     /** 每次拉取的帧数（chunk）。播放线程的调度粒度就是它。 */
     private val chunkFrames: Int,
     private val counters: PlaybackCounters,
+    /**
+     * 供给方此刻是否活跃（例如 `PcmRingBuffer::producerActive`）。
+     * 默认恒 true = 保持旧口径（所有读空都计欠载）；生产环境由播放器按数据源类型接线。
+     */
+    private val supplyActive: () -> Boolean = { true },
 ) {
 
     init {
@@ -50,6 +57,9 @@ class PlayoutLoop(
     /** 本块 pending 里属于"欠载补零"的帧数（写完时入账）。 */
     private var pendingSilenceFrames = 0
 
+    /** 本块拉取时供给方是否活跃（[fill] 时采样）；不活跃的块只补零、不计欠载口径。 */
+    private var pendingSupplyActive = true
+
     /**
      * 推进一步。
      *
@@ -71,7 +81,10 @@ class PlayoutLoop(
         pendingFrames -= advancedFrames
         if (pendingFrames == 0) {
             counters.recordWrite(pendingAudioFrames)
-            counters.recordSilence(pendingSilenceFrames)
+            // 供给不活跃时段的补零是「空转保持连续」，不进欠载口径（静音填充帧同理）。
+            if (pendingSupplyActive) {
+                counters.recordSilence(pendingSilenceFrames)
+            }
             pendingAudioFrames = 0
             pendingSilenceFrames = 0
         }
@@ -80,9 +93,13 @@ class PlayoutLoop(
 
     /** 从源拉一块到 [buffer]，缺口补零，并记下这一块的音频/静音构成。 */
     private fun fill() {
+        val active = supplyActive()
         // 源返回超量（实现 bug）时按缓冲容量截断，绝不让它写出数组边界。
         val gotSamples = source.readInto(buffer).coerceIn(0, buffer.size)
-        counters.recordRead(gotSamples, buffer.size, channelCount)
+        // 供给欠载只在「有生产者却没供上」时记；没开播的空转读空不进口径。
+        if (active) {
+            counters.recordRead(gotSamples, buffer.size, channelCount)
+        }
         val audioFrames = PcmLayout.framesForSamples(gotSamples, channelCount)
 
         if (gotSamples < buffer.size) {
@@ -94,5 +111,6 @@ class PlayoutLoop(
         pendingOffsetSamples = 0
         pendingAudioFrames = audioFrames
         pendingSilenceFrames = chunkFrames - audioFrames
+        pendingSupplyActive = active
     }
 }

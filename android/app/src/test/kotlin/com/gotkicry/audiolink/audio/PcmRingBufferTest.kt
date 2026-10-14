@@ -2,6 +2,8 @@ package com.gotkicry.audiolink.audio
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -72,13 +74,47 @@ class PcmRingBufferTest {
     }
 
     @Test
-    fun readFromEmptyRingCountsOneUnderrun() {
+    fun readFromEmptyRingWithoutProducerCountsNothing() {
         val ring = PcmRingBuffer(capacityFrames = 8, channelCount = 2)
         val out = FloatArray(8)
 
         assertEquals("空环读不到任何样本", 0, ring.readInto(out))
-        assertEquals("读不满一次 = 一次欠载", 1L, ring.underrunCount)
+        assertFalse("从未有人写过 = 没有生产者", ring.producerActive())
+        assertEquals("没开播的读空不计欠载（2026-10 口径修正）", 0L, ring.underrunCount)
+        assertEquals(0L, ring.starvedFramesTotal)
+    }
+
+    @Test
+    fun readFromEmptyRingWhileProducerActiveCountsOneUnderrun() {
+        val ring = PcmRingBuffer(capacityFrames = 8, channelCount = 2)
+        ring.write(interleaved2(4), 4)
+        assertEquals("先读空 4 帧（读满不计）", 8, ring.readInto(FloatArray(8)))
+        assertTrue(ring.producerActive())
+
+        assertEquals("环已空但生产者刚写过", 0, ring.readInto(FloatArray(8)))
+        assertEquals("有生产者的读空 = 一次欠载", 1L, ring.underrunCount)
         assertEquals("缺失帧数按帧计", 4L, ring.starvedFramesTotal)
+    }
+
+    @Test
+    fun readFromEmptyRingAfterProducerGoneStopsCounting() {
+        var now = 1_000_000_000L
+        val ring = PcmRingBuffer(capacityFrames = 8, channelCount = 2, nowNanos = { now })
+        ring.write(interleaved2(4), 4)
+        assertTrue(ring.producerActive())
+
+        // 生产者消失（关流/播放线程退出）：超过判定窗口后读空不再计欠载。
+        now += PcmRingBuffer.PRODUCER_GAP_NS + 1
+        assertFalse(ring.producerActive())
+        ring.readInto(FloatArray(8))
+        ring.readInto(FloatArray(8))
+        assertEquals(0L, ring.underrunCount)
+
+        // 窗口边界：恰好 100 ms 仍算活跃（健康推流每 10/20 ms 一写，离窗口很远）。
+        now = 1_000_000_000L
+        ring.write(interleaved2(4), 4)
+        now += PcmRingBuffer.PRODUCER_GAP_NS
+        assertTrue("边界时刻仍视为活跃", ring.producerActive())
     }
 
     @Test
