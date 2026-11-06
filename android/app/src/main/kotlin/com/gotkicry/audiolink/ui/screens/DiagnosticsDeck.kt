@@ -216,6 +216,18 @@ fun DiagnosticsDeck(
                 KeyValueRow(strings.diagScheduleSlips, peer.scheduleSlips.toString())
                 KeyValueRow(strings.diagQueueRejects, peer.queueRejects.toString())
                 KeyValueRow(strings.diagCursorCatchups, peer.cursorCatchups.toString())
+                // docs/77 §7.7：旧口径下一个 15 帧的洞与 15 个各 1 帧的洞同形，这两行把它拆开。
+                // 第三个数是 docs/78 §A 的跳队头次数：它涨、上面的「游标追赶」就该停。
+                KeyValueRow(
+                    strings.diagCatchupGaps,
+                    "${peer.catchupGaps} / ${peer.catchupFrames} / ${peer.catchupJumps}",
+                )
+                KeyValueRow(strings.diagRejectKinds, "${peer.rejectReal} / ${peer.rejectConceal}")
+                KeyValueRow(strings.diagHoleHist, peer.holeHist.joinToString(" "))
+                KeyValueRow(
+                    strings.diagQueueHighWater,
+                    "${peer.queueHighWater} ${strings.diagFramesUnit}",
+                )
             }
             KeyValueRow(strings.diagFramesWritten, state.framesWritten.toString())
             KeyValueRow(strings.diagSilenceFrames, state.silenceFrames.toString())

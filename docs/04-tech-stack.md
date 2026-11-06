@@ -155,6 +155,8 @@
 | COM 线程模型 | 所有对象 **`!Send + !Sync`** | **谁用谁建**：使用线程内 `initialize_mta()` + 构造对象，线程间只传数据 |
 | 独占模式 | Realtek 端点 `EventsExclusive` 报 `0x88890008` | v1 不依赖独占模式 |
 
+> **更正（2026-10-15）**：上表「同步格式」与 `autoconvert` 两行的处置已翻转。旧策略「非 48 kHz 端点直接拒绝启动、引导用户改系统设置」会让 44.1 kHz 端点**完全采不到/放不出音频**；现改为：混音格式已是 48 kHz / 2ch / f32 时仍原样请求（零重采样路径不变），否则请求统一格式 + `autoconvert: true`，由系统 SRC 在**平台边界**显式转换（`LoopbackCapture::system_src_active()` / `RenderSink::system_src_active()` 可查，`device_info().format` 仍报告真实混音格式）。这与 §3「采集源在进入内核时统一重采样到 48 kHz」（`docs/02-architecture.md`）及 FR-02 的采样率档位要求一致；内核内部依旧全程 48 kHz、绝不自己 SRC，`format_guard` 硬闸仍然校验边界转换后实际交付的格式。实现在 `audiolink-audio::wasapi::choose_stream_format`。
+
 ---
 
 ## ADR-006 · 发现与连接

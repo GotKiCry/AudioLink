@@ -1,7 +1,9 @@
 //! WASAPI **loopback 采集**：在渲染端点上"听"该端点的输出（ADR-005）
 //!
 //! 关键实现点：
-//! - 请求格式 = 设备**混音格式原样**（`autoconvert: false`）→ 不做静默重采样；
+//! - 混音格式已是 48 kHz / 2ch / f32 → 原样请求（`autoconvert: false`），零重采样；
+//!   否则请求统一格式 + `autoconvert: true`，由**系统 SRC** 在边界转成 48 kHz
+//!   （显式兜底，2026-10-15 起替代旧的「非 48 kHz 直接拒绝」；`system_src_active()` 可查）；
 //! - 事件驱动共享模式（`StreamMode::EventsShared`）→ 靠事件句柄唤醒，不轮询；
 //! - 每次唤醒把**所有已就绪的包**读干净（事件驱动下通常 1 包 = 1 个设备周期 = 10 ms）；
 //! - 读缓冲与转换缓冲都在 `open()` 时一次分配好，`read()` 稳态零分配。
@@ -11,11 +13,12 @@ use std::time::{Duration, Instant};
 use wasapi::{AudioCaptureClient, AudioClient, Direction, Handle, StreamMode, WasapiError};
 
 use crate::error::AudioError;
-use crate::format::{CHANNELS, DeviceFormat, convert_to_internal, require_unified_sample_rate};
+use crate::format::{CHANNELS, DeviceFormat, convert_to_internal};
 use crate::source::{CaptureSource, CaptureStats, CapturedPacket};
 
 use super::{
-    DeviceSelector, RenderDeviceInfo, map_wasapi, ms_to_hns, open_render_device, to_device_format,
+    DeviceSelector, RenderDeviceInfo, choose_stream_format, map_wasapi, ms_to_hns,
+    open_render_device,
 };
 
 /// 渲染端点上的 loopback 采集源。
@@ -25,6 +28,7 @@ pub struct LoopbackCapture {
     event: Handle,
     device: RenderDeviceInfo,
     format: DeviceFormat,
+    system_src: bool,
     requested_buffer_ms: u32,
     effective_buffer_ms: f64,
     buffer_frames: u32,
@@ -52,9 +56,8 @@ impl LoopbackCapture {
         let mix = client
             .get_mixformat()
             .map_err(|error| map_wasapi(error, "读取混音格式"))?;
-        let format = to_device_format(&mix)?;
-        // 「零重采样」的前置条件：设备混音格式必须是 48 kHz（否则给出可操作提示，不静默 SRC）
-        require_unified_sample_rate(format.sample_rate)?;
+        let choice = choose_stream_format(&mix)?;
+        let format = choice.format;
         let bytes_per_frame = format.bytes_per_frame();
         if bytes_per_frame == 0 {
             return Err(AudioError::device_unavailable("混音格式的块对齐为 0"));
@@ -62,10 +65,10 @@ impl LoopbackCapture {
 
         client
             .initialize_client(
-                &mix,
+                &choice.wave,
                 &Direction::Capture,
                 &StreamMode::EventsShared {
-                    autoconvert: false,
+                    autoconvert: choice.system_src,
                     buffer_duration_hns: ms_to_hns(buffer_ms),
                 },
             )
@@ -93,6 +96,7 @@ impl LoopbackCapture {
             event,
             device: info,
             format,
+            system_src: choice.system_src,
             requested_buffer_ms: buffer_ms,
             effective_buffer_ms,
             buffer_frames,
@@ -108,6 +112,14 @@ impl LoopbackCapture {
     /// 端点信息。
     pub fn device_info(&self) -> &RenderDeviceInfo {
         &self.device
+    }
+
+    /// 系统重采样是否生效（端点混音格式 ≠ 48 kHz / 2ch / f32 时为 `true`）。
+    ///
+    /// `true` 时采集流由 WASAPI 在边界上 SRC 到 48 kHz；真实混音格式见
+    /// [`RenderDeviceInfo::format`]（`device_info().format`）。
+    pub fn system_src_active(&self) -> bool {
+        self.system_src
     }
 
     /// 采集缓冲帧数（设备实际生效值）。

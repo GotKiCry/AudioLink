@@ -1,6 +1,9 @@
 package com.gotkicry.audiolink.capture
 
 import com.gotkicry.audiolink.core.PcmPull
+import com.gotkicry.audiolink.diagnostics.EventRing
+import com.gotkicry.audiolink.diagnostics.IntervalRing
+import com.gotkicry.audiolink.diagnostics.ProbeEvent
 
 /**
  * FFI 采集契约的 Kotlin 实现：`com.gotkicry.audiolink.core.PcmPull`。
@@ -27,6 +30,10 @@ import com.gotkicry.audiolink.core.PcmPull
  */
 class CapturePcmPull(
     private val ring: CaptureRing,
+    /** 内核拉取节拍探针（常开诊断，`null` = 不记；每次调用一记）。 */
+    private val probe: IntervalRing? = null,
+    /** 离散事件探针：返回空（只该在环已关闭后发生）记一条。 */
+    private val events: EventRing? = null,
 ) : PcmPull {
 
     /**
@@ -49,6 +56,14 @@ class CapturePcmPull(
 
     @Synchronized
     override fun readPcm(maxSamples: Int): List<Float> {
+        val out = readFromRing(maxSamples)
+        // 探针：每次调用一记（间隔 = 内核拉取节拍），空返回单独记事件。
+        probe?.record(out.size)
+        if (out.isEmpty()) events?.record(ProbeEvent.CAPTURE_PULL_EMPTY)
+        return out
+    }
+
+    private fun readFromRing(maxSamples: Int): List<Float> {
         readCalls += 1
         if (maxSamples <= 0) {
             emptyReturns += 1

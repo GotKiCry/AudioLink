@@ -67,6 +67,20 @@ data class PeerUi(
     val scheduleSlips: Long = 0L,
     val queueRejects: Long = 0L,
     val cursorCatchups: Long = 0L,
+    // docs/77 §7.7：把上面的「拍数」拆成「洞数 / 洞大小 / 拒的是什么」。
+    // 旧口径下一个 15 帧的洞与 15 个各 1 帧的洞完全同形，而两者治法相反。
+    val catchupGaps: Long = 0L,
+    val catchupFrames: Long = 0L,
+    /** docs/78 §A：缺口超阈值被**一次跳队头**收掉的次数（这条涨，[cursorCatchups] 就该停）。 */
+    val catchupJumps: Long = 0L,
+    val rejectConceal: Long = 0L,
+    val rejectReal: Long = 0L,
+    /** 接收侧洞大小直方图，分档 [0, 1-3, 4-12, 13-30, >30] 帧。 */
+    val holeHist: List<Long> = emptyList(),
+    /** 待播队列历史最高水位（帧）—— 水位棘轮是否在爬，只看这一个数。 */
+    val queueHighWater: Long = 0L,
+    /** 播放管线软复位次数（docs/77 §7.6；本轮未接线，恒为 0）。 */
+    val playoutResets: Long = 0L,
 )
 
 /**
@@ -112,6 +126,20 @@ data class PeerSnapshot(
     val scheduleSlips: Long = 0L,
     val queueRejects: Long = 0L,
     val cursorCatchups: Long = 0L,
+    // docs/77 §7.7：把上面的「拍数」拆成「洞数 / 洞大小 / 拒的是什么」。
+    // 旧口径下一个 15 帧的洞与 15 个各 1 帧的洞完全同形，而两者治法相反。
+    val catchupGaps: Long = 0L,
+    val catchupFrames: Long = 0L,
+    /** docs/78 §A：缺口超阈值被**一次跳队头**收掉的次数（这条涨，[cursorCatchups] 就该停）。 */
+    val catchupJumps: Long = 0L,
+    val rejectConceal: Long = 0L,
+    val rejectReal: Long = 0L,
+    /** 接收侧洞大小直方图，分档 [0, 1-3, 4-12, 13-30, >30] 帧。 */
+    val holeHist: List<Long> = emptyList(),
+    /** 待播队列历史最高水位（帧）—— 水位棘轮是否在爬，只看这一个数。 */
+    val queueHighWater: Long = 0L,
+    /** 播放管线软复位次数（docs/77 §7.6；本轮未接线，恒为 0）。 */
+    val playoutResets: Long = 0L,
 )
 
 /**
@@ -181,6 +209,14 @@ object PeerStateMapper {
             scheduleSlips = snapshot.scheduleSlips,
             queueRejects = snapshot.queueRejects,
             cursorCatchups = snapshot.cursorCatchups,
+            catchupGaps = snapshot.catchupGaps,
+            catchupFrames = snapshot.catchupFrames,
+            catchupJumps = snapshot.catchupJumps,
+            rejectConceal = snapshot.rejectConceal,
+            rejectReal = snapshot.rejectReal,
+            holeHist = snapshot.holeHist,
+            queueHighWater = snapshot.queueHighWater,
+            playoutResets = snapshot.playoutResets,
         )
     }
 }

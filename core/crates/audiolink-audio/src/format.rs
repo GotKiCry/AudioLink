@@ -4,14 +4,14 @@
 //! 任何采集源（44.1 k / 16 bit / 单声道 / 24 bit …）进入内核前都必须转成该格式；
 //! 编码器、抖动缓冲、混音器只处理这一种格式 —— 这样混音与时钟同步只需一套算术。
 //!
-//! # 采样率策略（M1 明确取舍）
+//! # 采样率策略（2026-10-15 更新）
 //!
-//! WASAPI 共享模式若打开 `autoconvert`，驱动会**静默重采样**（实测：请求 44.1 kHz 也会「成功」，
-//! 但拿到的字节已经是 SRC 之后的样本，内核按原采样率解读就会错）。所以「零重采样」不是靠内核
-//! 强制 48 k 得到的，而是靠**把 Windows 播放设备设为 48 kHz**（`docs/05-roadmap.md` M1 验收：
-//! 「遥测显示采集/内核/播放采样率均为 48000」）。遇到 44.1 k 设备时不静默重采样，
-//! 而是返回 [`AudioError::InvalidConfig`] 并让调用方给出可操作提示 —— 静默 SRC 会让
-//! 「零重采样」这条验收失去意义，也会引入不可控的延迟与音质损失。
+//! 内核内部仍只认 48 kHz；**采样率转换发生在平台边界**，与 `docs/02-architecture.md` §3
+//! 「采集源在进入内核时统一重采样到该格式」一致。Windows（WASAPI）的实现：
+//! 混音格式已是 48 kHz / 2ch / f32 时原样请求（零重采样）；否则请求统一格式并打开
+//! `autoconvert`，由系统 SRC 在边界完成转换 —— 这是**显式**兜底（`system_src_active()` 可查、
+//! `device_info().format` 仍报告真实混音格式），替代旧的「非 48 kHz 直接拒绝启动」
+//! （那会让 44.1 kHz 端点完全采不到/放不出音频）。
 
 use crate::error::AudioError;
 
@@ -128,13 +128,16 @@ impl DeviceFormat {
     }
 }
 
-/// 校验采样率必须是内部统一采样率（不做静默重采样，见模块文档）。
+/// 校验采样率必须是内部统一采样率。
+///
+/// 平台边界（WASAPI `autoconvert` 系统 SRC 等）失效时的最后兜底提示；
+/// 正常路径下边界已把流转成 48 kHz，不会走到这里。
 pub fn require_unified_sample_rate(sample_rate: u32) -> Result<(), AudioError> {
     if sample_rate == SAMPLE_RATE_HZ {
         Ok(())
     } else {
         Err(AudioError::invalid_config_owned(format!(
-            "设备采样率 {sample_rate} Hz ≠ 内核统一 {SAMPLE_RATE_HZ} Hz；请在系统声音设置里把设备设为 48 kHz（本项目不做静默重采样）"
+            "设备采样率 {sample_rate} Hz ≠ 内核统一 {SAMPLE_RATE_HZ} Hz（平台边界未能完成转换；请把设备设为 48 kHz）"
         )))
     }
 }
@@ -230,7 +233,7 @@ fn write_sample(value: f32, format: SampleFormat, out: &mut [u8]) -> bool {
 ///
 /// - 位深：按上表折算到 `[-1.0, 1.0]`；
 /// - 声道：1 ch → 复制成双声道；2 ch → 直通；> 2 ch → 取**前两个声道**（WAVEFORMATEXTENSIBLE 下即 FL/FR）；
-/// - 采样率：不做转换（调用方必须先过 [`require_unified_sample_rate`]，避免静默 SRC）。
+/// - 采样率：不做转换（平台边界负责把流转成 48 kHz，见模块文档「采样率策略」）。
 ///
 /// 返回写入 `dst` 的 **f32 个数**（= 帧数 × 2）。`dst` 不足时报 [`AudioError::InvalidConfig`]，不 panic。
 pub fn convert_to_internal(

@@ -14,11 +14,12 @@ use wasapi::{
 };
 
 use crate::error::AudioError;
-use crate::format::{CHANNELS, DeviceFormat, convert_from_internal, require_unified_sample_rate};
+use crate::format::{CHANNELS, DeviceFormat, convert_from_internal};
 use crate::sink::{PlayoutSink, PlayoutStats};
 
 use super::{
-    DeviceSelector, RenderDeviceInfo, map_wasapi, ms_to_hns, open_render_device, to_device_format,
+    DeviceSelector, RenderDeviceInfo, choose_stream_format, map_wasapi, ms_to_hns,
+    open_render_device,
 };
 
 /// 写入时等待空间的硬上限（超过即判欠载并让调用方决策）。
@@ -31,6 +32,7 @@ pub struct RenderSink {
     event: Handle,
     device: RenderDeviceInfo,
     format: DeviceFormat,
+    system_src: bool,
     requested_buffer_ms: u32,
     effective_buffer_ms: f64,
     buffer_frames: u32,
@@ -53,18 +55,18 @@ impl RenderSink {
         let mix = client
             .get_mixformat()
             .map_err(|error| map_wasapi(error, "读取混音格式"))?;
-        let format = to_device_format(&mix)?;
-        require_unified_sample_rate(format.sample_rate)?;
+        let choice = choose_stream_format(&mix)?;
+        let format = choice.format;
         let bytes_per_frame = format.bytes_per_frame();
         if bytes_per_frame == 0 {
             return Err(AudioError::device_unavailable("混音格式的块对齐为 0"));
         }
         client
             .initialize_client(
-                &mix,
+                &choice.wave,
                 &Direction::Render,
                 &StreamMode::EventsShared {
-                    autoconvert: false,
+                    autoconvert: choice.system_src,
                     buffer_duration_hns: ms_to_hns(buffer_ms),
                 },
             )
@@ -105,6 +107,7 @@ impl RenderSink {
             event,
             device: info,
             format,
+            system_src: choice.system_src,
             requested_buffer_ms: buffer_ms,
             effective_buffer_ms,
             buffer_frames,
@@ -118,6 +121,14 @@ impl RenderSink {
     /// 端点信息。
     pub fn device_info(&self) -> &RenderDeviceInfo {
         &self.device
+    }
+
+    /// 系统重采样是否生效（端点混音格式 ≠ 48 kHz / 2ch / f32 时为 `true`）。
+    ///
+    /// `true` 时播放流由 WASAPI 在边界上把 48 kHz 内部流 SRC 到端点格式；真实混音格式见
+    /// [`RenderDeviceInfo::format`]（`device_info().format`）。
+    pub fn system_src_active(&self) -> bool {
+        self.system_src
     }
 
     /// 播放缓冲帧数（设备实际生效值）。

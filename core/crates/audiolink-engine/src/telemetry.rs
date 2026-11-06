@@ -50,6 +50,33 @@ pub struct UnderrunBreakdown {
     pub queue_rejects: u32,
     /// C 线：播放游标追赶的拍数（同拍另记一次 `underruns`）。
     pub cursor_catchups: u32,
+
+    // ---- docs/77 §7.7：把上面三个「拍数」拆成「几个洞、多大、拒的是什么」----
+    // 为什么需要这组：`cursor_catchups` 是**逐拍**记账，一个 15 帧的洞会被记成 15，
+    // 与「15 个各 1 帧的洞」在旧口径下完全同形 —— 而两者的治法相反（前者治洞，后者治到达节奏）。
+    /// **洞的个数**（C 线的分母）：从「不追赶」进入「追赶」的转换次数。
+    pub catchup_gaps: u32,
+    /// C 线跳过的总帧数（= 各洞大小之和；与 `cursor_catchups` 应大致相等，差值是降档路径混入量）。
+    pub catchup_frames: u32,
+    /// docs/78 §A：缺口超过阈值、被**一次跳队头**收掉的次数（不再逐拍追赶）。
+    ///
+    /// 与 `cursor_catchups` 是同一件事的两种走法：这条涨，那条就该停。
+    /// 若两者同时高速增长，说明阈值没生效（或标记集仍在被覆盖）。
+    pub catchup_jumps: u32,
+    /// B 线里被拒的是**掩盖占位帧**的个数 —— 高则说明该下调让位线。
+    pub reject_conceal: u32,
+    /// B 线里被拒的是**真实解码帧**的个数 —— 高则说明洞太大/容量不够（真丢音频）。
+    pub reject_real: u32,
+    /// 接收侧判定的洞大小直方图，分档 `[0, 1-3, 4-12, 13-30, >30]` 帧。
+    ///
+    /// 4-12 档落在掩盖上限内（`CONCEAL_FADE_MS / frame_ms`），**不触发**逐拍追赶；
+    /// 13-30 / >30 两档才是 docs/77 §S1「大洞标记」的目标。
+    /// 若真机跑完这两档恒为 0 ⇒ S1 的触发条件从未发生，根因判定错误，必须回退。
+    pub hole_hist: [u32; 5],
+    /// 待播队列的历史最高水位（帧）。棘轮是否真的在爬，看这一个数就够。
+    pub queue_high_water: u32,
+    /// 播放管线软复位次数（docs/77 §7.6 的兜底；本轮 S1+S3 未接线，恒为 0）。
+    pub playout_resets: u32,
 }
 
 impl UnderrunBreakdown {
@@ -59,6 +86,19 @@ impl UnderrunBreakdown {
             schedule_slips: self.schedule_slips.saturating_sub(earlier.schedule_slips),
             queue_rejects: self.queue_rejects.saturating_sub(earlier.queue_rejects),
             cursor_catchups: self.cursor_catchups.saturating_sub(earlier.cursor_catchups),
+            catchup_gaps: self.catchup_gaps.saturating_sub(earlier.catchup_gaps),
+            catchup_frames: self.catchup_frames.saturating_sub(earlier.catchup_frames),
+            catchup_jumps: self.catchup_jumps.saturating_sub(earlier.catchup_jumps),
+            reject_conceal: self.reject_conceal.saturating_sub(earlier.reject_conceal),
+            reject_real: self.reject_real.saturating_sub(earlier.reject_real),
+            // 直方图逐档饱和差：`queue_high_water` 是水位不是计数，不参与差值语义。
+            hole_hist: std::array::from_fn(|i| {
+                self.hole_hist[i].saturating_sub(earlier.hole_hist[i])
+            }),
+            queue_high_water: self
+                .queue_high_water
+                .saturating_sub(earlier.queue_high_water),
+            playout_resets: self.playout_resets.saturating_sub(earlier.playout_resets),
         }
     }
 }
@@ -107,6 +147,16 @@ pub struct TelemetryAggregator {
     schedule_slips: u32,
     queue_rejects: u32,
     cursor_catchups: u32,
+
+    // ---- docs/77 §7.7：B/C 线的可解释分解（进程内口径，不进 StreamStats，理由同上）----
+    catchup_gaps: u32,
+    catchup_frames: u32,
+    catchup_jumps: u32,
+    reject_conceal: u32,
+    reject_real: u32,
+    hole_hist: [u32; 5],
+    queue_high_water: u32,
+    playout_resets: u32,
 
     /// **连续静音**（「长断音」）统计 —— M2 待决口径第 ④ 条。
     ///
@@ -160,6 +210,14 @@ impl TelemetryAggregator {
             schedule_slips: 0,
             queue_rejects: 0,
             cursor_catchups: 0,
+            catchup_gaps: 0,
+            catchup_frames: 0,
+            catchup_jumps: 0,
+            reject_conceal: 0,
+            reject_real: 0,
+            hole_hist: [0; 5],
+            queue_high_water: 0,
+            playout_resets: 0,
             silence: SilenceTracker::default(),
             rtt_us: 0,
             clock_offset_us: 0,
@@ -280,6 +338,59 @@ impl TelemetryAggregator {
     /// C 线分量（docs/73 §2）：播放游标追赶越过一拍（同一拍仍按原口径记一次 `underruns`）。
     pub fn record_cursor_catchup(&mut self) {
         self.cursor_catchups = self.cursor_catchups.saturating_add(1);
+    }
+
+    /// docs/77 §7.7：进入一次新的追赶序列（一个「洞」）。
+    ///
+    /// 与 [`Self::record_cursor_catchup`] 的分工：那条记的是**拍**，这条记的是**洞**。
+    /// 一个 15 帧的洞在旧口径下等于「15」，与 15 个各 1 帧的洞无法区分 —— 而两者治法相反：
+    /// 前者该治洞（本方案 S1），后者该治到达节奏。
+    pub fn record_catchup_gap(&mut self) {
+        self.catchup_gaps = self.catchup_gaps.saturating_add(1);
+    }
+
+    /// docs/77 §7.7：追赶跳过的帧数合计（与 `cursor_catchups` 同拍累加，便于交叉校验）。
+    pub fn record_catchup_frames(&mut self, count: u32) {
+        self.catchup_frames = self.catchup_frames.saturating_add(count);
+    }
+
+    /// docs/78 §A：一次「缺口超阈值 → 跳队头」的收口（把 D 拍压成 1 拍）。
+    pub fn record_catchup_jump(&mut self) {
+        self.catchup_jumps = self.catchup_jumps.saturating_add(1);
+    }
+
+    /// docs/77 §7.7：B 线拒收的**帧类**拆分 —— 掩帧被拒说明让位线偏低；真帧被拒才是真丢音频。
+    pub fn record_reject_by_kind(&mut self, conceal: u32, real: u32) {
+        self.reject_conceal = self.reject_conceal.saturating_add(conceal);
+        self.reject_real = self.reject_real.saturating_add(real);
+    }
+
+    /// docs/77 §7.7：接收侧判定的洞大小入桶（`gap` = 缺失帧数）。
+    ///
+    /// 分档见 [`UnderrunBreakdown::hole_hist`]：4-12 档在掩盖上限内（10 ms 帧下 12 帧 = 120 ms），
+    /// **不触发**逐拍追赶；13-30 / >30 才是 S1 大洞标记的射程。
+    pub fn record_hole(&mut self, gap: u32) {
+        let bucket = match gap {
+            0 => 0,
+            1..=3 => 1,
+            4..=12 => 2,
+            13..=30 => 3,
+            _ => 4,
+        };
+        self.hole_hist[bucket] = self.hole_hist[bucket].saturating_add(1);
+    }
+
+    /// docs/77 §7.7：待播队列历史最高水位（帧）—— 棘轮是否在爬，只看这一个数。
+    pub fn note_queue_depth(&mut self, frames: usize) {
+        let depth = u32::try_from(frames).unwrap_or(u32::MAX);
+        if depth > self.queue_high_water {
+            self.queue_high_water = depth;
+        }
+    }
+
+    /// docs/77 §7.6：播放管线软复位（S2 兜底；本轮 S1+S3 未接线，恒为 0）。
+    pub fn record_playout_reset(&mut self) {
+        self.playout_resets = self.playout_resets.saturating_add(1);
     }
 
     /// 记录一拍播放输出：`peak` 是这一拍**写出去**的 PCM 峰值，`synthetic` = 这一拍是引擎补的
@@ -414,6 +525,14 @@ impl TelemetryAggregator {
             schedule_slips: self.schedule_slips,
             queue_rejects: self.queue_rejects,
             cursor_catchups: self.cursor_catchups,
+            catchup_gaps: self.catchup_gaps,
+            catchup_frames: self.catchup_frames,
+            catchup_jumps: self.catchup_jumps,
+            reject_conceal: self.reject_conceal,
+            reject_real: self.reject_real,
+            hole_hist: self.hole_hist,
+            queue_high_water: self.queue_high_water,
+            playout_resets: self.playout_resets,
         }
     }
 
@@ -438,6 +557,14 @@ impl TelemetryAggregator {
         self.schedule_slips = 0;
         self.queue_rejects = 0;
         self.cursor_catchups = 0;
+        self.catchup_gaps = 0;
+        self.catchup_frames = 0;
+        self.catchup_jumps = 0;
+        self.reject_conceal = 0;
+        self.reject_real = 0;
+        self.hole_hist = [0; 5];
+        self.queue_high_water = 0;
+        self.playout_resets = 0;
         self.silence.reset();
         self.loss_pct_x100 = 0;
         self.bitrate_bps = 0;
@@ -605,10 +732,19 @@ mod tests {
         assert_eq!(aggregator.snapshot().underruns, 4, "underruns 口径不变");
         assert_eq!(aggregator.snapshot().late_drops, 1, "late_drops 口径不变");
 
+        // docs/77 §7.7：新增字段一律显式列出（刻意保留穷举护栏 —— 将来再加字段要在这里被逼着确认一次）。
         let delta = breakdown.saturating_delta_since(UnderrunBreakdown {
             schedule_slips: 1,
             queue_rejects: 5, // 超过当前值：饱和到 0，不出负数
             cursor_catchups: 1,
+            catchup_gaps: 0,
+            catchup_frames: 0,
+            catchup_jumps: 0,
+            reject_conceal: 0,
+            reject_real: 0,
+            hole_hist: [0; 5],
+            queue_high_water: 0,
+            playout_resets: 0,
         });
         assert_eq!(
             delta,
@@ -616,6 +752,14 @@ mod tests {
                 schedule_slips: 2,
                 queue_rejects: 0,
                 cursor_catchups: 0,
+                catchup_gaps: 0,
+                catchup_frames: 0,
+                catchup_jumps: 0,
+                reject_conceal: 0,
+                reject_real: 0,
+                hole_hist: [0; 5],
+                queue_high_water: 0,
+                playout_resets: 0,
             }
         );
 

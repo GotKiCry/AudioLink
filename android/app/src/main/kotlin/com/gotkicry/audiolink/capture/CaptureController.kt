@@ -3,6 +3,7 @@ package com.gotkicry.audiolink.capture
 import android.media.projection.MediaProjection
 import android.os.SystemClock
 import com.gotkicry.audiolink.core.PcmPull
+import com.gotkicry.audiolink.diagnostics.ProbeHub
 
 /**
  * 采集的总编排：状态机 + 采集源 + 采集线程 + 采集环 + 给内核的 [PcmPull] 出口。
@@ -46,6 +47,8 @@ class CaptureController(
     backoff: BackoffPolicy = BackoffPolicy(),
     private val clock: () -> Long = { SystemClock.elapsedRealtime() },
     private val framesPerRead: Int = CapturePump.DEFAULT_FRAMES_PER_READ,
+    /** 时序探针注册表（常开诊断，`null` = 不记）；采集读节拍与内核拉取节拍各接一路。 */
+    private val probeHub: ProbeHub? = null,
 ) {
 
     private val ring = CaptureRing(ringCapacityFrames)
@@ -55,7 +58,7 @@ class CaptureController(
      *
      * 生命周期与引擎一致：引擎起来时创建、引擎停止前 [close]。
      */
-    val pull: PcmPull = CapturePcmPull(ring)
+    val pull: PcmPull = CapturePcmPull(ring, probe = probeHub?.capturePull, events = probeHub?.events)
 
     private val machine = CaptureStateMachine(backoff)
 
@@ -164,7 +167,13 @@ class CaptureController(
                 source.start()
                 synchronized(guard) { machine.onEvent(CaptureEvent.StartSucceeded, clock()) }
                 attempt = 0
-                val pump = CapturePump(source, ring, framesPerRead = framesPerRead)
+                val pump = CapturePump(
+                    source,
+                    ring,
+                    framesPerRead = framesPerRead,
+                    probe = probeHub?.captureRead,
+                    events = probeHub?.events,
+                )
                 while (isCurrent(id)) {
                     pump.pumpOnce()
                 }

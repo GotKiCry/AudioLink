@@ -2,6 +2,7 @@ package com.gotkicry.audiolink.audio
 
 import com.gotkicry.audiolink.core.PcmFeed
 import com.gotkicry.audiolink.core.PcmBufferState
+import com.gotkicry.audiolink.diagnostics.IntervalRing
 
 /**
  * 内核 PCM → 播放环的搬运器：UniFFI 回调接口 [`PcmFeed`] 的 Kotlin 实现。
@@ -32,6 +33,8 @@ class FfiPcmFeed(
     private val ring: PcmRingBuffer,
     private val channelCount: Int = ring.channelCount,
     private val outputBufferState: () -> PcmBufferState? = { null },
+    /** 供给节拍探针（常开诊断，`null` = 不记；每次回调一记，路径上零分配）。 */
+    private val probe: IntervalRing? = null,
 ) : PcmFeed {
 
     override fun playoutBufferState(): PcmBufferState? {
@@ -60,6 +63,8 @@ class FfiPcmFeed(
      */
     @Synchronized
     override fun feedPcm(samples: List<Float>, frames: Int): Int {
+        // 探针记每一次回调（含被拒绝的）：内核供给的间隔抖动/停摆正是「计数器全绿但声音断」要找的东西。
+        probe?.record(frames)
         if (frames <= 0) return 0
 
         val wanted = PcmLayout.samplesForFrames(frames, channelCount)

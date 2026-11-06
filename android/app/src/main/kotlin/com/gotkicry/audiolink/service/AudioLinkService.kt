@@ -19,6 +19,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import com.gotkicry.audiolink.MainActivity
 import com.gotkicry.audiolink.R
 import com.gotkicry.audiolink.audio.FfiPcmFeed
@@ -40,6 +41,10 @@ import com.gotkicry.audiolink.core.peers
 import com.gotkicry.audiolink.core.setLocalPeerGain
 import com.gotkicry.audiolink.core.startSend
 import com.gotkicry.audiolink.core.stopSend
+import com.gotkicry.audiolink.core.telemetry
+import com.gotkicry.audiolink.diagnostics.ProbeHub
+import java.io.FileDescriptor
+import java.io.PrintWriter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -237,6 +242,12 @@ class AudioLinkService : Service() {
         /** UI 刷新节奏，对齐架构 §4 的 500 ms 批量推送。 */
         private const val UI_REFRESH_MS = 500L
 
+        /** 探针 logcat 心跳间隔（引擎运行中每 5 s 一行，不是每拍都打）。 */
+        private const val PROBE_LOG_INTERVAL_NS = 5_000_000_000L
+
+        /** 与 EngineLifecycle 同一 tag：`adb logcat -s AudioLink:I` 一条命令收齐。 */
+        private const val TAG = "AudioLink"
+
         // 进程级队列不随 Service 销毁而取消；旧 stop 完成后才允许新实例 start。
         private val engineOperations = EngineOperationQueue(
             CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
@@ -339,11 +350,21 @@ class AudioLinkService : Service() {
     @Volatile
     private var player: LowLatencyPlayer? = null
 
+    /**
+     * 时序诊断探针注册表（常开）：排查「计数器全绿但声音断续」的取证口。
+     * 出口是 [dump]（dumpsys）与 [refreshState] 里的 5 s logcat 心跳；用法见 android/AGENTS.md「诊断探针」。
+     */
+    private val probeHub = ProbeHub()
+
     /** 内核 PCM 的落地环：FFI 回调写它，播放线程读它。 */
-    private val playoutRing = PcmRingBuffer(PLAYOUT_RING_FRAMES, CHANNEL_COUNT)
+    private val playoutRing = PcmRingBuffer(PLAYOUT_RING_FRAMES, CHANNEL_COUNT, events = probeHub.events)
 
     /** FFI 接缝：内核 `PcmFeed.feedPcm` 的 Kotlin 实现（把 PCM 写进 [playoutRing]）。 */
-    private val pcmFeed = FfiPcmFeed(playoutRing, outputBufferState = { player?.bufferState() })
+    private val pcmFeed = FfiPcmFeed(
+        playoutRing,
+        outputBufferState = { player?.bufferState() },
+        probe = probeHub.pcmFeed,
+    )
 
     // ---- 发送采集（FR-06/07）：采集出口与它的状态 ----
 
@@ -353,7 +374,7 @@ class AudioLinkService : Service() {
      * 它持有采集环与 `PcmPull` 出口：**引擎拿到的就是 `captureController.pull`**。
      * 生命周期与引擎一致 —— 服务起来时建、服务销毁前 [CaptureController.close]（见 [onDestroy]）。
      */
-    private val captureController = CaptureController()
+    private val captureController = CaptureController(probeHub = probeHub)
 
     /**
      * 当前发送源；`null` = 关闭。
@@ -472,6 +493,9 @@ class AudioLinkService : Service() {
 
     private var lastError: String? = null
 
+    /** 上一次打探针心跳的时刻（nanoTime）；0 = 还没打过。 */
+    private var lastProbeLogNanos: Long = 0L
+
     /**
      * 对端列表（内核 `peers()`）的快照。
      *
@@ -500,6 +524,60 @@ class AudioLinkService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    /**
+     * dumpsys 取证出口：`adb shell dumpsys activity service com.gotkicry.audiolink/.service.AudioLinkService`。
+     *
+     * 三段内容：探针报告（节拍 + 间隙 + 离散事件）、当前 UI 状态的关键计数、FFI telemetry 摘要。
+     * 全部 best-effort：dump 由系统 binder 线程调用，任何一段失败都不该把整份输出带走。
+     */
+    override fun dump(fd: FileDescriptor, writer: PrintWriter, args: Array<out String>?) {
+        super.dump(fd, writer, args)
+        val now = System.nanoTime()
+        writer.println("== AudioLink 时序探针（常开环；窗口=环内最近事件） ==")
+        writer.print(runCatching { probeHub.report(now) }.getOrElse { "探针快照失败：${it.message}\n" })
+        val s = _state.value
+        writer.println(
+            "ui: playing=${s.playing} engine=${s.engineRunning} " +
+                "trackUnderruns=${s.trackUnderruns} sourceUnderruns=${s.sourceUnderruns} " +
+                "ring=${s.ringBufferedFrames}/${s.ringCapacityFrames} " +
+                "ringOverflow=${s.ringOverflowFrames} ringUnderruns=${s.ringUnderruns} " +
+                "queued=${s.queuedFrames}/${s.queueTargetFrames} silence=${s.silenceFrames} " +
+                "capture=${s.captureSelection}/${s.captureState} " +
+                "lastError=${s.lastError ?: "-"}",
+        )
+        writer.println(
+            runCatching { telemetry() }.fold(
+                onSuccess = { t ->
+                    "ffi.telemetry: peers=${t.peers} rtt=${t.rttUs}us " +
+                        "jitterP50=${t.jitterUs}us jitterP95=${t.jitterP95Us}us " +
+                        "loss=${t.lossPct}% bitrate=${t.bitrateBps}bps frame=${t.frameMs}ms " +
+                        "underruns=${t.underruns} plc=${t.plcCount} lateDrops=${t.lateDrops} " +
+                        "e2e=${t.e2eLatencyUs}us"
+                },
+                onFailure = { e -> "ffi.telemetry: 不可用（${e.javaClass.simpleName}: ${e.message}）" },
+            ),
+        )
+        // docs/77 §7.8：内核 B/C 线分量账。缺了这一段，看 dump 分不清「播放线程卡」与「帧迟到」。
+        // 直接问 FFI 而不是读服务态：dump 由 binder 线程调用，要能在任何服务状态下给出答案。
+        writer.println(
+            runCatching { peers() }.fold(
+                onSuccess = { list ->
+                    list.firstOrNull()?.let { p ->
+                        "kernel.bc: scheduleSlips=${p.scheduleSlips} queueRejects=${p.queueRejects} " +
+                            "cursorCatchups=${p.cursorCatchups} catchupGaps=${p.catchupGaps} " +
+                            "catchupFrames=${p.catchupFrames} catchupJumps=${p.catchupJumps} " +
+                            "rejectConceal=${p.rejectConceal} " +
+                            "rejectReal=${p.rejectReal} queueHighWater=${p.queueHighWater} " +
+                            "playoutResets=${p.playoutResets} " +
+                            "holeHist=${p.holeHist.joinToString(",", "[", "]")}"
+                    } ?: "kernel.bc: 无对端"
+                },
+                onFailure = { e -> "kernel.bc: 不可用（${e.javaClass.simpleName}: ${e.message}）" },
+            ),
+        )
+        writer.flush()
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -1300,6 +1378,7 @@ class AudioLinkService : Service() {
             sampleRate = SAMPLE_RATE,
             channelCount = CHANNEL_COUNT,
             bufferFrames = TRACK_BUFFER_FRAMES,
+            events = probeHub.events,
         )
         // 唯一的 PCM 接缝：谁往环里写，播放线程就从这里读。
         candidate.setSource(playoutRing)
@@ -1448,6 +1527,15 @@ class AudioLinkService : Service() {
                 // 通知失败不该影响音频路径（用户关掉通知权限时系统本就会丢弃）。
             }
         }
+        // 探针心跳：引擎运行中每 5 s 一行（dumpsys 之外的第二取证通道）。
+        // runCatching：JVM 单测里 android.util.Log 是 stub，日志不许带塌刷新循环。
+        if (engine != null) {
+            val now = System.nanoTime()
+            if (now - lastProbeLogNanos >= PROBE_LOG_INTERVAL_NS) {
+                lastProbeLogNanos = now
+                runCatching { Log.i(TAG, probeHub.oneLine(now)) }
+            }
+        }
         // 会话表是"按需拉"的：主线程只读快照，真正的 FFI 调用丢到 IO（见 refreshPeersAsync）。
         refreshPeersAsync()
     }
@@ -1499,6 +1587,16 @@ class AudioLinkService : Service() {
                             scheduleSlips = peer.scheduleSlips.toLong(),
                             queueRejects = peer.queueRejects.toLong(),
                             cursorCatchups = peer.cursorCatchups.toLong(),
+                            // docs/77 §7.7：分量账的细分（洞数/洞大小/拒收帧类）。
+                            catchupGaps = peer.catchupGaps.toLong(),
+                            catchupFrames = peer.catchupFrames.toLong(),
+                            catchupJumps = peer.catchupJumps.toLong(),
+                            rejectConceal = peer.rejectConceal.toLong(),
+                            rejectReal = peer.rejectReal.toLong(),
+                            // List<UInt> -> List<Long>：与其它计数同口径，UI 层不做无符号运算。
+                            holeHist = peer.holeHist.map { it.toLong() },
+                            queueHighWater = peer.queueHighWater.toLong(),
+                            playoutResets = peer.playoutResets.toLong(),
                         )
                     }
                 } catch (e: CancellationException) {

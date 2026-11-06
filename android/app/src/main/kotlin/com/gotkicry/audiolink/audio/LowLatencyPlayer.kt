@@ -6,6 +6,8 @@ import android.media.AudioTrack
 import android.os.Process
 import android.os.Build
 import com.gotkicry.audiolink.core.PcmBufferState
+import com.gotkicry.audiolink.diagnostics.EventRing
+import com.gotkicry.audiolink.diagnostics.ProbeEvent
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -42,6 +44,8 @@ class LowLatencyPlayer(
     private val channelCount: Int = CHANNEL_COUNT_STEREO,
     /** 请求的输出缓冲（帧）。实际生效值见 [PlaybackStats.actualBufferFrames]。 */
     private val bufferFrames: Int,
+    /** 离散事件探针（常开诊断，`null` = 不记）：设备欠载增量与补静音都进这里。 */
+    private val events: EventRing? = null,
 ) : PcmSink {
 
     companion object {
@@ -133,7 +137,7 @@ class LowLatencyPlayer(
         require(bufferFrames > 0) { "bufferFrames 必须为正：$bufferFrames" }
     }
 
-    private val counters = PlaybackCounters()
+    private val counters = PlaybackCounters(events)
 
     /**
      * 保护 `AudioTrack` 的创建/写入/释放。
@@ -465,7 +469,7 @@ class LowLatencyPlayer(
             if (target <= 0 || needsPriming) {
                 val progressed = loop.pumpOnce()
                 outputBufferedFrames = watermark.queuedFrames.toInt() + loop.bufferedFrames
-                trackUnderruns = localTrack.underrunCount
+                sampleTrackUnderruns(localTrack)
                 if (++ticks % BUFFER_SNAPSHOT_INTERVAL == 0) {
                     actualBufferFrames = localTrack.bufferSizeInFrames
                     startThreshold = startThresholdFrames(localTrack)
@@ -486,7 +490,7 @@ class LowLatencyPlayer(
                 } else if (!sleepNanos(IDLE_SLEEP_MS * NANOS_PER_MILLI)) {
                     return
                 }
-                trackUnderruns = localTrack.underrunCount
+                sampleTrackUnderruns(localTrack)
                 if (++ticks % BUFFER_SNAPSHOT_INTERVAL == 0) {
                     actualBufferFrames = localTrack.bufferSizeInFrames
                     bufferCapacityFrames = localTrack.bufferCapacityInFrames
@@ -494,6 +498,16 @@ class LowLatencyPlayer(
                 }
             }
         }
+    }
+
+    /**
+     * 采一次设备欠载计数（每轮既有采样的原位）：**只在出现正增量时**记一条探针事件。
+     * 欠载计数本身是单调累计值，逐轮记会把同一次欠载重复成几百条事件。
+     */
+    private fun sampleTrackUnderruns(localTrack: AudioTrack) {
+        val current = localTrack.underrunCount
+        if (current > trackUnderruns) events?.record(ProbeEvent.TRACK_UNDERRUN)
+        trackUnderruns = current
     }
 
     private fun startThresholdFrames(localTrack: AudioTrack): Int =

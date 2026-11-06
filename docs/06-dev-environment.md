@@ -161,6 +161,8 @@ keyPassword=<同上>
 | `get_id()` 前 12 字符 | 所有设备相同（`{0.0.0.00000000}.{`），唯一性只在尾部 GUID | 设备选择 UI 必须显示 GUID 段（`RenderDeviceInfo::short_id`） |
 | 默认输出 | 本机默认是 **NVIDIA HDMI**（不是虚拟声卡）；但它**空闲时不出数据**，且有内容播放时电平可达 0 dBFS+ | 自环测量必须能区分「端点安静」与「端点很吵」两种情况 → `self-loop` 报告里的**采集电平**一行 |
 
+> **更正（2026-10-15）**：「同步格式」与「`autoconvert` 是陷阱」两行的处置已翻转——`autoconvert` 不再是禁用项。旧策略下非 48 kHz 端点直接拒绝启动，用户在这些端点上**完全采不到/放不出音频**；现策略：混音格式 = 48 kHz / 2ch / f32 时原样请求（零重采样不变），否则请求统一格式 + `autoconvert: true`，由系统 SRC 在边界**显式**转换（`system_src_active()` 可查，真实混音格式仍经 `device_info().format` 上报）。内核内部不做 SRC 的纪律不变（`format_guard` 硬闸照旧）。实现见 `audiolink-audio::wasapi::choose_stream_format`，同步说明见 `docs/04-tech-stack.md` ADR-005 更正块。
+
 **实测工具用法**（不碰网络与 Android，M1 第一周的关键未知量就靠它钉死）：
 
 ```powershell

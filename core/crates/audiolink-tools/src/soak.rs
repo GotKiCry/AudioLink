@@ -1513,6 +1513,16 @@ mod tests {
                 schedule_slips: 40,
                 queue_rejects: 9,
                 cursor_catchups: 7,
+                // docs/77 §7.7 新增字段：本用例只验证原三分量，其余保持默认
+                // （显式写出来而不是 `..Default`，是为了将来再加字段时被迫在这里确认一次）。
+                catchup_gaps: 0,
+                catchup_frames: 0,
+                catchup_jumps: 0,
+                reject_conceal: 0,
+                reject_real: 0,
+                hole_hist: [0; 5],
+                queue_high_water: 0,
+                playout_resets: 0,
             },
         ));
 

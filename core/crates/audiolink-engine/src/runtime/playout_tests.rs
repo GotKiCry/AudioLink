@@ -523,6 +523,9 @@ fn packet_gap_emits_non_silent_concealment_before_recovery_frame() {
             plc: 1,
             late_drops: 0,
             queue_rejects: 0,
+            // docs/77 §7.7：帧类拆分字段（本场景无拒收）。
+            reject_conceal: 0,
+            reject_real: 0,
         }
     );
     assert_eq!(
@@ -727,8 +730,13 @@ fn long_gap_is_bounded_and_does_not_fill_the_playback_queue_with_old_frames() {
         output.push(frame);
         true
     });
-    let report = receiver.receive(1_000, &packets[1], |frame, _emission| {
-        output.push(frame);
+    let report = receiver.receive(1_000, &packets[1], |frame, emission| {
+        // docs/77 §S1：超过掩盖上限的洞会额外投递一次 `Emission::Hole`（洞首序号、无采样）。
+        // 它不是音频帧，本断言只关心「真实音频 + 掩盖」的序列，故跳过；
+        // Hole 的投递行为由 `long_gap_emits_a_hole_mark_for_the_player_cursor_jump` 单独守护。
+        if emission != Emission::Hole {
+            output.push(frame);
+        }
         true
     });
 
@@ -739,6 +747,73 @@ fn long_gap_is_bounded_and_does_not_fill_the_playback_queue_with_old_frames() {
         output.iter().map(|frame| frame.seq).collect::<Vec<_>>(),
         [0, 1, 2, 3, 4, 5, 6, 1_000]
     );
+}
+
+#[test]
+fn long_gap_emits_a_hole_mark_for_the_player_cursor_jump() {
+    // docs/77 §S1：接收侧在 gap 超过掩盖上限时**已经重建了解码器**（判定为时间轴重建），
+    // 必须把同一个事实交给播放侧 —— 否则播放侧只能逐拍补掩盖：那 D 拍不消费队列，
+    // 净增 D-1 帧，撞满容量后就是 docs/77 §3.3 的水位棘轮（现场：B/C 每秒十几且不自愈）。
+    //
+    // 短洞不得投递 Hole —— 这一点由 `packet_gap_emits_non_silent_concealment_before_recovery_frame`
+    // 的输出序列断言（[0, 1, 2] 里没有额外帧）隐含守护。
+    let packets = encoded_packets(2);
+    let mut receiver = AudioReceiver::new(CodecConfig::m1_default()).unwrap();
+    let mut holes = Vec::new();
+    let _ = receiver.receive(0, &packets[0], |_frame, _emission| true);
+    let _ = receiver.receive(1_000, &packets[1], |frame, emission| {
+        if emission == Emission::Hole {
+            holes.push((frame.seq, frame.samples.len()));
+        }
+        true
+    });
+    assert_eq!(holes, [(1, 0)], "gap=999 应以洞首 1 投递一次空载荷 Hole");
+}
+
+#[test]
+fn large_gap_jumps_to_queue_head_instead_of_paying_per_beat_catchup() {
+    // docs/78 §A：`distance >= CATCHUP_JUMP_DISTANCE` 时一次跳队头。
+    // 现场背景（2026-10-22 真机）：1209 个缺口 × 平均 3.9 拍逐拍追赶 = 4751 拍不消费队列，
+    // 把 30 帧容量的待播队列顶满 → 5104 次**真实帧**拒收的正反馈。
+    // 跳队头必须**消费**队列里的帧（放进 Ready 返回），而不是像逐拍追那样留在 pending。
+    let (tx, rx) = crossbeam_channel::bounded(4);
+    let stats = telemetry();
+    let marks = RejectedMarks::new();
+    let mut pending = None;
+    let mut expected = Some(5);
+    tx.send(frame(7)).unwrap(); // distance = 2，恰好在阈值上
+
+    assert!(matches!(
+        take_due_frame_after_reject(&rx, &mut pending, &mut expected, &stats, Some(&marks)),
+        DueFrame::ReadyAfterRejectedGap(PlaybackFrame { seq: 7, .. })
+    ));
+    assert_eq!(expected, Some(8));
+    assert!(
+        pending.is_none(),
+        "跳队头必须消费队列，不得把帧留进 pending"
+    );
+    let bd = stats.lock().unwrap().underrun_breakdown();
+    assert_eq!(bd.catchup_jumps, 1, "跳队头单独记账");
+    assert_eq!(bd.cursor_catchups, 0, "跳队头不得再记逐拍追赶");
+}
+
+#[test]
+fn catchup_jump_is_disabled_where_the_time_axis_must_stay_strict() {
+    // 排播（组内同步）模式下调用方传 `None`（`(!scheduled_mode).then_some(...)`），
+    // A 必须不生效：跳队头会把本端时间轴整体前移 D 帧（docs/12:504 的整帧差教训）。
+    let (tx, rx) = crossbeam_channel::bounded(4);
+    let stats = telemetry();
+    let mut pending = None;
+    let mut expected = Some(5);
+    tx.send(frame(9)).unwrap(); // distance = 4
+
+    assert!(matches!(
+        take_due_frame(&rx, &mut pending, &mut expected, &stats),
+        DueFrame::Missing
+    ));
+    let bd = stats.lock().unwrap().underrun_breakdown();
+    assert_eq!(bd.catchup_jumps, 0, "排播下不得跳队头");
+    assert_eq!(bd.cursor_catchups, 1, "排播下仍逐拍追赶以保时间轴");
 }
 
 #[test]

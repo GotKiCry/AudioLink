@@ -1,5 +1,7 @@
 package com.gotkicry.audiolink.audio
 
+import com.gotkicry.audiolink.diagnostics.EventRing
+import com.gotkicry.audiolink.diagnostics.ProbeEvent
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -25,7 +27,10 @@ import java.util.concurrent.atomic.AtomicLong
  *    没有生产者（未开播/已关流）时的读空不计入 —— 那是"没开播"，不是"供给跟不上"；
  *  - [starvedFrames]：这些欠载合计缺了多少帧（严重度口径），与 [sourceUnderruns] 同一闸门。
  */
-class PlaybackCounters {
+class PlaybackCounters(
+    /** 离散事件探针（常开诊断，`null` = 不记）：补静音是「用户真的听到了断」的直接证据。 */
+    private val events: EventRing? = null,
+) {
 
     private val writtenFrames = AtomicLong()
     private val silence = AtomicLong()
@@ -61,7 +66,10 @@ class PlaybackCounters {
 
     /** 记一次欠载补写的静音帧。 */
     fun recordSilence(frames: Int) {
-        if (frames > 0) silence.addAndGet(frames.toLong())
+        if (frames > 0) {
+            silence.addAndGet(frames.toLong())
+            events?.record(ProbeEvent.SILENCE_FILL)
+        }
     }
 
     /** 记一次"拿到了数据但写不进去、调用方放弃"的丢弃（推模式专用）。 */

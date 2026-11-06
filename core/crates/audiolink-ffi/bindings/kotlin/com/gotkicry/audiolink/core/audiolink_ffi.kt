@@ -805,16 +805,16 @@ internal open class UniffiVTableCallbackInterfacePcmPull(
 
 
 // For large crates we prevent `MethodTooLargeException` (see #2340)
-// N.B. the name of the extension is very misleading, since it is
-// rather `InterfaceTooLargeException`, caused by too many methods
+// N.B. the name of the extension is very misleading, since it is 
+// rather `InterfaceTooLargeException`, caused by too many methods 
 // in the interface for large crates.
 //
 // By splitting the otherwise huge interface into two parts
-// * UniffiLib
+// * UniffiLib 
 // * IntegrityCheckingUniffiLib (this)
 // we allow for ~2x as many methods in the UniffiLib interface.
-//
-// The `ffi_uniffi_contract_version` method and all checksum methods are put
+// 
+// The `ffi_uniffi_contract_version` method and all checksum methods are put 
 // into `IntegrityCheckingUniffiLib` and these methods are called only once,
 // when the library is loaded.
 internal interface IntegrityCheckingUniffiLib : Library {
@@ -871,8 +871,8 @@ internal interface UniffiLib : Library {
         internal val INSTANCE: UniffiLib by lazy {
             val componentName = "audiolink_ffi"
             // For large crates we prevent `MethodTooLargeException` (see #2340)
-            // N.B. the name of the extension is very misleading, since it is
-            // rather `InterfaceTooLargeException`, caused by too many methods
+            // N.B. the name of the extension is very misleading, since it is 
+            // rather `InterfaceTooLargeException`, caused by too many methods 
             // in the interface for large crates.
             //
             // By splitting the otherwise huge interface into two parts
@@ -880,7 +880,7 @@ internal interface UniffiLib : Library {
             // * IntegrityCheckingUniffiLib
             // And all checksum methods are put into `IntegrityCheckingUniffiLib`
             // we allow for ~2x as many methods in the UniffiLib interface.
-            //
+            // 
             // Thus we first load the library with `loadIndirect` as `IntegrityCheckingUniffiLib`
             // so that we can (optionally!) call `uniffiCheckApiChecksums`...
             loadIndirect<IntegrityCheckingUniffiLib>(componentName)
@@ -895,14 +895,14 @@ internal interface UniffiLib : Library {
             // to trigger this issue, the performance impact is negligible, running on
             // a macOS M1 machine the `loadIndirect` call takes ~50ms.
             val lib = loadIndirect<UniffiLib>(componentName)
-            // No need to check the contract version and checksums, since
+            // No need to check the contract version and checksums, since 
             // we already did that with `IntegrityCheckingUniffiLib` above.
             uniffiCallbackInterfacePcmFeed.register(lib)
             uniffiCallbackInterfacePcmPull.register(lib)
             // Loading of library with integrity check done.
             lib
         }
-
+        
         // The Cleaner for the whole library
         internal val CLEANER: UniffiCleaner by lazy {
             UniffiCleaner.create()
@@ -910,15 +910,15 @@ internal interface UniffiLib : Library {
     }
 
     // FFI functions
-    fun uniffi_audiolink_ffi_fn_clone_discoverybrowser(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+    fun uniffi_audiolink_ffi_fn_clone_discoverybrowser(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
-fun uniffi_audiolink_ffi_fn_free_discoverybrowser(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_audiolink_ffi_fn_free_discoverybrowser(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-fun uniffi_audiolink_ffi_fn_constructor_discoverybrowser_new(uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_audiolink_ffi_fn_constructor_discoverybrowser_new(uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
-fun uniffi_audiolink_ffi_fn_method_discoverybrowser_hosts(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_audiolink_ffi_fn_method_discoverybrowser_hosts(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_audiolink_ffi_fn_method_discoverybrowser_stop(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_audiolink_ffi_fn_method_discoverybrowser_stop(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_audiolink_ffi_fn_init_callback_vtable_pcmfeed(`vtable`: UniffiVTableCallbackInterfacePcmFeed,
 ): Unit
@@ -932,13 +932,13 @@ fun uniffi_audiolink_ffi_fn_func_engine_start(`config`: RustBuffer.ByValue,`play
 ): Long
 fun uniffi_audiolink_ffi_fn_func_engine_stop(
 ): Long
-fun uniffi_audiolink_ffi_fn_func_local_peer_gain(`peerId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_audiolink_ffi_fn_func_local_peer_gain(`peerId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_audiolink_ffi_fn_func_local_status(uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_audiolink_ffi_fn_func_local_status(uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_audiolink_ffi_fn_func_peers(uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_audiolink_ffi_fn_func_peers(uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun uniffi_audiolink_ffi_fn_func_protocol_self_test(uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_audiolink_ffi_fn_func_protocol_self_test(uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_audiolink_ffi_fn_func_set_local_peer_gain(`peerId`: RustBuffer.ByValue,`gain`: Float,
 ): Long
@@ -950,15 +950,15 @@ fun uniffi_audiolink_ffi_fn_func_stop_send(
 ): Long
 fun uniffi_audiolink_ffi_fn_func_stop_send_to(`peerId`: RustBuffer.ByValue,
 ): Long
-fun uniffi_audiolink_ffi_fn_func_telemetry(uniffi_out_err: UniffiRustCallStatus,
+fun uniffi_audiolink_ffi_fn_func_telemetry(uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun ffi_audiolink_ffi_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun ffi_audiolink_ffi_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
-fun ffi_audiolink_ffi_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
-fun ffi_audiolink_ffi_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun ffi_audiolink_ffi_rust_future_poll_u8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -966,7 +966,7 @@ fun ffi_audiolink_ffi_rust_future_cancel_u8(`handle`: Long,
 ): Unit
 fun ffi_audiolink_ffi_rust_future_free_u8(`handle`: Long,
 ): Unit
-fun ffi_audiolink_ffi_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
 fun ffi_audiolink_ffi_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -974,7 +974,7 @@ fun ffi_audiolink_ffi_rust_future_cancel_i8(`handle`: Long,
 ): Unit
 fun ffi_audiolink_ffi_rust_future_free_i8(`handle`: Long,
 ): Unit
-fun ffi_audiolink_ffi_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
 fun ffi_audiolink_ffi_rust_future_poll_u16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -982,7 +982,7 @@ fun ffi_audiolink_ffi_rust_future_cancel_u16(`handle`: Long,
 ): Unit
 fun ffi_audiolink_ffi_rust_future_free_u16(`handle`: Long,
 ): Unit
-fun ffi_audiolink_ffi_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Short
 fun ffi_audiolink_ffi_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -990,7 +990,7 @@ fun ffi_audiolink_ffi_rust_future_cancel_i16(`handle`: Long,
 ): Unit
 fun ffi_audiolink_ffi_rust_future_free_i16(`handle`: Long,
 ): Unit
-fun ffi_audiolink_ffi_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Short
 fun ffi_audiolink_ffi_rust_future_poll_u32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -998,7 +998,7 @@ fun ffi_audiolink_ffi_rust_future_cancel_u32(`handle`: Long,
 ): Unit
 fun ffi_audiolink_ffi_rust_future_free_u32(`handle`: Long,
 ): Unit
-fun ffi_audiolink_ffi_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Int
 fun ffi_audiolink_ffi_rust_future_poll_i32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -1006,7 +1006,7 @@ fun ffi_audiolink_ffi_rust_future_cancel_i32(`handle`: Long,
 ): Unit
 fun ffi_audiolink_ffi_rust_future_free_i32(`handle`: Long,
 ): Unit
-fun ffi_audiolink_ffi_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Int
 fun ffi_audiolink_ffi_rust_future_poll_u64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -1014,7 +1014,7 @@ fun ffi_audiolink_ffi_rust_future_cancel_u64(`handle`: Long,
 ): Unit
 fun ffi_audiolink_ffi_rust_future_free_u64(`handle`: Long,
 ): Unit
-fun ffi_audiolink_ffi_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 fun ffi_audiolink_ffi_rust_future_poll_i64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -1022,7 +1022,7 @@ fun ffi_audiolink_ffi_rust_future_cancel_i64(`handle`: Long,
 ): Unit
 fun ffi_audiolink_ffi_rust_future_free_i64(`handle`: Long,
 ): Unit
-fun ffi_audiolink_ffi_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 fun ffi_audiolink_ffi_rust_future_poll_f32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -1030,7 +1030,7 @@ fun ffi_audiolink_ffi_rust_future_cancel_f32(`handle`: Long,
 ): Unit
 fun ffi_audiolink_ffi_rust_future_free_f32(`handle`: Long,
 ): Unit
-fun ffi_audiolink_ffi_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Float
 fun ffi_audiolink_ffi_rust_future_poll_f64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -1038,7 +1038,7 @@ fun ffi_audiolink_ffi_rust_future_cancel_f64(`handle`: Long,
 ): Unit
 fun ffi_audiolink_ffi_rust_future_free_f64(`handle`: Long,
 ): Unit
-fun ffi_audiolink_ffi_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Double
 fun ffi_audiolink_ffi_rust_future_poll_pointer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -1046,7 +1046,7 @@ fun ffi_audiolink_ffi_rust_future_cancel_pointer(`handle`: Long,
 ): Unit
 fun ffi_audiolink_ffi_rust_future_free_pointer(`handle`: Long,
 ): Unit
-fun ffi_audiolink_ffi_rust_future_complete_pointer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rust_future_complete_pointer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
 fun ffi_audiolink_ffi_rust_future_poll_rust_buffer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -1054,7 +1054,7 @@ fun ffi_audiolink_ffi_rust_future_cancel_rust_buffer(`handle`: Long,
 ): Unit
 fun ffi_audiolink_ffi_rust_future_free_rust_buffer(`handle`: Long,
 ): Unit
-fun ffi_audiolink_ffi_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun ffi_audiolink_ffi_rust_future_poll_void(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -1062,7 +1062,7 @@ fun ffi_audiolink_ffi_rust_future_cancel_void(`handle`: Long,
 ): Unit
 fun ffi_audiolink_ffi_rust_future_free_void(`handle`: Long,
 ): Unit
-fun ffi_audiolink_ffi_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
+fun ffi_audiolink_ffi_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 
 }
@@ -1250,7 +1250,7 @@ inline fun <T : Disposable?, R> T.use(block: (T) -> R) =
         }
     }
 
-/**
+/** 
  * Used to instantiate an interface without an actual pointer, for fakes in tests, mostly.
  *
  * @suppress
@@ -1670,14 +1670,14 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
 
 
 public interface DiscoveryBrowserInterface {
-
+    
     fun `hosts`(): List<DiscoveredHost>
-
+    
     /**
      * Releases the socket immediately when the receiving screen leaves the foreground.
      */
     fun `stop`()
-
+    
     companion object
 }
 
@@ -1770,7 +1770,7 @@ open class DiscoveryBrowser: Disposable, AutoCloseable, DiscoveryBrowserInterfac
         }
     }
 
-
+    
     @Throws(FfiException::class)override fun `hosts`(): List<DiscoveredHost> {
             return FfiConverterSequenceTypeDiscoveredHost.lift(
     callWithPointer {
@@ -1781,28 +1781,28 @@ open class DiscoveryBrowser: Disposable, AutoCloseable, DiscoveryBrowserInterfac
     }
     )
     }
+    
 
-
-
+    
     /**
      * Releases the socket immediately when the receiving screen leaves the foreground.
      */override fun `stop`()
-        =
+        = 
     callWithPointer {
     uniffiRustCall() { _status ->
     UniffiLib.INSTANCE.uniffi_audiolink_ffi_fn_method_discoverybrowser_stop(
         it, _status)
 }
     }
+    
+    
 
+    
 
-
-
-
-
-
+    
+    
     companion object
-
+    
 }
 
 /**
@@ -1836,14 +1836,14 @@ public object FfiConverterTypeDiscoveryBrowser: FfiConverter<DiscoveryBrowser, P
 
 
 data class DiscoveredHost (
-    var `idShort`: kotlin.String,
-    var `name`: kotlin.String,
-    var `addr`: kotlin.String,
-    var `platform`: kotlin.String,
-    var `protoVersion`: kotlin.UShort,
+    var `idShort`: kotlin.String, 
+    var `name`: kotlin.String, 
+    var `addr`: kotlin.String, 
+    var `platform`: kotlin.String, 
+    var `protoVersion`: kotlin.UShort, 
     var `compatible`: kotlin.Boolean
 ) {
-
+    
     companion object
 }
 
@@ -1893,15 +1893,15 @@ data class EngineStartConfig (
     /**
      * 用户可见节点名（仅展示，不参与身份判定）。
      */
-    var `nodeName`: kotlin.String,
+    var `nodeName`: kotlin.String, 
     /**
      * 身份材料（`cert.pem` / `key.pem`）的落地目录。
      */
-    var `dataDir`: kotlin.String,
+    var `dataDir`: kotlin.String, 
     /**
      * QUIC 监听端口；`0` = 默认 `58290`。
      */
-    var `listenPort`: kotlin.UShort,
+    var `listenPort`: kotlin.UShort, 
     /**
      * **平台侧额外声明**的能力位（§13 的协商位图，位名与语义见 `audiolink_types::Capabilities`）。
      *
@@ -1913,7 +1913,7 @@ data class EngineStartConfig (
      * 非零值与内核默认取**并集**，因此**不可能**抹掉必需位（`REQUIRED` 只有 `OPUS`）——
      * 若允许调用方覆盖整张位图，一个只写 `MICROPHONE` 的调用方就会让双方缺必需位、直接拒连。
      */
-    var `capabilities`: kotlin.UInt = 0u,
+    var `capabilities`: kotlin.UInt = 0u, 
     /**
      * 低延迟档开关：`true` = 10 ms Opus 帧 + 10 ms 播放水位；`false`（缺省）= 标准档 20 ms 帧。
      *
@@ -1929,7 +1929,7 @@ data class EngineStartConfig (
      */
     var `lowLatency`: kotlin.Boolean = false
 ) {
-
+    
     companion object
 }
 
@@ -1973,41 +1973,41 @@ data class LocalStatus (
     /**
      * 指纹短码（16 hex 字符）—— UI 展示用。
      */
-    var `idShort`: kotlin.String,
+    var `idShort`: kotlin.String, 
     /**
      * 完整指纹（64 hex 字符）—— 本机身份的稳定标识。
      */
-    var `idHex`: kotlin.String,
+    var `idHex`: kotlin.String, 
     /**
      * 节点展示名。
      */
-    var `name`: kotlin.String,
+    var `name`: kotlin.String, 
     /**
      * 实际监听的 `ip:port`。
      */
-    var `addr`: kotlin.String,
+    var `addr`: kotlin.String, 
     /**
      * `win` / `android` / `unknown`。
      */
-    var `platform`: kotlin.String,
+    var `platform`: kotlin.String, 
     /**
      * 能力位原始值。
      */
-    var `capsBits`: kotlin.UShort,
+    var `capsBits`: kotlin.UShort, 
     /**
      * 本机能否推流（= 配了采集回调）。
      */
-    var `canSend`: kotlin.Boolean,
+    var `canSend`: kotlin.Boolean, 
     /**
      * 本机能否接收（= 配了播放回调）。
      */
-    var `canReceive`: kotlin.Boolean,
+    var `canReceive`: kotlin.Boolean, 
     /**
      * 协议版本（`0x0201`）。
      */
     var `protoVersion`: kotlin.UShort
 ) {
-
+    
     companion object
 }
 
@@ -2063,13 +2063,13 @@ data class PcmBufferState (
     /**
      * Kotlin 环、未写完的块与 AudioTrack 已接收但尚未消费的总帧数。
      */
-    var `queuedFrames`: kotlin.UInt,
+    var `queuedFrames`: kotlin.UInt, 
     /**
      * AudioTrack 的输出目标；不含网络抖动缓冲，0 表示停用闭环调节。
      */
     var `targetFrames`: kotlin.UInt
 ) {
-
+    
     companion object
 }
 
@@ -2104,28 +2104,28 @@ data class PeerView (
     /**
      * 指纹短码。
      */
-    var `idShort`: kotlin.String,
+    var `idShort`: kotlin.String, 
     /**
      * 完整指纹。
      */
-    var `idHex`: kotlin.String,
+    var `idHex`: kotlin.String, 
     /**
      * 对端展示名（对端自报，**不作为身份依据**：身份只认 `id_hex` 那份证书指纹）。
      */
-    var `name`: kotlin.String,
+    var `name`: kotlin.String, 
     /**
      * 对端地址 `ip:port`。
      */
-    var `addr`: kotlin.String,
+    var `addr`: kotlin.String, 
     /**
      * `idle` / `handshaking` / `streaming` / `degraded` / `reconnecting` / `failed`
      * （与桌面端契约 §6 的 `state` 字面量同一套）。
      */
-    var `state`: kotlin.String,
+    var `state`: kotlin.String, 
     /**
      * 该对端的遥测快照（`peers` 字段恒为 1）。
      */
-    var `telemetry`: TelemetryView,
+    var `telemetry`: TelemetryView, 
     /**
      * 本端作为**接收端**时，本条流协商生效的 Opus 帧长（ms）。
      *
@@ -2138,21 +2138,58 @@ data class PeerView (
      * 是听感发闷/断续而遥测全绿，只看 `telemetry.frame_ms`（那是本端**本地**档位）看不出来。
      * 两者不等，就是「本端跟随了对端的帧长」的证据。
      */
-    var `negotiatedFrameMs`: kotlin.UByte?,
+    var `negotiatedFrameMs`: kotlin.UByte?, 
     /**
      * 本机播放线程错过的节拍数；仅统计本端，不来自对端反馈。
      */
-    var `scheduleSlips`: kotlin.UInt,
+    var `scheduleSlips`: kotlin.UInt, 
     /**
      * 本机待播队列满时拒收的帧数。
      */
-    var `queueRejects`: kotlin.UInt,
+    var `queueRejects`: kotlin.UInt, 
     /**
      * 本机播放游标逐拍越过序号缺口的次数。
      */
-    var `cursorCatchups`: kotlin.UInt
+    var `cursorCatchups`: kotlin.UInt, 
+    /**
+     * 追赶越过的**洞个数**（`cursor_catchups` 记的是拍数，这个才是洞数）。
+     */
+    var `catchupGaps`: kotlin.UInt, 
+    /**
+     * 追赶跳过的总帧数（应≈ `cursor_catchups`，差值来自降档/回收路径混入）。
+     */
+    var `catchupFrames`: kotlin.UInt, 
+    /**
+     * docs/78 §A：缺口超阈值、被**一次跳队头**收掉的次数（不再逐拍追赶）。
+     *
+     * 这条涨、`cursor_catchups` 就该停 —— 两者同时高速增长说明阈值没生效。
+     */
+    var `catchupJumps`: kotlin.UInt, 
+    /**
+     * 满队列拒收里**掩盖占位帧**的个数 —— 高则说明该下调让位线，无音频损失。
+     */
+    var `rejectConceal`: kotlin.UInt, 
+    /**
+     * 满队列拒收里**真实解码帧**的个数 —— 这才是真丢音频。
+     */
+    var `rejectReal`: kotlin.UInt, 
+    /**
+     * 接收侧洞大小直方图，分档 `[0, 1-3, 4-12, 13-30, >30]` 帧。
+     *
+     * 13-30 / >30 两档是 docs/77 §S1「大洞标记」的射程；若真机上这两档恒为 0，
+     * 说明 S1 的触发条件从未发生、根因判定错误，须回退 S1 重新定位。
+     */
+    var `holeHist`: List<kotlin.UInt>, 
+    /**
+     * 待播队列历史最高水位（帧）—— 水位棘轮是否真的在爬，只看这一个数。
+     */
+    var `queueHighWater`: kotlin.UInt, 
+    /**
+     * 播放管线软复位次数（docs/77 §7.6 的兜底；本轮 S1+S3 未接线，恒为 0）。
+     */
+    var `playoutResets`: kotlin.UInt
 ) {
-
+    
     companion object
 }
 
@@ -2172,6 +2209,14 @@ public object FfiConverterTypePeerView: FfiConverterRustBuffer<PeerView> {
             FfiConverterUInt.read(buf),
             FfiConverterUInt.read(buf),
             FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterSequenceUInt.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
         )
     }
 
@@ -2185,7 +2230,15 @@ public object FfiConverterTypePeerView: FfiConverterRustBuffer<PeerView> {
             FfiConverterOptionalUByte.allocationSize(value.`negotiatedFrameMs`) +
             FfiConverterUInt.allocationSize(value.`scheduleSlips`) +
             FfiConverterUInt.allocationSize(value.`queueRejects`) +
-            FfiConverterUInt.allocationSize(value.`cursorCatchups`)
+            FfiConverterUInt.allocationSize(value.`cursorCatchups`) +
+            FfiConverterUInt.allocationSize(value.`catchupGaps`) +
+            FfiConverterUInt.allocationSize(value.`catchupFrames`) +
+            FfiConverterUInt.allocationSize(value.`catchupJumps`) +
+            FfiConverterUInt.allocationSize(value.`rejectConceal`) +
+            FfiConverterUInt.allocationSize(value.`rejectReal`) +
+            FfiConverterSequenceUInt.allocationSize(value.`holeHist`) +
+            FfiConverterUInt.allocationSize(value.`queueHighWater`) +
+            FfiConverterUInt.allocationSize(value.`playoutResets`)
     )
 
     override fun write(value: PeerView, buf: ByteBuffer) {
@@ -2199,6 +2252,14 @@ public object FfiConverterTypePeerView: FfiConverterRustBuffer<PeerView> {
             FfiConverterUInt.write(value.`scheduleSlips`, buf)
             FfiConverterUInt.write(value.`queueRejects`, buf)
             FfiConverterUInt.write(value.`cursorCatchups`, buf)
+            FfiConverterUInt.write(value.`catchupGaps`, buf)
+            FfiConverterUInt.write(value.`catchupFrames`, buf)
+            FfiConverterUInt.write(value.`catchupJumps`, buf)
+            FfiConverterUInt.write(value.`rejectConceal`, buf)
+            FfiConverterUInt.write(value.`rejectReal`, buf)
+            FfiConverterSequenceUInt.write(value.`holeHist`, buf)
+            FfiConverterUInt.write(value.`queueHighWater`, buf)
+            FfiConverterUInt.write(value.`playoutResets`, buf)
     }
 }
 
@@ -2211,61 +2272,61 @@ data class TelemetryView (
     /**
      * 这份快照覆盖的对端数（`telemetry()` 是全部，`PeerView.telemetry` 恒为 1）。
      */
-    var `peers`: kotlin.UInt,
+    var `peers`: kotlin.UInt, 
     /**
      * 流 ID（未推流时为 0）。
      */
-    var `streamId`: kotlin.UInt,
+    var `streamId`: kotlin.UInt, 
     /**
      * QUIC 平滑 RTT（µs）。
      */
-    var `rttUs`: kotlin.UInt,
+    var `rttUs`: kotlin.UInt, 
     /**
      * 到达间隔抖动 P50（µs）。
      */
-    var `jitterUs`: kotlin.UInt,
+    var `jitterUs`: kotlin.UInt, 
     /**
      * 到达间隔抖动 P95（µs）。
      */
-    var `jitterP95Us`: kotlin.UInt,
+    var `jitterP95Us`: kotlin.UInt, 
     /**
      * 丢包率（百分比，`0.0`–`100.0`）。
      */
-    var `lossPct`: kotlin.Double,
+    var `lossPct`: kotlin.Double, 
     /**
      * 实际编码码率（bps）。
      */
-    var `bitrateBps`: kotlin.UInt,
+    var `bitrateBps`: kotlin.UInt, 
     /**
      * 帧长（ms）。
      */
-    var `frameMs`: kotlin.UByte,
+    var `frameMs`: kotlin.UByte, 
     /**
      * 声道数。
      */
-    var `channels`: kotlin.UByte,
+    var `channels`: kotlin.UByte, 
     /**
      * 播放环水位（µs）。
      */
-    var `bufferLevelUs`: kotlin.UInt,
+    var `bufferLevelUs`: kotlin.UInt, 
     /**
      * 累计欠载次数。
      */
-    var `underruns`: kotlin.UInt,
+    var `underruns`: kotlin.UInt, 
     /**
      * 丢包隐藏次数（M1 只计数，不做掩盖）。
      */
-    var `plcCount`: kotlin.UInt,
+    var `plcCount`: kotlin.UInt, 
     /**
      * 迟到丢弃包数。
      */
-    var `lateDrops`: kotlin.UInt,
+    var `lateDrops`: kotlin.UInt, 
     /**
      * 估算端到端延迟（µs）。
      */
     var `e2eLatencyUs`: kotlin.UInt
 ) {
-
+    
     companion object
 }
 
@@ -2355,7 +2416,7 @@ public object FfiConverterTypeTelemetryView: FfiConverterRustBuffer<TelemetryVie
  * 完整人话串由 `Throwable.message` 给出（`1002 NO_PEER: no such peer session`）。
  */
 sealed class FfiException: kotlin.Exception() {
-
+    
     /**
      * 统一失败形态。
      *
@@ -2364,17 +2425,17 @@ sealed class FfiException: kotlin.Exception() {
      * - `context`：出错细节（谁、在哪、什么值）。
      */
     class Failure(
-
+        
         /**
          * §11 错误码数值。
          */
-        val `code`: kotlin.UShort,
-
+        val `code`: kotlin.UShort, 
+        
         /**
          * §11 错误码短名。
          */
-        val `messageText`: kotlin.String,
-
+        val `messageText`: kotlin.String, 
+        
         /**
          * 失败细节。
          */
@@ -2383,13 +2444,13 @@ sealed class FfiException: kotlin.Exception() {
         override val message
             get() = "code=${ `code` }, messageText=${ `messageText` }, context=${ `context` }"
     }
-
+    
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<FfiException> {
         override fun lift(error_buf: RustBuffer.ByValue): FfiException = FfiConverterTypeFfiError.lift(error_buf)
     }
 
-
+    
 }
 
 /**
@@ -2397,7 +2458,7 @@ sealed class FfiException: kotlin.Exception() {
  */
 public object FfiConverterTypeFfiError : FfiConverterRustBuffer<FfiException> {
     override fun read(buf: ByteBuffer): FfiException {
-
+        
 
         return when(buf.getInt()) {
             1 -> FfiException.Failure(
@@ -2449,17 +2510,17 @@ public object FfiConverterTypeFfiError : FfiConverterRustBuffer<FfiException> {
  * 3. 返回值 = 实际接收的帧数，仅供诊断；`< frames` 表示 Kotlin 侧环满。
  */
 public interface PcmFeed {
-
+    
     /**
      * 交付一段 PCM。
      */
     fun `feedPcm`(`samples`: List<kotlin.Float>, `frames`: kotlin.Int): kotlin.Int
-
+    
     /**
      * 从播放线程发布的快照读数，不在 Rust 线程调用 AudioTrack。
      */
     fun `playoutBufferState`(): PcmBufferState?
-
+    
     companion object
 }
 
@@ -2531,12 +2592,12 @@ public object FfiConverterTypePcmFeed: FfiConverterCallbackInterface<PcmFeed>()
  * 3. 同样可能从 Rust 音频线程调用，实现必须线程安全。
  */
 public interface PcmPull {
-
+    
     /**
      * 取最多 `max_samples` 个交错样本。
      */
     fun `readPcm`(`maxSamples`: kotlin.Int): List<kotlin.Float>
-
+    
     companion object
 }
 
@@ -2748,6 +2809,34 @@ public object FfiConverterOptionalTypePcmPull: FfiConverterRustBuffer<PcmPull?> 
 /**
  * @suppress
  */
+public object FfiConverterSequenceUInt: FfiConverterRustBuffer<List<kotlin.UInt>> {
+    override fun read(buf: ByteBuffer): List<kotlin.UInt> {
+        val len = buf.getInt()
+        return List<kotlin.UInt>(len) {
+            FfiConverterUInt.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<kotlin.UInt>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterUInt.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<kotlin.UInt>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterUInt.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceFloat: FfiConverterRustBuffer<List<kotlin.Float>> {
     override fun read(buf: ByteBuffer): List<kotlin.Float> {
         val len = buf.getInt()
@@ -2918,7 +3007,7 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
         { future -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_free_void(future) },
         // lift function
         { Unit },
-
+        
         // Error FFI converter
         FfiException.ErrorHandler,
     )
@@ -2939,7 +3028,7 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
 }
     )
     }
-
+    
 
         /**
          * 本机状态。
@@ -2952,7 +3041,7 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
 }
     )
     }
-
+    
 
         /**
          * 已连接对端列表。
@@ -2965,7 +3054,7 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
 }
     )
     }
-
+    
 
         /**
          * 契约 §8 的 `protocolSelfTest() -> String`。
@@ -2977,7 +3066,7 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
 }
     )
     }
-
+    
 
         /**
          * 设置**本机**对该设备的本地播放增益（FR-12：接收端每路独立音量）。
@@ -3004,7 +3093,7 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
         { future -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_free_void(future) },
         // lift function
         { Unit },
-
+        
         // Error FFI converter
         FfiException.ErrorHandler,
     )
@@ -3029,7 +3118,7 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
         { future -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_free_void(future) },
         // lift function
         { Unit },
-
+        
         // Error FFI converter
         FfiException.ErrorHandler,
     )
@@ -3048,7 +3137,7 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
         { future -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_free_void(future) },
         // lift function
         { Unit },
-
+        
         // Error FFI converter
         FfiException.ErrorHandler,
     )
@@ -3070,7 +3159,7 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
         { future -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_free_void(future) },
         // lift function
         { Unit },
-
+        
         // Error FFI converter
         FfiException.ErrorHandler,
     )
@@ -3098,7 +3187,7 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
         { future -> UniffiLib.INSTANCE.ffi_audiolink_ffi_rust_future_free_void(future) },
         // lift function
         { Unit },
-
+        
         // Error FFI converter
         FfiException.ErrorHandler,
     )
@@ -3115,3 +3204,6 @@ public object FfiConverterSequenceTypePeerView: FfiConverterRustBuffer<List<Peer
 }
     )
     }
+    
+
+

@@ -8,8 +8,8 @@
 //! | 请求缓冲 1–20 ms | `GetBufferSize` 一律 **1056 帧 = 22 ms** | 共享模式拿不到 10–20 ms 的**缓冲**；能压的是读出口粒度（10 ms），M1 风险清单据此更新 |
 //! | 请求缓冲 ≥ 30 ms | 按请求值生效（30/50/100 ms 精确） | 需要更大缓冲时可信 |
 //! | 每包帧数 | 480 帧（= 1 个周期） | 采集侧固有粒度 10 ms |
-//! | 混音格式 | 四个端点均 **48000 Hz / 2ch / f32** | 「零重采样」成立的前提（若是 44.1 kHz 必须让用户改设备设置，见 [`crate::format::require_unified_sample_rate`]） |
-//! | `autoconvert` | 44.1 kHz 且 `autoconvert=false` → `0x88890008`；`true` 会做 SRC | **本项目禁用** autoconvert：静默重采样会让 M1「零重采样」验收失去意义 |
+//! | 混音格式 | 四个端点均 **48000 Hz / 2ch / f32** | 本机天然零重采样；非统一格式端点走系统 SRC 兜底（见下） |
+//! | `autoconvert` | 44.1 kHz 且 `autoconvert=false` → `0x88890008`；`true` 会做 SRC | **2026-10-15 策略翻转**：混音格式 ≠ 48k/2ch/f32 时请求统一格式 + `autoconvert: true`，由系统 SRC 兜底（此前直接拒绝启动，导致非 48 kHz 端点完全采不到/放不出音频）。SRC 是**显式**的：`system_src_active()` 可查、`device_info().format` 仍报告真实混音格式 |
 //! | NVIDIA HDMI 端点 | 2 s 内 **0 包**（端点未播放） | loopback 只在端点播放时交付数据 → 默认输出若是 HDMI 且无播放，要诊断提示 |
 //! | 独占模式 | Realtek 上 `EventsExclusive` 报 `0x88890008` | 独占路径不可用，v1 不依赖它 |
 //!
@@ -27,7 +27,7 @@ pub use render::RenderSink;
 use wasapi::{Device, DeviceEnumerator, DeviceState, Direction, SampleType, WaveFormat};
 
 use crate::error::AudioError;
-use crate::format::{DeviceFormat, SampleFormat};
+use crate::format::{CHANNELS, DeviceFormat, SAMPLE_RATE_HZ, SampleFormat};
 
 /// 设备选择器。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -311,6 +311,46 @@ pub(crate) fn to_device_format(wave: &WaveFormat) -> Result<DeviceFormat, AudioE
     })
 }
 
+/// 流格式决策结果（采集与播放共用）。
+pub(crate) struct StreamFormatChoice {
+    /// 传给 `initialize_client` 的格式。
+    pub wave: WaveFormat,
+    /// 内核实际收发的格式（`system_src = true` 时是**请求格式**，不是混音格式）。
+    pub format: DeviceFormat,
+    /// 是否启用了 WASAPI 系统重采样（混音格式 ≠ 统一内部格式时为 `true`）。
+    pub system_src: bool,
+}
+
+/// 决定用哪种格式初始化流（2026-10-15 起的新策略，替代旧的「非 48 kHz 直接拒绝」）：
+///
+/// - 混音格式已是统一内部格式（48 kHz / 2ch / f32）→ 原样请求，`autoconvert: false`，零重采样；
+/// - 否则 → 请求统一格式 + `autoconvert: true`，由系统 SRC 在边界上把流转成 48 kHz。
+///   这是**显式**转换：调用方可通过 `system_src` 标志与 [`RenderDeviceInfo::format`]（真实混音格式）观测，
+///   与 docs/02 §3「采集源在进入内核时统一重采样到 48 kHz」的架构契约一致。
+pub(crate) fn choose_stream_format(mix: &WaveFormat) -> Result<StreamFormatChoice, AudioError> {
+    let mix_format = to_device_format(mix)?;
+    if mix_format.is_unified() {
+        return Ok(StreamFormatChoice {
+            wave: mix.clone(),
+            format: mix_format,
+            system_src: false,
+        });
+    }
+    let wave = WaveFormat::new(
+        32,
+        32,
+        &SampleType::Float,
+        SAMPLE_RATE_HZ as usize,
+        CHANNELS as usize,
+        None,
+    );
+    Ok(StreamFormatChoice {
+        wave,
+        format: DeviceFormat::new(SAMPLE_RATE_HZ, CHANNELS, SampleFormat::F32),
+        system_src: true,
+    })
+}
+
 /// 人类可读的 `WaveFormat` 描述（报告用；与 `docs/04-tech-stack.md` 的写法一致）。
 pub(crate) fn describe_format(wave: &WaveFormat) -> String {
     let kind = match wave.get_subformat() {
@@ -336,7 +376,7 @@ pub(crate) fn map_wasapi(error: wasapi::WasapiError, what: &str) -> AudioError {
             AudioError::device_unavailable_owned(format!("找不到端点：{name}"))
         }
         WasapiError::UnsupportedFormat => AudioError::device_unavailable_owned(format!(
-            "{what}：设备不接受该格式（共享模式必须使用设备混音格式，且本项目不使用 autoconvert）"
+            "{what}：设备不接受该格式（已尝试 autoconvert 系统重采样仍被拒绝；请把端点设为 48 kHz / 立体声）"
         )),
         WasapiError::LoopbackWithExclusiveMode => {
             AudioError::invalid_config("loopback 采集不能用独占模式")
@@ -348,4 +388,48 @@ pub(crate) fn map_wasapi(error: wasapi::WasapiError, what: &str) -> AudioError {
 /// 缓冲时长（ms）→ 100 ns 单位（WASAPI 的 `hns` 口径）。
 pub(crate) const fn ms_to_hns(ms: u32) -> i64 {
     ms as i64 * 10_000
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    fn mix_wave(sample_rate: usize, channels: usize, sample_type: &SampleType) -> WaveFormat {
+        let bits = match sample_type {
+            SampleType::Float => 32,
+            SampleType::Int => 16,
+        };
+        WaveFormat::new(bits, bits, sample_type, sample_rate, channels, None)
+    }
+
+    #[test]
+    fn 统一格式端点不启用系统重采样() {
+        let mix = mix_wave(48_000, 2, &SampleType::Float);
+        let choice = choose_stream_format(&mix).unwrap();
+        assert!(!choice.system_src);
+        assert!(choice.format.is_unified());
+        assert_eq!(choice.wave.get_samplespersec(), 48_000);
+    }
+
+    #[test]
+    fn 非48k端点请求统一格式并启用系统重采样() {
+        let mix = mix_wave(44_100, 2, &SampleType::Float);
+        let choice = choose_stream_format(&mix).unwrap();
+        assert!(choice.system_src);
+        assert!(choice.format.is_unified());
+        // 请求的流格式必须是 48 kHz / 2ch / f32 —— 内核只认这一种
+        assert_eq!(choice.wave.get_samplespersec(), 48_000);
+        assert_eq!(choice.wave.get_nchannels(), 2);
+        assert_eq!(choice.wave.get_subformat().unwrap(), SampleType::Float);
+    }
+
+    #[test]
+    fn 采样率达标但位深不符同样走系统转换() {
+        let mix = mix_wave(48_000, 2, &SampleType::Int);
+        let choice = choose_stream_format(&mix).unwrap();
+        assert!(choice.system_src);
+        assert!(choice.format.is_unified());
+    }
 }

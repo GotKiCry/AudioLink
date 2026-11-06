@@ -164,6 +164,31 @@ pub struct PeerView {
     pub queue_rejects: u32,
     /// 本机播放游标逐拍越过序号缺口的次数。
     pub cursor_catchups: u32,
+
+    // ---- docs/77 §7.7：把上面三个「拍数」拆成「几个洞、多大、拒的是什么」----
+    // 现场「B/C 每秒十几」在旧口径下无法区分「一个 15 帧的洞」与「15 个 1 帧的洞」，
+    // 而两者治法相反。全部走 Engine 独立出口（不进 StreamStats，wire schema 冻结）。
+    /// 追赶越过的**洞个数**（`cursor_catchups` 记的是拍数，这个才是洞数）。
+    pub catchup_gaps: u32,
+    /// 追赶跳过的总帧数（应≈ `cursor_catchups`，差值来自降档/回收路径混入）。
+    pub catchup_frames: u32,
+    /// docs/78 §A：缺口超阈值、被**一次跳队头**收掉的次数（不再逐拍追赶）。
+    ///
+    /// 这条涨、`cursor_catchups` 就该停 —— 两者同时高速增长说明阈值没生效。
+    pub catchup_jumps: u32,
+    /// 满队列拒收里**掩盖占位帧**的个数 —— 高则说明该下调让位线，无音频损失。
+    pub reject_conceal: u32,
+    /// 满队列拒收里**真实解码帧**的个数 —— 这才是真丢音频。
+    pub reject_real: u32,
+    /// 接收侧洞大小直方图，分档 `[0, 1-3, 4-12, 13-30, >30]` 帧。
+    ///
+    /// 13-30 / >30 两档是 docs/77 §S1「大洞标记」的射程；若真机上这两档恒为 0，
+    /// 说明 S1 的触发条件从未发生、根因判定错误，须回退 S1 重新定位。
+    pub hole_hist: Vec<u32>,
+    /// 待播队列历史最高水位（帧）—— 水位棘轮是否真的在爬，只看这一个数。
+    pub queue_high_water: u32,
+    /// 播放管线软复位次数（docs/77 §7.6 的兜底；本轮 S1+S3 未接线，恒为 0）。
+    pub playout_resets: u32,
 }
 
 /// 遥测快照（`telemetry()`；字段尽可能对齐桌面契约 §6 的 `TelemetryView`）。
@@ -433,6 +458,14 @@ fn peer_view(engine: &Engine, status: PeerStatus) -> PeerView {
         schedule_slips: breakdown.schedule_slips,
         queue_rejects: breakdown.queue_rejects,
         cursor_catchups: breakdown.cursor_catchups,
+        catchup_gaps: breakdown.catchup_gaps,
+        catchup_frames: breakdown.catchup_frames,
+        catchup_jumps: breakdown.catchup_jumps,
+        reject_conceal: breakdown.reject_conceal,
+        reject_real: breakdown.reject_real,
+        hole_hist: breakdown.hole_hist.to_vec(),
+        queue_high_water: breakdown.queue_high_water,
+        playout_resets: breakdown.playout_resets,
     }
 }
 

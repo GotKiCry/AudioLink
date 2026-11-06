@@ -1,5 +1,7 @@
 package com.gotkicry.audiolink.audio
 
+import com.gotkicry.audiolink.diagnostics.EventRing
+import com.gotkicry.audiolink.diagnostics.ProbeEvent
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -29,6 +31,12 @@ import java.util.concurrent.atomic.AtomicLong
  * 距上次写入超过 [PRODUCER_GAP_NS] 即判定"没有生产者"，此后读空**不**计入
  * [underrunCount] / [starvedFramesTotal]；写入恢复后计数自然恢复。
  *
+ * ## 探针事件一律在锁外记（docs/77 §S4 #1，2026-10-20）
+ * [write] 早期版本把 `events.record(...)` 写在 `synchronized(lock)` **内部**（[readInto] 一直在锁外），
+ * 于是形成 `ring.lock → EventRing` 的锁嵌套；而内核播放线程**每拍**都会调 `playoutBufferState()`
+ * → [sizeFrames]，抢的正是 `ring.lock`。一旦发生 overflow，内核播放线程就被外部 monitor 连坐卡住
+ * —— 一次丢帧立刻升级成「供给停摆」的正反馈。所以锁内只累计原子量，探针事件一律出锁后再记。
+ *
  * 线程安全：所有索引与数组访问都在内部锁下；统计计数用 `AtomicLong`（读侧不取锁）。
  */
 class PcmRingBuffer(
@@ -38,6 +46,8 @@ class PcmRingBuffer(
     val channelCount: Int = DEFAULT_CHANNEL_COUNT,
     /** 单调时钟（纳秒）；测试注入假时钟以驱动「生产者离开」的判定。 */
     private val nowNanos: () -> Long = System::nanoTime,
+    /** 离散事件探针（常开诊断，`null` = 不记）：overflow 与供给欠载各记一条。 */
+    private val events: EventRing? = null,
 ) : PcmSource {
 
     companion object {
@@ -128,9 +138,12 @@ class PcmRingBuffer(
         // 超容量的一次性写入：只保留最后 capacityFrames 帧（丢的都是最旧的）。
         var srcOffsetFrames = 0
         var framesToWrite = frames
+        // 本调用里发生了多少次「丢弃」（= 要记几条 overflow 事件，口径与逐次丢弃一一对应）。
+        var overflowEvents = 0
         if (framesToWrite > capacityFrames) {
             val dropped = framesToWrite - capacityFrames
             overflow.addAndGet(dropped.toLong())
+            overflowEvents += 1
             srcOffsetFrames = dropped
             framesToWrite = capacityFrames
         }
@@ -142,6 +155,7 @@ class PcmRingBuffer(
                 // 腾空间：把读指针往前推 = 丢弃最旧的 (framesToWrite - free) 帧。
                 val drop = framesToWrite - free
                 overflow.addAndGet(drop.toLong())
+                overflowEvents += 1
                 readFrame += drop
             }
             val dstFrame = (writeFrame % capacityFrames).toInt()
@@ -166,6 +180,13 @@ class PcmRingBuffer(
             }
             writeFrame += framesToWrite
             lastWriteNanos = nowNanos()
+        }
+
+        // 探针事件**出锁之后**再记（docs/77 §S4 #1）：锁内记会让 ring.lock 与探针的锁嵌套，
+        // 而内核播放线程每拍都要抢 ring.lock（见类注释）。丢掉的那条时间戳晚几微秒，取证无差别。
+        val sink = events
+        if (sink != null) {
+            repeat(overflowEvents) { sink.record(ProbeEvent.PLAYOUT_RING_OVERFLOW, nowNanos()) }
         }
         return frames
     }
@@ -213,6 +234,7 @@ class PcmRingBuffer(
         if (taken < wantFrames && producerActive()) {
             underrunEvents.incrementAndGet()
             starvedFrames.addAndGet((wantFrames - taken).toLong())
+            events?.record(ProbeEvent.PLAYOUT_RING_UNDERRUN, nowNanos())
         }
         return PcmLayout.samplesForFrames(taken, channelCount)
     }

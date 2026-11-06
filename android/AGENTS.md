@@ -11,10 +11,11 @@ Compose UI + 前台服务承载收发,Rust 内核经 UniFFI(JNA)接入。单模�
 | `…/audio/` | 播放:`LowLatencyPlayer`(AudioTrack 低延迟)、`PlayoutLoop`、`PcmRingBuffer`、`FfiPcmFeed` |
 | `…/capture/` | 采集:麦克风 / `SystemLoopbackCaptureSource`(MediaProjection)/ 状态机 |
 | `…/service/` | `EngineLifecycle`、`LanDiscovery`、UI 状态映射(`PeerUiState` 等) |
+| `…/diagnostics/` | `ProtocolSelfTest`(协议自检)+ 时序探针(`IntervalRing`/`EventRing`/`ProbeHub`,见下「诊断探针」) |
 | `…/ui/` | `screens/`(Console/Device/Sender/Receiver/Settings/Update/Licenses)、`components/`、`theme/`、`i18n/` |
 | `…/update/` | 应用内更新(GitHub Releases,FileProvider 安装) |
 | `app/src/main/jniLibs/{arm64-v8a,armeabi-v7a}/` | `libaudiolink_ffi.so`(JNA 加载) |
-| `app/src/test/` | 30 个纯 JVM 单测(JUnit4) |
+| `app/src/test/` | 33 个纯 JVM 单测(JUnit4) |
 | `app/build.gradle.kts` | SDK/ABI/签名/版本;UniFFI 绑定挂为 source set |
 | `core/crates/audiolink-ffi/bindings/` | Kotlin 绑定(入库交付物)+ README(再生成纪律) |
 | `android/scripts/build-rust.ps1` | Rust .so 交叉编译脚本 |
@@ -30,6 +31,19 @@ pwsh tools/gradlew.ps1 lint
 pwsh tools/check-version.ps1              # versionName 与根 Cargo.toml 一致
 pwsh core/crates/audiolink-ffi/bindings/check-so-symbols.ps1  # FFI 四环自检
 ```
+
+## 诊断探针(时序取证)
+
+排查「诊断面板计数器全绿、声音却断断续续」这类问题的取证通道:**常开内存环**(record 路径稳态零分配、不打日志,统计只在快照时算),事后由 PC 侧 Agent 拉取分析。
+
+- 快照:`adb shell dumpsys activity service com.gotkicry.audiolink/.service.AudioLinkService`
+  (`AudioLinkService.dump` 输出 ProbeHub.report + PlaybackUiState 关键字段 + FFI `telemetry()` 摘要)
+- 心跳:`adb logcat -d -s AudioLink:I`(引擎运行中每 5 s 一行 ProbeHub.oneLine)
+- 埋点地图:`FfiPcmFeed.feedPcm`(内核→播放环供给节拍)、`CapturePump.pumpOnce`(设备读节拍)、
+  `CapturePcmPull.readPcm`(内核拉采集节拍,空返回记事件)、`PcmRingBuffer`(overflow/供给欠载)、
+  `PlaybackCounters.recordSilence`(欠载补静音)、`LowLatencyPlayer` 播放循环(AudioTrack 欠载正增量)
+  —— 全部汇入 `AudioLinkService.probeHub`。
+- 改埋点时守同一纪律:热路径只写预分配数组/原子量,不许分配、不许打日志;间隙阈值等新口径进 `diagnostics/` 的纯 Kotlin 类并补 JVM 单测。
 
 ## 硬约束与坑
 

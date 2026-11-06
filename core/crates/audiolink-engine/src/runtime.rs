@@ -3238,8 +3238,26 @@ struct RejectedMarks {
     next_overwrite: AtomicUsize,
 }
 
-/// 见 [`RejectedMarks`]：在窗缺口数的两倍余量。
-const REJECTED_MARK_SLOTS: usize = 16;
+/// 见 [`RejectedMarks`]：覆盖「队列容量 30 + 重排在飞 18」的全部在窗序号，再留一倍余量。
+///
+/// docs/78 §B（2026-10-22 真机）：原值 16 的设计前提是「在窗**缺口数**不会超过队列容量」，
+/// 现场实测 `catchupGaps=1209 / queueRejects=5104` —— 缺口数比队列容量高两个数量级，
+/// 槽位被反复轮转覆盖，绝大多数缺口因此拿不到标记、只能退回逐拍追赶。
+/// 扩到 64 让散点缺口仍走已验收的跳队头快路径；雪崩场景由 `CATCHUP_JUMP_DISTANCE` 兜底。
+const REJECTED_MARK_SLOTS: usize = 64;
+
+/// docs/78 §A：队头帧超前游标多少帧时，放弃逐拍追赶、**一次跳队头**。
+///
+/// 为什么是 2 而不是「队列容量量级」：
+/// - `missing_tick_advances_cursor_and_late_frame_is_never_played` 与
+///   `full_queue_rejection_marks_every_gap_and_recovers_at_each_accepted_frame`
+///   两个守护用例都只钉住 `distance == 1` 必须逐拍掩盖 ⇒ 2 是安全下界；
+/// - 真机现场 `catchupFrames / catchupGaps = 4751 / 1209 ≈ 3.9`，平均缺口才 4 帧；
+///   取 30 会一个都跳不到，A 形同虚设。
+///
+/// 代价：时间轴前移 `distance` 帧。非排播（单机收发）下无外显代价；
+/// 排播模式下本函数收到的 `rejected_marks` 恒为 `None`，A 不生效（见调用点门控）。
+const CATCHUP_JUMP_DISTANCE: u32 = 2;
 
 impl RejectedMarks {
     fn new() -> Self {
@@ -3623,6 +3641,12 @@ struct ReceiveReport {
     /// 口径说明：掩盖占位帧在队列只剩一格时**主动让位**（见 [`Emission`] 与
     /// `receive_audio`），让位不算拒收、不进这个计数 —— 这里的每次计数都有真音频损失。
     queue_rejects: u32,
+
+    // docs/77 §7.7：把 `queue_rejects` 按**被拒的帧类**拆开。
+    /// 被拒的是掩盖占位帧：说明让位线（`conceal_ceiling`）该下调，没有真音频损失。
+    reject_conceal: u32,
+    /// 被拒的是真实解码帧：这才是**真丢音频**，高则说明洞太大或容量不够。
+    reject_real: u32,
 }
 
 /// `AudioReceiver::receive` 投递的帧类：接收侧掩盖占位帧 / 真实解码帧。
@@ -3636,6 +3660,15 @@ enum Emission {
     Conceal,
     /// 真实解码帧（队列的最后一格永远留给它）。
     Real,
+    /// **超掩盖上限的洞**（docs/77 §S1）：`frame.seq` 是洞的首序号、`samples` 为空。
+    ///
+    /// 为什么要有它：`receive` 在 `gap > max_conceal_frames` 时**已经重建了解码器**（判定为
+    /// 时间轴重建），但播放侧不知情，只能逐拍补掩盖 —— 那一串拍不消费队列，净增 D-1 帧，
+    /// 撞满容量后就是 docs/77 §3.3 的水位棘轮。这个变体把「接收侧已判定的大洞」交给播放侧，
+    /// 让它走已有的 `ReadyAfterRejectedGap` 快路径（D 拍压成 1 拍）。
+    ///
+    /// 让位 ≠ 拒收：它不进队、不记 `queue_rejects`，只 `note_dropped_seq` 标记缺口。
+    Hole,
 }
 
 /// 接收方向**由帧长派生**的全部状态，打包成一个可以整体重建的单元。
@@ -3806,6 +3839,8 @@ impl AudioReceiver {
         mut emit: impl FnMut(PlaybackFrame, Emission) -> bool,
     ) -> ReceiveReport {
         let mut report = ReceiveReport::default();
+        // docs/77 §S1：进入本包前的接收游标 = 洞首。下面 `self.expected_seq` 会被推进，先留一份。
+        let hole_start = self.expected_seq.unwrap_or(seq);
         let gap = match self.expected_seq {
             None => 0,
             Some(expected) => {
@@ -3849,6 +3884,7 @@ impl AudioReceiver {
             ) {
                 report.late_drops = report.late_drops.saturating_add(1);
                 report.queue_rejects = report.queue_rejects.saturating_add(1);
+                report.reject_conceal = report.reject_conceal.saturating_add(1);
             }
             report.plc = report.plc.saturating_add(1);
         }
@@ -3858,6 +3894,15 @@ impl AudioReceiver {
             if let Ok(decoder) = OpusDecoder::new(self.decoder.config()) {
                 self.decoder = decoder;
             }
+            // docs/77 §S1：同一个判据、同一时刻把这个大洞交给播放侧跳队头。
+            // 洞内本来就没有帧，跳过的不是音频；D 拍的「逐拍追赶」由此压成 1 拍。
+            let _ = emit(
+                PlaybackFrame {
+                    seq: hole_start,
+                    samples: Vec::new(),
+                },
+                Emission::Hole,
+            );
         }
 
         let decoded = match self.decoder.decode_into(payload, &mut self.pcm) {
@@ -3885,6 +3930,7 @@ impl AudioReceiver {
         ) {
             report.late_drops = report.late_drops.saturating_add(1);
             report.queue_rejects = report.queue_rejects.saturating_add(1);
+            report.reject_real = report.reject_real.saturating_add(1);
         }
         report
     }
@@ -3900,6 +3946,12 @@ fn push_playback_frame(
     emission: Emission,
     conceal_ceiling: usize,
 ) -> bool {
+    // docs/77 §S1：大洞标记不是音频，不进队；把洞首交给播放端跳队头。
+    // 与掩帧让位同一条纪律 —— 返回 true，不污染 `queue_rejects`。
+    if emission == Emission::Hole {
+        handle.note_dropped_seq(frame.seq);
+        return true;
+    }
     if emission == Emission::Conceal && handle.should_yield_conceal(conceal_ceiling) {
         handle.note_dropped_seq(frame.seq);
         return true;
@@ -3927,6 +3979,11 @@ fn receive_audio(
         telemetry.record_plc_frames(report.plc);
         telemetry.record_late_drops(report.late_drops);
         telemetry.record_queue_rejects(report.queue_rejects);
+        // docs/77 §7.7：B 线按帧类拆开 + 洞大小入桶（`lost` 就是 gap）。
+        telemetry.record_reject_by_kind(report.reject_conceal, report.reject_real);
+        if report.lost > 0 {
+            telemetry.record_hole(report.lost);
+        }
     }
 }
 
@@ -4942,10 +4999,17 @@ fn note_playout_beat(
     samples: &[f32],
     frame_ms: u32,
     synthetic: bool,
+    queue_depth: usize,
 ) {
     let peak = frame_peak(samples);
     let segment = match telemetry.lock() {
-        Ok(mut telemetry) => telemetry.record_playout_beat(peak, frame_ms, synthetic),
+        // docs/77 §7.7：水位峰值**搭这一趟已有的锁**。播放循环里绝不许为它再抢一次 ——
+        // 实测（2026-10-20）：单独抢锁会把播放线程拖慢，直接把
+        // `queue_reject_burst::queue_rejects_under_wifi_style_bursts` 的硬零断言打红（B=4~8）。
+        Ok(mut telemetry) => {
+            telemetry.note_queue_depth(queue_depth);
+            telemetry.record_playout_beat(peak, frame_ms, synthetic)
+        }
         // 锁中毒（某处 panic）不该让播放线程跟着倒下：丢一段静音账，比整条链路哑掉强。
         Err(_) => None,
     };
@@ -5221,6 +5285,8 @@ fn playout_main(
     let mut refill_after_underrun = false;
     let mut scheduled_reported = false;
     let mut mixed: Vec<f32> = Vec::new();
+    // docs/77 §7.7：当前是否处在「追赶序列」中 —— 一个洞只记一次洞数（`catchup_gaps`）。
+    let mut catchup_active = false;
 
     'playout: while !stop.load(Ordering::Relaxed) {
         // 睡到下一个提交时刻。节奏必须由**本地时钟**决定，数据到没到只影响
@@ -5398,6 +5464,9 @@ fn playout_main(
             frames_for_ms(MAX_TARGET_MS, frame_ms_u32),
         );
         let buffered_frames = frames.len() + usize::from(pending.is_some());
+        // docs/77 §7.7：水位历史峰值 —— 棘轮是否真的在爬，看这一个数就够。
+        // 注意：这里**不能**每拍抢 telemetry 锁 —— 接收侧每包要抢同一把，
+        // 播放线程被拖慢会让队列更早撞满，直接把 queue_reject_burst 的硬零断言打红。
         // 最高档位无法再靠“升档”触发补水。欠载后等到至少一个新帧到达，再按当前目标
         // 重新建立余量；完全断流时不进入 Hold，播放游标仍按真实时间推进。
         if refill_after_underrun && buffered_frames > 0 {
@@ -5426,7 +5495,15 @@ fn playout_main(
                     {
                         break 'playout;
                     }
-                    note_playout_beat(&telemetry, &events, peer, &silence, frame_ms_u32, true);
+                    note_playout_beat(
+                        &telemetry,
+                        &events,
+                        peer,
+                        &silence,
+                        frame_ms_u32,
+                        true,
+                        buffered_frames,
+                    );
                     continue;
                 }
                 PlayoutAction::Drop { late_us } => {
@@ -5445,7 +5522,15 @@ fn playout_main(
                     {
                         break 'playout;
                     }
-                    note_playout_beat(&telemetry, &events, peer, &silence, frame_ms_u32, true);
+                    note_playout_beat(
+                        &telemetry,
+                        &events,
+                        peer,
+                        &silence,
+                        frame_ms_u32,
+                        true,
+                        buffered_frames,
+                    );
                     continue;
                 }
                 PlayoutAction::Play => report_playout_scheduled(
@@ -5488,6 +5573,7 @@ fn playout_main(
                     &concealed_pcm,
                     frame_ms_u32,
                     true,
+                    buffered_frames,
                 );
                 continue;
             }
@@ -5555,6 +5641,7 @@ fn playout_main(
         match due {
             DueFrame::Ready(mut frame) | DueFrame::ReadyAfterRejectedGap(mut frame) => {
                 playout_gap.on_ready();
+                catchup_active = false;
                 let _ = playout_concealer.process_good(&mut frame.samples);
                 apply_playout_gain(&mut frame.samples, &gain_state, &local_gain_state);
                 if let Some(watchdog) = watchdog.as_mut() {
@@ -5569,6 +5656,7 @@ fn playout_main(
                     &frame.samples,
                     frame_ms_u32,
                     false,
+                    buffered_frames,
                 );
                 let frames_before = sink_written_frames(&sink);
                 let outcome =
@@ -5600,6 +5688,20 @@ fn playout_main(
                 if let Ok(mut telemetry) = telemetry.lock() {
                     telemetry.record_underrun();
                 }
+                // docs/77 §7.7：追赶（`pending` 还持着超前帧）与空队列是两种欠载，分开记账。
+                // 「洞」只在进入追赶的第一拍记一次 —— 否则一个 15 帧的洞会被数成 15 个洞。
+                if pending.is_some() {
+                    let entering = !catchup_active;
+                    catchup_active = true;
+                    if let Ok(mut telemetry) = telemetry.lock() {
+                        if entering {
+                            telemetry.record_catchup_gap();
+                        }
+                        telemetry.record_catchup_frames(1);
+                    }
+                } else {
+                    catchup_active = false;
+                }
                 // §7：排播模式下不升档 —— 升档会引入「Hold 一拍」，而那会把整条时间轴后移一帧。
                 if !scheduled_mode && gap.raise_depth {
                     let max_target = frames_for_ms(MAX_TARGET_MS, frame_ms_u32);
@@ -5623,6 +5725,7 @@ fn playout_main(
                     &concealed_pcm,
                     frame_ms_u32,
                     true,
+                    buffered_frames,
                 );
             }
             DueFrame::Disconnected => break,
@@ -5798,6 +5901,21 @@ fn take_due_frame_after_reject(
                 && rejected_marks.covers_gap(expected, distance)
             {
                 *expected_seq = Some(frame.seq.wrapping_add(1));
+                return DueFrame::ReadyAfterRejectedGap(frame);
+            }
+            // docs/78 §A：缺口大到继续逐拍追必然把队列顶满时，一次跳队头。
+            //
+            // 为什么必须在这里断开：追赶的每一拍都把帧留在 `pending`、**不消费队列**，
+            // 于是 D 拍的缺口让队列净增 D-1 帧。容量只有 30 帧时几个缺口就撞满，
+            // 撞满又制造新的拒收缺口（现场 1209 洞 / 5104 拒收的正反馈，docs/77 §3.3）。
+            //
+            // 门控：排播模式下调用方传 `None`（`(!scheduled_mode).then_some(...)`），
+            // 因此 A 只在非排播生效 —— 排播要求时间轴严格由 epoch 决定。
+            if rejected_marks.is_some() && distance >= CATCHUP_JUMP_DISTANCE {
+                *expected_seq = Some(frame.seq.wrapping_add(1));
+                if let Ok(mut telemetry) = telemetry.lock() {
+                    telemetry.record_catchup_jump();
+                }
                 return DueFrame::ReadyAfterRejectedGap(frame);
             }
             *pending = Some(frame);

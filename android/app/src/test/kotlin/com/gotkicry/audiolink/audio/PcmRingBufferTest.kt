@@ -1,5 +1,7 @@
 package com.gotkicry.audiolink.audio
 
+import com.gotkicry.audiolink.diagnostics.EventRing
+import com.gotkicry.audiolink.diagnostics.ProbeEvent
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -188,6 +190,28 @@ class PcmRingBufferTest {
     fun zeroCapacityIsRejected() {
         PcmRingBuffer(capacityFrames = 0, channelCount = 2)
     }
+
+    @Test
+    fun overflowRecordsOneProbeEventPerDropAction() {
+        // docs/77 §S4 #1：overflow 事件从 synchronized(lock) 内搬到锁外，**计数口径不变** ——
+        // 一次「丢弃动作」记一条事件，与改动前逐字一致（锁内累计原子量、出锁记探针）。
+        val events = EventRing(capacity = 8)
+        val ring = PcmRingBuffer(capacityFrames = 4, channelCount = 2, events = events)
+
+        ring.write(interleaved2(4, startFrame = 0), 4) // 恰好写满，不丢
+        assertEquals("写满不丢就不该记事件", 0, overflowEventCount(events))
+
+        ring.write(interleaved2(2, startFrame = 10), 2) // 环满 → 腾 2 帧 = 一次丢弃动作
+        assertEquals(1, overflowEventCount(events))
+
+        // 一次性超容量：先丢 6 帧（1 条），进锁后还要再腾 4 帧（1 条）—— 两次丢弃各记一条。
+        ring.write(interleaved2(10, startFrame = 20), 10)
+        assertEquals(3, overflowEventCount(events))
+        assertEquals("帧数口径不受影响", 2L + 6L + 4L, ring.overflowFrames)
+    }
+
+    private fun overflowEventCount(events: EventRing): Int =
+        events.snapshot().getValue(ProbeEvent.PLAYOUT_RING_OVERFLOW).count
 
     @Test
     fun readIntoIgnoresPartialFrameTailInDstSize() {

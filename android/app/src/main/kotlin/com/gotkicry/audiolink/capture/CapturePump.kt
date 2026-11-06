@@ -1,6 +1,9 @@
 package com.gotkicry.audiolink.capture
 
 import com.gotkicry.audiolink.audio.PcmLayout
+import com.gotkicry.audiolink.diagnostics.EventRing
+import com.gotkicry.audiolink.diagnostics.IntervalRing
+import com.gotkicry.audiolink.diagnostics.ProbeEvent
 
 /**
  * 采集侧的**单步推进器** —— 纯逻辑、不依赖 Android 框架、可直接 JVM 单测，
@@ -27,6 +30,10 @@ class CapturePump(
     private val targetChannels: Int = PcmFrameAssembler.DEFAULT_CHANNEL_COUNT,
     /** 每次从设备拉取的采样帧数；默认 480 帧（10 ms），覆盖最短 Opus 帧长。 */
     private val framesPerRead: Int = DEFAULT_FRAMES_PER_READ,
+    /** 设备读节拍探针（常开诊断，`null` = 不记；每次设备读一记，含空读）。 */
+    private val probe: IntervalRing? = null,
+    /** 离散事件探针：截断读记一条。 */
+    private val events: EventRing? = null,
 ) {
 
     init {
@@ -98,10 +105,17 @@ class CapturePump(
                 "采集源返回错误码 $read（${source.javaClass.simpleName}）",
             )
         }
-        if (read == 0) return false
+        if (read == 0) {
+            probe?.record(0)
+            return false
+        }
 
         val count = read.coerceAtMost(buffer.capacitySamples)
-        if (count != read) truncatedReads += 1
+        probe?.record(PcmLayout.framesForSamples(count, sourceChannels))
+        if (count != read) {
+            truncatedReads += 1
+            events?.record(ProbeEvent.CAPTURE_TRUNCATED)
+        }
         sourceSamples += count.toLong()
 
         // 编码换算：F32 源零拷贝直接用缓冲，S16 源走纯函数换算（有单测）。
