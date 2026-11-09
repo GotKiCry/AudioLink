@@ -5,18 +5,26 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * [CapturePcmPull] 的契约测试 —— 断言的每一条都来自 FFI 侧的白纸黑字
  * （`core/crates/audiolink-ffi/src/audio_bridge.rs` 的 `PcmPull` 文档与 `KotlinCaptureSource::read` 的实现）。
  *
- * 内核消费方的三条硬约束：长度**偶数**且 ≤ `max_samples`；空返回只表示「暂无数据」；
+ * 内核消费方的三条硬约束：样本数 ≤ `max_samples`；空返回只表示「暂无数据」；
  * **绝不忙等**（内核拿到空返回只睡最多 5 ms 就再来拉）。
  */
 class CapturePcmPullTest {
 
     private fun ring(capacity: Int = 64) = CaptureRing(capacity, channelCount = 2, topUpWaitMs = 0L)
+
+    private fun floats(bytes: ByteArray): List<Float> {
+        val out = FloatArray(bytes.size / 4)
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(out)
+        return out.toList()
+    }
 
     @Test
     fun implementsTheGeneratedPcmPullInterface() {
@@ -25,18 +33,18 @@ class CapturePcmPullTest {
     }
 
     @Test
-    fun neverExceedsMaxSamplesAndKeepsLengthEven() {
+    fun returnsLittleEndianBytesWithinSampleBudget() {
         val ring = ring()
         repeat(10) { ring.write(floatArrayOf(1f, 2f), 1) }
         val pull = CapturePcmPull(ring)
 
-        // 内核一次要 4 个样本：正好两帧。
-        assertEquals(4, pull.readPcm(4).size)
+        // 内核一次要 4 个样本：正好两帧，线上是 16 个 f32 字节。
+        assertEquals(16, pull.readPcm(4).size)
 
-        // 奇数上限：宁少给一个，也不给半帧（契约要求偶数长度）。
+        // 奇数上限：宁少给一个样本，也不给半帧。
         val odd = pull.readPcm(3)
-        assertEquals("奇数上限要退到偶数", 2, odd.size)
-        assertEquals(0, odd.size % 2)
+        assertEquals("奇数上限要退到两个样本", 8, odd.size)
+        assertEquals(0, odd.size % 8)
     }
 
     @Test
@@ -63,7 +71,7 @@ class CapturePcmPullTest {
         ring.write(floatArrayOf(0.5f, 0.5f, 0.25f, 0.25f), 2)
         reader.join(2_000)
         assertFalse("写数据后必须被唤醒", reader.isAlive)
-        assertEquals(4, returned.get())
+        assertEquals(16, returned.get())
     }
 
     @Test
@@ -85,6 +93,6 @@ class CapturePcmPullTest {
         val pull = CapturePcmPull(ring)
         ring.write(floatArrayOf(1f, 2f, 3f, 4f), 2)
         val got = pull.readPcm(4)
-        assertEquals(listOf(1f, 2f, 3f, 4f), got)
+        assertEquals(listOf(1f, 2f, 3f, 4f), floats(got))
     }
 }

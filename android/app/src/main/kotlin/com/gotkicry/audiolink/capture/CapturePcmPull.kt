@@ -4,6 +4,8 @@ import com.gotkicry.audiolink.core.PcmPull
 import com.gotkicry.audiolink.diagnostics.EventRing
 import com.gotkicry.audiolink.diagnostics.IntervalRing
 import com.gotkicry.audiolink.diagnostics.ProbeEvent
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /**
  * FFI 采集契约的 Kotlin 实现：`com.gotkicry.audiolink.core.PcmPull`。
@@ -11,7 +13,7 @@ import com.gotkicry.audiolink.diagnostics.ProbeEvent
  * 内核侧消费方是 `KotlinCaptureSource::read`（`core/crates/audiolink-ffi/src/audio_bridge.rs`），
  * 它给出的三条硬约束在这里逐条对应：
  *
- * 1. 「返回 48 kHz / f32 / 2ch 交错样本，长度**偶数**、且 ≤ `max_samples`」——
+ * 1. 「返回 48 kHz / 小端 f32 / 2ch 交错字节块，样本数 ≤ `max_samples`」——
  *    长度先向下取整到声道边界（[CaptureRing] 只会给出整帧），绝不超过 `max_samples`；
  * 2. 「返回空 = 暂无数据（不要忙等返回 0，那会在采集线程里变成热循环）」——
  *    数据不足时**阻塞在 [CaptureRing.readBlocking] 的条件变量上**（有界阻塞：环关闭或等满
@@ -22,11 +24,7 @@ import com.gotkicry.audiolink.diagnostics.ProbeEvent
  * **停止路径的不变量**：采集停止**必须** `ring.close()`，否则内核线程会永远停在阻塞读上
  * （见 [CaptureRing] 的关闭语义）。
  *
- * ## 已知代价（**未验证，不要当成「性能可接受」**）
- * UniFFI 0.29 把 Rust `Vec<f32>` 映成 `List<Float>`，所以每次拉取都要把样本装箱 ——
- * 20 ms / 1920 样本 ≈ 1920 个装箱对象。这条代价与播放侧（`FfiPcmFeed`）完全同源，
- * **真机 GC 抖动未验证**（本机无真机）。逃生通道同样是 UDL `bytes`（`ByteArray` +
- * `FloatBuffer` 零拷贝视图），属 Rust 侧改动，不在本模块权限内。
+ * 返回 `ByteArray` 而非逐样本装箱的 `List<Float>`；小端 f32 由 Rust 侧批量解码。
  */
 class CapturePcmPull(
     private val ring: CaptureRing,
@@ -55,7 +53,7 @@ class CapturePcmPull(
         private set
 
     @Synchronized
-    override fun readPcm(maxSamples: Int): List<Float> {
+    override fun readPcm(maxSamples: Int): ByteArray {
         val out = readFromRing(maxSamples)
         // 探针：每次调用一记（间隔 = 内核拉取节拍），空返回单独记事件。
         probe?.record(out.size)
@@ -63,36 +61,36 @@ class CapturePcmPull(
         return out
     }
 
-    private fun readFromRing(maxSamples: Int): List<Float> {
+    private fun readFromRing(maxSamples: Int): ByteArray {
         readCalls += 1
         if (maxSamples <= 0) {
             emptyReturns += 1
-            return emptyList()
+            return ByteArray(0)
         }
-        // 契约要求长度是偶数（= 整数帧）：maxSamples 是奇数时只能少给一个样本 —— 宁少给，
+        // 契约要求整数帧：maxSamples 是奇数时只能少给一个样本 —— 宁少给，
         // 不给半帧（内核虽会截断，但那样每次都多记一次「读不满」，遥测噪声更大）。
         val usable = maxSamples - maxSamples % ring.channelCount
         if (usable <= 0) {
             emptyReturns += 1
-            return emptyList()
+            return ByteArray(0)
         }
 
         val dst = scratchFor(usable)
         val got = ring.readBlocking(dst)
         if (got <= 0) {
             emptyReturns += 1
-            return emptyList()
+            return ByteArray(0)
         }
 
-        // 装箱：契约要求的返回类型就是 List<Float>（见类注释的代价说明）。
-        val out = ArrayList<Float>(got)
-        for (index in 0 until got) {
-            out.add(dst[index])
-        }
+        val out = ByteArray(got * 4)
+        ByteBuffer.wrap(out)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .asFloatBuffer()
+            .put(dst, 0, got)
         return out
     }
 
-    /** 取一块**长度恰好等于本次请求量**的缓冲（长度变了就重分配一次，之后零分配）。 */
+    /** 取一块**长度恰好等于本次请求量**的缓冲（长度变了才重分配这个 scratch）。 */
     private fun scratchFor(size: Int): FloatArray {
         if (scratch.size != size) {
             scratch = FloatArray(size)

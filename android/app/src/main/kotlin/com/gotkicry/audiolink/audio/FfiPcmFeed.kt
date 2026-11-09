@@ -3,6 +3,8 @@ package com.gotkicry.audiolink.audio
 import com.gotkicry.audiolink.core.PcmFeed
 import com.gotkicry.audiolink.core.PcmBufferState
 import com.gotkicry.audiolink.diagnostics.IntervalRing
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /**
  * 内核 PCM → 播放环的搬运器：UniFFI 回调接口 [`PcmFeed`] 的 Kotlin 实现。
@@ -16,16 +18,11 @@ import com.gotkicry.audiolink.diagnostics.IntervalRing
  * ## 三条必须守住的约定（来自 `core/crates/audiolink-ffi/src/audio_bridge.rs`）
  * 1. **线程**：`feedPcm` 由内核的 Rust 播放线程调用（不是 UI 线程、也不是 AudioTrack 线程），
  *    所以本类必须线程安全 —— 环自身有锁，[feedPcm] 另加 `@Synchronized` 保护复用缓冲（见下）。
- * 2. **格式**：`samples` 恒为 48 kHz / f32 / 2ch 交错，长度应为 `frames * 2`。
+ * 2. **格式**：`samples` 恒为 48 kHz / 小端 f32 / 2ch 交错的字节块，长度应为 `frames * 2 * 4`。
  * 3. **返回值**：`accepted < frames` 在内核侧会被记为"Kotlin 侧环满"（`PlayoutStats.write_errors++`），
  *    所以环满时**不能**闷声返回 `frames` —— 那会让上游遥测里这一段彻底消失。
  *
- * ## 已知代价（**未验证，不要当成"性能可接受"**）
- * UniFFI 0.29 把 Rust `Vec<f32>` 映成 `List<Float>`（没有 `FloatArray` 映射），
- * 每帧 20 ms / 1920 个样本会在 Kotlin 侧产生约 1920 个装箱对象 ≈ 30 KB/帧。
- * 本类只能做"少分配一次"：用**预分配 scratch 数组**逐元素搬运，而不是每个回调再 `toFloatArray()`。
- * **真机 GC 抖动未验证**（本机无真机）。若真机实测进不了预算，逃生通道是把这条 PCM 通道换成
- * UDL `bytes`（`ByteArray` + `ByteBuffer.asFloatBuffer()` 零拷贝视图）—— 属 Rust 侧改动，找 ffi 流。
+ * `ByteArray` 避免逐样本装箱；`FloatBuffer` 批量读入预分配 scratch，避免逐元素 JVM 方法调用。
  *
  * @param ring 目标播放环（其 `channelCount` 决定交错布局）。
  */
@@ -49,7 +46,7 @@ class FfiPcmFeed(
         const val INITIAL_SCRATCH_SAMPLES = 1_920
     }
 
-    /** 复用的搬运缓冲：实时路径不再产生新数组（装箱已躲不掉，至少别再复制一份）。 */
+    /** 复用的搬运缓冲：`FloatBuffer` 直接写入这里，不再逐样本装箱或复制出第二个样本数组。 */
     private var scratch = FloatArray(INITIAL_SCRATCH_SAMPLES)
 
     /**
@@ -62,22 +59,24 @@ class FfiPcmFeed(
      * @return 实际接收的帧数（仅供诊断）；环满导致丢帧时返回 `< frames`。
      */
     @Synchronized
-    override fun feedPcm(samples: List<Float>, frames: Int): Int {
+    override fun feedPcm(samples: ByteArray, frames: Int): Int {
         // 探针记每一次回调（含被拒绝的）：内核供给的间隔抖动/停摆正是「计数器全绿但声音断」要找的东西。
         probe?.record(frames)
         if (frames <= 0) return 0
 
         val wanted = PcmLayout.samplesForFrames(frames, channelCount)
-        if (samples.size < wanted) {
-            // 声明的帧数与实际样本数不符 = 上游口径破了。**宁可不写**：
+        val wantedBytes = wanted * 4
+        if (samples.size < wantedBytes) {
+            // 声明的帧数与实际字节数不符 = 上游口径破了。**宁可不写**：
             // 写进去就是整段声道错位（听起来像噪音），比丢一段糟得多；返回 0 也让内核把这次算成异常。
             return 0
         }
 
         val buffer = scratchFor(wanted)
-        for (i in 0 until wanted) {
-            buffer[i] = samples[i]
-        }
+        ByteBuffer.wrap(samples)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .asFloatBuffer()
+            .get(buffer, 0, wanted)
 
         val overflowBefore = ring.overflowFrames
         ring.write(buffer, frames)

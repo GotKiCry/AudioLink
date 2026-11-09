@@ -140,6 +140,6 @@ armeabi-v7a    13/13  缺失=[]
 * 所有 PCM 都是 **48 000 Hz / f32 / 2ch 交错**（零重采样；内核会断言设备格式，不达标直接拒绝推流）；
 * `PcmFeed.feedPcm` 会被**内核的 Rust 播放线程**（`audiolink-playout`，非 UI 线程）调用 →
   实现必须线程安全；
-* 生成的 Kotlin 里 `Vec<f32>` 是 `List<Float>`（UniFFI 0.29 的映射，不是 `FloatArray`），
-  装箱代价见 `../src/audio_bridge.rs` 顶部的说明；
+* PCM 在 Rust 侧以 `Vec<u8>` 导出，生成绑定对应 `ByteArray`；载荷是小端 f32 交错字节块，
+  批量转换方式见 `../src/audio_bridge.rs` 顶部的说明；
 * 删改本目录里的 `.kt` 没有意义 —— 下次生成会覆盖，要改的是 Rust 侧的 `#[uniffi::export]` 面。

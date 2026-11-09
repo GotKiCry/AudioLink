@@ -17,15 +17,11 @@
 //! 所以 engine 侧完全看不出音频是从 Kotlin 来的 —— 工厂只在目标线程里被调用
 //! （`audiolink-engine::runtime` 的「谁用谁建」纪律）。
 //!
-//! # 实时路径的代价（**已知成本，别当没这回事**）
+//! # 实时路径的代价
 //!
-//! UniFFI 0.29 的 Kotlin 绑定里 `Vec<f32>` 映射为 `List<Float>`（不是 `FloatArray`）：
-//! 每帧 20 ms（1920 个交错样本）会在 Kotlin 侧产生 1920 个装箱对象 ≈ 30 KB/帧、1.5 MB/s 垃圾。
-//! 这是本桥接**已知**的性能代价，选它的理由是**唯一可编译可验收的路径**：
-//! 要拿到零装箱的 `ByteArray`，只能用 UDL 模式的 `bytes` 类型（proc-macro 模式没有对应 FFI 类型），
-//! 那会引入 UDL + build.rs 的第二套脚手架生成链路。
-//! M1 无真机（`adb devices` 为空），**抖动影响未验证**；真机接入后若 GC 抖动进不了预算，
-//! 逃生通道是：把 `PcmFeed` 换成 UDL `bytes`（`ByteArray` + `ByteBuffer.asFloatBuffer()` 零拷贝视图）。
+//! UniFFI 0.29 把 `Vec<f32>` 映成 `List<Float>`，每个样本都要装箱；`Vec<u8>` 则直接
+//! 映成 `ByteArray`。双向 PCM 因而统一按 **小端 f32 字节块** 跨 FFI，Kotlin 再用
+//! `ByteBuffer.asFloatBuffer()` 批量搬运，避免每秒约 9.6 万个装箱对象及其 GC 抖动。
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -47,14 +43,14 @@ pub struct PcmBufferState {
 /// Kotlin 实现的 PCM 灌入口（`AudioLinkService.feedPcm` 就是它）。
 ///
 /// 契约（Kotlin 侧必须遵守，否则声音会错位）：
-/// 1. `samples` 是 **48 kHz / f32 / 2ch 交错**样本，长度恒为 `frames * 2`；
+/// 1. `samples` 是 **48 kHz / 小端 f32 / 2ch 交错**字节块，长度恒为 `frames * 2 * 4`；
 /// 2. **从任意线程调用**：内核的播放线程是 Rust 线程（`audiolink-playout`，不是 UI 线程、也不是
 ///    Kotlin 的主线程），实现必须线程安全（落到 `PcmRingBuffer` 上时要自己加锁）；
 /// 3. 返回值 = 实际接收的帧数，仅供诊断；`< frames` 表示 Kotlin 侧环满。
 #[uniffi::export(callback_interface)]
 pub trait PcmFeed: Send + Sync {
-    /// 交付一段 PCM。
-    fn feed_pcm(&self, samples: Vec<f32>, frames: i32) -> i32;
+    /// 交付一段 PCM 的小端 f32 字节块。
+    fn feed_pcm(&self, samples: Vec<u8>, frames: i32) -> i32;
 
     /// 从播放线程发布的快照读数，不在 Rust 线程调用 AudioTrack。
     fn playout_buffer_state(&self) -> Option<PcmBufferState> {
@@ -65,18 +61,36 @@ pub trait PcmFeed: Send + Sync {
 /// Kotlin 实现的 PCM 拉取口（发送方向用，M1 Android 不用）。
 ///
 /// 契约：
-/// 1. 返回 48 kHz / f32 / 2ch 交错样本，长度 **偶数**、且 ≤ `max_samples`；
+/// 1. 返回 48 kHz / 小端 f32 / 2ch 交错字节块，长度是 `4 * 声道数` 的倍数、且样本数 ≤ `max_samples`；
 /// 2. 返回空 = 暂无数据（不要忙等返回 0，那会在采集线程里变成热循环）；
 /// 3. 同样可能从 Rust 音频线程调用，实现必须线程安全。
 #[uniffi::export(callback_interface)]
 pub trait PcmPull: Send + Sync {
-    /// 取最多 `max_samples` 个交错样本。
-    fn read_pcm(&self, max_samples: i32) -> Vec<f32>;
+    /// 取最多 `max_samples` 个交错样本的小端 f32 字节块。
+    fn read_pcm(&self, max_samples: i32) -> Vec<u8>;
 }
 
 /// 统一内部格式（48 kHz / f32 / 2ch）—— engine 的「零重采样」硬闸会拿它做断言。
 fn unified_format() -> DeviceFormat {
     DeviceFormat::new(SAMPLE_RATE_HZ, CHANNELS, SampleFormat::F32)
+}
+
+const PCM_F32_BYTES: usize = 4;
+
+fn pcm_bytes(samples: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(samples.len() * PCM_F32_BYTES);
+    for sample in samples {
+        bytes.extend_from_slice(&sample.to_le_bytes());
+    }
+    bytes
+}
+
+fn extend_pcm_from_bytes(dst: &mut Vec<f32>, bytes: &[u8]) {
+    dst.extend(
+        bytes
+            .chunks_exact(PCM_F32_BYTES)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])),
+    );
 }
 
 /// 播放输出 → Kotlin 回调。
@@ -128,7 +142,7 @@ impl PlayoutSink for KotlinPlayoutSink {
         }
         self.stats.writes += 1;
 
-        let accepted = self.feed.feed_pcm(samples.to_vec(), frames as i32);
+        let accepted = self.feed.feed_pcm(pcm_bytes(samples), frames as i32);
         if accepted < 0 {
             // Kotlin 侧明确报错（例如播放器已释放）→ 记为写入失败；`write_errors` 是唯一能表达它的字段。
             self.stats.write_errors += 1;
@@ -197,8 +211,9 @@ impl CaptureSource for KotlinCaptureSource {
         dst.clear();
 
         let samples = self.pull.read_pcm(self.max_samples as i32);
-        // 奇数长度说明 Kotlin 侧给的字节数不是整数帧：截到帧边界，绝不把半帧塞给编码器。
-        let usable = samples.len() - samples.len() % CHANNELS as usize;
+        // 字节数不是完整的双声道帧：截到边界，绝不把半帧塞给编码器。
+        let frame_bytes = CHANNELS as usize * PCM_F32_BYTES;
+        let usable = samples.len() - samples.len() % frame_bytes;
         if usable == 0 {
             self.stats.read_timeouts += 1;
             // 「回调立即返回空」会把采集线程变成热循环，所以这里给一个**下限**睡眠。
@@ -210,8 +225,8 @@ impl CaptureSource for KotlinCaptureSource {
             return Ok(None);
         }
 
-        dst.extend_from_slice(&samples[..usable]);
-        let frames = usable / CHANNELS as usize;
+        extend_pcm_from_bytes(dst, &samples[..usable]);
+        let frames = usable / frame_bytes;
         self.stats.packets += 1;
         self.stats.frames += frames as u64;
 
@@ -278,11 +293,12 @@ mod tests {
         fn playout_buffer_state(&self) -> Option<PcmBufferState> {
             self.buffer
         }
-        fn feed_pcm(&self, samples: Vec<f32>, _frames: i32) -> i32 {
+        fn feed_pcm(&self, samples: Vec<u8>, _frames: i32) -> i32 {
             *self.calls.lock().unwrap() += 1;
-            let frames = (samples.len() / 2) as i32;
+            let frames = (samples.len() / (CHANNELS as usize * PCM_F32_BYTES)) as i32;
             let accepted = self.accept_limit.unwrap_or(frames);
-            self.received.lock().unwrap().extend_from_slice(&samples);
+            let mut received = self.received.lock().unwrap();
+            extend_pcm_from_bytes(&mut received, &samples);
             accepted
         }
     }
@@ -293,12 +309,12 @@ mod tests {
     }
 
     impl PcmPull for ScriptedPull {
-        fn read_pcm(&self, _max_samples: i32) -> Vec<f32> {
+        fn read_pcm(&self, _max_samples: i32) -> Vec<u8> {
             let mut chunks = self.chunks.lock().unwrap();
             if chunks.is_empty() {
                 Vec::new()
             } else {
-                chunks.remove(0)
+                pcm_bytes(&chunks.remove(0))
             }
         }
     }

@@ -40,9 +40,9 @@ struct CountingFeed {
 }
 
 impl PcmFeed for CountingFeed {
-    fn feed_pcm(&self, samples: Vec<f32>, _frames: i32) -> i32 {
+    fn feed_pcm(&self, samples: Vec<u8>, _frames: i32) -> i32 {
         self.calls.fetch_add(1, Ordering::Relaxed);
-        (samples.len() / 2) as i32
+        (samples.len() / 8) as i32
     }
 }
 

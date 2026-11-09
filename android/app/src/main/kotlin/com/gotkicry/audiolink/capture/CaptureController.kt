@@ -39,7 +39,7 @@ import com.gotkicry.audiolink.diagnostics.ProbeHub
  *
  * ## 仍需真机验证
  * * 真实内录是否真的抓到系统音频、麦克风实际采样与延迟、授权弹窗流程、MIUI 的后台限制；
- * * 装箱（UniFFI 把 `Vec<f32>` 映成 `List<Float>`）在真机上的 GC 抖动。
+ * * PCM 以 `ByteArray` 跨 FFI 后的真机调度与输出延迟。
  * 这些**本模块无法验证**，不要当成已验证。
  */
 class CaptureController(

@@ -9,14 +9,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -53,11 +50,15 @@ fun LampTone.inkColor(): Color = when (this) {
  * 钨丝指示灯的圆点。
  *
  * **全屏唯一允许的持续动画是它的呼吸**（≤1 Hz）：[breathing] = true 时做 1.6 s 周期的明暗循环，
- * 用来表达"正在通流"。系统关掉动画（`ANIMATOR_DURATION_SCALE = 0`）时它会**真的静止**。
+ * 用来表达"正在通流"。动画按 250 ms 离散更新，避免装饰灯以 60 fps 持续触发重组。
+ * 系统关掉动画（`ANIMATOR_DURATION_SCALE = 0`）时它会**真的静止**。
  *
  * 控件本身 **decorative**（无 contentDescription）：状态永远由旁边的图标 + 文字承载，
  * 灯只是余光可捕捉的那一层。这样"状态不靠颜色单独传达"在任何情况下都成立。
  */
+private const val BREATH_PERIOD_NS = 1_600_000_000L
+private const val BREATH_UPDATE_MS = 250L
+
 @Composable
 fun StatusLamp(
     tone: LampTone,
@@ -67,21 +68,21 @@ fun StatusLamp(
 ) {
     val reducedMotion = LocalReducedMotion.current
     val color = tone.lampColor()
-    val alpha = if (breathing && !reducedMotion) {
-        val transition = rememberInfiniteTransition(label = "statusLamp")
-        val pulse by transition.animateFloat(
-            initialValue = 0.35f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 1600, easing = LinearEasing),
-                repeatMode = RepeatMode.Reverse,
-            ),
-            label = "statusLampAlpha",
-        )
-        pulse
-    } else {
-        1f
+    val pulse = remember { mutableFloatStateOf(0.35f) }
+    LaunchedEffect(breathing, reducedMotion) {
+        if (breathing && !reducedMotion) {
+            val startedAt = System.nanoTime()
+            while (true) {
+                val phase = ((System.nanoTime() - startedAt) % BREATH_PERIOD_NS).toFloat() / BREATH_PERIOD_NS
+                val linear = if (phase < 0.5f) phase * 2f else (1f - phase) * 2f
+                pulse.floatValue = 0.35f + 0.65f * linear
+                delay(BREATH_UPDATE_MS)
+            }
+        } else {
+            pulse.floatValue = 1f
+        }
     }
+    val alpha = if (breathing && !reducedMotion) pulse.floatValue else 1f
     Box(
         modifier = modifier.size(diameter + 8.dp),
         contentAlignment = Alignment.Center,

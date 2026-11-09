@@ -793,9 +793,8 @@ class AudioLinkService : Service() {
     /**
      * 手动 PCM 接缝（无装箱版）：直接写交错 `FloatArray` 到播放环。
      *
-     * 内核的正式路径走 [pcmFeed]（`FfiPcmFeed`，实现 UniFFI 的 `PcmFeed`，入参是 `List<Float>`；
-     * 装箱代价见该类注释）。本方法保留给非 FFI 的直推场景（本地自测注入 PCM，
-     * 或未来 PCM 通道换成 UDL `bytes` 零拷贝后复用同一入口）。
+     * 内核的正式路径走 [pcmFeed]（`FfiPcmFeed`，实现 UniFFI 的 `PcmFeed`，入参是 `ByteArray`；
+     * 小端 f32 的批量解码见该类注释）。本方法保留给非 FFI 的直推场景（本地自测注入 PCM）。
      *
      * 返回实际写入帧数；环满时按 drop-oldest 丢**最旧**帧（理由见 [PcmRingBuffer] 的类注释：
      * 实时音频的坏数据是延迟累积，宁可断一下也不能让延迟越积越大）。

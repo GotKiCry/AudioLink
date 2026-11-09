@@ -25,7 +25,7 @@ struct Counts {
 
 struct Feed(Arc<Counts>);
 impl PcmFeed for Feed {
-    fn feed_pcm(&self, _samples: Vec<f32>, frames: i32) -> i32 {
+    fn feed_pcm(&self, _samples: Vec<u8>, frames: i32) -> i32 {
         self.0.writes.fetch_add(1, Ordering::Relaxed);
         frames
     }
@@ -37,10 +37,13 @@ impl Drop for Feed {
 }
 struct Pull(Arc<Counts>);
 impl PcmPull for Pull {
-    fn read_pcm(&self, max_samples: i32) -> Vec<f32> {
+    fn read_pcm(&self, max_samples: i32) -> Vec<u8> {
         std::thread::sleep(Duration::from_millis(20));
         self.0.reads.fetch_add(1, Ordering::Relaxed);
-        vec![0.125; max_samples as usize]
+        vec![0.125f32; max_samples as usize]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect()
     }
 }
 impl Drop for Pull {
@@ -117,7 +120,7 @@ struct BlockedFeed {
     dropped: Arc<AtomicBool>,
 }
 impl PcmFeed for BlockedFeed {
-    fn feed_pcm(&self, _samples: Vec<f32>, frames: i32) -> i32 {
+    fn feed_pcm(&self, _samples: Vec<u8>, frames: i32) -> i32 {
         if let Some(entered) = self.entered.lock().unwrap().take() {
             let _ = entered.send(());
             let _ = self.release.lock().unwrap().recv();

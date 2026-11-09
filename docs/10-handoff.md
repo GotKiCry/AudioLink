@@ -10,6 +10,7 @@
 > 现状以看板（`tools/sync-board.ps1` 的条目清单）与各模块文档为准。
 > 引用本文任何缺口结论前，先按时间核对它是否已被后来的轮次补掉 —— 这条已有两次真实误读样本。
 > **最后更新**：2026-09-16（接收队列增长已修复，M2 自建 PCM 丢包掩盖已落地）· 远端 https://github.com/GotKiCry/AudioLink（PUBLIC）
+> **后续更正（2026-11-06）**：PCM 跨 UniFFI 已改为小端 f32 的 `ByteArray`，本文的 `List<Float>` 待办不再是现状；见 `docs/78-android-cpu-alpha.md`。
 
 ---
 

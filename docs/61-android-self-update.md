@@ -55,6 +55,9 @@ CI 产出两个 APK（`app-arm64-v8a-release.apk` / `app-armeabi-v7a-release.apk
 `versionCode` 从 `versionName` 派生：`major*10000 + minor*100 + patch`
 （0.1.0 → 100，0.1.1 → 101，0.2.0 → 200，1.0.0 → 10000）。
 
+> 2026-11-06 补：SemVer 预发布后缀在派生前去掉，`1.0.2-alpha.1` 与 `1.0.2` 都是 **10002**。
+> 初版按 `.` 分段直接 `toIntOrNull`，会把 `2-alpha` 解析成 0，实测错发为 10000；已修正并以设备包信息核验。
+
 **为什么必须动它**：原来写死 `versionCode = 1` —— 那样 0.1.1 的包与 0.1.0 的 code 相同，
 系统判为「同版本/降级」直接拒绝，**应用内更新永远装不上**。
 

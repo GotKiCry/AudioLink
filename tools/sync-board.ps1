@@ -30,6 +30,7 @@ $ErrorActionPreference = 'Stop'
 # 优先级含义：P0 = 当前关键路径，P1 = 本里程碑内，P2 = 近期技术债/护栏，P3 = 有余力再做，P4 = 已挂起（用户裁决，等整体架构完成后再优化）
 # ---------------------------------------------------------------------------
 $Tasks = @(
+    @{ T = '[M5] Android 播放 CPU 优化与 1.0.2-alpha.1 预发布'; M = 'M5'; P = 'P1'; S = 'Done'; B = '2026-11-09：状态灯离散更新、播放空闲轮询与 JNI 欠载采样降频；PCM 双向改为小端 f32 ByteArray，UniFFI 四环同源通过。修正预发布 versionCode：1.0.2-alpha.1 = 10002。PHK110 真机安装、APK 哈希与 PCM 回调核验通过；最终包 23 s 短窗平均 0.300 核。GitHub pre-release：1.0.2-alpha.1。未做声学 P50/P95、最终包长跑、32 位真机或 Windows updater 签名；既有 Cleaner Lint 错误未掩盖。详见 docs/78-android-cpu-alpha.md。' }
     # ---- M0 地基（全部已完成）----
     @{ T = '[M0] CI 能构建内核（core / android / desktop / version-consistency）'; M = 'M0'; P = 'P1'; S = 'Done'; B = '.github/workflows/ci.yml：四 job 并行，单轮约 3–4 分钟' }
     @{ T = '[M0] audiolink-types：协议常量、枚举、错误码、遥测结构'; M = 'M0'; P = 'P1'; S = 'Done'; B = 'docs/03-protocol.md §3/§4.1/§10/§11；serde 为可选 feature（默认零依赖）' }

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 struct SilentSource;
 impl PcmPull for SilentSource {
-    fn read_pcm(&self, _max_samples: i32) -> Vec<f32> {
+    fn read_pcm(&self, _max_samples: i32) -> Vec<u8> {
         Vec::new()
     }
 }

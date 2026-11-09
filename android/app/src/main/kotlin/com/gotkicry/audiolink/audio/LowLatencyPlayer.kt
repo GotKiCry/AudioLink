@@ -69,7 +69,7 @@ class LowLatencyPlayer(
         private const val JOIN_TIMEOUT_MS = 1_000L
 
         /** 无事可做时的休眠（只在输出缓冲满、源也没新数据时走到）。 */
-        private const val IDLE_SLEEP_MS = 1L
+        private const val IDLE_SLEEP_MS = 4L
 
         /** 缓冲快照的采样间隔（轮次）：`getBufferSizeInFrames` 是 JNI 调用，没必要每轮都问。 */
         private const val BUFFER_SNAPSHOT_INTERVAL = 32
@@ -435,11 +435,11 @@ class LowLatencyPlayer(
      *
      * 两种节奏，靠 [queueTargetFrames] 切换：
      *
-     * - **满灌（[QUEUE_TARGET_UNLIMITED]，旧行为）**：每轮都试着写，写不进就歇 1 ms。
+     * - **满灌（[QUEUE_TARGET_UNLIMITED]，旧行为）**：每轮都试着写，写不进就歇 4 ms。
      *   稳态下队列被灌到容量上限（真机 3844 帧 = 80.08 ms），flinger 报 Latency=101.00 ms。
      *   延迟地板是**这个策略**给的，不是容量的错（task-8 实测，docs/12 §2.1b）。
      * - **水位门控（target > 0）**：只在 `queued ≤ target − chunk` 时补一块
-     *   （判据见 [QueueWatermark.shouldWrite]），补不上就睡 1 ms 再看。
+     *   （判据见 [QueueWatermark.shouldWrite]），补不上就睡 4 ms 再看。
      *   稳态下队列稳定在 `[target − chunk, target]`，延迟随之降到目标档。
      */
     private fun runPlayoutLoop(localTrack: AudioTrack) {
@@ -469,29 +469,29 @@ class LowLatencyPlayer(
             if (target <= 0 || needsPriming) {
                 val progressed = loop.pumpOnce()
                 outputBufferedFrames = watermark.queuedFrames.toInt() + loop.bufferedFrames
-                sampleTrackUnderruns(localTrack)
                 if (++ticks % BUFFER_SNAPSHOT_INTERVAL == 0) {
+                    sampleTrackUnderruns(localTrack)
                     actualBufferFrames = localTrack.bufferSizeInFrames
                     startThreshold = startThresholdFrames(localTrack)
                 }
                 if (!progressed && !sleepNanos(IDLE_SLEEP_MS * NANOS_PER_MILLI)) return
             } else {
-                // 水位门控：**欠一个 chunk 就补一个**，欠不到就睡 1 ms 再看。
+                // 水位门控：**欠一个 chunk 就补一个**，欠不到就睡 4 ms 再看。
                 //
                 // 为什么**不**按固定 chunk 周期（10 ms）睡（这是实测踩到的坑）：
                 // `Thread.sleep` 的误差是单向累积的 —— 每拍多睡 0.5 ms，一秒就少写 48 ms 的数据，
                 // 而输出设备仍以 48 kHz 匀速消费，缺口只能由**播放环里的数据**补 ——
                 // 结果是环水位单调爬升（实测：3 分钟里从 80 ms 爬到 220 ms），端到端延迟反而变大。
                 // "缺了就补"没有这个问题：写入速率自动等于消费速率，水位稳定在目标档，
-                // 1 ms 的唤醒代价与旧的满灌路径完全相同（那条路径写不进时也是睡 1 ms）。
+                // 空闲唤醒间隔从 1 ms 放宽到 4 ms，降低满队列时的轮询开销。
                 if (watermark.shouldWrite(target, chunkFrames)) {
                     loop.pumpOnce()
                     outputBufferedFrames = watermark.queuedFrames.toInt() + loop.bufferedFrames
                 } else if (!sleepNanos(IDLE_SLEEP_MS * NANOS_PER_MILLI)) {
                     return
                 }
-                sampleTrackUnderruns(localTrack)
                 if (++ticks % BUFFER_SNAPSHOT_INTERVAL == 0) {
+                    sampleTrackUnderruns(localTrack)
                     actualBufferFrames = localTrack.bufferSizeInFrames
                     bufferCapacityFrames = localTrack.bufferCapacityInFrames
                     startThreshold = startThresholdFrames(localTrack)
@@ -501,8 +501,9 @@ class LowLatencyPlayer(
     }
 
     /**
-     * 采一次设备欠载计数（每轮既有采样的原位）：**只在出现正增量时**记一条探针事件。
-     * 欠载计数本身是单调累计值，逐轮记会把同一次欠载重复成几百条事件。
+     * 随 [BUFFER_SNAPSHOT_INTERVAL] 快照采一次设备欠载：**只在出现正增量时**记一条探针事件。
+     * 欠载计数本身是单调累计值，逐轮记会把同一次欠载重复成几百条事件；它没有控制作用，
+     * 不必像播放头水位那样每轮都做 JNI 查询。
      */
     private fun sampleTrackUnderruns(localTrack: AudioTrack) {
         val current = localTrack.underrunCount

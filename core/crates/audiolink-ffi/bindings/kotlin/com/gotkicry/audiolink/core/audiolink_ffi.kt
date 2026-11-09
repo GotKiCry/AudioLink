@@ -1129,13 +1129,13 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_audiolink_ffi_checksum_constructor_discoverybrowser_new() != 42985.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_audiolink_ffi_checksum_method_pcmfeed_feed_pcm() != 1438.toShort()) {
+    if (lib.uniffi_audiolink_ffi_checksum_method_pcmfeed_feed_pcm() != 38401.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_audiolink_ffi_checksum_method_pcmfeed_playout_buffer_state() != 59216.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_audiolink_ffi_checksum_method_pcmpull_read_pcm() != 57607.toShort()) {
+    if (lib.uniffi_audiolink_ffi_checksum_method_pcmpull_read_pcm() != 58715.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
@@ -1567,6 +1567,25 @@ public object FfiConverterString: FfiConverter<String, RustBuffer.ByValue> {
         val byteBuf = toUtf8(value)
         buf.putInt(byteBuf.limit())
         buf.put(byteBuf)
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
+    override fun read(buf: ByteBuffer): ByteArray {
+        val len = buf.getInt()
+        val byteArr = ByteArray(len)
+        buf.get(byteArr)
+        return byteArr
+    }
+    override fun allocationSize(value: ByteArray): ULong {
+        return 4UL + value.size.toULong()
+    }
+    override fun write(value: ByteArray, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        buf.put(value)
     }
 }
 
@@ -2504,7 +2523,7 @@ public object FfiConverterTypeFfiError : FfiConverterRustBuffer<FfiException> {
  * Kotlin 实现的 PCM 灌入口（`AudioLinkService.feedPcm` 就是它）。
  *
  * 契约（Kotlin 侧必须遵守，否则声音会错位）：
- * 1. `samples` 是 **48 kHz / f32 / 2ch 交错**样本，长度恒为 `frames * 2`；
+ * 1. `samples` 是 **48 kHz / 小端 f32 / 2ch 交错**字节块，长度恒为 `frames * 2 * 4`；
  * 2. **从任意线程调用**：内核的播放线程是 Rust 线程（`audiolink-playout`，不是 UI 线程、也不是
  * Kotlin 的主线程），实现必须线程安全（落到 `PcmRingBuffer` 上时要自己加锁）；
  * 3. 返回值 = 实际接收的帧数，仅供诊断；`< frames` 表示 Kotlin 侧环满。
@@ -2512,9 +2531,9 @@ public object FfiConverterTypeFfiError : FfiConverterRustBuffer<FfiException> {
 public interface PcmFeed {
     
     /**
-     * 交付一段 PCM。
+     * 交付一段 PCM 的小端 f32 字节块。
      */
-    fun `feedPcm`(`samples`: List<kotlin.Float>, `frames`: kotlin.Int): kotlin.Int
+    fun `feedPcm`(`samples`: kotlin.ByteArray, `frames`: kotlin.Int): kotlin.Int
     
     /**
      * 从播放线程发布的快照读数，不在 Rust 线程调用 AudioTrack。
@@ -2533,7 +2552,7 @@ internal object uniffiCallbackInterfacePcmFeed {
             val uniffiObj = FfiConverterTypePcmFeed.handleMap.get(uniffiHandle)
             val makeCall = { ->
                 uniffiObj.`feedPcm`(
-                    FfiConverterSequenceFloat.lift(`samples`),
+                    FfiConverterByteArray.lift(`samples`),
                     FfiConverterInt.lift(`frames`),
                 )
             }
@@ -2587,16 +2606,16 @@ public object FfiConverterTypePcmFeed: FfiConverterCallbackInterface<PcmFeed>()
  * Kotlin 实现的 PCM 拉取口（发送方向用，M1 Android 不用）。
  *
  * 契约：
- * 1. 返回 48 kHz / f32 / 2ch 交错样本，长度 **偶数**、且 ≤ `max_samples`；
+ * 1. 返回 48 kHz / 小端 f32 / 2ch 交错字节块，长度是 `4 * 声道数` 的倍数、且样本数 ≤ `max_samples`；
  * 2. 返回空 = 暂无数据（不要忙等返回 0，那会在采集线程里变成热循环）；
  * 3. 同样可能从 Rust 音频线程调用，实现必须线程安全。
  */
 public interface PcmPull {
     
     /**
-     * 取最多 `max_samples` 个交错样本。
+     * 取最多 `max_samples` 个交错样本的小端 f32 字节块。
      */
-    fun `readPcm`(`maxSamples`: kotlin.Int): List<kotlin.Float>
+    fun `readPcm`(`maxSamples`: kotlin.Int): kotlin.ByteArray
     
     companion object
 }
@@ -2613,7 +2632,7 @@ internal object uniffiCallbackInterfacePcmPull {
                     FfiConverterInt.lift(`maxSamples`),
                 )
             }
-            val writeReturn = { value: List<kotlin.Float> -> uniffiOutReturn.setValue(FfiConverterSequenceFloat.lower(value)) }
+            val writeReturn = { value: kotlin.ByteArray -> uniffiOutReturn.setValue(FfiConverterByteArray.lower(value)) }
             uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
         }
     }
@@ -2827,34 +2846,6 @@ public object FfiConverterSequenceUInt: FfiConverterRustBuffer<List<kotlin.UInt>
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterUInt.write(it, buf)
-        }
-    }
-}
-
-
-
-
-/**
- * @suppress
- */
-public object FfiConverterSequenceFloat: FfiConverterRustBuffer<List<kotlin.Float>> {
-    override fun read(buf: ByteBuffer): List<kotlin.Float> {
-        val len = buf.getInt()
-        return List<kotlin.Float>(len) {
-            FfiConverterFloat.read(buf)
-        }
-    }
-
-    override fun allocationSize(value: List<kotlin.Float>): ULong {
-        val sizeForLength = 4UL
-        val sizeForItems = value.map { FfiConverterFloat.allocationSize(it) }.sum()
-        return sizeForLength + sizeForItems
-    }
-
-    override fun write(value: List<kotlin.Float>, buf: ByteBuffer) {
-        buf.putInt(value.size)
-        value.iterator().forEach {
-            FfiConverterFloat.write(it, buf)
         }
     }
 }
